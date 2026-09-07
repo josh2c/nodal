@@ -1,0 +1,294 @@
+//! The Git facade: every `git` invocation Nodal makes goes through this type.
+//!
+//! Nodal talks to Git through its command line rather than a library, so refs, hooks and
+//! config behave exactly as the user's own tools see them. A unit is an independent
+//! repository, never a worktree, so this facade has no worktree operations — only
+//! detection, for adopting an existing checkout in place.
+
+pub mod cmd;
+pub mod oid;
+pub mod preflight;
+pub mod refs;
+pub mod remote;
+pub mod scrub;
+pub mod status;
+pub mod tree;
+pub mod worktree;
+
+use std::path::{Path, PathBuf};
+
+pub use self::oid::Oid;
+use crate::error::{Error, Result};
+
+/// A branch and the commit it points at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Branch {
+    /// Short name, without `refs/heads/`.
+    pub name: String,
+    /// The commit at its tip.
+    pub oid: Oid,
+}
+
+/// A repository Nodal reads and writes: a unit's home, a base, or a user's checkout.
+#[derive(Debug, Clone)]
+pub struct Git {
+    /// The directory `git` is run in.
+    root: PathBuf,
+}
+
+impl Git {
+    /// Open a repository at `root`.
+    ///
+    /// # Errors
+    /// [`Error::NotARepository`] when `root` is not inside a Git repository,
+    /// [`Error::GitSpawn`] when `git` could not be started.
+    pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
+        let git = Self { root: root.into() };
+        if cmd::run(&git.root, &["rev-parse", "--git-dir"])?.ok() {
+            Ok(git)
+        } else {
+            Err(Error::NotARepository { path: git.root })
+        }
+    }
+
+    /// The directory every invocation runs in.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Where this checkout keeps its Git state, and whether it shares it with another.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git rev-parse` failed.
+    pub fn layout(&self) -> Result<worktree::Layout> {
+        let paths = cmd::run_ok(
+            &self.root,
+            &["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+        )?;
+        let lines = paths.lines()?;
+        let [git_dir, common_dir] = lines.as_slice() else {
+            return Err(Error::GitParse {
+                args: paths.args.clone(),
+                record: paths.text()?.to_owned(),
+            });
+        };
+        let bare = cmd::run_ok(&self.root, &["rev-parse", "--is-bare-repository"])?;
+        Ok(worktree::classify(
+            PathBuf::from(git_dir),
+            PathBuf::from(common_dir),
+            bare.text()? == "true",
+        ))
+    }
+
+    /// The Git directory of this checkout.
+    ///
+    /// # Errors
+    /// As [`Git::layout`].
+    pub fn git_dir(&self) -> Result<PathBuf> {
+        Ok(self.layout()?.git_dir)
+    }
+
+    /// Resolve a revision to a full object id.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the revision is unknown, [`Error::GitOid`] on unreadable output.
+    pub fn rev_parse(&self, rev: &str) -> Result<Oid> {
+        let output = cmd::run_ok(&self.root, &["rev-parse", "--verify", "--end-of-options", rev])?;
+        Oid::parse(output.text()?)
+    }
+
+    /// Resolve a revision, `None` when it does not exist.
+    ///
+    /// # Errors
+    /// [`Error::GitOid`] when a resolved id could not be read.
+    pub fn rev_parse_opt(&self, rev: &str) -> Result<Option<Oid>> {
+        let output =
+            cmd::run(&self.root, &["rev-parse", "--verify", "--quiet", "--end-of-options", rev])?;
+        if !output.ok() {
+            return Ok(None);
+        }
+        Ok(Some(Oid::parse(output.text()?)?))
+    }
+
+    /// List the tree at a revision. `recursive` walks subtrees; `paths` limits the walk.
+    ///
+    /// One call of this is what a workspace fingerprint is built from
+    /// (`docs/contracts.md`, fingerprint inputs).
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the revision is unknown, [`Error::GitParse`] on an unreadable
+    /// record.
+    pub fn ls_tree(&self, rev: &str, recursive: bool, paths: &[&str]) -> Result<Vec<tree::Entry>> {
+        let mut args = vec!["ls-tree", "-z", "--full-tree"];
+        if recursive {
+            args.push("-r");
+        }
+        args.push(rev);
+        args.push("--");
+        args.extend_from_slice(paths);
+        let output = cmd::run_ok(&self.root, &args)?;
+        tree::parse(&output.args, &output.records()?)
+    }
+
+    /// Read the working tree's status, untracked files included, ignored files excluded.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git status` failed, [`Error::GitParse`] on an unreadable record.
+    pub fn status(&self) -> Result<status::Summary> {
+        let output = cmd::run_ok(
+            &self.root,
+            &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
+        )?;
+        status::parse(&output.args, &output.records()?)
+    }
+
+    /// The branch HEAD names, `None` when HEAD is detached.
+    ///
+    /// # Errors
+    /// [`Error::GitEncoding`] when the name is not UTF-8.
+    pub fn current_branch(&self) -> Result<Option<String>> {
+        let output = cmd::run(&self.root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+        if !output.ok() {
+            return Ok(None);
+        }
+        Ok(Some(output.text()?.to_owned()))
+    }
+
+    /// Every local branch, sorted by name.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git for-each-ref` failed.
+    pub fn branches(&self) -> Result<Vec<Branch>> {
+        let listed = refs::list(&self.root, "refs/heads/")?;
+        Ok(listed
+            .into_iter()
+            .map(|reference| Branch {
+                name: reference.name.trim_start_matches("refs/heads/").to_owned(),
+                oid: reference.oid,
+            })
+            .collect())
+    }
+
+    /// Whether a local branch exists.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git` failed for a reason other than a missing ref.
+    pub fn branch_exists(&self, name: &str) -> Result<bool> {
+        Ok(refs::read(&self.root, &format!("refs/heads/{name}"))?.is_some())
+    }
+
+    /// Create a branch at `start`, or at HEAD when `start` is `None`. Not idempotent:
+    /// Git refuses a branch that already exists, which is how unit branches stay unique
+    /// inside a repository.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the branch exists or the start point is unknown.
+    pub fn create_branch(&self, name: &str, start: Option<&str>) -> Result<()> {
+        let mut args = vec!["branch", "--", name];
+        args.extend(start);
+        cmd::run_ok(&self.root, &args)?;
+        Ok(())
+    }
+
+    /// Create a branch and check it out, the `nodal new` step after a clone is scrubbed.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the branch exists or the working tree would be overwritten.
+    pub fn switch_new(&self, name: &str, start: Option<&str>) -> Result<()> {
+        let mut args = vec!["switch", "--create", name];
+        args.extend(start);
+        cmd::run_ok(&self.root, &args)?;
+        Ok(())
+    }
+
+    /// Check out an existing branch.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the branch is unknown or the working tree would be overwritten.
+    pub fn switch(&self, name: &str) -> Result<()> {
+        cmd::run_ok(&self.root, &["switch", "--", name])?;
+        Ok(())
+    }
+
+    /// Delete a local branch. `force` deletes one whose commits are not merged.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the branch is checked out, unknown, or unmerged without `force`.
+    pub fn delete_branch(&self, name: &str, force: bool) -> Result<()> {
+        let flag = if force { "-D" } else { "-d" };
+        cmd::run_ok(&self.root, &["branch", flag, "--", name])?;
+        Ok(())
+    }
+
+    /// Read a full ref name, `None` when it does not exist.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git` failed for a reason other than a missing ref.
+    pub fn read_ref(&self, name: &str) -> Result<Option<Oid>> {
+        refs::read(&self.root, name)
+    }
+
+    /// Point a ref at an object, creating it if needed. `reason` goes in the reflog.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git update-ref` refused the name or the object.
+    pub fn write_ref(&self, name: &str, oid: &Oid, reason: &str) -> Result<()> {
+        refs::write(&self.root, name, oid, reason)
+    }
+
+    /// Delete a ref; deleting one that does not exist succeeds.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git update-ref -d` failed.
+    pub fn delete_ref(&self, name: &str) -> Result<()> {
+        refs::delete(&self.root, name)
+    }
+
+    /// Every ref under a prefix, sorted by name.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git for-each-ref` failed.
+    pub fn list_refs(&self, prefix: &str) -> Result<Vec<refs::Ref>> {
+        refs::list(&self.root, prefix)
+    }
+
+    /// Which commits of a revision exist on no remote. The Git half of the uniqueness
+    /// check `nodal reclaim` runs before removing anything.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the revision is unknown.
+    pub fn remote_containment(&self, rev: &str) -> Result<remote::Containment> {
+        remote::containment(&self.root, rev)
+    }
+
+    /// Which Git operations, if any, are in progress here.
+    ///
+    /// # Errors
+    /// As [`Git::layout`].
+    pub fn preflight(&self) -> Result<preflight::Report> {
+        Ok(preflight::inspect(&self.git_dir()?))
+    }
+
+    /// Refuse to go on when a Git operation is in progress.
+    ///
+    /// # Errors
+    /// [`Error::GitInProgress`] listing every state found; otherwise as [`Git::layout`].
+    pub fn ensure_no_operation_in_progress(&self) -> Result<()> {
+        let report = self.preflight()?;
+        if report.is_clear() {
+            return Ok(());
+        }
+        Err(Error::GitInProgress { repo: self.root.clone(), states: report.states })
+    }
+
+    /// Scrub the Git state a copy-on-write clone inherited from its base.
+    ///
+    /// # Errors
+    /// [`Error::GitLinkedWorktree`] on a linked or bare checkout, [`Error::GitInProgress`]
+    /// when the clone inherited a half-finished operation, [`Error::GitUnknownBranch`] when
+    /// the head branch does not exist, [`Error::Io`] when a removal failed.
+    pub fn scrub(&self, options: &scrub::Options) -> Result<scrub::Report> {
+        scrub::apply(&self.root, &self.layout()?, options)
+    }
+}
