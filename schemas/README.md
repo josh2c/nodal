@@ -20,8 +20,8 @@ Every change to a model type must land with its regenerated schema in the same c
 
 ## Versioning
 
-The set is versioned as a whole, by directory. `v1` is stable: a field may be added,
-because a reader that ignores unknown fields keeps working, but removing a field,
-renaming one, narrowing a pattern or changing a type is a breaking change and lands as a
-new `v2/` directory with the previous one left in place, so older bundles stay readable.
+The set is versioned as a whole, by directory. `v1` is stable. A field may be added: a
+reader that ignores unknown fields keeps working. A removal, a rename, a narrowed pattern
+or a changed type is a breaking change. It lands as a new `v2/` directory. The previous
+directory stays in place, so older bundles stay readable.
 The version lives in `SCHEMA_VERSION` in `crates/nodal-core/src/model/schema.rs`.
