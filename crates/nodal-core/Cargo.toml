@@ -1,0 +1,16 @@
+[package]
+name = "nodal-core"
+description = "Core library for Nodal: WorkUnits over shared project state."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

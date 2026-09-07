@@ -1,0 +1,20 @@
+[package]
+name = "nodal-cli"
+description = "The nodal command-line interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nodal"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+tracing.workspace = true
+nodal-core.workspace = true
+
+[lints]
+workspace = true
