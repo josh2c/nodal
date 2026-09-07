@@ -43,15 +43,19 @@ model/                 plain data, serde + schemars; zero IO
   manifest.rs          Manifest (.nodal/manifest.toml)
   bundle.rs            Bundle envelope
 
-store/                 SQLite; repository functions; no business rules
-  mod.rs               Store::open, migrations runner
+store/                 SQLite (WAL); repository functions; no business rules
+  mod.rs               Store::open, connection pragmas
+  migrations.rs        the numbered migration table and the runner
   migrations/          0001_init.sql, 0002_… (plain SQL files, include_str!)
+  row.rs               model values in and out of columns, one place
+  projects.rs          insert/get/find/list/update (one fn each)
   units.rs             insert/get/list/update_status (one fn each)
   environments.rs
   events.rs
   bases.rs
   templates.rs
   sessions.rs
+  leases.rs
   locks.rs
 
 recipe/
