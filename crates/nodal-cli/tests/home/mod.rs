@@ -180,6 +180,59 @@ fn write_activation(root: &Path, home: &Path, subject: (&Unit, &Environment, &Pr
     files::write(home, &activation, &manifest).unwrap();
 }
 
+/// A one-commit project, and the state directory the units it makes go in.
+///
+/// Named for what it holds rather than for the project inside it, because
+/// `nodal_core::model::Project` is a row in the registry and this is a place on a disk.
+///
+/// `nodal new` needs a repository with a commit in it; this is the smallest one that is
+/// still a project a recipe can be inferred from.
+pub struct Workspace {
+    /// The temporary root, kept so it outlives the test.
+    directory: tempfile::TempDir,
+    /// The repository units are made from.
+    pub source: PathBuf,
+    /// Nodal's state directory: the registry, and every home.
+    pub state: PathBuf,
+}
+
+impl Workspace {
+    /// Build the repository and its one commit.
+    #[must_use]
+    pub fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("project");
+        let state = directory.path().join("state");
+        std::fs::create_dir_all(source.join("app")).unwrap();
+        std::fs::write(source.join("app").join("main.txt"), "shared\n").unwrap();
+        std::fs::write(source.join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
+        std::fs::write(source.join(".gitignore"), "node_modules/\n").unwrap();
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.email", "unit@example.invalid"],
+            vec!["config", "user.name", "Test"],
+            vec!["add", "-A"],
+            vec!["commit", "-qm", "first"],
+        ] {
+            let status = Command::new("git").args(&args).current_dir(&source).status().unwrap();
+            assert!(status.success(), "git {args:?}");
+        }
+        Self { directory, source, state }
+    }
+
+    /// The temporary root, which is where a test writes a shell start-up file.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        self.directory.path()
+    }
+}
+
+impl Default for Workspace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(unix)]
 fn set_owner_only(path: &Path) {
     use std::os::unix::fs::PermissionsExt as _;

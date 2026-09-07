@@ -22,7 +22,7 @@ mod home;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use home::{Fixture, PORT, SECRET, SLUG};
+use home::{Fixture, PORT, SECRET, SLUG, Workspace};
 
 /// A terminal: a real shell, started interactive, reading its commands from a pipe,
 /// with the integration installed in the start-up file it reads.
@@ -40,9 +40,9 @@ struct Terminal {
 
 impl Terminal {
     /// A bash that reads a start-up file with the integration in it.
-    fn bash(program: PathBuf, fixture: &Fixture) -> Self {
-        let rc = fixture.root().join("rc.bash");
-        let ticks = fixture.root().join("ticks");
+    fn bash(program: PathBuf, root: &Path) -> Self {
+        let rc = root.join("rc.bash");
+        let ticks = root.join("ticks");
         std::fs::write(
             &rc,
             format!(
@@ -65,8 +65,8 @@ impl Terminal {
     }
 
     /// A zsh that reads a start-up file with the integration in it.
-    fn zsh(program: PathBuf, fixture: &Fixture) -> Self {
-        let directory = fixture.root().join("zdotdir");
+    fn zsh(program: PathBuf, root: &Path) -> Self {
+        let directory = root.join("zdotdir");
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join(".zshrc"), format!("PS1=''\n{}\n", install("zsh"))).unwrap();
         Self {
@@ -74,6 +74,12 @@ impl Terminal {
             args: vec![String::from("-i")],
             vars: vec![(String::from("ZDOTDIR"), directory)],
         }
+    }
+
+    /// The same terminal, with one more variable in its environment.
+    fn with(mut self, name: &str, value: &Path) -> Self {
+        self.vars.push((name.to_owned(), value.to_path_buf()));
+        self
     }
 
     /// Type `lines` into the terminal and return what it printed.
@@ -140,7 +146,7 @@ const REPORT: &str = "sh -c 'printf \"%s|%s|%s\" \"$NODAL_ID\" \"$NODAL_UNIT\" \
 fn bash_carries_the_unit_into_every_process_it_starts() {
     let bash = shell_or_skip!("bash");
     let fixture = Fixture::new();
-    let terminal = Terminal::bash(bash, &fixture);
+    let terminal = Terminal::bash(bash, fixture.root());
     let typed = format!("cd '{home}'\n{REPORT}", home = fixture.home.display());
     assert_eq!(terminal.typed(&typed, &fixture.outside()), expected());
 }
@@ -149,7 +155,7 @@ fn bash_carries_the_unit_into_every_process_it_starts() {
 fn zsh_carries_the_unit_into_every_process_it_starts() {
     let zsh = shell_or_skip!("zsh");
     let fixture = Fixture::new();
-    let terminal = Terminal::zsh(zsh, &fixture);
+    let terminal = Terminal::zsh(zsh, fixture.root());
     let typed = format!("cd '{home}'\n{REPORT}", home = fixture.home.display());
     assert_eq!(terminal.typed(&typed, &fixture.outside()), expected());
 }
@@ -173,7 +179,7 @@ fn fish_carries_the_unit_into_every_process_it_starts() {
 fn leaving_a_home_unsets_what_entering_it_set() {
     let bash = shell_or_skip!("bash");
     let fixture = Fixture::new();
-    let terminal = Terminal::bash(bash, &fixture);
+    let terminal = Terminal::bash(bash, fixture.root());
     let typed = format!(
         "cd '{home}'\ncd '{outside}'\nprintf '[%s][%s][%s]' \"$NODAL_ID\" \"$PORT\" \"$NODAL_EXPORTED\"",
         home = fixture.home.display(),
@@ -186,7 +192,7 @@ fn leaving_a_home_unsets_what_entering_it_set() {
 fn nodal_cd_moves_the_bash_it_is_run_from() {
     let bash = shell_or_skip!("bash");
     let fixture = Fixture::new();
-    let terminal = Terminal::bash(bash, &fixture);
+    let terminal = Terminal::bash(bash, fixture.root());
     assert_eq!(terminal.typed(&cd_line(&fixture), &fixture.outside()), moved(&fixture));
 }
 
@@ -194,8 +200,33 @@ fn nodal_cd_moves_the_bash_it_is_run_from() {
 fn nodal_cd_moves_the_zsh_it_is_run_from() {
     let zsh = shell_or_skip!("zsh");
     let fixture = Fixture::new();
-    let terminal = Terminal::zsh(zsh, &fixture);
+    let terminal = Terminal::zsh(zsh, fixture.root());
     assert_eq!(terminal.typed(&cd_line(&fixture), &fixture.outside()), moved(&fixture));
+}
+
+#[test]
+fn nodal_new_moves_the_shell_into_the_unit_it_made() {
+    let bash = shell_or_skip!("bash");
+    let project = Workspace::new();
+    let terminal = Terminal::bash(bash, project.root())
+        .with("NODAL_HOME", &project.state)
+        // The per-machine secrets file is shared by every unit on a machine, and a test
+        // must never read or create the one belonging to whoever is running it.
+        .with("NODAL_SECRETS_FILE", &project.state.join("secrets.env"));
+
+    let typed =
+        "nodal new 'fix the worker import' > /dev/null\nprintf '%s|%s' \"$PWD\" \"$NODAL_UNIT\"";
+    let seen = terminal.typed(typed, &project.source);
+    let (moved, unit) = seen.split_once('|').unwrap_or_default();
+
+    assert!(
+        Path::new(moved).starts_with(&project.state),
+        "the shell is at {moved}, which is not a home under {}",
+        project.state.display()
+    );
+    // Which handle `nodal new` derives is that command's rule, not this one's. What
+    // matters here is that the shell is in the home it made and carries its unit.
+    assert!(!unit.is_empty(), "the shell moved but the home was not activated: {seen}");
 }
 
 /// Ask the shell function to enter the unit by name, then report where the shell is.
@@ -215,7 +246,7 @@ fn moved(fixture: &Fixture) -> String {
 fn installing_the_hook_keeps_the_prompt_command_a_person_already_had() {
     let bash = shell_or_skip!("bash");
     let fixture = Fixture::new();
-    let terminal = Terminal::bash(bash, &fixture);
+    let terminal = Terminal::bash(bash, fixture.root());
     terminal.typed("true", &fixture.outside());
     let ticks = std::fs::read_to_string(fixture.root().join("ticks")).unwrap_or_default();
     assert!(ticks.contains("tick"), "the prompt command that was there stopped running");
@@ -263,7 +294,7 @@ fn the_hook_leaves_a_home_direnv_already_activated_alone() {
     // A terminal an IDE opened on the home, with direnv doing the activation. The
     // prompt hook finds NODAL_ROOT already correct and adds nothing of its own, which
     // is what an unset NODAL_EXPORTED says.
-    let mut terminal = Terminal::bash(bash, &fixture);
+    let mut terminal = Terminal::bash(bash, fixture.root());
     let mut args = vec![
         String::from("exec"),
         fixture.home.to_string_lossy().into_owned(),
