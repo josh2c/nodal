@@ -98,13 +98,25 @@ pub fn plan_init(root: impl AsRef<Path>) -> Result<InitPlan> {
 /// Write the planned file. Idempotent: writing the same plan twice leaves the same
 /// bytes, and an existing recipe is only overwritten when `overwrite` says so.
 ///
+/// Without `overwrite` the file is created exclusively rather than checked and then
+/// written, so a recipe that appeared since the plan was made is still not clobbered.
+///
 /// # Errors
 ///
 /// [`Error::RecipeExists`] when a recipe is already there and `overwrite` is false, and
 /// [`Error::Io`] if the file cannot be written.
 pub fn apply_init(plan: &InitPlan, overwrite: bool) -> Result<()> {
-    if plan.existed && !overwrite {
-        return Err(Error::RecipeExists { path: plan.path.clone() });
+    use std::io::Write as _;
+
+    if overwrite {
+        return std::fs::write(&plan.path, &plan.contents).map_err(Error::io(&plan.path));
     }
-    std::fs::write(&plan.path, &plan.contents).map_err(Error::io(&plan.path))
+    let mut file = match std::fs::File::create_new(&plan.path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(Error::RecipeExists { path: plan.path.clone() });
+        }
+        Err(error) => return Err(Error::io(&plan.path)(error)),
+    };
+    file.write_all(plan.contents.as_bytes()).map_err(Error::io(&plan.path))
 }
