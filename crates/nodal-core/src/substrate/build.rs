@@ -12,12 +12,13 @@
 //! closed is the behaviour this module is here to avoid; the half-built directory is
 //! nobody's home and harms nothing while it waits for the next invocation.
 //!
-//! Two origins, one plan. The first base of a project is a fresh clone of its remote,
-//! so nothing local can reach it — not an uncommitted file, not a stale
-//! `node_modules`, not a `.git` that belongs to another checkout. Every later base is a
-//! copy-on-write copy of the nearest base already built here, which costs metadata
-//! rather than a network round trip and leaves the installed dependencies in place for
-//! the package manager to update rather than fetch.
+//! Three origins, one plan. The first base of a project is a fresh clone: of the
+//! project's remote, or of the checkout itself when the project names no remote. A
+//! clone either way, so nothing local can reach it — not an uncommitted file, not a
+//! stale `node_modules`, not a `.git` that belongs to another checkout. Every later
+//! base is a copy-on-write copy of the nearest base already built here, which costs
+//! metadata rather than a network round trip and leaves the installed dependencies in
+//! place for the package manager to update rather than fetch.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -41,14 +42,27 @@ pub const KIND: &str = "base build";
 /// The remote a base is cloned from and fetched from.
 pub const ORIGIN: &str = "origin";
 
+/// What the directory a base is being assembled in is called, until it is one.
+const PARTIAL_SUFFIX: &str = ".partial";
+
 /// Where a base's content comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "from")]
 pub enum Origin {
-    /// A fresh clone of the project's remote. The first base of a project, always.
+    /// A fresh clone of the project's remote. The first base of a project that has
+    /// one, always.
     Remote {
         /// The URL, as the checkout's `origin` gives it.
         url: String,
+    },
+    /// A fresh clone of the asking checkout, for a project that names no remote.
+    ///
+    /// A clone, not a copy. Git carries the objects across and makes the working tree
+    /// from them, so an uncommitted file, an ignored directory and another tool's
+    /// `.git` state stay where they are, exactly as they do for a clone of a remote.
+    Checkout {
+        /// The checkout's own path, which Git reads as a URL.
+        path: String,
     },
     /// A copy-on-write copy of the nearest base already built on this machine.
     Neighbour {
@@ -68,6 +82,7 @@ impl Origin {
     pub fn describe(&self) -> String {
         match self {
             Self::Remote { url } => format!("a fresh clone of {url}"),
+            Self::Checkout { path } => format!("a fresh clone of the checkout at {path}"),
             Self::Neighbour { base, distance: Some(distance), .. } => {
                 format!("base {base}, {distance} commit(s) away")
             }
@@ -214,16 +229,18 @@ struct Materialise {
 }
 
 impl Materialise {
+    /// Where the content is put together, before it is given the name a base has.
+    fn partial(&self) -> PathBuf {
+        let mut name = self.destination.as_os_str().to_os_string();
+        name.push(PARTIAL_SUFFIX);
+        PathBuf::from(name)
+    }
+
     /// Copy the nearest base, which costs metadata on a filesystem that shares blocks.
-    fn copy(&self, source: &Path) -> Result<()> {
+    fn copy(&self, source: &Path, into: &Path) -> Result<()> {
         let parent = self.destination.parent().unwrap_or(Path::new("."));
-        std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
         let backend = workspace::select_backend(parent);
-        let report = backend.clone_tree(
-            source,
-            &self.destination,
-            &Excludes::with_recipe(&self.excludes),
-        )?;
+        let report = backend.clone_tree(source, into, &Excludes::with_recipe(&self.excludes))?;
         self.progress.line(&format!(
             "copied {files} file(s) with the {backend} backend",
             files = report.files,
@@ -238,26 +255,40 @@ impl Step for Materialise {
         String::from("clone")
     }
 
+    /// Assemble the content beside the destination, then rename it into place.
+    ///
+    /// The rename is why the destination existing is enough to say the step is done.
+    /// A clone or a copy that a kill stops half-way leaves a directory with a `.git`
+    /// in it and most of a repository under that, and a resumed build that accepted
+    /// one would install into a tree that is missing files. A rename is one step in
+    /// the filesystem, so a base either has its name or has nothing.
     fn apply(&self) -> Result<()> {
-        if self.destination.join(".git").exists() {
+        if self.destination.exists() {
             self.progress.line("the base directory is already there");
             return Ok(());
         }
-        remove(&self.destination)?;
+        let partial = self.partial();
+        remove(&partial)?;
+        let parent = self.destination.parent().unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
         self.progress.line(&format!("building from {}", self.origin.describe()));
         match &self.origin {
             Origin::Remote { url } => {
-                git::clone(url, &self.destination)?;
+                git::clone(url, &partial)?;
             }
-            Origin::Neighbour { path, .. } => self.copy(path)?,
+            Origin::Checkout { path } => {
+                git::clone(path, &partial)?;
+            }
+            Origin::Neighbour { path, .. } => self.copy(path, &partial)?,
         }
         // A copy inherits the source's worktree registrations, hooks path and HEAD; a
         // fresh clone inherits none of that and the scrub is a no-op on it.
-        Git::open(&self.destination)?.scrub(&scrub::Options::default())?;
-        Ok(())
+        Git::open(&partial)?.scrub(&scrub::Options::default())?;
+        std::fs::rename(&partial, &self.destination).map_err(Error::io(&partial))
     }
 
     fn undo(&self) -> Result<()> {
+        remove(&self.partial())?;
         remove(&self.destination)
     }
 }

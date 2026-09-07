@@ -6,6 +6,12 @@
 //! killed run leaves is built here by hand, from the journal downwards, so that the
 //! rebuild-and-roll-back path is exercised the same way on every machine.
 //!
+//! The base the plan clones is made here by hand for the same reason every identifier
+//! is: a plan built twice has to be the same plan, and resolving a base is the other
+//! operation's work, tested in `tests/substrate.rs`. It is made the way the substrate
+//! makes one — a clone of the checkout, detached at the commit — so what a step reads
+//! here is what a step reads in the product.
+//!
 //! The per-machine secrets file activation reads is `secrets.env` in the state
 //! directory, and every fixture here has a temporary one, so no test in this file reads
 //! or writes the file belonging to whoever is running it.
@@ -20,21 +26,23 @@ use nodal_core::lifecycle::ops::new::{self, Params};
 use nodal_core::lifecycle::owner::{Liveness, Owner};
 use nodal_core::lifecycle::{Action, guard, marker, ops};
 use nodal_core::model::{
-    BranchName, Digest, EnvState, Environment, OperationId, Ports, Project, ProjectName, Recipe,
-    Slug, Timestamp, Unit, UnitStatus,
+    Base, BranchName, Digest, EnvState, Environment, OperationId, Platform, Ports, Project,
+    ProjectName, Recipe, Slug, Timestamp, Unit, UnitStatus, WorkspaceFp,
 };
-use nodal_core::store::{Store, environments, projects, units};
+use nodal_core::store::{Store, bases, environments, projects, units};
 use nodal_core::{Error, lifecycle};
 use tempfile::TempDir;
 
-/// A project to clone, a state directory, and the registry in it.
+/// A project, the base built from it, a state directory, and the registry in it.
 struct Fixture {
     /// Kept so that the temporary directory outlives the test.
     _root: TempDir,
-    /// The repository a home is cloned from.
+    /// The person's checkout. Read to decide the base; never cloned into a home.
     source: PathBuf,
     /// Nodal's state directory.
     state: PathBuf,
+    /// The base a home is cloned from.
+    base: PathBuf,
 }
 
 impl Fixture {
@@ -55,11 +63,28 @@ impl Fixture {
             );
         }
         let state = root.path().join("state");
-        Self { _root: root, source, state }
+        let base = state.join("project").join("b").join("00000004");
+        clone_to_base(&source, &base);
+        Self { _root: root, source, state, base }
     }
 
     fn store(&self) -> Store {
         Store::open(self.state.join("registry.db")).unwrap()
+    }
+
+    /// The base row the environment names, which its foreign key requires.
+    fn base_row(&self) -> Base {
+        let at = Timestamp::parse("2026-09-07T09:00:00Z").unwrap();
+        Base {
+            id: id('4'),
+            project_id: id('1'),
+            ws_fingerprint: WorkspaceFp(Digest::parse("00000000000000000000000000000004").unwrap()),
+            platform: Platform::parse("x86_64-unknown-linux-gnu").unwrap(),
+            commit: git(&self.source, &["rev-parse", "HEAD"]).parse().unwrap(),
+            path: self.base.clone(),
+            built_at: at,
+            last_used: at,
+        }
     }
 
     /// The parameters of a create, with every identifier fixed so that two builds of
@@ -90,7 +115,7 @@ impl Fixture {
             attempt: 1,
             home: self.state.join("project").join("e").join("00000001"),
             managed: true,
-            base_id: None,
+            base_id: Some(id('4')),
             ws_fp_materialized: None,
             schema_fp_materialized: None,
             host: nodal_core::lifecycle::owner::current_host(),
@@ -104,7 +129,7 @@ impl Fixture {
         Params {
             project,
             recipe: Recipe::default(),
-            source: self.source.clone(),
+            base_path: self.base.clone(),
             state_dir: self.state.clone(),
             unit,
             environment,
@@ -120,6 +145,39 @@ impl Fixture {
 
 fn id<T: std::str::FromStr<Err = Error>>(last: char) -> T {
     format!("01J8Z6H000000000000000000{last}").parse().unwrap()
+}
+
+/// Make the base the plan clones, the way the substrate makes one: a clone of the
+/// checkout, detached at its commit, so the base holds what is committed and no more.
+fn clone_to_base(source: &Path, base: &Path) {
+    std::fs::create_dir_all(base.parent().unwrap()).unwrap();
+    let parent = base.parent().unwrap();
+    assert!(
+        Command::new("git")
+            .args(["clone", "--quiet", "--"])
+            .arg(source)
+            .arg(base)
+            .current_dir(parent)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let head = git(source, &["rev-parse", "HEAD"]);
+    assert!(
+        Command::new("git")
+            .args(["checkout", "--force", "--detach", &head])
+            .current_dir(base)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+/// `git` in a directory, as trimmed text, with the call insisted upon.
+fn git(directory: &Path, args: &[&str]) -> String {
+    let output = Command::new("git").args(args).current_dir(directory).output().unwrap();
+    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 #[test]
@@ -213,6 +271,7 @@ fn a_home_is_refused_inside_a_project_or_another_units_home() {
     let params = fixture.params();
     let store = fixture.store();
     projects::insert(store.conn(), &params.project).unwrap();
+    bases::insert(store.conn(), &fixture.base_row()).unwrap();
     units::insert(store.conn(), &params.unit).unwrap();
     environments::insert(store.conn(), &params.environment).unwrap();
 

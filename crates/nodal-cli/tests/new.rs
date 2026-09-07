@@ -1,16 +1,26 @@
-//! Acceptance test for T1.3: `nodal new`, end to end, against a real repository.
+//! Acceptance test for T1.3 and T1.11a: `nodal new`, end to end, against a real
+//! repository.
 //!
 //! Every assertion here is about a property a person can check for themselves in a unit
 //! Nodal made: `git status` says nothing, `git worktree list` names one checkout, two
 //! units cannot be told apart by the files in them, and the second unit on a branch is
 //! refused by name rather than by a constraint violation.
 //!
-//! The last test is the one that needs a second process. What makes an interruption
+//! Three of them are about where a home comes from. A home is a clone of a base, so
+//! what the person had uncommitted in their checkout when they asked is in no unit; the
+//! second unit of a workspace finds the base warm and neither clones nor installs
+//! anything; and the base the first unit paid for is held against eviction while that
+//! unit exists.
+//!
+//! The last two are the ones that need a second process. What makes an interruption
 //! different from a failure is that no code of ours runs afterwards, so the account the
-//! next invocation reads has to have been written down before the kill. The test runs
-//! the real binary, waits until the operation has reached a point inside the home, sends
-//! `SIGKILL`, and then runs `nodal new` again — which is what a person would do — and
-//! asserts that the killed run left nothing at all.
+//! next invocation reads has to have been written down before the kill. Each test runs
+//! the real binary, waits until the operation has reached the part being tested, sends
+//! `SIGKILL`, and then runs `nodal new` again — which is what a person would do. A
+//! create killed while it makes a home leaves nothing, because a home no registry row
+//! knows about is the worst outcome there is. A create killed while it builds its base
+//! keeps the base, because the base is a prerequisite with a plan of its own and
+//! throwing away a clone and an install is the cost that plan exists to avoid.
 
 #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
@@ -27,11 +37,12 @@ const REACH_TIMEOUT: Duration = Duration::from_secs(60);
 /// poll is as tight as it can be and the project the kill test uses is not small.
 const POLL: Duration = Duration::from_millis(1);
 
-/// How many files the kill test's project carries in its dependency directory.
+/// How many files the kill tests work with in bulk.
 ///
-/// They are what makes the clone long enough to be killed part-way through. They are
-/// ignored by Git and kept by the exclusion policy, which is the shape of every real
-/// project this tool is for: most of the bytes are installed dependencies.
+/// They are what makes an operation long enough to be killed part-way through. Where
+/// they are put says which operation is being killed: in the base's dependency
+/// directory they slow the clone a create makes, and committed to the repository they
+/// slow the clone the base build makes.
 const BULK_FILES: usize = 12_000;
 
 /// A project to make units in, and the state directory they go in.
@@ -50,12 +61,13 @@ impl Workspace {
         Self::build(0)
     }
 
-    /// The same, with a dependency directory of `bulk` ignored files in it.
+    /// The same, with `BULK_FILES` committed files in it, so that cloning it is long
+    /// enough to be interrupted.
     fn with_bulk() -> Self {
         Self::build(BULK_FILES)
     }
 
-    /// A repository, its one commit, and however many ignored files were asked for.
+    /// A repository, its one commit, and however many bulk files were asked for.
     fn build(bulk: usize) -> Self {
         let root = TempDir::new().unwrap();
         let source = root.path().join("project");
@@ -64,11 +76,7 @@ impl Workspace {
         std::fs::write(source.join("app").join("main.txt"), "shared\n").unwrap();
         std::fs::write(source.join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
         std::fs::write(source.join(".gitignore"), "node_modules/\n").unwrap();
-        let modules = source.join("node_modules");
-        std::fs::create_dir_all(&modules).unwrap();
-        for index in 0..bulk {
-            std::fs::write(modules.join(format!("{index}.js")), "module.exports = {};\n").unwrap();
-        }
+        write_bulk(&source.join("vendor"), bulk);
         for args in [
             vec!["init", "-q", "-b", "main"],
             vec!["config", "user.email", "unit@example.invalid"],
@@ -100,24 +108,60 @@ impl Workspace {
     /// Where this project's homes are, whatever the project ended up being called, and
     /// `None` until the first create has made the directory.
     fn homes(&self) -> Option<PathBuf> {
+        self.segment("e")
+    }
+
+    /// The same for the project's bases, which sit under their own segment so that no
+    /// walk of the homes can reach one.
+    fn base_directory(&self) -> Option<PathBuf> {
+        self.segment("b")
+    }
+
+    /// One segment of this project's directory, `None` until something has made it.
+    fn segment(&self, name: &str) -> Option<PathBuf> {
         std::fs::read_dir(&self.state)
             .into_iter()
             .flatten()
             .flatten()
-            .map(|entry| entry.path().join("e"))
+            .map(|entry| entry.path().join(name))
             .find(|path| path.is_dir())
     }
 
     /// Every home this project has, in name order.
     fn units(&self) -> Vec<PathBuf> {
-        let mut homes: Vec<PathBuf> = self
-            .homes()
+        Self::entries(self.homes())
+    }
+
+    /// Every base this project has, in name order. A directory still being assembled
+    /// carries a suffix and is not one yet.
+    fn bases(&self) -> Vec<PathBuf> {
+        Self::entries(self.base_directory())
             .into_iter()
-            .flat_map(|directory| std::fs::read_dir(directory).into_iter().flatten().flatten())
+            .filter(|path| !path.to_string_lossy().ends_with(".partial"))
+            .collect()
+    }
+
+    /// What is directly inside a directory, in name order, and nothing when there is
+    /// no such directory yet.
+    fn entries(directory: Option<PathBuf>) -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = directory
+            .into_iter()
+            .flat_map(|path| std::fs::read_dir(path).into_iter().flatten().flatten())
             .map(|entry| entry.path())
             .collect();
-        homes.sort();
-        homes
+        found.sort();
+        found
+    }
+}
+
+/// Write `count` files into a directory, as an install writes a dependency tree.
+fn write_bulk(directory: &Path, count: usize) {
+    if count == 0 {
+        return;
+    }
+    std::fs::create_dir_all(directory).unwrap();
+    for index in 0..count {
+        std::fs::write(directory.join(format!("{index}.js")), "module.exports = {};\n").unwrap();
     }
 }
 
@@ -201,8 +245,63 @@ fn a_home_that_would_sit_inside_the_project_is_refused() {
 }
 
 #[test]
+fn a_unit_carries_nothing_the_checkout_had_not_committed() {
+    let workspace = Workspace::new();
+    // What a person's checkout looks like at the moment they ask for a unit: an edit
+    // in progress, a file they have not added, and a directory Git is ignoring.
+    std::fs::write(workspace.source.join("app").join("main.txt"), "half-finished\n").unwrap();
+    std::fs::write(workspace.source.join("scratch.txt"), "notes to self\n").unwrap();
+    write_bulk(&workspace.source.join("node_modules"), 3);
+
+    stdout(&workspace.nodal(&["new", "worker import"]));
+    let home = workspace.units().pop().unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(home.join("app").join("main.txt")).unwrap(),
+        "shared\n",
+        "the unit has the committed file, not the edit in progress"
+    );
+    assert!(!home.join("scratch.txt").exists(), "nor the file that was never added");
+    assert!(!home.join("node_modules").exists(), "nor the directory Git was ignoring");
+    assert_eq!(
+        git(&home, &["status", "--porcelain", "--untracked-files=all"]),
+        "",
+        "so the unit is clean, which a clone of the checkout would not have been"
+    );
+}
+
+#[test]
+fn the_second_unit_of_a_workspace_reuses_the_base_the_first_one_paid_for() {
+    let workspace = Workspace::new();
+    let first = workspace.nodal(&["new", "worker import"]);
+    let told = String::from_utf8(first.stderr.clone()).unwrap();
+    stdout(&first);
+    assert!(told.contains("building from"), "the first create says it is building: {told}");
+    assert_eq!(workspace.bases().len(), 1, "and it built one base");
+
+    let second = workspace.nodal(&["new", "payroll export"]);
+    let told = String::from_utf8(second.stderr.clone()).unwrap();
+    stdout(&second);
+    assert!(told.contains("is warm for this workspace"), "the second finds it: {told}");
+    assert!(!told.contains("building from"), "and clones nothing: {told}");
+    assert_eq!(workspace.bases().len(), 1, "there is still one base");
+    assert_eq!(workspace.units().len(), 2, "and two units on it");
+
+    // Both units hold the base, which is what stops a sweep taking it away.
+    let listed = stdout(&workspace.nodal(&["base", "ls", "--json"]));
+    assert!(listed.contains("\"pins\": 2"), "{listed}");
+}
+
+#[test]
 fn a_killed_create_leaves_nothing_once_the_next_invocation_resolves_it() {
-    let workspace = Workspace::with_bulk();
+    let workspace = Workspace::new();
+    // The base first, so that what the kill lands in is the create and not the build.
+    // The bulk goes where an install would have put it, which is what the create then
+    // has to clone.
+    stdout(&workspace.nodal(&["base", "build"]));
+    let base = workspace.bases().pop().unwrap();
+    write_bulk(&base.join("node_modules"), BULK_FILES);
+
     let mut child = workspace
         .command(&["new", "worker import"])
         .stdout(Stdio::null())
@@ -224,6 +323,39 @@ fn a_killed_create_leaves_nothing_once_the_next_invocation_resolves_it() {
     assert_eq!(homes.len(), 1, "the killed run's home is gone: {homes:?}");
     assert!(!half_made.exists());
     assert!(homes[0].join(".nodal").join("id").is_file());
+    assert_eq!(workspace.bases().len(), 1, "and the base it was cloning is untouched");
+    assert!(
+        homes[0].join("node_modules").is_dir(),
+        "which is what the unit that did finish was made from"
+    );
+}
+
+#[test]
+fn a_create_killed_while_its_base_builds_keeps_the_base_and_finishes_it_next_time() {
+    let workspace = Workspace::with_bulk();
+    let mut child = workspace
+        .command(&["new", "worker import"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for_a_base_directory(&workspace, &mut child);
+    kill(&mut child);
+    assert!(workspace.units().is_empty(), "the kill landed before any home was made");
+
+    // What a person does next. The base build is resumed rather than taken back, and
+    // the create that wanted it is simply asked for again.
+    let second = workspace.command(&["new", "payroll export"]).output().unwrap();
+    let told = String::from_utf8(second.stderr.clone()).unwrap();
+    assert!(stdout(&second).contains("payroll-export"), "{told}");
+    assert!(told.contains("was interrupted and resumed"), "the person is told: {told}");
+
+    let bases = workspace.bases();
+    assert_eq!(bases.len(), 1, "one base, finished: {bases:?}");
+    assert!(bases[0].join("vendor").join("0.js").is_file(), "and complete");
+    let homes = workspace.units();
+    assert_eq!(homes.len(), 1, "{homes:?}");
+    assert!(homes[0].join("vendor").join("0.js").is_file(), "the unit came from it");
 }
 
 /// Wait until the killed run has made a home, and answer with it.
@@ -243,6 +375,28 @@ fn wait_for_a_home(workspace: &Workspace, child: &mut Child) -> PathBuf {
     }
     let _ = child.kill();
     panic!("no home appeared within {REACH_TIMEOUT:?}");
+}
+
+/// Wait until the killed run has started assembling a base, and answer once it has.
+///
+/// The directory being waited for is the one the build assembles in, not the one a
+/// base ends up under: the rename between them is what makes a base either whole or
+/// absent, so waiting for the finished name would be waiting for the step to be over.
+fn wait_for_a_base_directory(workspace: &Workspace, child: &mut Child) {
+    let deadline = Instant::now() + REACH_TIMEOUT;
+    while Instant::now() < deadline {
+        if workspace.base_directory().is_some_and(|path| {
+            std::fs::read_dir(path).into_iter().flatten().flatten().next().is_some()
+        }) {
+            return;
+        }
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("the create finished before it could be killed: {status}");
+        }
+        std::thread::sleep(POLL);
+    }
+    let _ = child.kill();
+    panic!("no base directory appeared within {REACH_TIMEOUT:?}");
 }
 
 /// `SIGKILL`, so that nothing of the child's own runs afterwards.

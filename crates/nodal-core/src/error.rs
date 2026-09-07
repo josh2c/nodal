@@ -454,15 +454,6 @@ pub enum Error {
         branch: String,
     },
 
-    /// A base has to come from the project's remote, and the checkout names none.
-    #[error("{repo} has no remote {remote:?} to build a base from", repo = repo.display())]
-    NoRemote {
-        /// The checkout that was read.
-        repo: PathBuf,
-        /// The remote that was looked for.
-        remote: String,
-    },
-
     /// The commit a base is keyed to is in neither the remote nor the checkout.
     #[error("commit {commit} is not in the remote or the checkout it was asked for")]
     BaseCommitMissing {

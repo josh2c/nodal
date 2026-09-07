@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Args;
 use nodal_core::lifecycle::ops::new::{self, Request};
@@ -9,6 +10,7 @@ use nodal_core::model::{BranchName, Objective, Slug};
 use nodal_core::output::{self, Format};
 use nodal_core::runtime::entry;
 use nodal_core::store::Store;
+use nodal_core::substrate::{self, Reporter};
 
 /// Arguments of `nodal new`.
 #[derive(Debug, Args)]
@@ -41,12 +43,18 @@ impl New {
     /// function enters the new home, and a shell that did not reads the path in the
     /// report, as a script does.
     ///
+    /// The first create of a workspace builds the base the home is cloned from, which
+    /// takes as long as a clone and an install take. It says so line by line on
+    /// standard error while it works, so that the wait is accounted for rather than
+    /// silent.
+    ///
     /// # Errors
     ///
     /// Propagates a branch another open unit holds, a home that would overlap a tree
     /// Nodal knows, and whatever Git, the filesystem or the registry reported.
     pub fn run(&self, store: &mut Store) -> nodal_core::Result<ExitCode> {
-        let report = new::create(store, &self.request()?)?;
+        let progress: Arc<dyn Reporter> = substrate::sink(self.json);
+        let report = new::create(store, &self.request()?, &progress)?;
         output::write(&report, Format::from_json_flag(self.json), &mut std::io::stdout())?;
         if let Some(environment) = &report.unit.environment {
             entry::ask_to_enter(&environment.home)?;

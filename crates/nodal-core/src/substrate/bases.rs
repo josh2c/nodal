@@ -66,9 +66,9 @@ impl Outcome {
 /// The base a unit of this workspace is cloned from, built if there is not one yet.
 ///
 /// # Errors
-/// [`Error::NotARepository`] when the source is not a checkout, [`Error::NoRemote`]
-/// when a first base is wanted and the checkout names no remote, [`Error::OperationStep`]
-/// when a build step failed, and whatever the registry reports.
+/// [`Error::NotARepository`] when the source is not a checkout,
+/// [`Error::OperationStep`] when a build step failed, and whatever the registry
+/// reports.
 pub fn ensure(
     store: &mut Store,
     request: &Request,
@@ -154,8 +154,14 @@ fn build_one(
     Ok(Outcome { base, fingerprint: key.fingerprint.clone(), origin: Some(origin) })
 }
 
-/// Where the new base's content comes from: the nearest base already here, or the
-/// project's remote when this is the project's first base on this platform.
+/// Where the new base's content comes from: the nearest base already here, or a clone
+/// when this is the project's first base on this platform.
+///
+/// The clone is of the project's remote where there is one. A project that names no
+/// remote — one that has not been pushed anywhere yet — is cloned from its own
+/// checkout instead, which is a clone and not a copy: Git carries the committed
+/// objects and builds the working tree from them, so the guarantee that no local state
+/// reaches a base is the same one, from the same mechanism.
 fn origin_for(store: &Store, request: &Request, key: &Key) -> Result<Origin> {
     let candidates: Vec<Base> = bases::list_for_project(store.conn(), request.project.id)?
         .into_iter()
@@ -165,11 +171,18 @@ fn origin_for(store: &Store, request: &Request, key: &Key) -> Result<Origin> {
         return Ok(Origin::Neighbour { base: base.id, path: base.path.clone(), distance });
     }
     let git = Git::open(&request.source)?;
-    let url = git.remote_url(build::ORIGIN)?.ok_or_else(|| Error::NoRemote {
-        repo: request.source.clone(),
-        remote: String::from(build::ORIGIN),
-    })?;
-    Ok(Origin::Remote { url })
+    match git.remote_url(build::ORIGIN)? {
+        Some(url) => Ok(Origin::Remote { url }),
+        None => Ok(Origin::Checkout { path: url_of(&request.source)? }),
+    }
+}
+
+/// A path as Git takes a URL. Refused rather than mangled when it is not UTF-8.
+fn url_of(path: &Path) -> Result<String> {
+    path.to_str().map(str::to_owned).ok_or_else(|| Error::InvalidValue {
+        kind: "checkout path",
+        value: path.to_string_lossy().into_owned(),
+    })
 }
 
 /// The base nearest to a commit, and how far away it is.

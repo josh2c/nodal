@@ -11,7 +11,7 @@
 //! here is written to standard output: progress is standard error, and the answer is
 //! standard output.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Where the lines a build writes about itself go.
 pub trait Reporter: Send + Sync {
@@ -36,6 +36,16 @@ impl Reporter for Stderr {
     fn line(&self, message: &str) {
         eprintln!("{message}");
     }
+}
+
+/// The sink a command reports a build to.
+///
+/// One function rather than the same three lines in every command: standard error when
+/// a person is reading, and nothing at all when a tool asked for JSON, so that the
+/// answer on standard output is the whole of the output.
+#[must_use]
+pub fn sink(json: bool) -> Arc<dyn Reporter> {
+    if json { Arc::new(Silent) } else { Arc::new(Stderr) }
 }
 
 /// Keeps every line, in order. What a test asserts on.
