@@ -2,27 +2,32 @@
   "$defs": {
     "BaseId": {
       "description": "Identifies a warm base: the substrate a unit's home is cloned from.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
     "CommitId": {
       "description": "A Git object id in full, lowercase hexadecimal form.",
+      "maxLength": 64,
       "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
       "type": "string"
     },
     "Digest": {
       "description": "A content digest, lowercase hex. The algorithm is the fingerprint module's\nchoice; the model only fixes the form.",
+      "maxLength": 128,
       "pattern": "^[0-9a-f]+$",
       "type": "string"
     },
     "Platform": {
       "description": "A target triple, for example `aarch64-apple-darwin`. Part of the workspace\nfingerprint, because a base built on one platform is not warm on another.",
-      "pattern": "^\\S+$",
+      "maxLength": 255,
+      "pattern": "^[\\x21-\\x7E]+$",
       "type": "string"
     },
     "ProjectId": {
       "description": "Identifies a project: one Git repository Nodal manages units for.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
     "Timestamp": {

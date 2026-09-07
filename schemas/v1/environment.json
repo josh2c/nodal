@@ -2,22 +2,26 @@
   "$defs": {
     "BaseId": {
       "description": "Identifies a warm base: the substrate a unit's home is cloned from.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
     "DbName": {
       "description": "A database name Nodal created and may therefore drop.",
+      "maxLength": 63,
       "pattern": "^[a-z_][a-z0-9_]*$",
       "type": "string"
     },
     "Digest": {
       "description": "A content digest, lowercase hex. The algorithm is the fingerprint module's\nchoice; the model only fixes the form.",
+      "maxLength": 128,
       "pattern": "^[0-9a-f]+$",
       "type": "string"
     },
     "EnvId": {
       "description": "Identifies one materialisation of a unit. A unit re-materialised after reclaim\ngets a new environment, not a new unit.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
     "EnvState": {
@@ -42,14 +46,15 @@
     },
     "HostName": {
       "description": "The name of a host a unit can live on.",
-      "pattern": "^\\S+$",
+      "maxLength": 255,
+      "pattern": "^[\\x21-\\x7E]+$",
       "type": "string"
     },
     "Ports": {
       "additionalProperties": false,
       "description": "The ports allocated to an environment, by the name the recipe gave them.",
       "patternProperties": {
-        "^\\S+$": {
+        "^[\\x21-\\x7E]+$": {
           "format": "uint16",
           "maximum": 65535,
           "minimum": 0,
@@ -69,7 +74,8 @@
     },
     "UnitId": {
       "description": "Identifies a `WorkUnit`. Stable for the life of the work, across machines.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
     "WorkspaceFp": {

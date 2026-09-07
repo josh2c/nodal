@@ -10,17 +10,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::actor::Actor;
 use crate::model::ids::{EnvId, EventId, UnitId};
-use crate::model::scalar::{LINE_PATTERN, TOKEN_PATTERN, is_line, is_token, string_newtype};
+use crate::model::scalar::{self, string_newtype};
 use crate::model::timestamp::Timestamp;
 
 string_newtype! {
     /// A name for one of an event's references, for example `commit` or `file`.
-    RefName, kind = "reference name", pattern = TOKEN_PATTERN, validate = is_token
+    RefName, kind = "reference name", shape = scalar::TOKEN
 }
 
 string_newtype! {
     /// A pointer to raw output kept outside the event, such as a log file path.
-    RawRef, kind = "raw reference", pattern = LINE_PATTERN, validate = is_line
+    RawRef, kind = "raw reference", shape = scalar::LINE
 }
 
 /// What kind of thing happened.

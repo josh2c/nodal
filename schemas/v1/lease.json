@@ -2,12 +2,14 @@
   "$defs": {
     "EnvId": {
       "description": "Identifies one materialisation of a unit. A unit re-materialised after reclaim\ngets a new environment, not a new unit.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
     "ResourceKey": {
       "description": "What is being held, as `kind:value`, for example `port:5432` or `device:usb0`.",
-      "pattern": "^\\S+$",
+      "maxLength": 255,
+      "pattern": "^[\\x21-\\x7E]+$",
       "type": "string"
     },
     "Timestamp": {

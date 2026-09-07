@@ -11,6 +11,40 @@ use std::path::PathBuf;
 
 use nodal_core::model::schema;
 
+/// Types that are part of another record rather than a record of their own, and so
+/// are published inside the schemas that embed them instead of as files. Anything not
+/// listed here and not in the catalogue fails the test below, which is what stops a new
+/// model type from shipping without a schema.
+const EMBEDDED_TYPES: &[&str] = &["Actor", "SubFp", "SchemaDoc"];
+
+fn model_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/model")
+}
+
+/// Every `pub struct X {` declared in the model, by name. Tuple structs are the
+/// validated scalars; they are published inside the records that use them.
+fn declared_record_types() -> Vec<String> {
+    let mut names = Vec::new();
+    let entries = std::fs::read_dir(model_dir()).expect("the model directory exists");
+    for entry in entries {
+        let path = entry.expect("a readable directory entry").path();
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        for line in source.lines() {
+            if let Some(rest) = line.strip_prefix("pub struct ")
+                && let Some(name) = rest.strip_suffix(" {")
+            {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    names.sort_unstable();
+    names
+}
+
 fn schemas_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../schemas")
 }
@@ -28,6 +62,26 @@ fn committed_schemas_match_the_model() {
             document.render(),
             "{} is out of date; run ci/schema-diff.sh and commit the result",
             path.display()
+        );
+    }
+}
+
+#[test]
+fn the_catalogue_covers_every_record_type_the_model_declares() {
+    let published: Vec<String> = schema::catalog().into_iter().map(|doc| doc.type_name).collect();
+    let declared = declared_record_types();
+    assert!(!declared.is_empty(), "the source scan found no record types at all");
+    for name in &declared {
+        assert!(
+            published.contains(name) || EMBEDDED_TYPES.contains(&name.as_str()),
+            "{name} is a model record with no schema: add it to catalog(), or to \
+             EMBEDDED_TYPES if it is only ever part of another record"
+        );
+    }
+    for name in &published {
+        assert!(
+            declared.contains(name),
+            "{name} is in the catalogue but is not a record type in src/model"
         );
     }
 }

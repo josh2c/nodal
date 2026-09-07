@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::fingerprint::Digest;
 use crate::model::ids::ProjectId;
-use crate::model::scalar::{LINE_PATTERN, is_line, string_newtype};
+use crate::model::scalar::{self, string_newtype};
 use crate::model::timestamp::Timestamp;
 
 string_newtype! {
     /// A project's display name, taken from its directory or its remote.
-    ProjectName, kind = "project name", pattern = LINE_PATTERN, validate = is_line
+    ProjectName, kind = "project name", shape = scalar::LINE
 }
 
 /// A repository Nodal knows about, and the recipe it was last read with.

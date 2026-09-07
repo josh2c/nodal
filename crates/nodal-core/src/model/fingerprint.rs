@@ -9,20 +9,18 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::model::scalar::{
-    DIGEST_PATTERN, TOKEN_PATTERN, is_hex_digest, is_token, string_newtype,
-};
+use crate::model::scalar::{self, string_newtype};
 
 string_newtype! {
     /// A content digest, lowercase hex. The algorithm is the fingerprint module's
     /// choice; the model only fixes the form.
-    Digest, kind = "digest", pattern = DIGEST_PATTERN, validate = is_hex_digest
+    Digest, kind = "digest", shape = scalar::DIGEST
 }
 
 string_newtype! {
     /// A target triple, for example `aarch64-apple-darwin`. Part of the workspace
     /// fingerprint, because a base built on one platform is not warm on another.
-    Platform, kind = "platform triple", pattern = TOKEN_PATTERN, validate = is_token
+    Platform, kind = "platform triple", shape = scalar::TOKEN
 }
 
 /// The key a warm base is stored under.

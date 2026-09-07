@@ -2,7 +2,8 @@
   "$defs": {
     "HostName": {
       "description": "The name of a host a unit can live on.",
-      "pattern": "^\\S+$",
+      "maxLength": 255,
+      "pattern": "^[\\x21-\\x7E]+$",
       "type": "string"
     },
     "Timestamp": {
@@ -12,7 +13,8 @@
     },
     "UnitId": {
       "description": "Identifies a `WorkUnit`. Stable for the life of the work, across machines.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     }
   },

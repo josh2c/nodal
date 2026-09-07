@@ -35,12 +35,14 @@
     },
     "ActorName": {
       "description": "What the actor is called: a tool name such as `claude-code`, or a person's\nhandle. Never a credential.",
-      "pattern": "^.+$",
+      "maxLength": 255,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
       "type": "string"
     },
     "EnvId": {
       "description": "Identifies one materialisation of a unit. A unit re-materialised after reclaim\ngets a new environment, not a new unit.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
     "Epistemic": {
@@ -60,7 +62,8 @@
     },
     "EventId": {
       "description": "Identifies one event in the log. Sorting by id sorts by time.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
     "EventKind": {
@@ -135,7 +138,8 @@
     },
     "RawRef": {
       "description": "A pointer to raw output kept outside the event, such as a log file path.",
-      "pattern": "^.+$",
+      "maxLength": 255,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
       "type": "string"
     },
     "Timestamp": {
@@ -145,7 +149,8 @@
     },
     "UnitId": {
       "description": "Identifies a `WorkUnit`. Stable for the life of the work, across machines.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     }
   },
@@ -199,7 +204,7 @@
       "additionalProperties": false,
       "description": "Named references the event points at: commits, files, ports, exit codes.",
       "patternProperties": {
-        "^\\S+$": {
+        "^[\\x21-\\x7E]+$": {
           "type": "string"
         }
       },

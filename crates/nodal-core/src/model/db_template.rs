@@ -5,12 +5,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::fingerprint::SchemaFp;
 use crate::model::ids::{ProjectId, TemplateId};
-use crate::model::scalar::{SQL_IDENTIFIER_PATTERN, is_sql_identifier, string_newtype};
+use crate::model::scalar::{self, string_newtype};
 use crate::model::timestamp::Timestamp;
 
 string_newtype! {
     /// A database name Nodal created and may therefore drop.
-    DbName, kind = "database name", pattern = SQL_IDENTIFIER_PATTERN, validate = is_sql_identifier
+    DbName, kind = "database name", shape = scalar::SQL_IDENTIFIER
 }
 
 /// A migrated and seeded database, frozen so that a new unit's database is a copy

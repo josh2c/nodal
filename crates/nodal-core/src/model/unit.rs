@@ -4,24 +4,22 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::model::ids::{ProjectId, UnitId};
-use crate::model::scalar::{
-    BRANCH_PATTERN, LINE_PATTERN, SLUG_PATTERN, is_branch_name, is_line, is_slug, string_newtype,
-};
+use crate::model::scalar::{self, string_newtype};
 use crate::model::timestamp::Timestamp;
 
 string_newtype! {
     /// The CLI handle for a unit, derived from its branch.
-    Slug, kind = "slug", pattern = SLUG_PATTERN, validate = is_slug
+    Slug, kind = "slug", shape = scalar::SLUG
 }
 
 string_newtype! {
     /// A Git branch name.
-    BranchName, kind = "branch name", pattern = BRANCH_PATTERN, validate = is_branch_name
+    BranchName, kind = "branch name", shape = scalar::BRANCH
 }
 
 string_newtype! {
     /// What the unit is for, in one line, as the person or agent stated it.
-    Objective, kind = "objective", pattern = LINE_PATTERN, validate = is_line
+    Objective, kind = "objective", shape = scalar::LINE
 }
 
 /// Where a unit is in its life. The branch, not the directory, is the identity a

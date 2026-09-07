@@ -2,17 +2,20 @@
   "$defs": {
     "DbName": {
       "description": "A database name Nodal created and may therefore drop.",
+      "maxLength": 63,
       "pattern": "^[a-z_][a-z0-9_]*$",
       "type": "string"
     },
     "Digest": {
       "description": "A content digest, lowercase hex. The algorithm is the fingerprint module's\nchoice; the model only fixes the form.",
+      "maxLength": 128,
       "pattern": "^[0-9a-f]+$",
       "type": "string"
     },
     "ProjectId": {
       "description": "Identifies a project: one Git repository Nodal manages units for.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
     "SchemaFp": {
@@ -21,7 +24,8 @@
     },
     "TemplateId": {
       "description": "Identifies a frozen database template.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
     "Timestamp": {

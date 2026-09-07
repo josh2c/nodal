@@ -9,17 +9,17 @@ use serde::{Deserialize, Serialize};
 use crate::model::db_template::DbName;
 use crate::model::fingerprint::{SchemaFp, WorkspaceFp};
 use crate::model::ids::{BaseId, EnvId, UnitId};
-use crate::model::scalar::{TOKEN_PATTERN, is_token, string_newtype};
+use crate::model::scalar::{self, string_newtype};
 use crate::model::timestamp::Timestamp;
 
 string_newtype! {
     /// The name of a host a unit can live on.
-    HostName, kind = "host name", pattern = TOKEN_PATTERN, validate = is_token
+    HostName, kind = "host name", shape = scalar::TOKEN
 }
 
 string_newtype! {
     /// The name a recipe gives a port, for example `app` or `api`.
-    PortName, kind = "port name", pattern = TOKEN_PATTERN, validate = is_token
+    PortName, kind = "port name", shape = scalar::TOKEN
 }
 
 /// Whether an environment exists on disk and whether anything is running in it.
