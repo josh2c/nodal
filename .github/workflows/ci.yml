@@ -1,24 +1,78 @@
 name: ci
 on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   check:
+    name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo install cargo-deny --locked && cargo deny check
-      - name: schemas up to date
-        run: cargo run -p nodal-cli -- schema export --out schemas/ && git diff --exit-code schemas/
-  safety:
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  deny:
+    name: deny
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with: { command: check }
+
+  release:
+    name: release (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --workspace --test 'safety_*'
+        with: { targets: "${{ matrix.target }}" }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p nodal-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nodal-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/nodal
+          if-no-files-found: error
+
+  acceptance:
+    name: acceptance (${{ matrix.target }})
+    needs: release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: nodal-${{ matrix.target }}
+          path: artifact
+      - run: chmod +x artifact/nodal
+      - name: nodal --version from the release artifact
+        run: ci/acceptance-version.sh artifact/nodal
+
+# Returning with the tasks that create what they check:
+#   schema export diff (T0.2 model + schemas/), safety suite (tests/safety, T1.13).

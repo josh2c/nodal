@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = ["crates/nodal-core", "crates/nodal-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/josh2c/nodal"
+
+[workspace.dependencies]
+nodal-core = { path = "crates/nodal-core", version = "0.1.0" }
+clap = { version = "4", features = ["derive", "env"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+  "ansi",
+  "env-filter",
+  "fmt",
+  "std",
+] }
+
+# Complexity is a linter setting, not a review opinion (docs/code-structure.md).
+# Thresholds live in clippy.toml; the levels below are hard limits in CI and locally.
+[workspace.lints.rust]
+missing_docs = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+cognitive_complexity = "deny"
+too_many_lines = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+
+[profile.release]
+strip = "symbols"
