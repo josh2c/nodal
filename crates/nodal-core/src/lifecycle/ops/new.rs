@@ -41,6 +41,7 @@ use crate::model::{
     ProjectId, ProjectName, Recipe, Slug, Timestamp, Unit, UnitId, UnitStatus,
 };
 use crate::output::view::Created;
+use crate::remove;
 use crate::services::ports;
 use crate::store::{Store, environments, projects, units};
 use crate::workspace::{Excludes, Materializer, home, select_backend};
@@ -243,7 +244,7 @@ impl Step for Materialize {
     /// through one leaves exactly that. So the destination is removed first: what is
     /// under it is this operation's own half-made home and nothing else.
     fn apply(&self) -> Result<()> {
-        remove_tree(&self.home)?;
+        remove::tree(&self.home)?;
         if let Some(parent) = self.home.parent() {
             std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
         }
@@ -251,7 +252,7 @@ impl Step for Materialize {
     }
 
     fn undo(&self) -> Result<()> {
-        remove_tree(&self.home)
+        remove::tree(&self.home)
     }
 }
 
@@ -371,16 +372,6 @@ impl Step for Activate {
 
     fn undo(&self) -> Result<()> {
         files::remove(&self.environment.home)
-    }
-}
-
-/// Remove a directory and everything under it. Removing one that is not there is not a
-/// failure: an undo runs against a world it may never have changed.
-fn remove_tree(path: &Path) -> Result<()> {
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(Error::io(path)(error)),
     }
 }
 

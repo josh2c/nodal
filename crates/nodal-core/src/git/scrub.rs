@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use super::{cmd, preflight, refs, worktree};
 use crate::error::{Error, Result};
+use crate::remove;
 
 /// The inherited directory of worktree registrations, relative to the Git directory.
 const WORKTREES: &str = "worktrees";
@@ -81,7 +82,7 @@ fn remove_worktrees(target: &Target<'_>) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
-    std::fs::remove_dir_all(&path).map_err(Error::io(&path))?;
+    remove::tree(&path)?;
     Ok(true)
 }
 

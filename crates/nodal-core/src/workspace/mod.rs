@@ -41,6 +41,10 @@ pub struct Report {
     pub attributes: usize,
     /// Entries the exclusion list left out.
     pub excluded: usize,
+    /// Entries the source had when it was listed and no longer had when they were
+    /// copied. A live tree is allowed to change under a clone; what it holds is
+    /// reported rather than made into a failure.
+    pub vanished: usize,
     /// Files whose blocks could not be shared, so their bytes were copied.
     pub copied: usize,
     /// Bytes the clone holds, as the source counts them. On a backend that shares

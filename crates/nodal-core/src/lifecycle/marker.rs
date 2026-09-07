@@ -76,12 +76,7 @@ pub fn verify(home: &Path, unit: UnitId) -> Result<()> {
 /// # Errors
 /// [`Error::Io`] when the file is there and cannot be removed.
 pub fn remove(home: &Path) -> Result<()> {
-    let path = path(home);
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(Error::io(&path)(error)),
-    }
+    crate::remove::file(&path(home))
 }
 
 /// Writing a home's marker as one step of an operation.

@@ -71,6 +71,8 @@ pub struct Skipped {
     pub excluded: usize,
     /// Entries that are neither a directory, a file nor a symbolic link.
     pub other: usize,
+    /// Entries the directory listed that were gone by the time they were read.
+    pub vanished: usize,
 }
 
 /// Every entry under `root` the exclusion list keeps, parents first.
@@ -78,9 +80,14 @@ pub struct Skipped {
 /// The root itself is not an entry: a caller creates the destination and then reads
 /// this sequence into it.
 ///
+/// A tree is read while it is alive. An entry a directory listed and that is gone by
+/// the time its metadata is read is an entry the tree no longer has, so it is counted
+/// and left out rather than reported: a project whose own tools write and remove a
+/// temporary file is still a project a unit can be made from.
+///
 /// # Errors
 /// [`Error::Io`] naming the directory that could not be read or the entry whose
-/// metadata could not be read.
+/// metadata could not be read for any reason other than its being gone.
 pub fn walk(root: &Path, exclude: &Excludes) -> Result<(Vec<Entry>, Skipped)> {
     let mut entries = Vec::new();
     let mut skipped = Skipped::default();
@@ -93,7 +100,10 @@ pub fn walk(root: &Path, exclude: &Excludes) -> Result<(Vec<Entry>, Skipped)> {
                 continue;
             }
             let path = root.join(&relative);
-            let metadata = std::fs::symlink_metadata(&path).map_err(Error::io(path))?;
+            let Some(metadata) = read_metadata(&path)? else {
+                skipped.vanished += 1;
+                continue;
+            };
             let kind = Kind::of(&metadata);
             if kind == Kind::Other {
                 skipped.other += 1;
@@ -106,6 +116,15 @@ pub fn walk(root: &Path, exclude: &Excludes) -> Result<(Vec<Entry>, Skipped)> {
         }
     }
     Ok((entries, skipped))
+}
+
+/// The metadata of one entry, `None` when the entry has gone since it was listed.
+fn read_metadata(path: &Path) -> Result<Option<Metadata>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Error::io(path)(error)),
+    }
 }
 
 /// The entries of `directory`, sorted by name, so a walk has one order.

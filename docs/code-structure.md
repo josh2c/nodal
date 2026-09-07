@@ -32,6 +32,7 @@ nodal/
 ```
 lib.rs                 pub use of module facades only; no logic
 error.rs               one `Error` enum (thiserror), one `Result<T>`; variants per module, no strings-as-errors
+remove.rs              removing a path something else may be removing too: absence is success, at it and under it
 
 model/                 plain data, serde + schemars; zero IO
   mod.rs               re-exports
@@ -179,6 +180,9 @@ commands/              one file per command, each ≤ 40 lines: parse args → c
 - `clippy::pedantic` on, with a short, documented allow-list; `clippy::unwrap_used` and `expect_used` denied
   outside tests; `missing_docs` on public items of `nodal-core`.
 - No `match` nesting deeper than two: extract a function or use a table.
+- Absence is success in both directions. An undo removes what may never have been made, and a clone reads a tree that
+  is alive: an entry that goes between the listing and the copy is counted, not raised. Both rules are one place each
+  (`remove.rs`, `workspace/tree.rs`), because half of either is a failure on one machine and not on another.
 - Every apply step is idempotent and has an undo; the runner journals steps and finalizes the registry in one transaction.
   The work an operation does inside a home is therefore steps of that operation, not one helper that does all of it:
   a helper would hide the seam the journal needs, which is one key and one undo per thing that changed.

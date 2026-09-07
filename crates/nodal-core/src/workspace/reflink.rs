@@ -140,7 +140,7 @@ mod platform {
             return Ok(Put { bytes: metadata.size(), shared: true });
         }
         drop((from, to));
-        std::fs::remove_file(destination).map_err(Error::io(destination))?;
+        crate::remove::file(destination)?;
         let bytes = std::fs::copy(source, destination).map_err(Error::io(destination))?;
         Ok(Put { bytes, shared: false })
     }

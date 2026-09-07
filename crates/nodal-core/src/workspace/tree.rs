@@ -17,6 +17,12 @@
 //!   becoming many.
 //! * Directory permissions and times are applied after everything inside them, because
 //!   writing a child changes both.
+//!
+//! One more rule is about time rather than shape. The listing a clone works from is a
+//! snapshot and the tree it names is alive: a project's own tools, Git's background
+//! maintenance among them, write and remove files while a unit is being made. An entry
+//! that is gone by the time the copier reaches it is an entry the tree no longer has,
+//! so it is counted in the report and left out. Anything else that fails is reported.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry as Slot;
@@ -25,9 +31,10 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use super::exclude::Excludes;
-use super::walk::{Entry, Kind, walk};
+use super::walk::{Entry, Kind, Skipped, walk};
 use super::{Report, meta, xattr};
 use crate::error::{Error, Result};
+use crate::remove;
 
 /// What one call of a backend put across.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +76,7 @@ pub fn materialize(
     check(source, destination)?;
     let (entries, skipped) = walk(source, exclude)?;
     std::fs::create_dir_all(destination).map_err(Error::io(destination))?;
-    let mut copier = Copier::new(source, destination, ops, skipped.excluded);
+    let mut copier = Copier::new(source, destination, ops, &skipped);
     for entry in &entries {
         copier.put(entry)?;
     }
@@ -93,22 +100,44 @@ struct Copier<'a> {
 }
 
 impl<'a> Copier<'a> {
-    /// A copier that has done nothing yet, in a walk that left `excluded` entries out.
-    fn new(source: &'a Path, destination: &'a Path, ops: Ops, excluded: usize) -> Self {
-        let report = Report { excluded, ..Report::default() };
+    /// A copier that has done nothing yet, after a walk that left `skipped` out.
+    fn new(source: &'a Path, destination: &'a Path, ops: Ops, skipped: &Skipped) -> Self {
+        let report =
+            Report { excluded: skipped.excluded, vanished: skipped.vanished, ..Report::default() };
         Self { source, destination, ops, report, links: HashMap::new() }
     }
 
-    /// Put one entry at its place in the clone.
+    /// Put one entry at its place in the clone, or count it as gone.
+    ///
+    /// The source is asked again only when something failed, and only about the one
+    /// entry that failed. An entry that has gone since the walk listed it is not in the
+    /// tree any more and is not this clone's to carry; anything else is reported.
     fn put(&mut self, entry: &Entry) -> Result<()> {
         let (from, to) = (entry.under(self.source), entry.under(self.destination));
-        match entry.kind {
-            Kind::Directory => self.put_directory(&to)?,
-            Kind::Symlink => self.put_symlink(entry, &from, &to)?,
-            Kind::File => self.put_file(entry, &from, &to)?,
-            Kind::Other => {}
+        match self.put_entry(entry, &from, &to) {
+            Err(_) if remove::gone(&from) => self.leave_out(&to),
+            answer => answer,
         }
-        Ok(())
+    }
+
+    /// Put one entry across, whatever kind it is.
+    fn put_entry(&mut self, entry: &Entry, from: &Path, to: &Path) -> Result<()> {
+        match entry.kind {
+            Kind::Directory => self.put_directory(to),
+            Kind::Symlink => self.put_symlink(entry, from, to),
+            Kind::File => self.put_file(entry, from, to),
+            Kind::Other => Ok(()),
+        }
+    }
+
+    /// Count an entry the source no longer has, and take back the part of it that had
+    /// already been made, so the clone holds no half of a file that is not there.
+    fn leave_out(&mut self, to: &Path) -> Result<()> {
+        self.report.vanished += 1;
+        if to.is_dir() {
+            return remove::tree(to);
+        }
+        remove::file(to)
     }
 
     /// Make one directory. The walk then fills it, and [`Copier::finish`] gives it the
@@ -173,6 +202,11 @@ impl<'a> Copier<'a> {
         let made = entries.iter().rev().filter(|entry| entry.kind == Kind::Directory);
         for entry in made {
             let to = entry.under(self.destination);
+            // A directory the source lost while the clone was being made was never
+            // created here, and there is nothing to give the permissions of.
+            if remove::gone(&to) {
+                continue;
+            }
             meta::permissions(&to, &entry.metadata)?;
             meta::times(&to, &entry.metadata)?;
         }

@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use crate::env::{Activation, secrets};
 use crate::lifecycle::Step;
 use crate::model::{EnvName, Manifest};
+use crate::remove;
 use crate::{Error, Result};
 
 /// The per-unit directory inside a home.
@@ -77,16 +78,11 @@ pub fn write(home: &Path, activation: &Activation, manifest: &Manifest) -> Resul
 /// [`Error::Io`] if a file that is there cannot be removed.
 pub fn remove(home: &Path) -> Result<()> {
     for relative in PATHS {
-        let path = home.join(relative);
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(Error::io(&path)(error)),
-        }
+        remove::file(&home.join(relative))?;
     }
     let directory = home.join(DIR);
     if std::fs::read_dir(&directory).is_ok_and(|mut entries| entries.next().is_none()) {
-        std::fs::remove_dir(&directory).map_err(Error::io(&directory))?;
+        remove::directory(&directory)?;
     }
     Ok(())
 }

@@ -12,6 +12,7 @@ pub mod logging;
 pub mod model;
 pub mod output;
 pub mod recipe;
+pub mod remove;
 pub mod services;
 pub mod store;
 pub mod workspace;

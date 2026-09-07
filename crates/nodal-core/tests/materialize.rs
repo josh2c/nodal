@@ -253,6 +253,71 @@ fn both_backends_produce_the_same_tree() {
     }
 }
 
+/// How many files the live-tree test writes, and how many of them it takes away again.
+///
+/// Enough that the walk and the copy are still running while the removals happen. A
+/// smaller tree is cloned before the first removal lands, and the test then proves
+/// nothing.
+const LIVE_FILES: usize = 3_000;
+
+#[test]
+fn a_tree_that_loses_files_while_it_is_cloned_is_still_cloned() {
+    // A project is alive while a unit is made from it. Git's own background
+    // maintenance writes a lock file under `.git/objects` and removes it again without
+    // being asked, and it does so on some builds and not others; a package manager or
+    // a test run does the same in its own directories. A clone reads a listing and then
+    // copies what the listing named, so any of those can take a file away in between.
+    // What the clone must not do is fail.
+    for (label, backend) in backends() {
+        let case = Case::new();
+        let source = case.source();
+        let doomed = source.join("objects");
+        std::fs::create_dir_all(&doomed).unwrap();
+        write(&source.join("kept.txt"), "this file stays");
+        for index in 0..LIVE_FILES {
+            write(&doomed.join(format!("{index}.lock")), "a lock nobody asked for");
+        }
+
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let report = std::thread::scope(|scope| {
+            let (stop, target) = (&stop, doomed.as_path());
+            scope.spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    for index in 0..LIVE_FILES {
+                        let _ = std::fs::remove_file(target.join(format!("{index}.lock")));
+                    }
+                }
+            });
+            let destination = case.destination(label);
+            let answer = backend.clone_tree(&source, &destination, &Excludes::default());
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            (destination, answer)
+        });
+
+        let (destination, answer) = report;
+        let report = answer.unwrap_or_else(|error| {
+            panic!("{label}: a file the source lost must not fail the clone: {error}")
+        });
+        assert_eq!(
+            contents(&destination.join("kept.txt")),
+            "this file stays",
+            "{label}: what the source kept is in the clone"
+        );
+        // Whatever survived is there and whole; whatever did not is counted, not copied.
+        for index in 0..LIVE_FILES {
+            let name = format!("{index}.lock");
+            if destination.join("objects").join(&name).exists() {
+                assert_eq!(
+                    contents(&destination.join("objects").join(&name)),
+                    "a lock nobody asked for",
+                    "{label}: {name}"
+                );
+            }
+        }
+        assert!(report.files >= 1, "{label}: {report:?}");
+    }
+}
+
 #[test]
 fn a_destination_that_is_already_there_is_refused() {
     let case = Case::new();
