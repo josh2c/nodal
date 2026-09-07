@@ -12,6 +12,7 @@
 pub mod apfs;
 pub mod copy;
 pub mod exclude;
+pub mod home;
 pub mod meta;
 pub mod reflink;
 pub mod tree;

@@ -78,6 +78,18 @@ pub fn latest_for_unit(conn: &Connection, unit_id: UnitId) -> Result<Option<Envi
     row::one(conn, &sql, params![unit_id.to_string()], decode)
 }
 
+/// Every environment on this machine, oldest first.
+///
+/// What the placement guard reads: a home may not be created inside one that is already
+/// there, whatever state it is in.
+///
+/// # Errors
+/// As [`get`].
+pub fn list_all(conn: &Connection) -> Result<Vec<Environment>> {
+    let sql = format!("SELECT {COLUMNS} FROM environment ORDER BY id");
+    row::many(conn, &sql, [], decode)
+}
+
 /// Every environment in one state, oldest first. What `nodal ls` and reclaim read.
 ///
 /// # Errors
@@ -116,6 +128,24 @@ pub fn set_materialized(
         conn,
         "UPDATE environment SET ws_fp_materialized = ?, schema_fp_materialized = ? WHERE id = ?",
         params![workspace.map(|fp| fp.0.as_str()), schema.map(|fp| fp.0.as_str()), id.to_string()],
+    )?;
+    Ok(changed == 1)
+}
+
+/// Record the ports an environment holds; `false` when there is no such row.
+///
+/// The grants themselves are rows of `port_allocation`, written when the environment
+/// exists to hold them; this column is the same set in the form a reader wants, so both
+/// are written in the one transaction that finishes a create.
+///
+/// # Errors
+/// [`crate::Error::Store`] on a failed statement, [`crate::Error::StoreEncode`] when the
+/// ports cannot be encoded.
+pub fn set_ports(conn: &Connection, id: EnvId, ports: &Ports) -> Result<bool> {
+    let changed = row::write(
+        conn,
+        "UPDATE environment SET ports = ? WHERE id = ?",
+        params![row::json_of(ports, "port allocation")?, id.to_string()],
     )?;
     Ok(changed == 1)
 }

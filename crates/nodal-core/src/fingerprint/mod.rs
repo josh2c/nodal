@@ -26,9 +26,9 @@ use self::digest::Hasher;
 pub use self::inputs::{CLASSES, Class, Key, Selector};
 pub use self::platform::current as current_platform;
 pub use self::tree::{GitTreeAtCommit, TreeSource};
-use crate::Result;
 use crate::git::tree::Entry;
-use crate::model::{Digest, FingerprintPart, Platform, SchemaFp, SubFp, WorkspaceFp};
+use crate::model::{Digest, FingerprintPart, Platform, Recipe, SchemaFp, SubFp, WorkspaceFp};
+use crate::{Error, Result};
 
 /// The workspace key at a commit, with the parts it was composed from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +106,26 @@ pub fn compute_schema(selected: &Selected) -> Result<Schema> {
     let mut hasher = Hasher::new(digest::SCHEMA_DOMAIN);
     fold(&mut hasher, &parts);
     Ok(Schema { key: SchemaFp(hasher.finish()?), parts })
+}
+
+/// The digest of an effective recipe: what `project.recipe_hash` records.
+///
+/// It is not one of the two keys. A recipe changing does not make a base cold — the
+/// keys above already cover every input a base is built from — but it does mean the
+/// project a unit was created under is no longer the project the registry recorded, and
+/// this is the one value that says so without re-reading `nodal.toml`.
+///
+/// The recipe is hashed in its JSON form, which is stable: every map in it is ordered,
+/// and every field has a fixed place.
+///
+/// # Errors
+/// [`Error::Render`] when the recipe cannot be encoded.
+pub fn compute_recipe(recipe: &Recipe) -> Result<Digest> {
+    let json =
+        serde_json::to_string(recipe).map_err(|source| Error::Render { kind: "recipe", source })?;
+    let mut hasher = Hasher::new(digest::RECIPE_DOMAIN);
+    hasher.text(&json);
+    hasher.finish()
 }
 
 /// Fold named sub-fingerprints into a key, naming each part so that two classes

@@ -27,7 +27,10 @@
 //! because a user whose `nodal new` was killed should be told that the leftovers were
 //! cleaned up, not left to wonder.
 
+pub mod guard;
 pub mod journal;
+pub mod marker;
+pub mod ops;
 pub mod owner;
 pub mod step;
 

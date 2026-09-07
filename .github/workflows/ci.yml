@@ -84,6 +84,20 @@ jobs:
       - name: a killed operation is reported and rolled back by the next invocation
         run: ci/acceptance-operation.sh
 
+  acceptance-new:
+    name: acceptance (new)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: a unit is clean and alone, and a killed create leaves nothing
+        run: ci/acceptance-new.sh
+
   acceptance-ports:
     name: acceptance (ports)
     runs-on: ubuntu-latest

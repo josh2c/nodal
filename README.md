@@ -57,7 +57,7 @@ Adoption works in the other direction too: worktrees that other tools already cr
 
 ## Status
 
-The foundation layer is complete and tested: domain model, published JSON schemas (`schemas/v1/`), SQLite registry, git operations, environment fingerprints, project recipes with inference, an output layer, and an operation journal with crash recovery. Environment activation writes a unit's `.nodal/env`, `.envrc` and `.nodal/manifest.toml`, and `nodal env` reports what a home carries. The command surface is under construction.
+The foundation layer is complete and tested: domain model, published JSON schemas (`schemas/v1/`), SQLite registry, git operations, environment fingerprints, project recipes with inference, an output layer, and an operation journal with crash recovery. Environment activation writes a unit's `.nodal/env`, `.envrc` and `.nodal/manifest.toml`, and `nodal env` reports what a home carries. `nodal new` makes a unit: it clones the project into a home of its own, scrubs the Git state the clone inherited, takes the unit's branch, grants ports, and writes one registry row set at the end — so a run that is killed part-way through leaves nothing once the next command resolves it. The rest of the command surface is under construction.
 
 See `docs/contracts.md`, `docs/code-structure.md`, and `docs/scenarios.md`. Contributions: `CONTRIBUTING.md`.
 

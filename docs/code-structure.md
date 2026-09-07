@@ -96,7 +96,7 @@ workspace/
   btrfs.rs             subvolume snapshot
   copy.rs              fallback
   relocate.rs          CacheRelocator trait + InvalidateNextCache (+ optional rewrite)
-  create.rs            create_home(base, home): clone → scrub → checkout (calls above, no branching on backend)
+  home.rs              where Nodal keeps its state, and where a home goes inside it (pure paths)
 
 services/
   mod.rs               ServiceAdapter trait; registry of adapters by recipe kind
@@ -145,6 +145,8 @@ lifecycle/             the only module that composes others; each op = plan() pu
   step.rs              Step trait {key, apply, undo}; Plan = steps + the final registry write
   journal.rs           operation and operation_step rows: op id, step key, state
   owner.rs             whose run an operation is, and whether that process is still there
+  guard.rs             the placement rule: a home never overlaps a source, a project or another home
+  marker.rs            .nodal/id: write, read, verify against the registry
   ops/
     new.rs · adopt.rs · sync.rs · reclaim.rs · gc.rs · done.rs · transfer.rs · doctor.rs
   uniqueness.rs        the single uniqueness_check
@@ -157,7 +159,7 @@ output/
   json.rs              pretty for --json, compact for one line of a stream
   watch.rs             Source trait + polling loop; writes only changed answers
   view/                the read types themselves, one file per command family
-    unit.rs · status.rs · event.rs · base.rs · init.rs
+    unit.rs · status.rs · event.rs · base.rs · init.rs · env.rs · created.rs
 ```
 
 ## crates/nodal-cli/src
@@ -178,6 +180,10 @@ commands/              one file per command, each ≤ 40 lines: parse args → c
   outside tests; `missing_docs` on public items of `nodal-core`.
 - No `match` nesting deeper than two: extract a function or use a table.
 - Every apply step is idempotent and has an undo; the runner journals steps and finalizes the registry in one transaction.
+  The work an operation does inside a home is therefore steps of that operation, not one helper that does all of it:
+  a helper would hide the seam the journal needs, which is one key and one undo per thing that changed.
+- No plan holds a resolved secret value. A plan is rebuilt from the journal, which is a table in the registry, so a
+  step that needs a value asks its source when it applies rather than carrying one.
 - An operation is journalled before and after every step, so a process killed between two steps leaves an
   accurate account. The registry write and the journal's move to `committed` share that one transaction, so
   an operation is either wholly done or wholly not. The next command calls `lifecycle::resolve`, which
