@@ -181,8 +181,8 @@ output/
   json.rs              pretty for --json, compact for one line of a stream
   watch.rs             Source trait + polling loop; writes only changed answers
   view/                the read types themselves, one file per command family
-    unit.rs · status.rs · event.rs · base.rs · init.rs · env.rs · created.rs · reclaim.rs
-    doctor.rs
+    unit.rs · status.rs · event.rs · base.rs · init.rs · env.rs · created.rs
+    reclaim.rs · doctor.rs
 ```
 
 ## crates/nodal-cli/src

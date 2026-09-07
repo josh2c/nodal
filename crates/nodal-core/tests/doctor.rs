@@ -80,6 +80,8 @@ struct Planted {
     sessions: PathBuf,
     /// The registry, which holds nothing: doctor runs before any unit exists.
     store: Store,
+    /// A symbolic link to the machine root: the same directories under another name.
+    link: PathBuf,
 }
 
 impl Planted {
@@ -95,7 +97,12 @@ impl Planted {
 
     /// The report this machine produces from a given Docker.
     fn report_with(&self, docker: &dyn Docker) -> Doctor {
-        let machine = Machine::here(&self.checkout, &self.state, Some(&self.sessions));
+        self.report_from(docker, &self.checkout, &self.state)
+    }
+
+    /// The report produced by running in `cwd`, with `state` as the state directory.
+    fn report_from(&self, docker: &dyn Docker, cwd: &Path, state: &Path) -> Doctor {
+        let machine = Machine::here(cwd, state, Some(&self.sessions));
         doctor::survey(self.store.conn(), docker, &machine, Timestamp::now())
             .expect("a machine doctor can read")
     }
@@ -142,7 +149,12 @@ fn plant() -> Planted {
     write(&state.join("app").join(ORPHAN).join("base"), &"d".repeat(512));
 
     // The record of the session that made the loose worktree.
-    let worktree = checkout.join(".claude/worktrees/loose");
+    //
+    // Under the resolved path, because that is the path the tool itself writes: it
+    // records the directory the operating system gives it, with every link already
+    // followed. On a host whose temporary directory is a link this is not the path
+    // this test built, which is the whole reason the symlink test below exists.
+    let worktree = nodal_core::lifecycle::guard::resolve(&checkout.join(".claude/worktrees/loose"));
     let encoded = doctor::intent::encode(&worktree);
     write(
         &sessions.join("projects").join(encoded).join("s.jsonl"),
@@ -156,8 +168,13 @@ fn plant() -> Planted {
         ),
     );
 
+    // A second name for the whole machine, so a test can reach it the way macOS does:
+    // `/var/folders/...` is a link and `/private/var/folders/...` is the directory.
+    let link = root.join("by-another-name");
+    std::os::unix::fs::symlink(root, &link).unwrap();
+
     let store = Store::open(root.join("registry.db")).expect("a registry");
-    Planted { directory, checkout, state, sessions, store }
+    Planted { directory, checkout, state, sessions, store, link }
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -327,6 +344,53 @@ fn unit_row(project: nodal_core::model::ProjectId, index: usize) -> nodal_core::
         created_at: now,
         updated_at: now,
     }
+}
+
+/// The macOS condition, reproduced on every host.
+///
+/// On macOS the temporary directory is a link: a test builds its machine under
+/// `/var/folders/...` and the directory is `/private/var/folders/...`. Git and Docker
+/// answer with the second name, and a registry row holds the first. Every comparison
+/// doctor makes is then between two names for one directory.
+///
+/// So this runs the whole survey through a second name for the machine: the checkout is
+/// entered through a link, the state directory is named through the link, and the other
+/// project's row holds a path through the link. The report must be the same report.
+#[test]
+fn a_machine_reached_by_another_name_reports_the_same_things() {
+    let machine = plant();
+    let by_link = |relative: &str| machine.link.join(relative);
+
+    // A second project, whose row holds a path nothing resolved.
+    let other = machine.root().join("code/other");
+    write(&other.join("README.md"), "# other\n");
+    git(&other, &["init", "--quiet", "."]);
+    commit(&other, "the other project");
+    git(&other, &["worktree", "add", "--quiet", "-b", "w", ".claude/worktrees/w"]);
+    nodal_core::store::projects::insert(machine.store.conn(), &project_row(&by_link("code/other")))
+        .expect("a second project");
+
+    let report = machine.report_from(&Daemon, &by_link("code/app"), &by_link("state"));
+
+    // This project, reached through the link, is still this project.
+    let loose = one(&report.here, Kind::NestedWorktree, "loose");
+    assert_eq!(loose.what, ".claude/worktrees/loose", "named relative to the checkout");
+    assert_eq!(
+        loose.intent.as_deref(),
+        Some("Make the importer retry a failed row"),
+        "the session record is found under the name the tool wrote it with"
+    );
+    assert!(one(&report.here, Kind::StaleCache, ".next").bytes.is_some());
+    assert!(one(&report.here, Kind::OrphanDatabase, ORPHAN).bytes.is_some());
+
+    // The other project's row named a path through the link. It is still another
+    // project, and its worktree is still in the second section.
+    assert!(one(&report.elsewhere, Kind::NestedWorktree, ".claude/worktrees/w").bytes.is_some());
+    assert!(
+        report.here.iter().all(|finding| !finding.what.contains("code/other")),
+        "another project's worktree reached the first section: {:#?}",
+        report.here
+    );
 }
 
 #[test]

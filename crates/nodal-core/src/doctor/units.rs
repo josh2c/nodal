@@ -14,7 +14,7 @@ use rusqlite::Connection;
 use crate::doctor::{Scope, Section, size};
 use crate::model::UnitStatus;
 use crate::output::view::doctor::{Finding, Kind};
-use crate::store::{environments, projects, units};
+use crate::store::{environments, units};
 
 /// How many open units a project holds before doctor says so.
 pub const LIMIT: usize = 10;
@@ -25,7 +25,8 @@ pub const LIMIT: usize = 10;
 /// [`crate::Error::Store`] when the registry could not be read.
 pub fn find(conn: &Connection, scope: &Scope) -> crate::Result<Vec<(Section, Finding)>> {
     let mut rows = Vec::new();
-    for project in projects::list(conn)? {
+    for known in &scope.projects {
+        let project = &known.project;
         let open = units::list_by_status(conn, project.id, UnitStatus::Open)?;
         if open.len() <= LIMIT {
             continue;
@@ -40,7 +41,7 @@ pub fn find(conn: &Connection, scope: &Scope) -> crate::Result<Vec<(Section, Fin
             }
         }
         rows.push((
-            scope.section(&project.root),
+            scope.section(&known.root),
             Finding::new(Kind::UnitCount, project.name.to_string())
                 .sized(bytes, complete)
                 .says(format!("{} open units, over the threshold of {LIMIT}", open.len())),

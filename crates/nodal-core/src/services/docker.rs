@@ -13,8 +13,10 @@
 //!
 //! The same rule holds for what a machine has left behind. [`leftovers`] reads the
 //! containers that have exited and the volumes nothing refers to, so `nodal doctor` can
-//! report them with a size. It reads and it does not remove: `docker ps`, `docker
-//! inspect` and `docker system df` are the three commands, and each one only answers.
+//! report them with a size. [`leftovers`] only reads: `docker ps`, `docker inspect` and
+//! `docker system df` are the three commands it runs, and each one only answers.
+//! [`remove`] is the module's one destructive call, it belongs to `nodal reclaim`, and
+//! doctor never reaches it.
 //!
 //! Two labels are the contract a container carries: [`UNIT_LABEL`] and [`ENV_LABEL`].
 //! Every container Nodal starts carries both, which is what makes attribution certain

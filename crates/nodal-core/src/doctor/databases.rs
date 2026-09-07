@@ -20,7 +20,7 @@ use rusqlite::Connection;
 use crate::doctor::{Scope, Section, size};
 use crate::model::DbName;
 use crate::output::view::doctor::{Finding, Kind};
-use crate::store::{environments, projects, templates};
+use crate::store::{environments, templates};
 
 /// The first characters of every database name Nodal makes.
 pub const PREFIX: &str = "nodal_";
@@ -34,7 +34,7 @@ const DEPTH: usize = 3;
 /// # Errors
 /// [`crate::Error::Store`] when the registry could not be read.
 pub fn find(conn: &Connection, scope: &Scope) -> crate::Result<Vec<(Section, Finding)>> {
-    let known = named(conn)?;
+    let known = named(conn, scope)?;
     let mut rows = Vec::new();
     for path in directories(&scope.state_dir) {
         let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else { continue };
@@ -54,14 +54,14 @@ pub fn find(conn: &Connection, scope: &Scope) -> crate::Result<Vec<(Section, Fin
 }
 
 /// Every database name the registry holds, from both tables that hold one.
-fn named(conn: &Connection) -> crate::Result<BTreeSet<String>> {
+fn named(conn: &Connection, scope: &Scope) -> crate::Result<BTreeSet<String>> {
     let mut known: BTreeSet<String> = environments::list_all(conn)?
         .into_iter()
         .filter_map(|environment| environment.db_name)
         .map(|name| name.to_string())
         .collect();
-    for project in projects::list(conn)? {
-        for template in templates::list_for_project(conn, project.id)? {
+    for project in &scope.projects {
+        for template in templates::list_for_project(conn, project.project.id)? {
             known.insert(template.db_name.to_string());
         }
     }

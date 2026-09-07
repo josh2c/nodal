@@ -27,6 +27,7 @@ use std::path::Path;
 
 use crate::doctor::{Section, intent, size};
 use crate::git::Git;
+use crate::lifecycle::guard;
 use crate::output::view::doctor::{Finding, Kind};
 use crate::{Result, git};
 
@@ -35,18 +36,23 @@ use crate::{Result, git};
 /// A `root` that is not a repository has none, which is the answer for a directory a
 /// person points doctor at that Git does not know.
 ///
+/// Both ends of every comparison here are resolved paths. Git prints the path it
+/// resolved, and `root` may be the path a registry row holds, which nothing resolved.
+///
 /// # Errors
 /// [`crate::Error::Git`] when the repository's own record could not be read.
 pub fn find(root: &Path, sessions: Option<&Path>, section: Section) -> Result<Vec<Finding>> {
     let Ok(git) = Git::open(root) else {
         return Ok(Vec::new());
     };
+    let root = guard::resolve(root);
     let mut findings = Vec::new();
-    for registered in git.worktrees()? {
-        if !registered.path.starts_with(root) || registered.path == root {
+    for mut registered in git.worktrees()? {
+        registered.path = guard::resolve(&registered.path);
+        if !registered.path.starts_with(&root) || registered.path == root {
             continue;
         }
-        findings.push(one(root, &registered, sessions, section));
+        findings.push(one(&root, &registered, sessions, section));
     }
     Ok(findings)
 }

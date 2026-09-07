@@ -28,6 +28,22 @@
 //! read about it: not its Git state, not its size. A lock is a statement that a tool is
 //! working in that directory, and doctor is not a tool that argues with one.
 //!
+//! ## One name per path
+//!
+//! Doctor compares paths from four sources: the directory the command was run in, the
+//! roots the registry holds, what `git worktree list` prints, and what Docker says a
+//! container mounts. Git and Docker resolve every link before they answer; a person's
+//! shell and a registry row do not. On a host whose temporary directory is a link —
+//! macOS names `/var/folders` and means `/private/var/folders` — the same directory
+//! therefore arrives under two names, and a comparison between them is false.
+//!
+//! So every path is resolved once, at the edge: on the way into [`Scope`], and in
+//! [`Scope::section`] on the way in from a tool. Past that edge every path in this
+//! module is the name the filesystem itself uses, and `starts_with` means what it reads
+//! as. The resolver is [`guard::resolve`], which is the one place in Nodal a path is
+//! normalised before it is compared with another; doctor does not have a rule of its
+//! own about this.
+//!
 //! ## A tool that is not there
 //!
 //! Docker absent, or a daemon this account may not reach, is a note and not a failure
@@ -48,7 +64,8 @@ use rusqlite::Connection;
 
 use crate::Result;
 use crate::git::Git;
-use crate::model::Timestamp;
+use crate::lifecycle::guard;
+use crate::model::{Project, Timestamp};
 use crate::output::view::doctor::{Checkout, Doctor, Finding, Note};
 use crate::services::docker::Docker;
 use crate::store::projects;
@@ -63,11 +80,25 @@ pub enum Section {
     Elsewhere,
 }
 
+/// One project the registry knows, and where its root really is.
+#[derive(Debug, Clone)]
+pub struct Known {
+    /// The row, for its name and its identifier.
+    pub project: Project,
+    /// Its root, resolved by [`guard::resolve`], which is what every comparison uses.
+    pub root: PathBuf,
+}
+
 /// What doctor reads, gathered once so that each source is a function of its inputs.
+///
+/// Every path here is resolved. Nothing in this type is the name a caller happened to
+/// use for a directory; it is the name the filesystem uses.
 #[derive(Debug, Clone, Default)]
 pub struct Scope {
     /// The top of the checkout the command was run in, when it was run in one.
     pub root: Option<PathBuf>,
+    /// Every project the registry holds, with its root resolved.
+    pub projects: Vec<Known>,
     /// The roots of every other project the registry knows.
     pub others: Vec<PathBuf>,
     /// Every path that belongs to another project: those roots, and the part of the
@@ -86,8 +117,13 @@ impl Scope {
     /// Everything else is this project's section, including a path nothing claims: "I
     /// cannot say whose this is" is not the same claim as "this is another project's",
     /// and the second section must hold only the second.
+    ///
+    /// The path is resolved first. This is the edge a tool's answer comes in at, and a
+    /// tool that resolved links and a registry row that did not must not be able to
+    /// name one directory two ways.
     #[must_use]
     pub fn section(&self, path: &Path) -> Section {
+        let path = guard::resolve(path);
         if self.owned_elsewhere.iter().any(|owned| path.starts_with(owned)) {
             Section::Elsewhere
         } else {
@@ -159,7 +195,7 @@ pub fn survey(
 
     largest_first(&mut here);
     largest_first(&mut elsewhere);
-    Ok(Doctor { now, checkout: checkout_of(conn, scope.root.as_deref())?, here, elsewhere, notes })
+    Ok(Doctor { now, checkout: checkout_of(&scope), here, elsewhere, notes })
 }
 
 /// Add findings to the section they belong to.
@@ -201,33 +237,47 @@ fn largest_first(findings: &mut [Finding]) {
 
 /// What doctor is going to read, gathered from the registry and the machine.
 fn scope_of(conn: &Connection, machine: &Machine<'_>) -> Result<Scope> {
-    let state_dir = machine.state_dir;
-    let root = Git::open(machine.cwd).and_then(|git| git.toplevel()).ok();
+    let state_dir = guard::resolve(machine.state_dir);
+    let root =
+        Git::open(machine.cwd).and_then(|git| git.toplevel()).ok().map(|top| guard::resolve(&top));
+    let projects: Vec<Known> = projects::list(conn)?
+        .into_iter()
+        .map(|project| Known { root: guard::resolve(&project.root), project })
+        .collect();
     let mut others = Vec::new();
     let mut owned_elsewhere = Vec::new();
-    for project in projects::list(conn)? {
-        if root.as_ref() == Some(&project.root) {
+    for known in &projects {
+        if root.as_ref() == Some(&known.root) {
             continue;
         }
-        owned_elsewhere.push(state_dir.join(home::project_segment(&project.name)));
-        owned_elsewhere.push(project.root.clone());
-        others.push(project.root);
+        owned_elsewhere.push(state_dir.join(home::project_segment(&known.project.name)));
+        owned_elsewhere.push(known.root.clone());
+        others.push(known.root.clone());
     }
     Ok(Scope {
         root,
+        projects,
         others,
         owned_elsewhere,
-        state_dir: state_dir.to_owned(),
-        sessions: machine.sessions.map(Path::to_path_buf),
+        state_dir,
+        sessions: machine.sessions.map(guard::resolve),
     })
 }
 
 /// The checkout line of the report: where the command ran, and what the registry calls
 /// the project there.
-fn checkout_of(conn: &Connection, root: Option<&Path>) -> Result<Option<Checkout>> {
-    let Some(root) = root else { return Ok(None) };
-    let project = projects::find_by_root(conn, root)?.map(|project| project.name.to_string());
-    Ok(Some(Checkout { root: root.to_owned(), project }))
+///
+/// The project is found among the roots the scope already resolved, and not by a query
+/// on the path. A registry row holds the path whoever wrote it used, which on a host
+/// with a linked temporary directory is not the path this command resolved.
+fn checkout_of(scope: &Scope) -> Option<Checkout> {
+    let root = scope.root.as_ref()?;
+    let project = scope
+        .projects
+        .iter()
+        .find(|known| &known.root == root)
+        .map(|known| known.project.name.to_string());
+    Some(Checkout { root: root.clone(), project })
 }
 
 /// A note about a source that could not answer.
