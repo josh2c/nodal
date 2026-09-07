@@ -82,10 +82,11 @@ git/
   preflight.rs         refuse in-progress state
 
 substrate/
-  mod.rs               Substrate facade
-  bases.rs             ensure(fp) -> Base; neighbour selection; pin/unpin
-  build.rs             build a base: clone, install, warm (each step a fn)
+  mod.rs               Layout (bases and homes are separate roots) + the project row
+  bases.rs             ensure(fp) -> Base; neighbour selection; pins; evict and gc
+  build.rs             build a base as a Plan: clone, checkout, install, warm
   lru.rs               eviction policy (pure)
+  progress.rs          Reporter: where a build says what it is doing
   templates.rs         ensure(schema_fp) -> Template; incremental from parent
 
 workspace/

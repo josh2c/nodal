@@ -4,6 +4,7 @@
 //! the library, so that `--json` output and the human form are two renderings of one
 //! value rather than two code paths.
 
+pub mod base;
 pub mod cd;
 pub mod env;
 pub mod init;

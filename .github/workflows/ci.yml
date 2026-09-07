@@ -134,6 +134,20 @@ jobs:
       - name: a home holds the project, leaves out what the list names, and is made fast
         run: ci/acceptance-materialize.sh
 
+  acceptance-substrate:
+    name: acceptance (substrate)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: two bases coexist, a pinned base is refused, a neighbour build is faster
+        run: ci/acceptance-substrate.sh
+
   acceptance-fixture:
     name: acceptance (fixture)
     runs-on: ubuntu-latest

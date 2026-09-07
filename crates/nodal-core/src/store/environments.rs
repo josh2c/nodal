@@ -184,3 +184,22 @@ fn decode(row: &Row<'_>) -> Result<Environment> {
         last_active: row::stamp(row, TABLE, "last_active")?,
     })
 }
+
+/// How many environments hold a base against eviction: its pin count.
+///
+/// The registry keeps no pin column. A pin *is* an environment row pointing at the
+/// base, so counting them is the whole answer and there is no second number that can
+/// disagree with the foreign key the database already enforces.
+///
+/// # Errors
+/// [`crate::Error::Store`] on a failed statement.
+pub fn count_for_base(conn: &Connection, base_id: BaseId) -> Result<u32> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM environment WHERE base_id = ?",
+            params![base_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(row::store_error(conn))?;
+    u32::try_from(count).map_err(|_| crate::Error::StoreEncode { kind: "pin count" })
+}

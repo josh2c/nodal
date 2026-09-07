@@ -16,7 +16,7 @@ pub mod init;
 pub mod status;
 pub mod unit;
 
-pub use crate::output::view::base::{BaseList, BaseRow};
+pub use crate::output::view::base::{BaseBuild, BaseList, BaseRow, BaseSweep};
 pub use crate::output::view::created::Created;
 pub use crate::output::view::env::{EnvReport, VarLine};
 pub use crate::output::view::event::EventLog;

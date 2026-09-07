@@ -17,5 +17,5 @@ use crate::lifecycle::Rebuild;
 /// a line here.
 #[must_use]
 pub fn rebuilders() -> Vec<&'static dyn Rebuild> {
-    vec![&new::New]
+    vec![&new::New, &crate::substrate::build::BaseBuild]
 }

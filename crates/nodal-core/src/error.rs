@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use thiserror::Error as ThisError;
 
 use crate::git::preflight;
-use crate::model::{BranchName, EnvId, OperationId, Slug, UnitId};
+use crate::model::{BaseId, BranchName, EnvId, OperationId, Slug, UnitId};
 
 /// Every failure `nodal-core` can return.
 #[derive(Debug, ThisError)]
@@ -452,6 +452,64 @@ pub enum Error {
         repo: PathBuf,
         /// The branch that was expected.
         branch: String,
+    },
+
+    /// A base has to come from the project's remote, and the checkout names none.
+    #[error("{repo} has no remote {remote:?} to build a base from", repo = repo.display())]
+    NoRemote {
+        /// The checkout that was read.
+        repo: PathBuf,
+        /// The remote that was looked for.
+        remote: String,
+    },
+
+    /// The commit a base is keyed to is in neither the remote nor the checkout.
+    #[error("commit {commit} is not in the remote or the checkout it was asked for")]
+    BaseCommitMissing {
+        /// The commit that could not be found.
+        commit: String,
+    },
+
+    /// A base still has units cloned from it, so it cannot be removed.
+    #[error("base {base} still holds {pins} unit(s)")]
+    BasePinned {
+        /// The base that was not removed.
+        base: BaseId,
+        /// How many units hold it.
+        pins: u32,
+    },
+
+    /// Nothing this project has built answers to the name that was given.
+    #[error("no base of this project is called {name:?}")]
+    BaseUnknown {
+        /// What was asked for.
+        name: String,
+    },
+
+    /// A tool a base build runs could not be started, usually because it is not
+    /// installed or not on the path.
+    #[error("could not run {program}: {source}")]
+    ToolSpawn {
+        /// The program that was to be started.
+        program: String,
+        /// Why it could not be.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// A tool a base build ran exited non-zero.
+    #[error("{program} {args} in {dir}: {stderr}", args = args.join(" "), dir = dir.display())]
+    Tool {
+        /// The program that was run.
+        program: String,
+        /// The arguments it was given.
+        args: Vec<String>,
+        /// The directory it ran in.
+        dir: PathBuf,
+        /// Its exit code, or `None` when a signal ended it.
+        code: Option<i32>,
+        /// What it wrote to standard error.
+        stderr: String,
     },
 }
 
