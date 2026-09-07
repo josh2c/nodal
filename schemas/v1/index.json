@@ -1,0 +1,51 @@
+{
+  "generated_by": "nodal-core 0.1.0",
+  "schemas": [
+    {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/project.json",
+      "file": "project.json",
+      "name": "project"
+    },
+    {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/base.json",
+      "file": "base.json",
+      "name": "base"
+    },
+    {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/db_template.json",
+      "file": "db_template.json",
+      "name": "db_template"
+    },
+    {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/unit.json",
+      "file": "unit.json",
+      "name": "unit"
+    },
+    {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/environment.json",
+      "file": "environment.json",
+      "name": "environment"
+    },
+    {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/session.json",
+      "file": "session.json",
+      "name": "session"
+    },
+    {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/event.json",
+      "file": "event.json",
+      "name": "event"
+    },
+    {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/lease.json",
+      "file": "lease.json",
+      "name": "lease"
+    },
+    {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/lock.json",
+      "file": "lock.json",
+      "name": "lock"
+    }
+  ],
+  "version": 1
+}

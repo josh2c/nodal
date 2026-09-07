@@ -1,0 +1,58 @@
+{
+  "$defs": {
+    "Digest": {
+      "description": "A content digest, lowercase hex. The algorithm is the fingerprint module's\nchoice; the model only fixes the form.",
+      "pattern": "^[0-9a-f]+$",
+      "type": "string"
+    },
+    "ProjectId": {
+      "description": "Identifies a project: one Git repository Nodal manages units for.",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "type": "string"
+    },
+    "ProjectName": {
+      "description": "A project's display name, taken from its directory or its remote.",
+      "pattern": "^.+$",
+      "type": "string"
+    },
+    "Timestamp": {
+      "description": "A UTC instant, serialised as an RFC 3339 string.",
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/project.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A repository Nodal knows about, and the recipe it was last read with.",
+  "properties": {
+    "created_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When Nodal first saw this project."
+    },
+    "id": {
+      "$ref": "#/$defs/ProjectId",
+      "description": "Identity of the project."
+    },
+    "name": {
+      "$ref": "#/$defs/ProjectName",
+      "description": "Display name; the handle a user sees in `nodal ls`."
+    },
+    "recipe_hash": {
+      "$ref": "#/$defs/Digest",
+      "description": "Digest of the effective recipe, so a changed `nodal.toml` is visible without\nre-reading the file."
+    },
+    "root": {
+      "description": "Absolute path of the repository root on this host.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "root",
+    "name",
+    "recipe_hash",
+    "created_at"
+  ],
+  "title": "Project",
+  "type": "object"
+}

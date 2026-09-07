@@ -5,7 +5,7 @@ members = ["crates/nodal-core", "crates/nodal-cli"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/josh2c/nodal"
 
@@ -13,6 +13,16 @@ repository = "https://github.com/josh2c/nodal"
 nodal-core = { path = "crates/nodal-core", version = "0.1.0" }
 clap = { version = "4", features = ["derive", "env"] }
 thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+time = { version = "0.3", default-features = false, features = [
+  "formatting",
+  "parsing",
+  "serde",
+  "std",
+] }
+ulid = { version = "1", default-features = false, features = ["std"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = [
   "ansi",

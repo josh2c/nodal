@@ -1,0 +1,229 @@
+{
+  "$defs": {
+    "Actor": {
+      "description": "The actor of a session or an event.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ActorKind",
+          "description": "Person or agent."
+        },
+        "name": {
+          "$ref": "#/$defs/ActorName",
+          "description": "What it is called."
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
+    "ActorKind": {
+      "description": "Whether the actor is a person or a program acting on its own.",
+      "oneOf": [
+        {
+          "const": "human",
+          "description": "A person at a terminal or an editor.",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "A coding agent.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActorName": {
+      "description": "What the actor is called: a tool name such as `claude-code`, or a person's\nhandle. Never a credential.",
+      "pattern": "^.+$",
+      "type": "string"
+    },
+    "EnvId": {
+      "description": "Identifies one materialisation of a unit. A unit re-materialised after reclaim\ngets a new environment, not a new unit.",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "type": "string"
+    },
+    "Epistemic": {
+      "description": "How the event is known. V1 has two tiers and no more: Nodal watched it happen, or\nsomebody said so.",
+      "oneOf": [
+        {
+          "const": "observed",
+          "description": "Captured by Nodal from a shim, a hook or the Git state.",
+          "type": "string"
+        },
+        {
+          "const": "stated",
+          "description": "Declared by a person or an agent.",
+          "type": "string"
+        }
+      ]
+    },
+    "EventId": {
+      "description": "Identifies one event in the log. Sorting by id sorts by time.",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "type": "string"
+    },
+    "EventKind": {
+      "description": "What kind of thing happened.",
+      "oneOf": [
+        {
+          "const": "attached",
+          "description": "An actor attached to an environment.",
+          "type": "string"
+        },
+        {
+          "const": "detached",
+          "description": "An actor detached.",
+          "type": "string"
+        },
+        {
+          "const": "command",
+          "description": "A command was run.",
+          "type": "string"
+        },
+        {
+          "const": "commit",
+          "description": "A commit was made.",
+          "type": "string"
+        },
+        {
+          "const": "test_result",
+          "description": "A test run reported a result.",
+          "type": "string"
+        },
+        {
+          "const": "failure",
+          "description": "Something failed.",
+          "type": "string"
+        },
+        {
+          "const": "file_touched",
+          "description": "A file was written.",
+          "type": "string"
+        },
+        {
+          "const": "finding",
+          "description": "Something was learned about the code.",
+          "type": "string"
+        },
+        {
+          "const": "decision",
+          "description": "A choice was made and should be inherited by whoever continues.",
+          "type": "string"
+        },
+        {
+          "const": "question",
+          "description": "Something is blocking and needs an answer.",
+          "type": "string"
+        },
+        {
+          "const": "handoff",
+          "description": "A handoff note to the next actor.",
+          "type": "string"
+        },
+        {
+          "const": "sync",
+          "description": "A sync ran, with its outcomes.",
+          "type": "string"
+        },
+        {
+          "const": "note",
+          "description": "A free note.",
+          "type": "string"
+        }
+      ]
+    },
+    "RawRef": {
+      "description": "A pointer to raw output kept outside the event, such as a log file path.",
+      "pattern": "^.+$",
+      "type": "string"
+    },
+    "Timestamp": {
+      "description": "A UTC instant, serialised as an RFC 3339 string.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "UnitId": {
+      "description": "Identifies a `WorkUnit`. Stable for the life of the work, across machines.",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/event.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One entry in a unit's log.",
+  "properties": {
+    "actor": {
+      "$ref": "#/$defs/Actor",
+      "description": "Who or what it happened by."
+    },
+    "body": {
+      "description": "The event in words, for the compiled context.",
+      "type": "string"
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EnvId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The environment it happened in, when it happened in one."
+    },
+    "epistemic": {
+      "$ref": "#/$defs/Epistemic",
+      "description": "Whether Nodal observed it or was told."
+    },
+    "id": {
+      "$ref": "#/$defs/EventId",
+      "description": "Identity of the event; sorting by it sorts by time."
+    },
+    "kind": {
+      "$ref": "#/$defs/EventKind",
+      "description": "What kind of thing happened."
+    },
+    "raw_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RawRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Where the raw output lives, when it was too large to keep inline."
+    },
+    "refs": {
+      "additionalProperties": false,
+      "description": "Named references the event points at: commits, files, ports, exit codes.",
+      "patternProperties": {
+        "^\\S+$": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ts": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When it happened."
+    },
+    "unit": {
+      "$ref": "#/$defs/UnitId",
+      "description": "The unit the event belongs to."
+    }
+  },
+  "required": [
+    "id",
+    "unit",
+    "ts",
+    "actor",
+    "kind",
+    "epistemic",
+    "body",
+    "refs"
+  ],
+  "title": "Event",
+  "type": "object"
+}
