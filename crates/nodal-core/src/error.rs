@@ -408,6 +408,43 @@ pub enum Error {
         unit: UnitId,
     },
 
+    /// A shell was named that Nodal does not write an integration for.
+    #[error("{name:?} is not a shell nodal speaks; it speaks {shells}", shells = crate::runtime::Shell::names().join(", "))]
+    UnknownShell {
+        /// The name that was given.
+        name: String,
+    },
+
+    /// No unit of any project has the slug that was given.
+    #[error("no unit is called {slug:?}")]
+    UnitNotFound {
+        /// The slug that was looked for.
+        slug: String,
+    },
+
+    /// More than one project has a unit with that slug, so the target is not decided.
+    #[error("{slug:?} is a unit of {projects}; run the command inside the project you mean", projects = projects.join(" and "))]
+    UnitAmbiguous {
+        /// The slug that was looked for.
+        slug: String,
+        /// The projects that each have one.
+        projects: Vec<String>,
+    },
+
+    /// A unit exists but has no home on any host, so there is nowhere to enter.
+    #[error("{slug:?} has no home; it has not been materialised or it was reclaimed")]
+    UnitNotMaterialized {
+        /// The slug of the unit.
+        slug: String,
+    },
+
+    /// A process scan was asked for on a host whose process table Nodal cannot read.
+    #[error("a process scan reads /proc, which {host} does not have")]
+    ProcessScanUnsupported {
+        /// The operating system the process is running on.
+        host: &'static str,
+    },
+
     /// A branch that had to exist did not.
     #[error("{repo} has no branch {branch:?}", repo = repo.display())]
     GitUnknownBranch {

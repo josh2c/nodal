@@ -70,6 +70,18 @@ jobs:
       - name: an activated home carries its variables and leaks no value
         run: ci/acceptance-env.sh
 
+  acceptance-entry:
+    name: acceptance (entry)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: the shells the integration is written for, and direnv for the other route
+        run: sudo apt-get update && sudo apt-get install -y zsh fish direnv
+      - name: a process in an activated home carries NODAL_ID, and no shell is started
+        run: ci/acceptance-entry.sh
+
   acceptance-operation:
     name: acceptance (operation)
     runs-on: ${{ matrix.os }}

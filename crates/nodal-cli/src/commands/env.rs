@@ -8,6 +8,7 @@ use nodal_core::env::files;
 use nodal_core::model::Timestamp;
 use nodal_core::output::view::EnvReport;
 use nodal_core::output::{self, Format};
+use nodal_core::runtime::{Shell, shells};
 
 /// Arguments of `nodal env`.
 #[derive(Debug, Args)]
@@ -16,9 +17,13 @@ pub struct Env {
     #[arg(value_name = "PATH")]
     pub path: Option<PathBuf>,
 
-    /// Print `export NAME='value'` lines for a shell to evaluate.
+    /// Print the assignments for a shell to evaluate.
     #[arg(long)]
     pub export: bool,
+
+    /// Which shell the assignments are for. Defaults to bash and zsh.
+    #[arg(long, value_name = "SHELL", requires = "export")]
+    pub shell: Option<String>,
 
     /// Print the report as JSON. Names and origins only, never a value.
     #[arg(long, conflicts_with = "export")]
@@ -35,7 +40,11 @@ impl Env {
         let start = self.path.clone().unwrap_or_else(|| PathBuf::from("."));
         let home = files::find_home(&start)?;
         if self.export {
-            print!("{}", files::export_lines(&files::read_dotenv(&home)?));
+            let shell = match &self.shell {
+                Some(name) => Shell::parse(name)?,
+                None => Shell::default(),
+            };
+            print!("{}", shells::assignments(shell, &files::read_dotenv(&home)?));
             return Ok(ExitCode::SUCCESS);
         }
         let report = EnvReport::from_manifest(&files::read_manifest(&home)?, Timestamp::now());

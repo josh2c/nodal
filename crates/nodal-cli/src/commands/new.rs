@@ -7,6 +7,7 @@ use clap::Args;
 use nodal_core::lifecycle::ops::new::{self, Request};
 use nodal_core::model::{BranchName, Objective, Slug};
 use nodal_core::output::{self, Format};
+use nodal_core::runtime::entry;
 use nodal_core::store::Store;
 
 /// Arguments of `nodal new`.
@@ -34,7 +35,11 @@ pub struct New {
 }
 
 impl New {
-    /// Create the unit and report what it was given.
+    /// Create the unit, report what it was given, and offer the home to the shell.
+    ///
+    /// The offer is the last thing and it changes no output: a shell that installed the
+    /// function enters the new home, and a shell that did not reads the path in the
+    /// report, as a script does.
     ///
     /// # Errors
     ///
@@ -43,6 +48,9 @@ impl New {
     pub fn run(&self, store: &mut Store) -> nodal_core::Result<ExitCode> {
         let report = new::create(store, &self.request()?)?;
         output::write(&report, Format::from_json_flag(self.json), &mut std::io::stdout())?;
+        if let Some(environment) = &report.unit.environment {
+            entry::ask_to_enter(&environment.home)?;
+        }
         Ok(ExitCode::SUCCESS)
     }
 
