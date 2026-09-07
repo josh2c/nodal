@@ -127,6 +127,12 @@ ulid_newtype! {
     EventId, kind = "event id"
 }
 
+ulid_newtype! {
+    /// Identifies one run of a lifecycle operation, as the journal records it. A
+    /// retried operation is a new run and gets a new identifier.
+    OperationId, kind = "operation id"
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]

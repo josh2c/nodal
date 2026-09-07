@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use thiserror::Error as ThisError;
 
 use crate::git::preflight;
+use crate::model::OperationId;
 
 /// Every failure `nodal-core` can return.
 #[derive(Debug, ThisError)]
@@ -219,6 +220,47 @@ pub enum Error {
         /// Why `serde_json` refused it.
         #[source]
         source: serde_json::Error,
+    },
+
+    /// A step of an operation failed. The steps before it were undone, so nothing the
+    /// operation did is left; the failure that stopped it is the source.
+    #[error("{kind} failed at step {key:?}: {source}")]
+    OperationStep {
+        /// The run, as the journal records it.
+        operation: OperationId,
+        /// Which operation it was.
+        kind: &'static str,
+        /// The step that failed.
+        key: String,
+        /// What the step reported.
+        #[source]
+        source: Box<Error>,
+    },
+
+    /// Undoing an operation failed. Unlike every other failure here, this one means
+    /// something is left behind: the run stays in the journal as `failed` and every
+    /// later invocation reports it.
+    #[error("{kind} could not be undone at step {key:?}: {why}")]
+    OperationUndo {
+        /// The run, as the journal records it.
+        operation: OperationId,
+        /// Which operation it was.
+        kind: &'static str,
+        /// The step whose undo failed.
+        key: String,
+        /// Why it failed, rendered, because the undo carried on past it.
+        why: String,
+    },
+
+    /// An operation reached a terminal state but the journal had no run of it still
+    /// marked `running` to close. The registry and the journal disagree, which no
+    /// sequence of operations produces; something else wrote to the journal.
+    #[error("{kind} finished but its journal entry is not there to close")]
+    OperationVanished {
+        /// The run, as the journal recorded it.
+        operation: OperationId,
+        /// Which operation it was.
+        kind: &'static str,
     },
 
     /// A branch that had to exist did not.
