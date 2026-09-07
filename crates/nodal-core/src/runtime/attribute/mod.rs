@@ -32,6 +32,23 @@
 //! the homes on this host, their units and the ports they were granted. Reading the
 //! registry happens once, in [`ps`](crate::runtime::ps), so a signal is a function of
 //! its inputs and a test gives it a scope rather than a machine.
+//!
+//! ## One name per path
+//!
+//! Two of the four signals answer with a path: `/proc/<pid>/cwd` is a link, so reading
+//! it gives the directory with every link on the way to it already followed, and Docker
+//! resolves a mount before it prints one. A registry row holds the path whoever created
+//! the home used, which nothing resolved. On a host whose temporary directory is a link
+//! — macOS names `/var/folders` and means `/private/var/folders` — one home therefore
+//! arrives under two names, and `starts_with` between them is false: the dev server in
+//! the home gets no row at all.
+//!
+//! So a path is resolved once, at the edge: every home root on the way into [`Scope`],
+//! and every path handed to [`Scope::at`] or [`Scope::containing`] on the way in from a
+//! signal. Past that edge every path here is the name the filesystem itself uses. The
+//! resolver is [`guard::resolve`](crate::lifecycle::guard::resolve), which is the one
+//! place in Nodal a path is normalised before it is compared with another; attribution
+//! does not have a rule of its own about this.
 
 pub mod cwd;
 pub mod docker;
@@ -42,6 +59,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::lifecycle::guard;
 use crate::model::{EnvId, Ports, Slug, UnitId};
 
 /// One home on this host, and what the registry says belongs to it.
@@ -60,6 +78,9 @@ pub struct Home {
 }
 
 /// Every home a signal may attribute something to.
+///
+/// Every root here is resolved. Nothing in this type is the name a registry row happened
+/// to hold for a home; it is the name the filesystem uses.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scope {
     /// The homes, in the order the registry gave them.
@@ -67,15 +88,27 @@ pub struct Scope {
 }
 
 impl Scope {
-    /// A scope over these homes.
+    /// A scope over these homes, each root resolved.
+    ///
+    /// This is the edge the registry's answer comes in at. A row holds the path whoever
+    /// created the home used; a signal answers with the path the operating system gives
+    /// back, which has every link on it followed.
     #[must_use]
     pub fn new(homes: Vec<Home>) -> Self {
+        let homes = homes
+            .into_iter()
+            .map(|home| Home { root: guard::resolve(&home.root), ..home })
+            .collect();
         Self { homes }
     }
 
     /// The home at exactly this path.
+    ///
+    /// The path is resolved first: `NODAL_ROOT` is the home's own name for itself,
+    /// written when the home was created and never resolved.
     #[must_use]
     pub fn at(&self, root: &Path) -> Option<&Home> {
+        let root = guard::resolve(root);
         self.homes.iter().find(|home| home.root == root)
     }
 
@@ -92,8 +125,12 @@ impl Scope {
     /// The deepest match wins, so a home inside another home — which the placement guard
     /// refuses, but an adopted directory can still produce — attributes to the inner
     /// one, which is the more specific answer.
+    ///
+    /// The path is resolved first, so that a signal which followed every link and a
+    /// registry row which followed none cannot name one home two ways.
     #[must_use]
     pub fn containing(&self, path: &Path) -> Option<&Home> {
+        let path = guard::resolve(path);
         self.homes
             .iter()
             .filter(|home| path.starts_with(&home.root))
@@ -342,6 +379,32 @@ mod tests {
         scope.homes.push(super::fixture::home(OTHER, "nested", "/homes/worker-import/inner", 1));
         let found = scope.containing(Path::new("/homes/worker-import/inner/src")).unwrap();
         assert_eq!(found.root, PathBuf::from("/homes/worker-import/inner"));
+    }
+
+    /// The macOS condition, made on any host.
+    ///
+    /// On macOS a home under the temporary directory is created at `/var/folders/…` and
+    /// is `/private/var/folders/…`; the registry keeps the first name and `/proc`, or
+    /// Docker, answers with the second. Both names must reach one home.
+    #[test]
+    fn a_home_named_through_a_link_is_the_same_home() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let real = directory.path().join("real");
+        std::fs::create_dir_all(real.join("apps").join("web")).unwrap();
+        let link = directory.path().join("by-another-name");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        // The row holds the linked name, which is the name the home was created under.
+        let linked = link.to_str().unwrap();
+        let scope = Scope::new(vec![super::fixture::home(UNIT, "worker-import", linked, 41_230)]);
+
+        // A signal answers with the resolved name, and still means this home.
+        let standing = scope.containing(&real.join("apps").join("web")).unwrap();
+        assert_eq!(standing.unit, UnitId::parse(UNIT).unwrap());
+
+        // `NODAL_ROOT` carries the linked name, and still names this home.
+        assert!(scope.at(&link).is_some(), "the home cannot find itself by its own name");
+        assert!(scope.at(&real).is_some(), "the home cannot be found by its resolved name");
     }
 
     #[test]
