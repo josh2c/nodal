@@ -79,6 +79,16 @@ jobs:
       - name: the fixture infers with zero gaps and builds inside its budget
         run: ci/acceptance-fixture.sh
 
+  startup:
+    name: startup budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: the release binary starts inside the DL-017 budget
+        run: ci/startup-budget.sh
+
   deny:
     name: deny
     runs-on: ubuntu-latest
