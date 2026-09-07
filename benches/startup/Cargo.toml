@@ -1,0 +1,16 @@
+[package]
+name = "nodal-startup-bench"
+description = "Measures how long the release binary takes to start, and fails above a threshold."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nodal-startup-bench"
+path = "src/main.rs"
+
+[lints]
+workspace = true
