@@ -1,0 +1,19 @@
+{
+  "now": "2026-09-06T14:22:00Z",
+  "bases": [
+    {
+      "base": {
+        "id": "01J9X0000000000000000000AB",
+        "project_id": "01J9X0000000000000000000AA",
+        "ws_fingerprint": "7f3ea1c0d4",
+        "platform": "x86_64-unknown-linux-gnu",
+        "commit": "9f1d2c3b4a5968778695a4b3c2d1e0f102030405",
+        "path": "/home/j/.nodal/project/base/7f3e",
+        "built_at": "2026-09-05T09:00:00Z",
+        "last_used": "2026-09-06T13:22:00Z"
+      },
+      "pins": 1,
+      "disk_bytes": 1160000000
+    }
+  ]
+}

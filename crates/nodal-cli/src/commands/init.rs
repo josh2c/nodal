@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Args;
-use nodal_core::recipe::{self, InitPlan};
+use nodal_core::output::view::InitReport;
+use nodal_core::output::{self, Format};
+use nodal_core::recipe;
 
 /// Arguments of `nodal init`.
 #[derive(Debug, Args)]
@@ -35,38 +37,22 @@ impl Init {
     pub fn run(&self) -> nodal_core::Result<ExitCode> {
         let root = self.path.clone().unwrap_or_else(|| PathBuf::from("."));
         let plan = recipe::plan_init(&root)?;
+        let report = InitReport::from_plan(&plan);
         if self.json {
-            println!("{}", json(&plan));
-            return Ok(ExitCode::SUCCESS);
+            return write(&report, Format::Json);
         }
         if self.print {
             print!("{}", plan.contents);
             return Ok(ExitCode::SUCCESS);
         }
         recipe::apply_init(&plan, self.force)?;
-        report(&plan);
-        Ok(ExitCode::SUCCESS)
+        write(&report, Format::Human)
     }
 }
 
-/// What was written, and what is left for a person.
-fn report(plan: &InitPlan) {
-    println!("{}", plan.path.display());
-    for gap in &plan.gaps {
-        println!("  gap  {}: {}", gap.key.toml_key(), gap.key.question());
-    }
-    if plan.gaps.is_empty() {
-        println!("  no gaps: every key was inferred");
-    }
-}
-
-/// The plan as JSON, for a tool that wants the gaps without the file.
-fn json(plan: &InitPlan) -> String {
-    serde_json::json!({
-        "path": plan.path,
-        "existed": plan.existed,
-        "contents": plan.contents,
-        "gaps": plan.gaps,
-    })
-    .to_string()
+/// Print a read type in the format asked for. Every command ends this way, so the two
+/// renderings stay two views of one value (`nodal_core::output`).
+fn write(report: &InitReport, format: Format) -> nodal_core::Result<ExitCode> {
+    output::write(report, format, &mut std::io::stdout())?;
+    Ok(ExitCode::SUCCESS)
 }

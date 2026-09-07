@@ -1,0 +1,14 @@
+  unit       worker-import  (open)
+  objective  worker import: handle missing supervisor_id
+  branch     nodal/worker-import +2 *3
+  freshness  fresh
+  home       /home/j/.nodal/project/e/01J9X2K4
+  env        stopped · managed
+  ports      app 41230
+  running    —
+  disk       287 MB
+  last       12 min ago
+
+  WHEN        KIND     ACTOR        HOW   WHAT
+  20 min ago  test     claude-code  saw   pnpm test: 0 failing
+  12 min ago  handoff  j2c          said  legacy date parser still fails on two-digit years

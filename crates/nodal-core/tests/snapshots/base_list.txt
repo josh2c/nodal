@@ -1,0 +1,2 @@
+  BASE      WORKSPACE  PLATFORM                  COMMIT    PINS  DISK    USED
+  01J9X000  7f3ea1c0   x86_64-unknown-linux-gnu  9f1d2c3b  1     1.1 GB  1 h ago

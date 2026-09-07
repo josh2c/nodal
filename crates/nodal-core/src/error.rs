@@ -210,6 +210,17 @@ pub enum Error {
         supported: u32,
     },
 
+    /// A read type could not be encoded as JSON. `kind` names the document, so the
+    /// message says what was being written rather than only why it failed.
+    #[error("a {kind} could not be rendered as JSON: {source}")]
+    Render {
+        /// What was being rendered, in the words a user sees.
+        kind: &'static str,
+        /// Why `serde_json` refused it.
+        #[source]
+        source: serde_json::Error,
+    },
+
     /// A branch that had to exist did not.
     #[error("{repo} has no branch {branch:?}", repo = repo.display())]
     GitUnknownBranch {
