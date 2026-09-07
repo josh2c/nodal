@@ -33,6 +33,23 @@ pub enum Error {
         value: String,
     },
 
+    /// A `nodal.toml` could not be read as a recipe.
+    #[error("{path}: {source}", path = path.display())]
+    Recipe {
+        /// The recipe file that was parsed.
+        path: PathBuf,
+        /// Why it was rejected, with the line and column.
+        #[source]
+        source: Box<toml::de::Error>,
+    },
+
+    /// `nodal init` was asked to write a recipe over one that is already there.
+    #[error("{path} already exists; pass --force to rewrite it", path = path.display())]
+    RecipeExists {
+        /// The recipe that is already in place.
+        path: PathBuf,
+    },
+
     /// A tracing subscriber was already installed in this process.
     #[error("logging is already initialised for this process")]
     LoggingAlreadyInitialised,

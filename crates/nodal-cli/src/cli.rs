@@ -6,8 +6,17 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{ArgAction, CommandFactory, Parser};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use nodal_core::logging::Verbosity;
+
+use crate::commands::init::Init;
+
+/// The subcommands implemented so far. The rest arrive with their own tasks.
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Write `nodal.toml` for this project, with a line for every gap.
+    Init(Init),
+}
 
 /// One list for every coding agent on your project.
 #[derive(Debug, Parser)]
@@ -24,6 +33,10 @@ pub struct Cli {
     /// Print progress to stderr; repeat for debug traces.
     #[arg(short = 'v', long, global = true, action = ArgAction::Count)]
     pub verbose: u8,
+
+    /// What to do.
+    #[command(subcommand)]
+    pub command: Option<Command>,
 }
 
 impl Cli {
@@ -39,11 +52,16 @@ impl Cli {
     ///
     /// Propagates whatever the invoked command returns from `nodal-core`.
     pub fn dispatch(&self) -> nodal_core::Result<ExitCode> {
-        tracing::debug!(store = ?self.store, no_hooks = self.no_hooks, "no subcommand given");
-        // No subcommands are implemented yet; each arrives with its own task. Until then
-        // a bare invocation prints the surface it does have, rather than nothing.
-        Self::command().print_help().map_err(nodal_core::Error::io("<stdout>"))?;
-        Ok(ExitCode::SUCCESS)
+        match &self.command {
+            Some(Command::Init(init)) => init.run(),
+            None => {
+                let (store, no_hooks) = (&self.store, self.no_hooks);
+                tracing::debug!(?store, no_hooks, "no subcommand given");
+                // A bare invocation prints the surface it has, rather than nothing.
+                Self::command().print_help().map_err(nodal_core::Error::io("<stdout>"))?;
+                Ok(ExitCode::SUCCESS)
+            }
+        }
     }
 }
 

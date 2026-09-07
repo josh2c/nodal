@@ -15,7 +15,21 @@ use nodal_core::model::schema;
 /// are published inside the schemas that embed them instead of as files. Anything not
 /// listed here and not in the catalogue fails the test below, which is what stops a new
 /// model type from shipping without a schema.
-const EMBEDDED_TYPES: &[&str] = &["Actor", "SubFp", "SchemaDoc"];
+const EMBEDDED_TYPES: &[&str] = &[
+    "Actor",
+    "SubFp",
+    "SchemaDoc",
+    // The sections of a recipe. `nodal.toml` is one document, so `Recipe` is the record
+    // and every section is published inside it.
+    "BaseSpec",
+    "Commands",
+    "Db",
+    "Env",
+    "Hooks",
+    "Reclaim",
+    "Services",
+    "Sync",
+];
 
 fn model_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/model")

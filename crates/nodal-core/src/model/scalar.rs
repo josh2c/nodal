@@ -86,6 +86,15 @@ pub(crate) const BRANCH: Shape = Shape {
     structure: is_branch_name,
 };
 
+/// The name of an environment variable, by the portable rule dotenv files follow:
+/// upper-case letters, digits and underscores, not starting with a digit.
+pub(crate) const ENV_NAME: Shape = Shape {
+    name: "environment variable name",
+    pattern: "^[A-Z_][A-Z0-9_]*$",
+    max_len: 255,
+    structure: is_env_name,
+};
+
 /// A single word for a machine to read: visible ASCII, no space.
 pub(crate) const TOKEN: Shape =
     Shape { name: "token", pattern: "^[\\x21-\\x7E]+$", max_len: 255, structure: is_token };
@@ -101,7 +110,7 @@ pub(crate) const LINE: Shape = Shape {
 /// Every shape, so that the agreement test cannot miss one.
 #[cfg(test)]
 pub(crate) const SHAPES: &[&Shape] =
-    &[&ULID, &DIGEST, &OBJECT_ID, &SLUG, &SQL_IDENTIFIER, &BRANCH, &TOKEN, &LINE];
+    &[&ULID, &DIGEST, &OBJECT_ID, &SLUG, &SQL_IDENTIFIER, &ENV_NAME, &BRANCH, &TOKEN, &LINE];
 
 /// The alphabet of a canonical ULID: Crockford base-32 without `I`, `L`, `O` and `U`.
 fn is_crockford_upper(byte: u8) -> bool {
@@ -135,6 +144,12 @@ fn is_sql_identifier(value: &str) -> bool {
     let mut bytes = value.bytes();
     bytes.next().is_some_and(|b| b.is_ascii_lowercase() || b == b'_')
         && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+fn is_env_name(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes.next().is_some_and(|b| b.is_ascii_uppercase() || b == b'_')
+        && bytes.all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
 }
 
 fn is_branch_name(value: &str) -> bool {
