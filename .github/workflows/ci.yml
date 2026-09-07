@@ -65,6 +65,20 @@ jobs:
       - name: a killed operation is reported and rolled back by the next invocation
         run: ci/acceptance-operation.sh
 
+  acceptance-fixture:
+    name: acceptance (fixture)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with: { version: 9.12.3 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22.11.0 }
+      - name: the fixture infers with zero gaps and builds inside its budget
+        run: ci/acceptance-fixture.sh
+
   deny:
     name: deny
     runs-on: ubuntu-latest
