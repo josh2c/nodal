@@ -387,6 +387,18 @@ impl Git {
         Ok(PathBuf::from(output.text()?))
     }
 
+    /// Every worktree this repository has, the main one included.
+    ///
+    /// This is a read. `git worktree list` states what the repository already records
+    /// and changes nothing, which is why `nodal doctor` may call it.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git worktree list` failed, [`Error::GitEncoding`] when its
+    /// output is not UTF-8.
+    pub fn worktrees(&self) -> Result<Vec<worktree::Registered>> {
+        worktree::list(&self.root)
+    }
+
     /// Which Git operations, if any, are in progress here.
     ///
     /// # Errors

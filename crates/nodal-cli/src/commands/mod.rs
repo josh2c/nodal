@@ -6,6 +6,7 @@
 
 pub mod base;
 pub mod cd;
+pub mod doctor;
 pub mod env;
 pub mod gc;
 pub mod init;

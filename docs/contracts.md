@@ -78,6 +78,11 @@ would make the next clone copy a copy.
 (in days). Alongside those, and additive to them: `package_manager_pin`, `monorepo`, `task_cache`,
 `dockerfile`, `compose`, `commands.{lint,typecheck,reset}`, `db.{tool,migrations_dir,fixed_ports}`.
 
+`base.exclude` never drops a path the project tracks. A copy that is missing a tracked path is dirty the
+moment it is made: `git status` in it reports one deletion for every file under that path. Inference reads
+`git ls-tree` before it proposes a row, and a copy refuses a list that holds a tracked path and names each
+one it found.
+
 Every key is optional and unknown keys are rejected, so a typo is a message rather than a line silently
 ignored. Most keys are inferred by `nodal init` from the project's own files; only the gaps need a human
 line, and `init` writes each gap as a comment above the empty key it belongs to. Published as
@@ -87,6 +92,12 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 `init, new, cd, adopt, ls, show, explain, env, shell, shell-init, run, ps, start, note, ask, handoff,
 sync, done, merge, prune, reclaim, gc, doctor, base, status`. Every read command accepts `--json`; `status --watch`
 emits newline-delimited JSON. Global `--store` and `--no-hooks`.
+
+`doctor` reads and never writes. It reports nested worktrees, stale build caches, exited containers,
+unreferenced volumes, orphan databases and a project over the open-unit threshold, each with a size, in two
+sections: this project, and a separate section for another project's leftovers that carries names and sizes
+only. A worktree another tool holds a lock on is reported as locked and read no further. Removal of
+unmanaged state is a later command (`decisions/DL-015`).
 
 `--json` and the default output are two renderings of one value, so a field a person sees is a field a
 tool can read. A read type carries the instant it was taken as `now`, and every relative time it prints

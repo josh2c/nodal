@@ -12,6 +12,10 @@
 //! A copy is not always usable where it lands. [`relocate`] is what a home does about
 //! the content that recorded the path it was made at, and it runs once the copy is
 //! there.
+//!
+//! A copy also has to be complete. [`tracked`] is the gate before one starts: it
+//! refuses an exclusion list that would leave out a path the source commit tracks,
+//! because a copy missing such a path is dirty the moment it is made.
 
 pub mod apfs;
 pub mod copy;
@@ -20,6 +24,7 @@ pub mod home;
 pub mod meta;
 pub mod reflink;
 pub mod relocate;
+pub mod tracked;
 pub mod tree;
 pub mod walk;
 pub mod xattr;

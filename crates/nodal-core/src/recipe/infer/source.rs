@@ -14,6 +14,14 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::git::Git;
+
+/// The revision [`Project::tracked`] asks about: what the project is checked out at.
+const HEAD: &str = "HEAD";
+
+/// Pathspec magic that makes Git read a path as characters and not as a pattern.
+const LITERAL: &str = ":(literal)";
+
 /// A project root, with the manifests inference reads more than once already parsed.
 #[derive(Debug, Clone)]
 pub struct Project {
@@ -53,6 +61,46 @@ impl Project {
     #[must_use]
     pub fn all_existing<'a>(&self, candidates: &[&'a str]) -> Vec<&'a str> {
         candidates.iter().copied().filter(|candidate| self.exists(candidate)).collect()
+    }
+
+    /// Which of `candidates` the project's checked-out commit tracks.
+    ///
+    /// This is the one question inference asks Git. A directory the project tracks is
+    /// the project's own content, whatever its name says, so no source may propose that
+    /// a copy leaves it out; [`crate::workspace::tracked`] is the gate that enforces
+    /// the same rule at the copy itself.
+    ///
+    /// Reading is tolerant here as everywhere in this type. A root that is not a
+    /// repository, and one with no commit yet, both track nothing.
+    #[must_use]
+    pub fn tracked<'a>(&self, candidates: &[&'a str]) -> Vec<&'a str> {
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+        let entries = self.ls_tree(candidates).unwrap_or_default();
+        candidates
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                entries.iter().any(|entry| entry.path.starts_with(Path::new(candidate)))
+            })
+            .collect()
+    }
+
+    /// The tree entries of `HEAD` under `candidates`, or `None` when Git cannot answer.
+    fn ls_tree(&self, candidates: &[&str]) -> Option<Vec<crate::git::tree::Entry>> {
+        let git = Git::open(&self.root).ok()?;
+        git.rev_parse_opt(HEAD).ok()??;
+        let pathspecs: Vec<String> =
+            candidates.iter().map(|path| format!("{LITERAL}{path}")).collect();
+        let borrowed: Vec<&str> = pathspecs.iter().map(String::as_str).collect();
+        match git.ls_tree(HEAD, false, &borrowed) {
+            Ok(entries) => Some(entries),
+            Err(error) => {
+                tracing::debug!(%error, "recipe inference: the tracked paths were not read");
+                None
+            }
+        }
     }
 
     /// The text of `relative`, or `None` when it is absent or not readable as UTF-8.
@@ -130,5 +178,68 @@ fn read_json(root: &Path, relative: &str) -> Option<Value> {
             tracing::debug!(file = relative, %error, "recipe inference: not valid JSON");
             None
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "tests fail by panicking")]
+mod tests {
+    use std::path::Path;
+    use std::process::Command;
+
+    use super::Project;
+
+    /// A project with `keep` committed and `ignored` present but not committed.
+    fn project(keep: &str, ignored: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        for path in [keep, ignored] {
+            let file = root.path().join(path).join("report.xml");
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, "<r/>").unwrap();
+        }
+        git(root.path(), &["init", "--quiet", "."]);
+        git(root.path(), &["add", "--", keep]);
+        git(
+            root.path(),
+            &[
+                "-c",
+                "user.email=t@example.invalid",
+                "-c",
+                "user.name=test",
+                "commit",
+                "--quiet",
+                "--message=fixture",
+            ],
+        );
+        root
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        assert!(Command::new("git").arg("-C").arg(dir).args(args).status().unwrap().success());
+    }
+
+    #[test]
+    fn only_the_directory_the_commit_holds_is_reported_as_tracked() {
+        let root = project("coverage", "test-results");
+        let project = Project::open(root.path());
+        assert_eq!(project.tracked(&["coverage", "test-results"]), ["coverage"]);
+    }
+
+    #[test]
+    fn a_root_that_is_not_a_repository_tracks_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("coverage")).unwrap();
+        let project = Project::open(root.path());
+        assert!(project.tracked(&["coverage"]).is_empty());
+        assert!(project.tracked(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_repository_with_no_commit_yet_tracks_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("coverage")).unwrap();
+        git(root.path(), &["init", "--quiet", "."]);
+        let project = Project::open(root.path());
+        assert!(project.tracked(&["coverage"]).is_empty());
     }
 }

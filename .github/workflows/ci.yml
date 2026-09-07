@@ -48,6 +48,26 @@ jobs:
       - name: the fixture project infers with zero gaps
         run: ci/acceptance-recipe.sh
 
+  acceptance-doctor:
+    name: acceptance (doctor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: the machine is reported, sized, and left exactly as it was
+        run: ci/acceptance-doctor.sh
+
+  acceptance-tracked:
+    name: acceptance (tracked)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: an exclusion list never drops a path the project tracks
+        run: ci/acceptance-tracked.sh
+
   acceptance-output:
     name: acceptance (output)
     runs-on: ubuntu-latest

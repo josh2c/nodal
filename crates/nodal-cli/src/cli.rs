@@ -14,6 +14,7 @@ use nodal_core::workspace::home;
 
 use crate::commands::base::Base;
 use crate::commands::cd::Cd;
+use crate::commands::doctor::Doctor;
 use crate::commands::env::Env;
 use crate::commands::gc::Gc;
 use crate::commands::init::Init;
@@ -50,6 +51,8 @@ pub enum Command {
     Reclaim(Reclaim),
     /// Remove the trashed homes whose retention has run out.
     Gc(Gc),
+    /// Report what tools left behind on this machine. It removes nothing.
+    Doctor(Doctor),
     /// List, build and collect the warm bases unit homes are cloned from.
     #[command(subcommand_required = true, arg_required_else_help = true)]
     Base(Base),
@@ -99,6 +102,7 @@ impl Cli {
             Some(Command::Ps(ps)) => ps.run(&self.registry()?),
             Some(Command::Reclaim(reclaim)) => reclaim.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Gc(gc)) => gc.run(&self.registry()?),
+            Some(Command::Doctor(doctor)) => doctor.run(&self.registry()?),
             Some(Command::ShellInit(init)) => init.run(),
             Some(Command::Shell(shell)) => shell.run(),
             Some(Command::Base(base)) => base.run(&mut self.registry()?),

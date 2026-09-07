@@ -69,7 +69,7 @@ use crate::services::ports;
 use crate::store::{Store, environments, events, projects, units};
 use crate::substrate::{self, Reporter};
 use crate::workspace::relocate::{CacheRelocator, InvalidateCache};
-use crate::workspace::{Excludes, Materializer, home, relocate, select_backend};
+use crate::workspace::{Excludes, Materializer, home, relocate, select_backend, tracked};
 use crate::{Error, Result};
 
 /// What this operation is called in the journal.
@@ -401,7 +401,12 @@ impl Step for Materialize {
     /// A clone refuses a destination that is already there, and a run killed part-way
     /// through one leaves exactly that. So the destination is removed first: what is
     /// under it is this operation's own half-made home and nothing else.
+    ///
+    /// The exclusion list is checked before that removal, because a list that would
+    /// drop a tracked path stops the operation and must not first take away the home a
+    /// resumed run would find.
     fn apply(&self) -> Result<()> {
+        tracked::refuse(&self.base, &self.excludes)?;
         remove_tree(&self.home)?;
         if let Some(parent) = self.home.parent() {
             std::fs::create_dir_all(parent).map_err(Error::io(parent))?;

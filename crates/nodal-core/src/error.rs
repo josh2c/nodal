@@ -348,6 +348,23 @@ pub enum Error {
         why: &'static str,
     },
 
+    /// An exclusion list would leave a tracked path out of a copy.
+    ///
+    /// A copy that is missing a path the commit tracks is dirty the moment it is made:
+    /// `git status` in it reports a deletion for every file under that path. So a
+    /// materialization refuses the list instead of making such a copy.
+    #[error(
+        "these paths are tracked in {source_tree}, so a copy must not leave them out: {paths}",
+        source_tree = source_tree.display(),
+        paths = paths.iter().map(|path| path.display().to_string()).collect::<Vec<String>>().join(", ")
+    )]
+    ExcludesTrackedPath {
+        /// The tree the copy is made from.
+        source_tree: PathBuf,
+        /// Every excluded path the tree tracks, in the order the list holds them.
+        paths: Vec<PathBuf>,
+    },
+
     /// A materialization backend was asked to work where it does not.
     #[error("the {backend} backend does not work on {path}", path = path.display())]
     MaterializeUnsupported {
