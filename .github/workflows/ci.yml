@@ -51,6 +51,20 @@ jobs:
       - name: both renderers match their snapshots
         run: ci/acceptance-output.sh
 
+  acceptance-operation:
+    name: acceptance (operation)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: a killed operation is reported and rolled back by the next invocation
+        run: ci/acceptance-operation.sh
+
   deny:
     name: deny
     runs-on: ubuntu-latest
