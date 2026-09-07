@@ -1,0 +1,23 @@
+[package]
+name = "nodal-fixture"
+description = "The project CI runs Nodal against, so CI never needs a real one."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nodal_fixture"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nodal-fixture"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
