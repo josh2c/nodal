@@ -7,7 +7,24 @@
 //! ([`crate::env::files`]) and grants ports ([`crate::services::ports`]). What this file
 //! adds is the order, the undo of each part, and the single registry write at the end.
 //!
-//! Two rules decide the shape of it.
+//! The tree it clones is a base ([`crate::substrate`]), never the person's checkout. A
+//! checkout carries uncommitted work, and a home cloned from one is a home that starts
+//! with somebody else's half-finished edit in it. So the base for the workspace comes
+//! first, and the create clones that.
+//!
+//! Three rules decide the shape of it.
+//!
+//! The base is a **prerequisite, not a step**. Resolving it runs a plan of its own,
+//! with its own journal entry and its own registry write, and only then is the create
+//! planned. The two want opposite things of an interrupted run: a killed base build is
+//! resumed, because throwing away a clone and an install because a laptop closed is
+//! the whole cost this module exists to avoid, and a killed create is rolled back to
+//! nothing, because a home no registry row knows about is the worst outcome there is.
+//! A plan has one [`crate::lifecycle::Recovery`] and one registry write, so one plan
+//! cannot hold both rules. Two plans in sequence hold them exactly: a create killed
+//! anywhere is taken back and leaves the base it was going to clone standing, and a
+//! base build killed anywhere is finished by the next invocation and the create that
+//! wanted it is simply asked for again.
 //!
 //! A home that exists and that no registry row knows about is the worst outcome, so
 //! nothing is written to the registry until every step has succeeded, and a run
@@ -23,6 +40,7 @@
 //! step that writes it, from sources the step asks at the moment it runs.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
@@ -43,6 +61,7 @@ use crate::model::{
 use crate::output::view::Created;
 use crate::services::ports;
 use crate::store::{Store, environments, projects, units};
+use crate::substrate::{self, Reporter};
 use crate::workspace::{Excludes, Materializer, home, select_backend};
 use crate::{Error, Result};
 
@@ -55,6 +74,13 @@ pub const BRANCH_PREFIX: &str = "nodal/";
 
 /// The port every unit is granted, whatever the project runs: the development server.
 const APP_PORT: &str = "app";
+
+/// Whether a base built for a create also runs the project's build command.
+///
+/// It does not. A create waits for its base, so what the base does is what the person
+/// waits for, and installing dependencies is the part a unit cannot start without.
+/// `nodal base build --warm` is where a person asks for the rest, before they want it.
+const WARM_BUILD: bool = false;
 
 /// How many words of a stated objective become the unit's handle. Two is what reads as
 /// a name — `worker-import`, `payroll-export` — rather than as a sentence.
@@ -70,8 +96,8 @@ const SLUG_ATTEMPTS: u32 = 1_000;
 /// What a person asked `nodal new` for.
 #[derive(Debug, Clone, Default)]
 pub struct Request {
-    /// A directory in the project. The repository holding it is what a home is cloned
-    /// from, until a warm base exists to clone instead.
+    /// A directory in the project. The repository holding it is read to decide which
+    /// base the unit wants; it is never what the home is cloned from.
     pub source: PathBuf,
     /// What the unit is for, as it was stated.
     pub objective: Option<Objective>,
@@ -94,8 +120,9 @@ pub struct Params {
     pub project: Project,
     /// The project's effective recipe, which decides the exclusions and the ports.
     pub recipe: Recipe,
-    /// The tree the home is cloned from.
-    pub source: PathBuf,
+    /// Where the base is: the tree the home is a clone of. *Which* base it is, is the
+    /// environment row's `base_id`, so the two cannot disagree.
+    pub base_path: PathBuf,
     /// Where Nodal keeps its state on this machine.
     pub state_dir: PathBuf,
     /// The unit row the operation ends by writing.
@@ -110,20 +137,32 @@ pub struct Params {
 
 /// Create a unit: choose its name, place its home, run the plan, and report the result.
 ///
+/// `progress` is where the base build says what it is doing, on the first create of a
+/// workspace. Every later create finds the base warm and reports one line.
+///
 /// # Errors
 /// [`Error::UnitBranchHeld`] when another open unit already holds the branch,
 /// [`Error::InsideSource`] when the home would overlap a tree Nodal knows,
 /// [`Error::OperationStep`] when a step failed, in which case the steps before it were
 /// undone, and whatever Git, the filesystem or the registry reported.
-pub fn create(store: &mut Store, request: &Request) -> Result<Created> {
-    let params = prepare(store, request)?;
+pub fn create(
+    store: &mut Store,
+    request: &Request,
+    progress: &Arc<dyn Reporter>,
+) -> Result<Created> {
+    let params = prepare(store, request, progress)?;
     let environment = params.environment.id;
     run(store, &plan(&params)?)?;
     Created::of(&params.unit, &read_back(store, environment)?, Timestamp::now())
 }
 
-/// Work out what the operation will do, without doing any of it.
-fn prepare(store: &mut Store, request: &Request) -> Result<Params> {
+/// Work out what the operation will do, and get the base it will clone.
+///
+/// Order matters here in one way that is not obvious from reading it. Every refusal —
+/// a held branch, a home that would overlap a tree Nodal knows — is made before the
+/// base is asked for, because asking for a base may build one, and a build is minutes.
+/// Nothing that can refuse the create runs after that call.
+fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -> Result<Params> {
     let git = Git::open(&request.source)?;
     git.ensure_no_operation_in_progress()?;
     let source = git.top_level()?;
@@ -137,14 +176,25 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Params> {
 
     let state_dir = home::directory()?;
     let unit = new_unit(project.id, &name.slug, &branch, request);
-    let environment = new_environment(unit.id, &project.name, &state_dir, unit.created_at);
+    let mut environment = new_environment(unit.id, &project.name, &state_dir, unit.created_at);
     guard::placement(store.conn(), &environment.home, &source)?;
+
+    let wanted = substrate::Request {
+        project: project.clone(),
+        source,
+        recipe: effective.recipe.clone(),
+        state_dir: state_dir.clone(),
+        warm: WARM_BUILD,
+    };
+    let base = substrate::ensure(store, &wanted, progress)?;
+    environment.base_id = Some(base.base.id);
+    environment.ws_fp_materialized = Some(base.fingerprint);
 
     Ok(Params {
         ports: port_names(&effective.recipe),
         recipe: effective.recipe,
         project,
-        source,
+        base_path: base.base.path,
         state_dir,
         unit,
         environment,
@@ -162,7 +212,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
     Ok(Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params))
         .then(Materialize {
-            source: params.source.clone(),
+            base: params.base_path.clone(),
             home: home.clone(),
             excludes: Excludes::with_recipe(&params.recipe.base.exclude),
             backend: select_backend(&params.state_dir),
@@ -222,10 +272,11 @@ impl Rebuild for New {
 // The steps.
 // ---------------------------------------------------------------------------
 
-/// Clone the tree into the home.
+/// Clone the base into the home.
 struct Materialize {
-    /// The tree being cloned.
-    source: PathBuf,
+    /// The base being cloned. A warm tree at the workspace's commit, with the
+    /// dependencies installed and nothing uncommitted in it.
+    base: PathBuf,
     /// Where it is cloned to.
     home: PathBuf,
     /// What the clone leaves out.
@@ -247,7 +298,7 @@ impl Step for Materialize {
         if let Some(parent) = self.home.parent() {
             std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
         }
-        self.backend.clone_tree(&self.source, &self.home, &self.excludes).map(drop)
+        self.backend.clone_tree(&self.base, &self.home, &self.excludes).map(drop)
     }
 
     fn undo(&self) -> Result<()> {

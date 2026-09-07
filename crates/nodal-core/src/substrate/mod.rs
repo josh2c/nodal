@@ -10,10 +10,12 @@
 //! `nodal new` that wants one and builds it if it is not there, reporting each step as
 //! it goes ([`progress`]). `nodal base build` is the same call made early.
 //!
-//! *The first base is a clone of the remote.* Never a copy of the user's checkout: a
-//! checkout carries uncommitted files, another tool's `.git` state, and a
-//! `node_modules` installed for whatever branch it was last on. Every later base is a
-//! copy of the nearest base already built here, which is what makes the second one
+//! *The first base is a clone.* Of the project's remote, or of the checkout itself
+//! when the project names no remote — a clone either way, never a copy. A checkout
+//! carries uncommitted files, another tool's `.git` state, and a `node_modules`
+//! installed for whatever branch it was last on; a clone leaves all of it behind,
+//! because Git carries objects and builds the working tree from them. Every later base
+//! is a copy of the nearest base already built here, which is what makes the second one
 //! fast.
 //!
 //! *A base is a root, not a home.* Homes are cloned **from** bases, so a base is never
@@ -30,4 +32,4 @@ pub mod progress;
 pub use crate::substrate::bases::{Outcome, Request, ensure, evict, gc, list, pins, resolve};
 pub use crate::substrate::build::{BaseBuild, Origin, Params};
 pub use crate::substrate::lru::DEFAULT_KEEP;
-pub use crate::substrate::progress::{Collector, Reporter, Silent, Stderr};
+pub use crate::substrate::progress::{Collector, Reporter, Silent, Stderr, sink};

@@ -9,13 +9,14 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Args, Subcommand};
+use nodal_core::git::Git;
 use nodal_core::lifecycle::ops::new::ensure_project;
-use nodal_core::model::Timestamp;
 use nodal_core::model::recipe::Recipe;
+use nodal_core::model::{Project, Timestamp};
 use nodal_core::output::view::{BaseBuild, BaseList, BaseRow, BaseSweep};
 use nodal_core::output::{self, Format, Render};
 use nodal_core::store::Store;
-use nodal_core::substrate::{self, Reporter, Silent, Stderr};
+use nodal_core::substrate::{self, Reporter};
 use nodal_core::workspace::home;
 use nodal_core::{Result, recipe};
 
@@ -56,15 +57,22 @@ impl Common {
         self.path.clone().unwrap_or_else(|| PathBuf::from("."))
     }
 
-    /// Where a build says what it is doing: standard error, unless a tool asked for
-    /// JSON, in which case nothing, so the answer is the whole of the output.
+    /// Where a build says what it is doing.
     fn progress(&self) -> Arc<dyn Reporter> {
-        if self.json { Arc::new(Silent) } else { Arc::new(Stderr) }
+        substrate::sink(self.json)
     }
 
-    /// The project's effective recipe.
-    fn recipe(&self) -> Result<Recipe> {
-        Ok(recipe::load(self.root())?.recipe)
+    /// The project this action is about, recorded if this is the first time Nodal has
+    /// seen it, with the recipe it was read against.
+    ///
+    /// The root is the repository's top level, never the directory the command was run
+    /// in. A project is one row however deep in it a person is standing, and the base
+    /// `nodal base build` warms is only of use if it is the one `nodal new` then finds.
+    fn project(&self, store: &mut Store) -> Result<(Project, Recipe)> {
+        let root = Git::open(self.root())?.top_level()?;
+        let recipe = recipe::load(&root)?.recipe;
+        let project = ensure_project(store, &root, &recipe)?;
+        Ok((project, recipe))
     }
 }
 
@@ -113,7 +121,7 @@ impl Base {
 
 /// Every base of the project, with the units holding each one.
 fn ls(common: &Common, store: &mut Store) -> Result<ExitCode> {
-    let project = ensure_project(store, &common.root(), &common.recipe()?)?;
+    let (project, _) = common.project(store)?;
     let bases = substrate::list(store, project.id)?;
     write(&BaseList { now: Timestamp::now(), bases }, common.json)
 }
@@ -121,11 +129,11 @@ fn ls(common: &Common, store: &mut Store) -> Result<ExitCode> {
 /// The base this workspace needs, built if it is not already there.
 fn build_one(args: &Build, store: &mut Store) -> Result<ExitCode> {
     let common = &args.common;
-    let project = ensure_project(store, &common.root(), &common.recipe()?)?;
+    let (project, recipe) = common.project(store)?;
     let request = substrate::Request {
         source: project.root.clone(),
         project,
-        recipe: common.recipe()?,
+        recipe,
         state_dir: home::directory()?,
         warm: args.warm,
     };
@@ -143,7 +151,7 @@ fn build_one(args: &Build, store: &mut Store) -> Result<ExitCode> {
 /// Remove the base that was named, or the idle ones beyond the number kept.
 fn collect(args: &Gc, store: &mut Store) -> Result<ExitCode> {
     let common = &args.common;
-    let project = ensure_project(store, &common.root(), &common.recipe()?)?;
+    let (project, _) = common.project(store)?;
     let progress = common.progress();
     let removed = match &args.base {
         Some(name) => {
