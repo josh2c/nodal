@@ -187,7 +187,15 @@ fn the_plan_is_the_same_plan_however_it_is_built() {
     let built = new::plan(&params).unwrap();
     assert_eq!(
         built.keys(),
-        ["home.materialize", "git.scrub", "git.branch", "git.hide", "home.marker", "env.activate",]
+        [
+            "home.materialize",
+            "home.relocate",
+            "git.scrub",
+            "git.branch",
+            "git.hide",
+            "home.marker",
+            "env.activate",
+        ]
     );
 
     let record = journalled(&fixture, &params);
@@ -229,10 +237,10 @@ fn a_run_whose_process_is_gone_is_rebuilt_and_rolled_back_to_nothing() {
     let home = params.environment.home.clone();
     let record = journalled(&fixture, &params);
 
-    // The world as a create killed inside its fourth step would have left it.
+    // The world as a create killed inside its sixth step would have left it.
     let plan = new::plan(&params).unwrap();
     let store = fixture.store();
-    for (position, step) in plan.steps.iter().enumerate().take(4) {
+    for (position, step) in plan.steps.iter().enumerate().take(5) {
         step.apply().unwrap();
         mark(&store, record.id, position, &step.key(), StepState::Applied);
     }
@@ -249,6 +257,7 @@ fn a_run_whose_process_is_gone_is_rebuilt_and_rolled_back_to_nothing() {
                 String::from("git.hide"),
                 String::from("git.branch"),
                 String::from("git.scrub"),
+                String::from("home.relocate"),
                 String::from("home.materialize"),
             ]
         },

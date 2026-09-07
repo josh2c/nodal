@@ -54,7 +54,7 @@ merge_fields!(Commands { dev, build, test, lint, typecheck, migrate, seed, reset
 merge_fields!(Db { kind, tool, migrations_dir, url_var, fixed_ports });
 merge_fields!(Services { shared, per_unit });
 merge_fields!(Env { required_local, generated, secrets });
-merge_fields!(BaseSpec { exclude });
+merge_fields!(BaseSpec { exclude, invalidate });
 merge_fields!(Hooks { pre_new, post_new, pre_reclaim, post_reclaim });
 merge_fields!(Sync { auto_irreversible });
 merge_fields!(Reclaim { trash_retention });

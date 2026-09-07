@@ -31,6 +31,14 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "invalidate": {
+          "default": [],
+          "description": "Paths whose content records the directory it was made in, so that a copy of it\nat a new path is removed rather than trusted. A path is matched wherever it\nsits under a home, not only at the root, because a repository of more than one\npackage keeps one such directory under each of them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "type": "object"
@@ -485,7 +493,8 @@
     "base": {
       "$ref": "#/$defs/BaseSpec",
       "default": {
-        "exclude": []
+        "exclude": [],
+        "invalidate": []
       },
       "description": "What a base clone leaves out."
     },

@@ -8,6 +8,10 @@
 //! [`select_backend`] answers once, for a path, and an operation never asks again.
 //! Where nothing can share blocks, [`copy::CopyFallback`] copies the bytes and says so,
 //! because a home that costs its own disk still works.
+//!
+//! A copy is not always usable where it lands. [`relocate`] is what a home does about
+//! the content that recorded the path it was made at, and it runs once the copy is
+//! there.
 
 pub mod apfs;
 pub mod copy;
@@ -15,6 +19,7 @@ pub mod exclude;
 pub mod home;
 pub mod meta;
 pub mod reflink;
+pub mod relocate;
 pub mod tree;
 pub mod walk;
 pub mod xattr;
