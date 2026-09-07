@@ -1,0 +1,19 @@
+{
+  "project": "project",
+  "now": "2026-09-06T14:22:00Z",
+  "units": [
+    {
+      "id": "01J9X4P0000000000000000AAB",
+      "slug": "auth-refresh",
+      "status": "review",
+      "branch": "feature/auth-refresh",
+      "objective": null,
+      "freshness": {
+        "state": "unknown"
+      },
+      "work": null,
+      "environment": null,
+      "last_active": null
+    }
+  ]
+}

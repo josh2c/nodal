@@ -147,7 +147,11 @@ lifecycle/             the only module that composes others; each op = plan() pu
 
 output/
   mod.rs               Render trait: human + json; every read type implements it
-  human.rs · json.rs · watch.rs
+  human.rs             Doc/Block/Table layout: the one place that decides alignment
+  json.rs              pretty for --json, compact for one line of a stream
+  watch.rs             Source trait + polling loop; writes only changed answers
+  view/                the read types themselves, one file per command family
+    unit.rs · status.rs · event.rs · base.rs · init.rs
 ```
 
 ## crates/nodal-cli/src

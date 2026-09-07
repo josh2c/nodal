@@ -1,0 +1,36 @@
+{
+  "now": "2026-09-06T14:22:00Z",
+  "unit": "worker-import",
+  "events": [
+    {
+      "id": "01J9X2K4Q7QW8QG4M2N5B3T700",
+      "unit": "01J9X2K4Q7QW8QG4M2N5B3T6HP",
+      "environment": "01J9X2K4Q7QW8QG4M2N5B3T6HQ",
+      "ts": "2026-09-06T14:02:00Z",
+      "actor": {
+        "kind": "agent",
+        "name": "claude-code"
+      },
+      "kind": "test_result",
+      "epistemic": "observed",
+      "body": "pnpm test: 0 failing",
+      "refs": {},
+      "raw_ref": null
+    },
+    {
+      "id": "01J9X2K4Q7QW8QG4M2N5B3T701",
+      "unit": "01J9X2K4Q7QW8QG4M2N5B3T6HP",
+      "environment": "01J9X2K4Q7QW8QG4M2N5B3T6HQ",
+      "ts": "2026-09-06T14:10:00Z",
+      "actor": {
+        "kind": "human",
+        "name": "j2c"
+      },
+      "kind": "handoff",
+      "epistemic": "stated",
+      "body": "legacy date parser still fails on two-digit years",
+      "refs": {},
+      "raw_ref": null
+    }
+  ]
+}
