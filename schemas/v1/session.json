@@ -1,0 +1,109 @@
+{
+  "$defs": {
+    "Actor": {
+      "description": "The actor of a session or an event.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ActorKind",
+          "description": "Person or agent."
+        },
+        "name": {
+          "$ref": "#/$defs/ActorName",
+          "description": "What it is called."
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
+    "ActorKind": {
+      "description": "Whether the actor is a person or a program acting on its own.",
+      "oneOf": [
+        {
+          "const": "human",
+          "description": "A person at a terminal or an editor.",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "A coding agent.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActorName": {
+      "description": "What the actor is called: a tool name such as `claude-code`, or a person's\nhandle. Never a credential.",
+      "maxLength": 255,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
+      "type": "string"
+    },
+    "EnvId": {
+      "description": "Identifies one materialisation of a unit. A unit re-materialised after reclaim\ngets a new environment, not a new unit.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "SessionId": {
+      "description": "Identifies one attachment of an actor to an environment.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "Timestamp": {
+      "description": "A UTC instant, serialised as an RFC 3339 string.",
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/session.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One shell, agent or editor attached to a home directory. Sessions are what makes\n\"who is in this unit right now\" answerable without guessing from processes.",
+  "properties": {
+    "actor": {
+      "$ref": "#/$defs/Actor",
+      "description": "Who attached."
+    },
+    "ended_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "When it detached; absent while the session is open."
+    },
+    "environment_id": {
+      "$ref": "#/$defs/EnvId",
+      "description": "The environment the actor attached to."
+    },
+    "id": {
+      "$ref": "#/$defs/SessionId",
+      "description": "Identity of the session."
+    },
+    "pid": {
+      "description": "Process id on the session's host, for attribution and idle detection.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "started_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When the actor attached."
+    }
+  },
+  "required": [
+    "id",
+    "environment_id",
+    "actor",
+    "started_at"
+  ],
+  "title": "Session",
+  "type": "object"
+}

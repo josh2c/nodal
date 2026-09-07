@@ -21,6 +21,16 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// A domain value did not have the shape its type requires. `kind` names the type
+    /// in the words a user sees, so the message is the same wherever it is raised.
+    #[error("{value:?} is not a valid {kind}")]
+    InvalidValue {
+        /// What the value was meant to be, for example `branch name`.
+        kind: &'static str,
+        /// The value as it was given.
+        value: String,
+    },
+
     /// A tracing subscriber was already installed in this process.
     #[error("logging is already initialised for this process")]
     LoggingAlreadyInitialised,

@@ -1,0 +1,130 @@
+{
+  "$defs": {
+    "BranchName": {
+      "description": "A Git branch name.",
+      "maxLength": 255,
+      "pattern": "^(?![-/])(?!.*(?:\\.\\.|//|@\\{))(?!.*[/.]$)(?!.*\\.lock$)[^\\s~^:?*\\[\\\\\\x00-\\x1F\\x7F-\\x9F]+$",
+      "type": "string"
+    },
+    "Objective": {
+      "description": "What the unit is for, in one line, as the person or agent stated it.",
+      "maxLength": 255,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
+      "type": "string"
+    },
+    "ProjectId": {
+      "description": "Identifies a project: one Git repository Nodal manages units for.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "Slug": {
+      "description": "The CLI handle for a unit, derived from its branch.",
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "Timestamp": {
+      "description": "A UTC instant, serialised as an RFC 3339 string.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "UnitId": {
+      "description": "Identifies a `WorkUnit`. Stable for the life of the work, across machines.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "UnitStatus": {
+      "description": "Where a unit is in its life. The branch, not the directory, is the identity a\nreviewer or another tool sees, so a unit outlives any one materialisation.",
+      "oneOf": [
+        {
+          "const": "open",
+          "description": "Being worked on; holds its branch against other units.",
+          "type": "string"
+        },
+        {
+          "const": "review",
+          "description": "Pushed and waiting on review.",
+          "type": "string"
+        },
+        {
+          "const": "merged",
+          "description": "Merged; runtime may be stopped, the delta is still kept.",
+          "type": "string"
+        },
+        {
+          "const": "archived",
+          "description": "Kept for the record only; nothing of it is running.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/unit.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One PR-sized piece of work.",
+  "properties": {
+    "branch": {
+      "$ref": "#/$defs/BranchName",
+      "description": "The branch this unit owns. Unique among open units, enforced by the registry."
+    },
+    "created_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When the unit was created."
+    },
+    "id": {
+      "$ref": "#/$defs/UnitId",
+      "description": "Identity of the unit; stable across machines and re-materialisations."
+    },
+    "objective": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Objective"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The stated intent, when there is one. Adoption may recover it later."
+    },
+    "parent_branch": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BranchName"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The branch the work started from, when it is known."
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId",
+      "description": "The project the unit belongs to."
+    },
+    "slug": {
+      "$ref": "#/$defs/Slug",
+      "description": "The CLI handle."
+    },
+    "status": {
+      "$ref": "#/$defs/UnitStatus",
+      "description": "Where the unit is in its life."
+    },
+    "updated_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When any of the above last changed."
+    }
+  },
+  "required": [
+    "id",
+    "project_id",
+    "slug",
+    "branch",
+    "status",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "Unit",
+  "type": "object"
+}
