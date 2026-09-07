@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::model::{EnvId, ProjectName, Slug};
+use crate::model::{BaseId, EnvId, ProjectName, Slug};
 use crate::{Error, Result};
 
 /// The environment variable that moves the state directory, as `NODAL_STORE` moves the
@@ -29,6 +29,13 @@ const REGISTRY_NAME: &str = "registry.db";
 
 /// The segment that separates a project's homes from anything else it may keep.
 const ENVIRONMENTS: &str = "e";
+
+/// The segment a project's bases sit under.
+///
+/// A base is what homes are cloned *from*, so it is never part of what reclaiming a
+/// unit takes away. Keeping the two under different segments makes that structural: a
+/// walk of the homes of a project cannot reach a base, whatever it is looking for.
+const BASES: &str = "b";
 
 /// How many characters of an environment's identifier name its home.
 ///
@@ -57,6 +64,34 @@ pub fn directory() -> Result<PathBuf> {
 /// As [`directory`].
 pub fn registry() -> Result<PathBuf> {
     Ok(directory()?.join(REGISTRY_NAME))
+}
+
+/// The directory a project's bases live in, under the state directory.
+///
+/// # Errors
+/// As [`directory`].
+pub fn bases(project: &ProjectName) -> Result<PathBuf> {
+    Ok(bases_in_directory(&directory()?, project))
+}
+
+/// The same directory, under a state directory the caller names.
+#[must_use]
+pub fn bases_in_directory(root: &Path, project: &ProjectName) -> PathBuf {
+    root.join(project_segment(project)).join(BASES)
+}
+
+/// Where one base lives. Named by the same eight characters a home is, and for the
+/// same reason: every base of a project has a path of one length, so a cache that
+/// recorded the path it was installed at can be repaired in place.
+#[must_use]
+pub fn for_base(root: &Path, project: &ProjectName, base: BaseId) -> PathBuf {
+    bases_in_directory(root, project).join(base_segment(base))
+}
+
+/// The segment that names one base.
+#[must_use]
+pub fn base_segment(base: BaseId) -> String {
+    tail(&base.to_string())
 }
 
 /// The home of one materialisation, under the state directory.
@@ -88,7 +123,11 @@ pub fn project_segment(project: &ProjectName) -> String {
 /// The segment that names one materialisation.
 #[must_use]
 pub fn segment(environment: EnvId) -> String {
-    let text = environment.to_string();
+    tail(&environment.to_string())
+}
+
+/// The last [`SEGMENT_LEN`] characters of an identifier.
+fn tail(text: &str) -> String {
     text[text.len().saturating_sub(SEGMENT_LEN)..].to_owned()
 }
 
@@ -124,7 +163,7 @@ mod tests {
     use std::path::Path;
 
     use super::{ENVIRONMENTS, SEGMENT_LEN, in_directory, project_segment, segment, slugify};
-    use crate::model::{EnvId, ProjectName};
+    use crate::model::{BaseId, EnvId, ProjectName};
 
     fn environment(last: char) -> EnvId {
         format!("01J8Z6H000000000000000000{last}").parse().unwrap()
@@ -148,6 +187,21 @@ mod tests {
     fn a_home_is_named_by_the_random_end_of_the_identifier() {
         let text = environment('7').to_string();
         assert_eq!(segment(environment('7')), text[text.len() - SEGMENT_LEN..]);
+    }
+
+    #[test]
+    fn a_base_is_never_inside_the_directory_homes_are_reclaimed_from() {
+        let root = Path::new("/home/u/.nodal");
+        let name = project("storefront");
+        let base: BaseId = "01J8Z6H000000000000000000B".parse().unwrap();
+        let path = super::for_base(root, &name, base);
+        assert!(path.starts_with(super::bases_in_directory(root, &name)));
+        assert!(!path.starts_with(in_directory(root, &name, environment('1')).parent().unwrap()));
+        assert_eq!(
+            path.as_os_str().len(),
+            in_directory(root, &name, environment('1')).as_os_str().len(),
+            "a base path and a home path are the same length"
+        );
     }
 
     #[test]

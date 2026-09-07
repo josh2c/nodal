@@ -39,6 +39,10 @@ use rusqlite::Connection;
 pub use crate::store::migrations::SCHEMA_VERSION;
 use crate::{Error, Result};
 
+/// The file the registry lives in, inside Nodal's home directory. `--store` overrides
+/// it, which is how a test and a second machine's registry are addressed.
+pub const FILE_NAME: &str = "registry.db";
+
 /// Settings of this connection, applied after the busy timeout is in place.
 ///
 /// `NORMAL` synchronisation is the documented safe pairing with WAL — a crash cannot

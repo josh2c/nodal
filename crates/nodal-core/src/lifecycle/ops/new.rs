@@ -393,7 +393,15 @@ fn remove_tree(path: &Path) -> Result<()> {
 /// A project row is not part of the create and is never rolled back with one: it is a
 /// fact about this machine, like the block of ports the project hands out from, and it
 /// outlives every unit made in it.
-fn ensure_project(store: &mut Store, root: &Path, recipe: &Recipe) -> Result<Project> {
+///
+/// Public because `nodal base` needs the same row before it can key a base, and one
+/// definition of "which project is this" is the point: two would let a base and the
+/// unit cloned from it belong to different projects.
+///
+/// # Errors
+/// [`Error::Render`] when the recipe could not be digested, and whatever the registry
+/// reports.
+pub fn ensure_project(store: &mut Store, root: &Path, recipe: &Recipe) -> Result<Project> {
     if let Some(found) = projects::find_by_root(store.conn(), root)? {
         return Ok(found);
     }

@@ -15,6 +15,7 @@ pub mod recipe;
 pub mod runtime;
 pub mod services;
 pub mod store;
+pub mod substrate;
 pub mod workspace;
 
 pub use crate::error::{Error, Result};

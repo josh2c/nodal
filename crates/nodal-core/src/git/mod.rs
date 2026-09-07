@@ -274,6 +274,92 @@ impl Git {
         remote::containment(&self.root, rev)
     }
 
+    /// The URL a remote fetches from, `None` when there is no such remote.
+    ///
+    /// # Errors
+    /// [`Error::GitSpawn`] when `git` could not be started, [`Error::GitEncoding`]
+    /// when the URL is not UTF-8.
+    pub fn remote_url(&self, name: &str) -> Result<Option<String>> {
+        remote::url(&self.root, name)
+    }
+
+    /// Fetch every branch and tag a remote has.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the remote could not be reached or does not exist.
+    pub fn fetch(&self, remote: &str) -> Result<()> {
+        cmd::run_ok(&self.root, &["fetch", "--quiet", "--", remote])?;
+        Ok(())
+    }
+
+    /// Fetch one revision out of a repository on this machine, by path.
+    ///
+    /// Objects only: nothing of the other repository's working tree, index or refs
+    /// comes across. This is how a base reaches a commit its remote does not have yet.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the path is not a repository or does not have the revision,
+    /// [`Error::InvalidValue`] when the path is not UTF-8.
+    pub fn fetch_from(&self, source: &Path, rev: &str) -> Result<()> {
+        cmd::run_ok(&self.root, &["fetch", "--quiet", "--no-tags", "--", text_of(source)?, rev])?;
+        Ok(())
+    }
+
+    /// Put the working tree at a revision, with HEAD detached at it.
+    ///
+    /// Detached rather than on a branch because a base is a substrate and not a piece
+    /// of work: the branch is made in the unit home that is cloned from it.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the revision is unknown or the checkout failed.
+    pub fn checkout_detached(&self, rev: &str) -> Result<()> {
+        cmd::run_ok(&self.root, &["checkout", "--force", "--detach", "--end-of-options", rev])?;
+        Ok(())
+    }
+
+    /// How many commits separate two revisions: the size of their symmetric
+    /// difference, which is the distance a neighbour is chosen by.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when either revision is unknown, [`Error::GitParse`] when the
+    /// count could not be read.
+    pub fn distance(&self, from: &str, to: &str) -> Result<u32> {
+        let range = format!("{from}...{to}");
+        let output = cmd::run_ok(&self.root, &["rev-list", "--count", &range])?;
+        let text = output.text()?;
+        text.parse()
+            .map_err(|_| Error::GitParse { args: output.args.clone(), record: text.to_owned() })
+    }
+
+    /// Whether a commit is really in this repository's object database.
+    ///
+    /// Not [`Git::rev_parse_opt`]: given a full object id, `git rev-parse --verify`
+    /// answers from the text alone and says yes for an object the repository has never
+    /// had. Asking for `<rev>^{commit}` makes it read the object, which is the question
+    /// a fetch is decided by.
+    ///
+    /// # Errors
+    /// [`Error::GitSpawn`] when `git` could not be started.
+    pub fn has_commit(&self, rev: &str) -> Result<bool> {
+        let peeled = format!("{rev}^{{commit}}");
+        let args = ["rev-parse", "--verify", "--quiet", "--end-of-options", peeled.as_str()];
+        Ok(cmd::run(&self.root, &args)?.ok())
+    }
+
+    /// The top of the working tree this repository is a checkout of.
+    ///
+    /// Nodal keys a project by its top level, so two commands run in two directories of
+    /// one repository name one project rather than two.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git rev-parse` failed, [`Error::GitEncoding`] when the path
+    /// is not UTF-8.
+    pub fn toplevel(&self) -> Result<PathBuf> {
+        let output =
+            cmd::run_ok(&self.root, &["rev-parse", "--path-format=absolute", "--show-toplevel"])?;
+        Ok(PathBuf::from(output.text()?))
+    }
+
     /// Which Git operations, if any, are in progress here.
     ///
     /// # Errors
@@ -303,4 +389,31 @@ impl Git {
     pub fn scrub(&self, options: &scrub::Options) -> Result<scrub::Report> {
         scrub::apply(&self.root, &self.layout()?, options)
     }
+}
+
+/// Clone a remote into `destination`, which must not exist.
+///
+/// This is how the first base of a project is made. The credentials are the ones the
+/// user's own `git` would use — a helper, an agent, or a token in the environment —
+/// because [`cmd::run`] adds nothing but the two settings that stop Git prompting and
+/// taking optional locks. Nothing is read out of the user's checkout: a base is a clone
+/// of the remote, so no uncommitted or local-only state can reach one.
+///
+/// # Errors
+/// [`Error::Io`] when the parent directory could not be made, [`Error::InvalidValue`]
+/// when `destination` is not UTF-8, [`Error::Git`] when the clone failed.
+pub fn clone(url: &str, destination: &Path) -> Result<Git> {
+    let parent = destination.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
+    cmd::run_ok(parent, &["clone", "--", url, text_of(destination)?])?;
+    Git::open(destination)
+}
+
+/// A path as an argument. Git takes bytes, but the one seam takes `&str`, so a path
+/// that is not UTF-8 is refused here rather than mangled on the way through.
+fn text_of(path: &Path) -> Result<&str> {
+    path.to_str().ok_or_else(|| Error::InvalidValue {
+        kind: "path",
+        value: path.to_string_lossy().into_owned(),
+    })
 }

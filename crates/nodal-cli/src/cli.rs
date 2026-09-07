@@ -12,6 +12,7 @@ use nodal_core::logging::Verbosity;
 use nodal_core::store::Store;
 use nodal_core::workspace::home;
 
+use crate::commands::base::Base;
 use crate::commands::cd::Cd;
 use crate::commands::env::Env;
 use crate::commands::init::Init;
@@ -37,6 +38,9 @@ pub enum Command {
     Shell(Shell),
     /// Run a command in a unit's environment and record it in the unit's log.
     Run(Run),
+    /// List, build and collect the warm bases unit homes are cloned from.
+    #[command(subcommand_required = true, arg_required_else_help = true)]
+    Base(Base),
 }
 
 /// One list for every coding agent on your project.
@@ -81,6 +85,7 @@ impl Cli {
             Some(Command::Run(run)) => run.run(&self.registry()?),
             Some(Command::ShellInit(init)) => init.run(),
             Some(Command::Shell(shell)) => shell.run(),
+            Some(Command::Base(base)) => base.run(&mut self.registry()?),
             None => {
                 let (store, no_hooks) = (&self.store, self.no_hooks);
                 tracing::debug!(?store, no_hooks, "no subcommand given");

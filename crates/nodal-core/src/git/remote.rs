@@ -38,3 +38,16 @@ pub(super) fn containment(repo: &Path, rev: &str) -> Result<Containment> {
     let unpushed = listed.lines()?.iter().map(|line| Oid::parse(line)).collect::<Result<_>>()?;
     Ok(Containment { remotes, unpushed })
 }
+
+/// The URL a remote fetches from, `None` when the repository has no such remote.
+///
+/// # Errors
+/// [`Error::GitSpawn`](crate::Error::GitSpawn) when `git` could not be started,
+/// [`Error::GitEncoding`](crate::Error::GitEncoding) when the URL is not UTF-8.
+pub(super) fn url(repo: &Path, name: &str) -> Result<Option<String>> {
+    let output = cmd::run(repo, &["remote", "get-url", "--", name])?;
+    if !output.ok() {
+        return Ok(None);
+    }
+    Ok(Some(output.text()?.to_owned()))
+}
