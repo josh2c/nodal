@@ -116,6 +116,83 @@ pub enum Error {
         git_dir: PathBuf,
     },
 
+    /// The registry could not be opened, read or written.
+    #[error("{path}: {source}", path = path.display())]
+    Store {
+        /// The database file the statement ran against.
+        path: PathBuf,
+        /// What SQLite reported.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+
+    /// A write the registry keeps unique met a row that is already there: a branch
+    /// another open unit holds, a lease another environment took, a home already
+    /// recorded. The caller decides what to do about it, so it is its own variant.
+    #[error("{path}: the registry already holds a conflicting row: {source}", path = path.display())]
+    StoreConflict {
+        /// The database file the statement ran against.
+        path: PathBuf,
+        /// The constraint SQLite reported.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+
+    /// A column did not hold a value the model accepts, so the registry is corrupt.
+    #[error("{table}.{column} could not be read: {source}")]
+    StoreRow {
+        /// The table the row came from.
+        table: &'static str,
+        /// The column that could not be read.
+        column: &'static str,
+        /// Why it could not be read.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+
+    /// A model value could not be encoded into the form a column keeps.
+    #[error("a {kind} could not be encoded for the registry")]
+    StoreEncode {
+        /// What was being encoded, in the words a user sees.
+        kind: &'static str,
+    },
+
+    /// The registry could not be put into write-ahead logging mode, so concurrent
+    /// readers and writers would not be safe.
+    #[error("{path} is in {found:?} journal mode, not wal", path = path.display())]
+    StoreJournalMode {
+        /// The database file that was opened.
+        path: PathBuf,
+        /// The mode it reported after the pragma was applied.
+        found: String,
+    },
+
+    /// A schema migration failed; the database is unchanged.
+    #[error("{path}: migration {version} ({name}) failed: {source}", path = path.display())]
+    StoreMigration {
+        /// The database file that was being migrated.
+        path: PathBuf,
+        /// Which step failed.
+        version: u32,
+        /// What that step does.
+        name: &'static str,
+        /// What SQLite reported.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+
+    /// The registry was written by a later version of Nodal, which may have changed
+    /// the meaning of rows this build would read.
+    #[error("{path} is at schema version {found}, and this build understands {supported}", path = path.display())]
+    StoreTooNew {
+        /// The database file that was opened.
+        path: PathBuf,
+        /// The version recorded in the file.
+        found: u32,
+        /// The newest version this build migrates to.
+        supported: u32,
+    },
+
     /// A branch that had to exist did not.
     #[error("{repo} has no branch {branch:?}", repo = repo.display())]
     GitUnknownBranch {
