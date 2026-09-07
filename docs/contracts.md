@@ -38,6 +38,26 @@ Kinds: `attached, detached, command, commit, test_result, failure, file_touched,
 question, handoff, sync, note`.
 
 ## Fingerprint inputs
-Workspace: lockfiles, package manifests, `.npmrc`, toolchain pins, Dockerfile and Compose files,
-`nodal.toml`, platform triple. Schema: migrations directory tree, database config, seed. Bases use tree
-object ids at a commit; staleness uses working-tree file hashes.
+Two keys, each composed of named parts, so a diff says which part moved. The authoritative list of
+paths is the table in `nodal_core::fingerprint::inputs`; this is what it covers.
+
+Workspace key — `toolchain`: version files (`.nvmrc`, `.node-version`, `.tool-versions`,
+`mise.toml`, `.python-version`, `.ruby-version`, `.java-version`, `rust-toolchain.toml`).
+`dependencies`: lockfiles and package manifests at any depth (`package.json`, `pnpm-lock.yaml`,
+`package-lock.json`, `yarn.lock`, `bun.lock`, `Cargo.toml`/`Cargo.lock`, `go.mod`/`go.sum`,
+`pyproject.toml`, `poetry.lock`, `uv.lock`, `requirements.txt`, `Gemfile.lock`, `composer.lock`)
+and the package manager's configuration (`.npmrc`, `.yarnrc.yml`, `pnpm-workspace.yaml`).
+`services`: `Dockerfile*`, `docker-compose*`, `compose.y[a]ml`, `.dockerignore`, the database
+config. `recipe`: `nodal.toml` and the monorepo task-graph and task-cache files it is inferred
+from (`turbo.json`, `nx.json`, `lerna.json`) plus the declared environment file (`.env.example`).
+The platform triple is part of this key.
+
+Schema key — `schema`: the migrations directory tree (`supabase/migrations`, `prisma/migrations`,
+`db/migrations`, `db/migrate`, `migrations`), the database config, the schema definition and the
+seed. The platform triple is deliberately not part of this key: a template is the same database on
+any host. The database config feeds both keys, so either moving is correct.
+
+Inputs are `(path, mode, object id)` triples, never file contents: Git has already hashed the
+contents. Bases use tree object ids at a commit, read with one `git ls-tree`; staleness uses
+working-tree file hashes, which must be Git blob object ids so that a clean checkout of a commit
+and the commit itself fingerprint identically.
