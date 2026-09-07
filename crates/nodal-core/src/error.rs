@@ -337,6 +337,24 @@ pub enum Error {
         host: &'static str,
     },
 
+    /// A clone was asked for at a destination it cannot be made at.
+    #[error("{destination} cannot hold a clone: {why}", destination = destination.display())]
+    MaterializeDestination {
+        /// The destination that was given.
+        destination: PathBuf,
+        /// Why it cannot be used.
+        why: &'static str,
+    },
+
+    /// A materialization backend was asked to work where it does not.
+    #[error("the {backend} backend does not work on {path}", path = path.display())]
+    MaterializeUnsupported {
+        /// The backend that was called.
+        backend: &'static str,
+        /// The path it was called on.
+        path: PathBuf,
+    },
+
     /// A branch that had to exist did not.
     #[error("{repo} has no branch {branch:?}", repo = repo.display())]
     GitUnknownBranch {

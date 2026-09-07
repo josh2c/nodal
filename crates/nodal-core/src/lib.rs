@@ -14,6 +14,7 @@ pub mod output;
 pub mod recipe;
 pub mod services;
 pub mod store;
+pub mod workspace;
 
 pub use crate::error::{Error, Result};
 

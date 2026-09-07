@@ -94,6 +94,20 @@ jobs:
       - name: two units get distinct ports and a pinned port names its holder
         run: ci/acceptance-ports.sh
 
+  acceptance-materialize:
+    name: acceptance (materialize)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: a home holds the project, leaves out what the list names, and is made fast
+        run: ci/acceptance-materialize.sh
+
   acceptance-fixture:
     name: acceptance (fixture)
     runs-on: ubuntu-latest
