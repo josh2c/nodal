@@ -1,11 +1,13 @@
 //! `nodal new`: a unit, the branch it owns, and a home to work in.
 //!
 //! Everything this operation does already exists somewhere else. It clones a tree with
-//! the backend the filesystem allows ([`crate::workspace`]), scrubs the Git state the
-//! clone inherited ([`crate::git::Git::scrub`]), takes the unit's branch, marks the home
-//! ([`crate::lifecycle::marker`]), writes the activation files
-//! ([`crate::env::files`]) and grants ports ([`crate::services::ports`]). What this file
-//! adds is the order, the undo of each part, and the single registry write at the end.
+//! the backend the filesystem allows ([`crate::workspace`]), removes from the copy the
+//! caches that record the path they were made at ([`crate::workspace::relocate`]),
+//! scrubs the Git state the clone inherited ([`crate::git::Git::scrub`]), takes the
+//! unit's branch, marks the home ([`crate::lifecycle::marker`]), writes the activation
+//! files ([`crate::env::files`]) and grants ports ([`crate::services::ports`]). What
+//! this file adds is the order, the undo of each part, and the single registry write at
+//! the end.
 //!
 //! The tree it clones is a base ([`crate::substrate`]), never the person's checkout. A
 //! checkout carries uncommitted work, and a home cloned from one is a home that starts
@@ -39,8 +41,9 @@
 //! be a plan that wrote them there. The activation is therefore assembled inside the
 //! step that writes it, from sources the step asks at the moment it runs.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
@@ -55,14 +58,17 @@ use crate::lifecycle::owner;
 use crate::lifecycle::step::{Commit, Plan, Step};
 use crate::lifecycle::{Rebuild, guard, marker, run};
 use crate::model::{
-    BranchName, EnvId, EnvState, Environment, Objective, PortBlock, PortName, Ports, Project,
-    ProjectId, ProjectName, Recipe, Slug, Timestamp, Unit, UnitId, UnitStatus,
+    BranchName, EnvId, EnvState, Environment, Epistemic, Event, EventId, EventKind, Objective,
+    PortBlock, PortName, Ports, Project, ProjectId, ProjectName, Recipe, RefName, Slug, Timestamp,
+    Unit, UnitId, UnitStatus,
 };
 use crate::output::view::Created;
+use crate::runtime::actor;
 use crate::services::ports;
-use crate::store::{Store, environments, projects, units};
+use crate::store::{Store, environments, events, projects, units};
 use crate::substrate::{self, Reporter};
-use crate::workspace::{Excludes, Materializer, home, select_backend};
+use crate::workspace::relocate::{CacheRelocator, InvalidateCache};
+use crate::workspace::{Excludes, Materializer, home, relocate, select_backend};
 use crate::{Error, Result};
 
 /// What this operation is called in the journal.
@@ -202,7 +208,7 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
     })
 }
 
-/// The plan: six steps in the home, then one registry write.
+/// The plan: seven steps in the home, then one registry write.
 ///
 /// # Errors
 /// [`Error::Render`] when the parameters cannot be written to the journal.
@@ -210,12 +216,19 @@ pub fn plan(params: &Params) -> Result<Plan> {
     let home = params.environment.home.clone();
     let value = serde_json::to_value(params)
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
-    Ok(Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params))
+    let relocation = Arc::new(OnceLock::new());
+    Ok(Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params, &relocation))
         .then(Materialize {
             base: params.base_path.clone(),
             home: home.clone(),
             excludes: Excludes::with_recipe(&params.recipe.base.exclude),
             backend: select_backend(&params.state_dir),
+        })
+        .then(Relocate {
+            home: home.clone(),
+            base: params.base_path.clone(),
+            relocator: InvalidateCache::with_recipe(&params.recipe.base.invalidate),
+            report: relocation,
         })
         .then(Scrub { home: home.clone() })
         .then(TakeBranch {
@@ -240,16 +253,62 @@ pub fn plan(params: &Params) -> Result<Plan> {
 /// branch is refused here by the partial unique index, whatever two racing processes
 /// each read a moment earlier. The ports are granted inside the same transaction,
 /// because a grant names the environment row and cannot be made before it exists.
-fn commit_of(params: &Params) -> Commit {
+///
+/// The relocation event is written here for the same reason and not by the step that
+/// did the removal: an event names a unit, and no unit row exists until this runs.
+fn commit_of(params: &Params, relocation: &Arc<OnceLock<relocate::Report>>) -> Commit {
     let (unit, environment) = (params.unit.clone(), params.environment.clone());
     let (block, names) = (params.block, params.ports.clone());
+    let relocation = Arc::clone(relocation);
     Box::new(move |tx: &Transaction<'_>| -> Result<()> {
         units::insert(tx, &unit)?;
         environments::insert(tx, &environment)?;
         let granted = ports::allocate(tx, block, environment.id, &names)?;
         environments::set_ports(tx, environment.id, &granted)?;
+        record_relocation(tx, unit.id, environment.id, relocation.get())?;
         Ok(())
     })
+}
+
+/// Write down that a cache was invalidated, so that a later `nodal explain` can say why
+/// a build in this home started cold.
+///
+/// A relocation that removed nothing is not an event. The log is what a person reads to
+/// understand a unit, and a line saying that nothing happened is noise in it.
+fn record_relocation(
+    tx: &Transaction<'_>,
+    unit: UnitId,
+    environment: EnvId,
+    report: Option<&relocate::Report>,
+) -> Result<()> {
+    let Some(report) = report.filter(|report| !report.changed_nothing()) else {
+        return Ok(());
+    };
+    let mut refs = BTreeMap::new();
+    let mut reference = |name: &str, value: String| {
+        if let Ok(name) = RefName::parse(name) {
+            refs.insert(name, value);
+        }
+    };
+    reference("relocator", report.relocator.to_owned());
+    reference("from", report.from.display().to_string());
+    reference("to", report.to.display().to_string());
+    reference("removed", report.removed.len().to_string());
+    events::append(
+        tx,
+        &Event {
+            id: EventId::from_ulid(ulid::Ulid::new()),
+            unit,
+            environment: Some(environment),
+            ts: Timestamp::now(),
+            actor: actor::current()?,
+            kind: EventKind::Note,
+            epistemic: Epistemic::Observed,
+            body: report.describe(),
+            refs,
+            raw_ref: None,
+        },
+    )
 }
 
 /// Finding an interrupted create again, from what the journal kept.
@@ -303,6 +362,55 @@ impl Step for Materialize {
 
     fn undo(&self) -> Result<()> {
         remove_tree(&self.home)
+    }
+}
+
+/// Remove the caches the copy cannot use at the path it is now at.
+///
+/// A fresh unit must not carry a cache keyed to the base's path, and the base is where
+/// such a cache comes from: the install and the build that made it ran there. The
+/// exclusion list keeps one out of the clone where it sits at the root of the tree;
+/// this step is what finds the ones under a second package, and it is what reports the
+/// removal so that the operation can record it.
+struct Relocate {
+    /// The home that was cloned.
+    home: PathBuf,
+    /// The base it was cloned from, which is the path its content was made at.
+    base: PathBuf,
+    /// What is removed, and why.
+    relocator: InvalidateCache,
+    /// Where the report is left for the registry write that ends the operation. A step
+    /// cannot hand a value to the step after it, and this hands nothing to one: the
+    /// commit is not a step, and it is the only place a unit row exists to name.
+    report: Arc<OnceLock<relocate::Report>>,
+}
+
+impl Step for Relocate {
+    fn key(&self) -> String {
+        String::from("home.relocate")
+    }
+
+    /// Repeatable: a second sweep of a home whose caches have gone removes nothing, and
+    /// the report the first one left is the one the commit writes.
+    fn apply(&self) -> Result<()> {
+        let report = self.relocator.relocate(&self.home, &self.base, &self.home)?;
+        if report.changed_nothing() {
+            return Ok(());
+        }
+        tracing::info!(
+            home = %self.home.display(),
+            removed = report.removed.len(),
+            examined = report.examined,
+            "removed caches that record the path they were made at"
+        );
+        let _ = self.report.set(report);
+        Ok(())
+    }
+
+    /// Nothing. What this removed was inside a directory the first step's undo removes,
+    /// and a cache that cannot be used is not something an undo owes anybody back.
+    fn undo(&self) -> Result<()> {
+        Ok(())
     }
 }
 

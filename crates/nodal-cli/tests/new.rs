@@ -12,6 +12,11 @@
 //! anything; and the base the first unit paid for is held against eviction while that
 //! unit exists.
 //!
+//! Two more are about what a home does with the caches the base's build left in it. A
+//! cache that records the path it was made at records the base's path, so a unit
+//! carries the caches that move and none of the caches that do not, and the removal is
+//! in the unit's log rather than only in the code that did it.
+//!
 //! The last two are the ones that need a second process. What makes an interruption
 //! different from a failure is that no code of ours runs afterwards, so the account the
 //! next invocation reads has to have been written down before the kill. Each test runs
@@ -22,12 +27,14 @@
 //! keeps the base, because the base is a prerequisite with a plan of its own and
 //! throwing away a clone and an install is the cost that plan exists to avoid.
 
-#![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use nodal_core::model::{Epistemic, Event, EventKind};
+use nodal_core::store::{Store, events, projects, units};
 use tempfile::TempDir;
 
 /// How long a test waits for a killed run to reach the home it is building.
@@ -65,6 +72,62 @@ impl Workspace {
     /// enough to be interrupted.
     fn with_bulk() -> Self {
         Self::build(BULK_FILES)
+    }
+
+    /// A two-package repository whose base has been built and then left holding the
+    /// caches a build leaves behind.
+    ///
+    /// The caches go in the base, not in the checkout, because that is where they come
+    /// from: the install and the build that wrote them ran there, and every path they
+    /// recorded is the base's. A checkout's copy would never reach a unit at all, since
+    /// a base is a clone of the committed objects and nothing else.
+    fn with_a_base_that_holds_caches() -> Self {
+        let workspace = Self::build(0);
+        workspace.commit_source();
+        stdout(&workspace.nodal(&["base", "build"]));
+        let base = workspace.bases().pop().expect("the base was built");
+        for (relative, content) in [
+            (".next/BUILD_ID", "one"),
+            (".next/cache/webpack/0.pack", "/old/path/of/the/base"),
+            ("apps/web/.next/BUILD_ID", "two"),
+            ("apps/web/.next/cache/webpack/0.pack", "/old/path/of/the/base"),
+            ("apps/web/.turbo/turbo-build.log", "cached"),
+            ("apps/web/scripts/__pycache__/tool.cpython-312.pyc", "compiled"),
+            ("node_modules/react/index.js", "module.exports = {};"),
+        ] {
+            let path = base.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+        workspace
+    }
+
+    /// Commit the second package and the ignore rules its build output needs, so that
+    /// the base's clone carries the source and the caches are the only thing planted.
+    fn commit_source(&self) {
+        std::fs::create_dir_all(self.source.join("apps/web/src")).unwrap();
+        std::fs::write(self.source.join("apps/web/src/page.tsx"), "export default null;\n")
+            .unwrap();
+        std::fs::write(
+            self.source.join(".gitignore"),
+            "node_modules/\n.next/\n.turbo/\n__pycache__/\n",
+        )
+        .unwrap();
+        git(&self.source, &["add", "-A"]);
+        git(&self.source, &["commit", "-qm", "the web package"]);
+    }
+
+    /// The registry, opened for reading what a command wrote.
+    fn store(&self) -> Store {
+        Store::open(self.state.join("registry.db")).unwrap()
+    }
+
+    /// Every event of the one unit this project has.
+    fn events(&self) -> Vec<Event> {
+        let store = self.store();
+        let project = projects::list(store.conn()).unwrap().pop().expect("the project is known");
+        let unit = units::list(store.conn(), project.id).unwrap().pop().expect("a unit was made");
+        events::list_for_unit(store.conn(), unit.id).unwrap()
     }
 
     /// A repository, its one commit, and however many bulk files were asked for.
@@ -403,4 +466,56 @@ fn wait_for_a_base_directory(workspace: &Workspace, child: &mut Child) {
 fn kill(child: &mut Child) {
     child.kill().unwrap();
     child.wait().unwrap();
+}
+
+#[test]
+fn a_unit_carries_the_caches_that_move_and_none_of_the_caches_that_do_not() {
+    let workspace = Workspace::with_a_base_that_holds_caches();
+    stdout(&workspace.nodal(&["new", "--name", "cache-check"]));
+    let home = workspace.units().pop().unwrap();
+
+    for gone in [".next/cache", "apps/web/.next/cache", "apps/web/scripts/__pycache__"] {
+        assert!(!home.join(gone).exists(), "{gone} records the path the base was built at");
+    }
+    // The one at the root was left out of the clone, which is what the table's row for
+    // it does. The two under the second package are the relocator's work: an exclusion
+    // list is read from the root of the tree and reaches neither.
+    for kept in [".next/BUILD_ID", "apps/web/.next/BUILD_ID", "apps/web/.turbo/turbo-build.log"] {
+        assert!(home.join(kept).is_file(), "{kept} moves without trouble and is kept warm");
+    }
+    assert!(home.join("apps/web/src/page.tsx").is_file());
+    assert!(home.join("node_modules/react/index.js").is_file(), "the dependencies move");
+}
+
+#[test]
+fn the_removal_of_a_cache_is_one_line_of_the_unit_own_log() {
+    let workspace = Workspace::with_a_base_that_holds_caches();
+    stdout(&workspace.nodal(&["new", "--name", "cache-check"]));
+    let home = workspace.units().pop().unwrap();
+    let base = workspace.bases().pop().unwrap();
+
+    let events = workspace.events();
+    assert_eq!(events.len(), 1, "the removal is one line of the unit's log: {events:?}");
+    let event = &events[0];
+    assert_eq!(event.kind, EventKind::Note);
+    assert_eq!(event.epistemic, Epistemic::Observed, "nodal watched itself do it");
+    assert!(event.body.contains("apps/web/.next/cache"), "{}", event.body);
+    assert!(event.body.contains("apps/web/scripts/__pycache__"), "{}", event.body);
+    assert!(event.body.contains(home.to_str().unwrap()), "{}", event.body);
+    assert_eq!(reference(event, "removed"), Some("2"), "{:?}", event.refs);
+    assert_eq!(reference(event, "relocator"), Some("invalidate"));
+    assert_eq!(reference(event, "from"), base.to_str(), "the path the caches were made at");
+    assert_eq!(reference(event, "to"), home.to_str());
+}
+
+#[test]
+fn a_unit_made_from_a_base_with_no_stale_cache_has_nothing_to_report() {
+    let workspace = Workspace::new();
+    stdout(&workspace.nodal(&["new", "--name", "nothing-to-say"]));
+    assert!(workspace.events().is_empty(), "a log line saying nothing happened is noise");
+}
+
+/// One of an event's named references, as text.
+fn reference<'a>(event: &'a Event, name: &str) -> Option<&'a str> {
+    event.refs.get(&name.parse().unwrap()).map(String::as_str)
 }

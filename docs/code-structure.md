@@ -96,7 +96,7 @@ workspace/
   reflink.rs           Linux FICLONE walk
   btrfs.rs             subvolume snapshot
   copy.rs              fallback
-  relocate.rs          CacheRelocator trait + InvalidateNextCache (+ optional rewrite)
+  relocate.rs          CacheRelocator trait + InvalidateCache (rewrite reserved, not built)
   home.rs              where Nodal keeps its state, and where a home goes inside it (pure paths)
 
 services/

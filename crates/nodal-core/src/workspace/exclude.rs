@@ -14,10 +14,13 @@
 //!   directory in `base.exclude`, which is added to this list.
 //! * The content names its own absolute path, so a copy at a new path is wrong rather
 //!   than only stale. A build cache of this kind must be rebuilt after a move, and a
-//!   copy of it wastes the blocks and the trust.
+//!   copy of it wastes the blocks and the trust. This list is read from the root of the
+//!   tree, so it reaches such a directory where it sits at the root and no further;
+//!   [`super::relocate`] is what finds the rest, once the copy is made.
 //!
-//! A row's `keep` value is the whole policy. Moving one is a one-word change, next to
-//! the reason it holds.
+//! The word a row is written with is the whole policy: `kept`, `dropped`, and
+//! `dropped_everywhere` where no copy of the directory is usable at any path. Moving a
+//! row is a one-word change, next to the reason it holds.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -29,40 +32,72 @@ pub struct Row {
     pub path: &'static str,
     /// Whether a unit home receives it. `false` puts the row in the default list.
     pub keep: bool,
+    /// Whether a copy of it at another path must be removed rather than trusted.
+    ///
+    /// This list is anchored at the root of the tree, so it reaches the copy of such a
+    /// directory that sits at the root and no other. A row marked here is also what
+    /// [`super::relocate`] looks for anywhere under a home, which is how the copy under
+    /// the second package of a repository, and the one Python writes beside every
+    /// source file, are found.
+    pub invalidate: bool,
     /// Why, in the words a report uses.
     pub reason: &'static str,
 }
 
+/// A row a unit home receives.
+const fn kept(path: &'static str, reason: &'static str) -> Row {
+    Row { path, keep: true, invalidate: false, reason }
+}
+
+/// A row a clone leaves out. The copy at the root of the tree is the one it reaches.
+const fn dropped(path: &'static str, reason: &'static str) -> Row {
+    Row { path, keep: false, invalidate: false, reason }
+}
+
+/// A row a clone leaves out and a home removes wherever under it the directory sits.
+const fn dropped_everywhere(path: &'static str, reason: &'static str) -> Row {
+    Row { path, keep: false, invalidate: true, reason }
+}
+
 /// Every directory this class of tool treats as generated state, and Nodal's answer for
-/// each one. The rows with `keep: false` are [`Excludes::default`].
+/// each one. The rows that are not [`kept`] are [`Excludes::default`].
 pub const ROWS: &[Row] = &[
     // Not this project's content.
-    Row {
-        path: ".claude/worktrees",
-        keep: false,
-        reason: "checkouts another tool made, which the clone would multiply",
-    },
-    Row { path: ".nodal", keep: false, reason: "the state of the copy it was found in" },
-    Row { path: "test-results", keep: false, reason: "output of a run that did not happen here" },
-    Row { path: "coverage", keep: false, reason: "output of a run that did not happen here" },
-    // Content that names its own absolute path.
-    Row { path: ".next/cache", keep: false, reason: "a build cache that records its own path" },
-    Row { path: "__pycache__", keep: false, reason: "compiled modules that record their own path" },
+    dropped(".claude/worktrees", "checkouts another tool made, which the clone would multiply"),
+    dropped(".nodal", "the state of the copy it was found in"),
+    dropped("test-results", "output of a run that did not happen here"),
+    dropped("coverage", "output of a run that did not happen here"),
+    // Content that names its own absolute path, so no copy of it is usable anywhere.
+    dropped_everywhere(".next/cache", "a build cache that records its own path"),
+    dropped_everywhere("__pycache__", "compiled modules that record their own path"),
     // Content Nodal clones on purpose. A copy-on-write clone of it costs no blocks.
-    Row { path: "node_modules", keep: true, reason: "installed dependencies, kept warm" },
-    Row { path: ".pnpm-store", keep: true, reason: "the dependency store, kept warm" },
-    Row { path: ".venv", keep: true, reason: "installed dependencies, kept warm" },
-    Row { path: "target", keep: true, reason: "build output, kept warm" },
-    Row { path: "dist", keep: true, reason: "build output, kept warm" },
-    Row { path: "build", keep: true, reason: "build output, kept warm" },
-    Row { path: ".next", keep: true, reason: "build output, kept warm without its cache" },
-    Row { path: ".nuxt", keep: true, reason: "build output, kept warm" },
-    Row { path: ".svelte-kit", keep: true, reason: "build output, kept warm" },
-    Row { path: ".turbo", keep: true, reason: "a task cache, kept warm" },
-    Row { path: ".vite", keep: true, reason: "a task cache, kept warm" },
-    Row { path: ".parcel-cache", keep: true, reason: "a task cache, kept warm" },
-    Row { path: ".cache", keep: true, reason: "a task cache, kept warm" },
+    //
+    // Some of it records absolute paths too: a Cargo `target` directory holds the path
+    // it was built at, and a build at a new path starts cold. That is stale, not wrong.
+    // The tool reads its own record, sees the change and rebuilds, and the copy cost no
+    // blocks to carry, so the row is kept whole.
+    kept("node_modules", "installed dependencies, kept warm"),
+    kept(".pnpm-store", "the dependency store, kept warm"),
+    kept(".venv", "installed dependencies, kept warm"),
+    kept("target", "build output, kept warm"),
+    kept("dist", "build output, kept warm"),
+    kept("build", "build output, kept warm"),
+    kept(".next", "build output, kept warm without its cache"),
+    kept(".nuxt", "build output, kept warm"),
+    kept(".svelte-kit", "build output, kept warm"),
+    kept(".turbo", "a task cache, kept warm"),
+    kept(".vite", "a task cache, kept warm"),
+    kept(".parcel-cache", "a task cache, kept warm"),
+    kept(".cache", "a task cache, kept warm"),
 ];
+
+/// The rows a home must not keep at a path other than the one they were made at.
+///
+/// [`super::relocate`] is what acts on them, after a clone rather than during one.
+#[must_use]
+pub fn invalidated() -> Vec<&'static Row> {
+    ROWS.iter().filter(|row| row.invalidate).collect()
+}
 
 /// The paths a clone leaves out.
 ///
@@ -131,7 +166,7 @@ impl Excludes {
 
 /// `path` as a plain relative path, or `None` when it cannot name anything inside a
 /// tree: an absolute path, an empty one, or one that starts by climbing out.
-fn normalise(path: &Path) -> Option<PathBuf> {
+pub(super) fn normalise(path: &Path) -> Option<PathBuf> {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
@@ -157,6 +192,18 @@ mod tests {
                 !list.excludes(Path::new(row.path)),
                 row.keep,
                 "{} is in the wrong list",
+                row.path
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_a_home_must_not_keep_is_also_a_row_a_clone_leaves_out() {
+        let list = Excludes::default_list();
+        for row in super::invalidated() {
+            assert!(
+                !row.keep && list.excludes(Path::new(row.path)),
+                "{} is invalidated after a clone but carried by one",
                 row.path
             );
         }

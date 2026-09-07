@@ -130,6 +130,8 @@ fn base(out: &mut String, recipe: &Recipe) {
     section(out, "base");
     out.push_str("# Paths no unit home receives. Regenerated output belongs here.\n");
     key_paths(out, "exclude", &recipe.base.exclude);
+    out.push_str("# Paths a home removes because their content records the path it was made at.\n");
+    key_paths(out, "invalidate", &recipe.base.invalidate);
 }
 
 /// The keys that are policy rather than fact. Anything unset is written as the default

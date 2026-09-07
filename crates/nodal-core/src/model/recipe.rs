@@ -210,6 +210,11 @@ pub struct Env {
 pub struct BaseSpec {
     /// Paths, relative to the project root, that no unit home receives.
     pub exclude: Vec<PathBuf>,
+    /// Paths whose content records the directory it was made in, so that a copy of it
+    /// at a new path is removed rather than trusted. A path is matched wherever it
+    /// sits under a home, not only at the root, because a repository of more than one
+    /// package keeps one such directory under each of them.
+    pub invalidate: Vec<PathBuf>,
 }
 
 /// Commands the project runs around lifecycle operations. They receive the `NODAL_*`

@@ -71,7 +71,7 @@ would make the next clone copy a copy.
 
 ## `nodal.toml`
 `backend`, `package_manager`, `commands.{dev,build,test,migrate,seed}`, `toolchain`, `db.{kind,url_var}`,
-`services.{shared,per_unit}`, `env.{required_local,generated,secrets}`, `base.exclude`,
+`services.{shared,per_unit}`, `env.{required_local,generated,secrets}`, `base.{exclude,invalidate}`,
 `hooks.{pre_new,post_new,pre_reclaim,post_reclaim}`, `sync.auto_irreversible`, `reclaim.trash_retention`
 (in days). Alongside those, and additive to them: `package_manager_pin`, `monorepo`, `task_cache`,
 `dockerfile`, `compose`, `commands.{lint,typecheck,reset}`, `db.{tool,migrations_dir,fixed_ports}`.
