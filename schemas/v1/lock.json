@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "HostName": {
+      "description": "The name of a host a unit can live on.",
+      "maxLength": 255,
+      "pattern": "^[\\x21-\\x7E]+$",
+      "type": "string"
+    },
+    "Timestamp": {
+      "description": "A UTC instant, serialised as an RFC 3339 string.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "UnitId": {
+      "description": "Identifies a `WorkUnit`. Stable for the life of the work, across machines.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/lock.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The single-writer claim on a unit. V1 runs on one host at a time; the lock exists so\nthat a unit moved to another machine cannot be written from both.",
+  "properties": {
+    "expires_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When the claim lapses unless renewed."
+    },
+    "host": {
+      "$ref": "#/$defs/HostName",
+      "description": "The host that holds the write."
+    },
+    "unit_id": {
+      "$ref": "#/$defs/UnitId",
+      "description": "The unit being held."
+    }
+  },
+  "required": [
+    "unit_id",
+    "host",
+    "expires_at"
+  ],
+  "title": "Lock",
+  "type": "object"
+}

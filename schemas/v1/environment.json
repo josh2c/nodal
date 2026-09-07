@@ -1,0 +1,201 @@
+{
+  "$defs": {
+    "BaseId": {
+      "description": "Identifies a warm base: the substrate a unit's home is cloned from.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "DbName": {
+      "description": "A database name Nodal created and may therefore drop.",
+      "maxLength": 63,
+      "pattern": "^[a-z_][a-z0-9_]*$",
+      "type": "string"
+    },
+    "Digest": {
+      "description": "A content digest, lowercase hex. The algorithm is the fingerprint module's\nchoice; the model only fixes the form.",
+      "maxLength": 128,
+      "pattern": "^[0-9a-f]+$",
+      "type": "string"
+    },
+    "EnvId": {
+      "description": "Identifies one materialisation of a unit. A unit re-materialised after reclaim\ngets a new environment, not a new unit.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "EnvState": {
+      "description": "Whether an environment exists on disk and whether anything is running in it.",
+      "oneOf": [
+        {
+          "const": "absent",
+          "description": "Recorded but not materialised, or reclaimed.",
+          "type": "string"
+        },
+        {
+          "const": "stopped",
+          "description": "On disk, nothing running.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "On disk with attributed processes.",
+          "type": "string"
+        }
+      ]
+    },
+    "HostName": {
+      "description": "The name of a host a unit can live on.",
+      "maxLength": 255,
+      "pattern": "^[\\x21-\\x7E]+$",
+      "type": "string"
+    },
+    "Ports": {
+      "additionalProperties": false,
+      "description": "The ports allocated to an environment, by the name the recipe gave them.",
+      "patternProperties": {
+        "^[\\x21-\\x7E]+$": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "SchemaFp": {
+      "$ref": "#/$defs/Digest",
+      "description": "The key a database template is stored under."
+    },
+    "Timestamp": {
+      "description": "A UTC instant, serialised as an RFC 3339 string.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "UnitId": {
+      "description": "Identifies a `WorkUnit`. Stable for the life of the work, across machines.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "WorkspaceFp": {
+      "$ref": "#/$defs/Digest",
+      "description": "The key a warm base is stored under."
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/environment.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One home directory, its services and how current it is.\n\n`ws_fp_materialized` and `schema_fp_materialized` are what was installed here, not\nwhat the tree now asks for: staleness is the difference between the two, computed\nwhen it matters. Whether the tree is dirty is never stored.",
+  "properties": {
+    "attempt": {
+      "description": "Which materialisation of that unit this is, counting from one.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "base_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BaseId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The base the home was cloned from, when it was cloned from one."
+    },
+    "created_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When the environment was created."
+    },
+    "db_name": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DbName"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The per-unit database, when the stack has one."
+    },
+    "fixed_port": {
+      "description": "A port the project pins and only one environment may hold at a time.",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "home": {
+      "description": "The home directory.",
+      "type": "string"
+    },
+    "host": {
+      "$ref": "#/$defs/HostName",
+      "description": "The host that holds the writable copy."
+    },
+    "id": {
+      "$ref": "#/$defs/EnvId",
+      "description": "Identity of the environment."
+    },
+    "last_active": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "Last observed activity in it."
+    },
+    "managed": {
+      "description": "False for a directory adopted in place, which Nodal did not create and will\nnever remove.",
+      "type": "boolean"
+    },
+    "ports": {
+      "$ref": "#/$defs/Ports",
+      "description": "Ports allocated from the project's block."
+    },
+    "schema_fp_materialized": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SchemaFp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The schema fingerprint actually present in the database here."
+    },
+    "state": {
+      "$ref": "#/$defs/EnvState",
+      "description": "Whether the home exists and whether anything runs in it."
+    },
+    "unit_id": {
+      "$ref": "#/$defs/UnitId",
+      "description": "The unit this is a materialisation of."
+    },
+    "ws_fp_materialized": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkspaceFp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The workspace fingerprint actually installed here."
+    }
+  },
+  "required": [
+    "id",
+    "unit_id",
+    "attempt",
+    "home",
+    "managed",
+    "host",
+    "ports",
+    "state",
+    "created_at",
+    "last_active"
+  ],
+  "title": "Environment",
+  "type": "object"
+}

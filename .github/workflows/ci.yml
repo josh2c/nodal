@@ -21,6 +21,16 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
+  schemas:
+    name: schemas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: schemas/ is what the model generates
+        run: ci/schema-diff.sh
+
   deny:
     name: deny
     runs-on: ubuntu-latest
@@ -74,5 +84,4 @@ jobs:
       - name: nodal --version from the release artifact
         run: ci/acceptance-version.sh artifact/nodal
 
-# Returning with the tasks that create what they check:
-#   schema export diff (T0.2 model + schemas/), safety suite (tests/safety, T1.13).
+# Returning with the task that creates what it checks: safety suite (tests/safety).

@@ -1,0 +1,82 @@
+{
+  "$defs": {
+    "DbName": {
+      "description": "A database name Nodal created and may therefore drop.",
+      "maxLength": 63,
+      "pattern": "^[a-z_][a-z0-9_]*$",
+      "type": "string"
+    },
+    "Digest": {
+      "description": "A content digest, lowercase hex. The algorithm is the fingerprint module's\nchoice; the model only fixes the form.",
+      "maxLength": 128,
+      "pattern": "^[0-9a-f]+$",
+      "type": "string"
+    },
+    "ProjectId": {
+      "description": "Identifies a project: one Git repository Nodal manages units for.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "SchemaFp": {
+      "$ref": "#/$defs/Digest",
+      "description": "The key a database template is stored under."
+    },
+    "TemplateId": {
+      "description": "Identifies a frozen database template.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "Timestamp": {
+      "description": "A UTC instant, serialised as an RFC 3339 string.",
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/db_template.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A migrated and seeded database, frozen so that a new unit's database is a copy\nrather than a migrate-and-seed run.",
+  "properties": {
+    "built_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When the freeze completed."
+    },
+    "db_name": {
+      "$ref": "#/$defs/DbName",
+      "description": "The database that holds the frozen state."
+    },
+    "id": {
+      "$ref": "#/$defs/TemplateId",
+      "description": "Identity of the template."
+    },
+    "parent_template_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TemplateId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The template this one was built from by forward migrations, when it was not\nbuilt from empty."
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId",
+      "description": "The project this template belongs to."
+    },
+    "schema_fingerprint": {
+      "$ref": "#/$defs/SchemaFp",
+      "description": "The schema fingerprint this template is current for."
+    }
+  },
+  "required": [
+    "id",
+    "project_id",
+    "schema_fingerprint",
+    "db_name",
+    "built_at"
+  ],
+  "title": "DbTemplate",
+  "type": "object"
+}

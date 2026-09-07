@@ -2,6 +2,9 @@
 
 Stable surfaces that other tools can rely on. Changing one requires a documented decision and a version bump.
 
+Machine-readable form: the types behind these surfaces are published as JSON Schema in
+`schemas/v1/`, generated from the model and diffed in CI (`schemas/README.md`).
+
 ## Directory contract
 A unit's home contains `.nodal/id` (marker, verified against the registry), `.nodal/env` (dotenv),
 `.nodal/manifest.toml`, `WORKUNIT.md` (facts about the unit and its siblings), `.envrc` (`dotenv .nodal/env`),

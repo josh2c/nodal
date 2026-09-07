@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "EnvId": {
+      "description": "Identifies one materialisation of a unit. A unit re-materialised after reclaim\ngets a new environment, not a new unit.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "ResourceKey": {
+      "description": "What is being held, as `kind:value`, for example `port:5432` or `device:usb0`.",
+      "maxLength": 255,
+      "pattern": "^[\\x21-\\x7E]+$",
+      "type": "string"
+    },
+    "Timestamp": {
+      "description": "A UTC instant, serialised as an RFC 3339 string.",
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/lease.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A claim on a singular resource. It expires so that a crashed session cannot hold a\nfixed port forever.",
+  "properties": {
+    "environment_id": {
+      "$ref": "#/$defs/EnvId",
+      "description": "The environment holding it."
+    },
+    "expires_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When the claim lapses unless renewed."
+    },
+    "resource": {
+      "$ref": "#/$defs/ResourceKey",
+      "description": "The resource being held."
+    }
+  },
+  "required": [
+    "resource",
+    "environment_id",
+    "expires_at"
+  ],
+  "title": "Lease",
+  "type": "object"
+}
