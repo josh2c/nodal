@@ -12,8 +12,14 @@
 #      fails when that takes longer than NODAL_FIXTURE_BUDGET_SECONDS (default 60).
 #
 # Its own suite, linter and type-checker run after the timed section: they prove the
-# commands the recipe names are commands that run, but they are not the build.
+# commands the recipe names are commands that run, but they are not the build. Every
+# one of them is dependency-free or already installed, so none of them adds to it.
 set -eu
+
+# Neither tool phones home from CI, and neither does so inside the timed section.
+export DO_NOT_TRACK=1
+export NEXT_TELEMETRY_DISABLED=1
+export TURBO_TELEMETRY_DISABLED=1
 
 budget=${NODAL_FIXTURE_BUDGET_SECONDS:-60}
 root=$(mktemp -d)

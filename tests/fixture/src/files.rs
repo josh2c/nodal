@@ -27,7 +27,6 @@ pub(crate) const TURBO_JSON: &str = r#"{
       "outputs": [".next/**", "!.next/cache/**", "dist/**"]
     },
     "typecheck": { "dependsOn": ["^build"] },
-    "lint": {},
     "dev": { "cache": false, "persistent": true }
   }
 }
@@ -49,7 +48,7 @@ pub(crate) const PACKAGE_JSON: &str = r#"{
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
-    "lint": "turbo run lint",
+    "lint": "node --check scripts/db.mjs && node --check tests/thing.test.mjs",
     "typecheck": "turbo run typecheck",
     "test": "node --test tests/*.test.mjs",
     "db:migrate": "node scripts/db.mjs migrate",
@@ -132,7 +131,7 @@ FROM node:22-slim
 WORKDIR /app
 COPY . .
 RUN corepack enable && pnpm install --frozen-lockfile && pnpm run build
-CMD [\"node\", \"apps/web/.next/standalone/apps/web/server.js\"]
+CMD [\"pnpm\", \"--filter\", \"@fixture/web\", \"start\"]
 ";
 
 /// The declared environment. Every name is either generated per working copy or a
@@ -259,7 +258,7 @@ pub(crate) const WEB_PACKAGE_JSON: &str = r#"{
   "scripts": {
     "dev": "next dev --port ${PORT:-3000}",
     "build": "next build",
-    "lint": "oxlint app",
+    "start": "next start --port ${PORT:-3000}",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -271,16 +270,16 @@ pub(crate) const WEB_PACKAGE_JSON: &str = r#"{
   "devDependencies": {
     "@types/node": "22.20.1",
     "@types/react": "19.2.18",
-    "oxlint": "1.81.0",
     "typescript": "5.9.3"
   }
 }
 "#;
 
-/// A standalone build, so the output is a server a working copy can actually start.
+/// A plain build. `next start` serves it, which is what a working copy runs; a
+/// standalone one traces every file under `node_modules` and is most of the build.
 pub(crate) const WEB_NEXT_CONFIG: &str = "\
 /** @type {import('next').NextConfig} */
-export default { output: \"standalone\" };
+export default {};
 ";
 
 /// The compiler options Next would otherwise write into the file on first build.
@@ -354,12 +353,10 @@ pub(crate) const CONFIG_PACKAGE_JSON: &str = r#"{
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "lint": "oxlint src",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@types/node": "22.20.1",
-    "oxlint": "1.81.0",
     "typescript": "5.9.3"
   }
 }
