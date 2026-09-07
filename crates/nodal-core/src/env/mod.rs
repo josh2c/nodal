@@ -1,7 +1,7 @@
 //! Activation: the environment a unit's home carries, and the files that deliver it.
 //!
 //! A home is activated when a shell that enters it has the unit's variables. Nodal
-//! spawns no subshell for that (DL-010): it writes two files and lets the tools a
+//! spawns no subshell for that: it writes two files and lets the tools a
 //! person already has read them. `.nodal/env` is a dotenv file with the resolved set,
 //! and `.envrc` is one line, `dotenv .nodal/env`, which direnv acts on. A shell with no
 //! direnv gets the same set from `nodal env --export`, which is the fallback the rc

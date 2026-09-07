@@ -27,8 +27,8 @@ A **WorkUnit** is a branch with a home directory and a memory.
 | Platform | Backend |
 | --- | --- |
 | macOS (APFS) | `clonefile` per entry, filtered walk for excludes |
-| Linux (btrfs) | subvolume snapshots and reflink copies |
-| Linux (XFS and other reflink filesystems) | `FICLONE` per file |
+| Linux (btrfs, XFS, bcachefs) | `FICLONE` per file, into a directory of its own |
+| Any other filesystem | a copy of the bytes, with a warning |
 | Windows | via WSL2, as Linux |
 
 ## Commands
