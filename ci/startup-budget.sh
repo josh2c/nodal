@@ -1,0 +1,62 @@
+#!/usr/bin/env sh
+# Acceptance test for T0.12: the release binary starts inside the startup budget.
+#
+# The project sets a 5 ms cold-start budget for the hot paths. This gate measures the fast
+# path that exists today, `nodal --version`, and fails when its median is over the
+# threshold below. It prints every number on every run, pass or fail, so the record a
+# later recalibration needs is in the log of any green run.
+#
+# The threshold is not the budget. `benches/startup` times a whole spawn from the
+# parent, so each number includes the fork and exec the parent pays for, whatever it
+# spawns. A shared CI runner charges more for that than a workstation does. The gate
+# therefore allows the budget plus the runner's own spawn cost:
+#
+#   threshold = 5 ms budget + measured runner spawn overhead, rounded up
+#             = 5 ms + 0.497 ms -> 5.5 ms
+#
+# The overhead is measured, not assumed: the script times the same number of spawns of
+# a binary that does nothing (`true`) and prints that median as the reference. The
+# reference is reported, never gated on, because it says how the runner is behaving and
+# not how Nodal is behaving. When the reference median moves far from the number the
+# threshold was calibrated against, recalibrate the threshold and record the new numbers.
+#
+# Calibrated on a GitHub-hosted ubuntu-24.04 runner, 2026-09-07, 200 runs after 20
+# warm-up runs (see spikes/RESULTS.md, T0.12):
+#   reference `true`  median 0.497 ms, p95 0.588 ms, max 0.683 ms
+#   `nodal --version` median 0.802 ms, p95 0.889 ms, max 0.987 ms
+#
+# The gate has wide headroom because 5 ms is a budget, not the current cost. It catches
+# a binary that grows into the budget. It does not catch a small regression; a tighter
+# number for that is a separate decision, not this one.
+#
+# Usage: ci/startup-budget.sh [path-to-nodal]
+# Environment:
+#   NODAL_STARTUP_THRESHOLD_MS  the number the median must stay under
+#   NODAL_STARTUP_RUNS          how many runs the median is taken over
+#   NODAL_STARTUP_WARMUP        how many runs are discarded first
+set -eu
+
+threshold=${NODAL_STARTUP_THRESHOLD_MS:-5.5}
+runs=${NODAL_STARTUP_RUNS:-200}
+warmup=${NODAL_STARTUP_WARMUP:-20}
+
+bench=$(cargo build --release --locked -q -p nodal-startup-bench --message-format=json \
+  | sed -n 's/.*"executable":"\([^"]*nodal-startup-bench\)".*/\1/p' | head -n 1)
+[ -n "$bench" ] || { echo "startup: the harness did not build" >&2; exit 1; }
+
+bin=${1:-}
+if [ -z "$bin" ]; then
+  cargo build --release --locked -q -p nodal-cli
+  bin=$(dirname "$bench")/nodal
+fi
+
+# The runner's own cost to spawn anything. Reported, never gated on.
+reference=/usr/bin/true
+[ -x "$reference" ] || reference=/bin/true
+if [ -x "$reference" ]; then
+  "$bench" --runs "$runs" --warmup "$warmup" --report-only "$reference"
+else
+  echo "startup: no reference binary on this machine; overhead not reported"
+fi
+
+"$bench" --runs "$runs" --warmup "$warmup" --threshold-ms "$threshold" "$bin" --version

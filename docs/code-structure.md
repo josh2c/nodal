@@ -15,6 +15,7 @@ nodal/
 ├── README.md
 ├── docs/                      contracts, code structure, scenarios
 ├── benches/                   startup and materialization benchmarks with recorded results
+│   └── startup/               spawns a binary N times, reports the median, gates on it
 ├── schemas/                   generated JSON schemas (committed, diffed in CI)
 ├── shims/                     tiny shell scripts: PATH shims, per-unit git hooks, rc hook, .envrc template
 ├── tests/                     workspace-level integration and safety suites

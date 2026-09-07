@@ -12,6 +12,12 @@ cargo deny check
 
 CI runs the same gates. The `ci/` directory holds the acceptance scripts CI runs; each one also runs locally.
 
+## Performance rules
+
+The hot paths have a 5 ms cold-start budget. `ci/startup-budget.sh` measures the
+release binary and fails above a threshold calibrated for the CI runner. Read the top of that
+script before you change the threshold. The harness is `benches/startup`.
+
 ## Code rules
 
 See `docs/code-structure.md`. The short version:
