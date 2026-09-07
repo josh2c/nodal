@@ -31,6 +31,16 @@ jobs:
       - name: schemas/ is what the model generates
         run: ci/schema-diff.sh
 
+  acceptance-recipe:
+    name: acceptance (recipe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: the fixture project infers with zero gaps
+        run: ci/acceptance-recipe.sh
+
   deny:
     name: deny
     runs-on: ubuntu-latest

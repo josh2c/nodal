@@ -1,6 +1,7 @@
 //! The `nodal` binary: parse arguments, dispatch, print. No behaviour lives here.
 
 mod cli;
+mod commands;
 
 use std::process::ExitCode;
 

@@ -12,7 +12,9 @@ use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use serde_json::Value;
 
-use crate::model::{Base, DbTemplate, Environment, Event, Lease, Lock, Project, Session, Unit};
+use crate::model::{
+    Base, DbTemplate, Environment, Event, Lease, Lock, Project, Recipe, Session, Unit,
+};
 
 /// The version of the schema set. Bumped only for a breaking change.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -76,6 +78,7 @@ pub fn catalog() -> Vec<SchemaDoc> {
         document::<Event>("event"),
         document::<Lease>("lease"),
         document::<Lock>("lock"),
+        document::<Recipe>("recipe"),
     ]
 }
 

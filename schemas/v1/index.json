@@ -54,6 +54,12 @@
       "file": "lock.json",
       "name": "lock",
       "type": "Lock"
+    },
+    {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/recipe.json",
+      "file": "recipe.json",
+      "name": "recipe",
+      "type": "Recipe"
     }
   ],
   "version": 1
