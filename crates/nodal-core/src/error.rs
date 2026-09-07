@@ -415,6 +415,13 @@ pub enum Error {
         name: String,
     },
 
+    /// The directory a command was run in belongs to no recorded project.
+    #[error("{path} is in no project Nodal knows; run `nodal new` in the project first", path = path.display())]
+    ProjectNotFound {
+        /// The directory the command was run in.
+        path: std::path::PathBuf,
+    },
+
     /// No unit of any project has the slug that was given.
     #[error("no unit is called {slug:?}")]
     UnitNotFound {

@@ -557,10 +557,17 @@ fn remove_tree(path: &Path) -> Result<()> {
 /// definition of "which project is this" is the point: two would let a base and the
 /// unit cloned from it belong to different projects.
 ///
+/// The root is recorded with its symbolic links resolved ([`guard::resolve`]), because
+/// a project is a tree and not a name for one. A command run in the project reaches the
+/// row by the name the operating system gives a running process, which on macOS is the
+/// resolved one whatever the person typed.
+///
 /// # Errors
 /// [`Error::Render`] when the recipe could not be digested, and whatever the registry
 /// reports.
 pub fn ensure_project(store: &mut Store, root: &Path, recipe: &Recipe) -> Result<Project> {
+    let root = guard::resolve(root);
+    let root = root.as_path();
     if let Some(found) = projects::find_by_root(store.conn(), root)? {
         return Ok(found);
     }

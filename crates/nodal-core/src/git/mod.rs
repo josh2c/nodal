@@ -6,6 +6,7 @@
 //! detection, for adopting an existing checkout in place.
 
 pub mod cmd;
+pub mod integration;
 pub mod oid;
 pub mod preflight;
 pub mod refs;
@@ -17,6 +18,7 @@ pub mod worktree;
 
 use std::path::{Path, PathBuf};
 
+pub use self::integration::{Divergence, Integration, Standing};
 pub use self::oid::Oid;
 use crate::error::{Error, Result};
 
@@ -49,6 +51,17 @@ impl Git {
         } else {
             Err(Error::NotARepository { path: git.root })
         }
+    }
+
+    /// Open a repository at `root` without asking Git whether it is one.
+    ///
+    /// [`Git::open`] spends a `git` invocation to answer a question the next invocation
+    /// answers anyway. A reader that is about to run a command, and that reports what
+    /// that command said, uses this instead: the list asks about ten homes and pays for
+    /// one process each rather than two.
+    #[must_use]
+    pub fn at(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
     }
 
     /// The directory every invocation runs in.
@@ -153,6 +166,19 @@ impl Git {
             &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
         )?;
         status::parse(&output.args, &output.records()?)
+    }
+
+    /// Where the checked-out branch stands against `base`: how far it has moved, and
+    /// what merging it into `base` would do.
+    ///
+    /// This is what a list reports as a unit's integration. It reads history and trees
+    /// and writes nothing a `git gc` does not collect.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `base` is not a revision this repository has,
+    /// [`Error::GitParse`] when a count or a tree identifier could not be read.
+    pub fn standing(&self, base: &str) -> Result<integration::Standing> {
+        integration::standing(&self.root, base)
     }
 
     /// The branch HEAD names, `None` when HEAD is detached.

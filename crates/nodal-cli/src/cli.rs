@@ -16,6 +16,7 @@ use crate::commands::base::Base;
 use crate::commands::cd::Cd;
 use crate::commands::env::Env;
 use crate::commands::init::Init;
+use crate::commands::ls::Ls;
 use crate::commands::new::New;
 use crate::commands::ps::Ps;
 use crate::commands::run::Run;
@@ -31,6 +32,8 @@ pub enum Command {
     Env(Env),
     /// Make a unit: a branch, a home cloned from the project, and the rows for both.
     New(New),
+    /// List every unit of the project: its work, its integration, and who is in it.
+    Ls(Ls),
     /// Print the home of a unit, and enter it when the shell function is installed.
     Cd(Cd),
     /// Print the shell integration for bash, zsh or fish.
@@ -84,20 +87,34 @@ impl Cli {
             Some(Command::Init(init)) => init.run(),
             Some(Command::Env(env)) => env.run(),
             Some(Command::New(new)) => new.run(&mut self.registry()?),
+            Some(Command::Ls(ls)) => ls.run(&self.registry()?),
             Some(Command::Cd(cd)) => cd.run(&self.registry()?),
             Some(Command::Run(run)) => run.run(&self.registry()?),
             Some(Command::Ps(ps)) => ps.run(&self.registry()?),
             Some(Command::ShellInit(init)) => init.run(),
             Some(Command::Shell(shell)) => shell.run(),
             Some(Command::Base(base)) => base.run(&mut self.registry()?),
-            None => {
-                let (store, no_hooks) = (&self.store, self.no_hooks);
-                tracing::debug!(?store, no_hooks, "no subcommand given");
-                // A bare invocation prints the surface it has, rather than nothing.
-                Self::command().print_help().map_err(nodal_core::Error::io("<stdout>"))?;
-                Ok(ExitCode::SUCCESS)
-            }
+            None => self.bare(),
         }
+    }
+
+    /// A bare `nodal` is `nodal ls`, and the help where there is no list to print.
+    ///
+    /// The list is what a person wants from the word on its own once they have units. A
+    /// directory in no project has none, and that person has not started yet, so they
+    /// get the surface instead of an error.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the registry or Git reported.
+    fn bare(&self) -> nodal_core::Result<ExitCode> {
+        let listing = Ls::default();
+        if let Some(answer) = listing.answer(&self.registry()?)? {
+            return listing.print(&answer);
+        }
+        tracing::debug!("no subcommand given and no project here");
+        Self::command().print_help().map_err(nodal_core::Error::io("<stdout>"))?;
+        Ok(ExitCode::SUCCESS)
     }
 
     /// The registry this invocation works on, with every interrupted operation dealt

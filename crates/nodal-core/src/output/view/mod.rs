@@ -25,5 +25,5 @@ pub use crate::output::view::init::InitReport;
 pub use crate::output::view::ps::Ps;
 pub use crate::output::view::status::{SharedResource, Status};
 pub use crate::output::view::unit::{
-    EnvLine, Freshness, Running, UnitDetail, UnitList, UnitRow, WorkTree,
+    EnvLine, Freshness, Remote, Running, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
 };

@@ -8,6 +8,7 @@ pub mod base;
 pub mod cd;
 pub mod env;
 pub mod init;
+pub mod ls;
 pub mod new;
 pub mod ps;
 pub mod run;

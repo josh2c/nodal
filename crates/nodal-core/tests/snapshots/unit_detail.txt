@@ -1,7 +1,11 @@
   unit       worker-import  (open)
   objective  worker import: handle missing supervisor_id
-  branch     nodal/worker-import +2 *3
+  branch     nodal/worker-import *3 +1 ?2
   freshness  fresh
+  main       open +2
+  remote     ^2
+  who        claude-code 1
+  age        2 d
   home       /home/j/.nodal/project/e/01J9X2K4
   env        stopped · managed
   ports      app 41230

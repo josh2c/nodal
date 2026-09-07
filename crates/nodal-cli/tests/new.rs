@@ -258,7 +258,10 @@ fn a_new_unit_has_a_clean_status_and_a_checkout_of_its_own() {
 
     let worktrees = git(&home, &["worktree", "list"]);
     assert_eq!(worktrees.lines().count(), 1, "a unit is its own repository: {worktrees}");
-    assert!(worktrees.contains(home.to_str().unwrap()), "{worktrees}");
+    // Git prints the resolved path, and a temporary directory is reached through a link
+    // on macOS, so the two names are compared in the one form both tools agree on.
+    let resolved = home.canonicalize().unwrap();
+    assert!(worktrees.contains(resolved.to_str().unwrap()), "{worktrees}");
 
     assert!(home.join(".nodal").join("id").is_file(), "the home carries its marker");
     assert!(home.join(".nodal").join("manifest.toml").is_file());

@@ -74,7 +74,7 @@ pub fn home(target: Option<&str>, cwd: &Path, conn: &Connection) -> Result<PathB
 /// # Errors
 /// As [`home`].
 pub fn home_of_unit(conn: &Connection, slug: &Slug, cwd: &Path) -> Result<PathBuf> {
-    let unit = match project_of(conn, cwd)? {
+    let unit = match project_at(conn, cwd)? {
         Some(project) => units::find_by_slug(conn, project.id, slug)?,
         None => None,
     };
@@ -86,13 +86,56 @@ pub fn home_of_unit(conn: &Connection, slug: &Slug, cwd: &Path) -> Result<PathBu
 }
 
 /// The project a directory belongs to, if the registry knows one.
-fn project_of(conn: &Connection, cwd: &Path) -> Result<Option<Project>> {
-    for directory in cwd.ancestors() {
+///
+/// A directory inside a unit's home belongs to the project that unit is of. The home is
+/// a clone, so its own top level is the home and not the project, and walking up from it
+/// reaches Nodal's state directory rather than the repository the work came from.
+///
+/// A project root is recorded with its symbolic links resolved, so the walk is made on
+/// the resolved form of the directory ([`crate::lifecycle::guard::resolve`]). Without
+/// that, a project is invisible from inside itself on any host that hands a process a
+/// different name for the directory it is in, which macOS does for everything under
+/// `/tmp`. The name as it was given is walked afterwards, for a row an earlier build
+/// recorded unresolved and for a path a person named on the command line.
+///
+/// # Errors
+/// [`Error::Store`] when the registry could not be read.
+pub fn project_at(conn: &Connection, path: &Path) -> Result<Option<Project>> {
+    if let Some(project) = project_of_home(conn, path)? {
+        return Ok(Some(project));
+    }
+    let resolved = crate::lifecycle::guard::resolve(path);
+    if let Some(project) = project_of_ancestor(conn, &resolved)? {
+        return Ok(Some(project));
+    }
+    if resolved == path {
+        return Ok(None);
+    }
+    project_of_ancestor(conn, path)
+}
+
+/// The project rooted at `path` or at any directory above it.
+fn project_of_ancestor(conn: &Connection, path: &Path) -> Result<Option<Project>> {
+    for directory in path.ancestors() {
         if let Some(project) = projects::find_by_root(conn, directory)? {
             return Ok(Some(project));
         }
     }
     Ok(None)
+}
+
+/// The project of the unit whose home holds `path`, when `path` is in one.
+fn project_of_home(conn: &Connection, path: &Path) -> Result<Option<Project>> {
+    let Ok(home) = crate::env::files::find_home(path) else {
+        return Ok(None);
+    };
+    let Some(marked) = crate::lifecycle::marker::read(&home)? else {
+        return Ok(None);
+    };
+    let Some(unit) = units::get(conn, marked)? else {
+        return Ok(None);
+    };
+    projects::get(conn, unit.project_id)
 }
 
 /// The one unit with this slug, over every project.

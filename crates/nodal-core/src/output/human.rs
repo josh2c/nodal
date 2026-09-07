@@ -284,18 +284,29 @@ pub fn bytes(count: u64) -> String {
 /// a rendering is a function of its inputs and a snapshot of it is stable.
 #[must_use]
 pub fn since(now: Timestamp, then: Timestamp) -> String {
+    let elapsed = span(now, then);
+    if elapsed == NOW { elapsed } else { format!("{elapsed} ago") }
+}
+
+/// What an elapsed time under a minute is called, in both forms.
+const NOW: &str = "now";
+
+/// How long there is between `then` and `now`, as a length rather than as a moment.
+/// This is what an age column carries, where "ago" would be said once per row.
+#[must_use]
+pub fn span(now: Timestamp, then: Timestamp) -> String {
     const SCALE: [(i64, i64, &str); 3] =
         [(3_600, 60, "min"), (86_400, 3_600, "h"), (0, 86_400, "d")];
     let seconds = now.unix_seconds() - then.unix_seconds();
     if seconds < 60 {
-        return String::from("now");
+        return String::from(NOW);
     }
     for (limit, scale, unit) in SCALE {
         if limit == 0 || seconds < limit {
-            return format!("{} {unit} ago", seconds / scale);
+            return format!("{} {unit}", seconds / scale);
         }
     }
-    String::from("now")
+    String::from(NOW)
 }
 
 /// The text, or the placeholder when there is none.
@@ -314,7 +325,7 @@ pub fn join(items: &[String]) -> String {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::{Block, Doc, Field, Table, bytes, since};
+    use super::{Block, Doc, Field, Table, bytes, since, span};
     use crate::model::Timestamp;
 
     fn at(text: &str) -> Timestamp {
@@ -373,5 +384,12 @@ mod tests {
         assert_eq!(since(now, at("2026-09-06T11:48:00Z")), "12 min ago");
         assert_eq!(since(now, at("2026-09-06T09:00:00Z")), "3 h ago");
         assert_eq!(since(now, at("2026-09-04T12:00:00Z")), "2 d ago");
+    }
+
+    #[test]
+    fn a_span_is_the_same_length_without_the_word_ago() {
+        let now = at("2026-09-06T12:00:00Z");
+        assert_eq!(span(now, at("2026-09-06T11:59:30Z")), "now");
+        assert_eq!(span(now, at("2026-09-04T12:00:00Z")), "2 d");
     }
 }

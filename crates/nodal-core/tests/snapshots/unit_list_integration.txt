@@ -1,0 +1,6 @@
+  UNIT           STATE  BRANCH                          MAIN                   REMOTE  WHO  AGE  OBJECTIVE
+  merged-plain   open   nodal/merged-plain              done (ancestor) -4     —       —    1 d  —
+  squash-landed  open   nodal/squash-landed             done (absorbed) +1 -2  —       —    1 d  —
+  clashes        open   nodal/clashes                   conflict +1 -4         —       —    1 d  —
+  detached-head  open   nodal/detached-head (detached)  unknown                —       —    1 d  —
+  who: a process scan reads /proc, which mac does not have
