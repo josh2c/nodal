@@ -331,10 +331,21 @@ fn concurrent_first_opens_all_succeed_and_migrate_once() {
         }
     });
 
-    let store = Store::open(&path).unwrap();
-    let tables: u32 = store
+    // Against a registry only one process ever opened, rather than against a number
+    // written down here: a migration that adds a table should not have to edit a test
+    // about concurrency.
+    let alone = TempDir::new().unwrap();
+    assert_eq!(
+        table_count(&Store::open(&path).unwrap()),
+        table_count(&Store::open(alone.path().join("registry.db")).unwrap()),
+        "the schema was applied once, not once per opener"
+    );
+}
+
+/// How many tables a registry has.
+fn table_count(store: &Store) -> u32 {
+    store
         .conn()
         .query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table'", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(tables, 9, "the schema was applied once, not once per opener");
+        .unwrap()
 }

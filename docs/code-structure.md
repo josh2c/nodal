@@ -136,9 +136,10 @@ adapters/
   generic.rs
 
 lifecycle/             the only module that composes others; each op = plan() pure + apply() IO
-  mod.rs
-  step.rs              Step trait {apply, undo, key}; Plan = Vec<Step>; runner journals each step
-  journal.rs           journal table: op id, step key, state; resume/rollback on next invocation
+  mod.rs               run(plan) and resolve(): the runner, and what the next command does
+  step.rs              Step trait {key, apply, undo}; Plan = steps + the final registry write
+  journal.rs           operation and operation_step rows: op id, step key, state
+  owner.rs             whose run an operation is, and whether that process is still there
   ops/
     new.rs · adopt.rs · sync.rs · reclaim.rs · gc.rs · done.rs · transfer.rs · doctor.rs
   uniqueness.rs        the single uniqueness_check
@@ -172,6 +173,11 @@ commands/              one file per command, each ≤ 40 lines: parse args → c
   outside tests; `missing_docs` on public items of `nodal-core`.
 - No `match` nesting deeper than two: extract a function or use a table.
 - Every apply step is idempotent and has an undo; the runner journals steps and finalizes the registry in one transaction.
+- An operation is journalled before and after every step, so a process killed between two steps leaves an
+  accurate account. The registry write and the journal's move to `committed` share that one transaction, so
+  an operation is either wholly done or wholly not. The next command calls `lifecycle::resolve`, which
+  rebuilds an interrupted operation's plan from the journal (`lifecycle::Rebuild`, one per op kind, passed
+  in as a table) and either resumes or rolls it back as the plan declared.
 - Plan/apply split in every lifecycle op: `plan()` returns a `Plan` value (pure, unit-testable),
   `apply(plan)` performs IO step by step and records each step's outcome. Branching lives in `plan()`.
 - Backend choice happens once (`select_backend`), never inside operations.
