@@ -76,10 +76,16 @@ fn refuse_marked_ancestor(placed: &Path, home: &Path) -> Result<()> {
 
 /// A path with every symbolic link on it resolved, as far as it exists.
 ///
+/// This is the one place a path is normalised before it is recorded as, or compared
+/// with, another path. Two names for one directory must not become two directories: a
+/// project recorded at `/var/folders/…` and a command run in `/private/var/folders/…`
+/// are the same tree, and macOS gives a process the second name for the first.
+///
 /// `canonicalize` needs the whole path to be there, and the destination of a create is
 /// exactly what is not. The longest existing prefix is resolved and the rest is put
 /// back on, which is enough: a link cannot be part of a path that does not exist.
-fn resolve(path: &Path) -> PathBuf {
+#[must_use]
+pub fn resolve(path: &Path) -> PathBuf {
     let mut rest = Vec::new();
     let mut head = path;
     loop {

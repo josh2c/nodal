@@ -26,8 +26,8 @@ use nodal_core::model::{
     BranchName, Digest, EnvId, EnvState, Environment, HostName, Ports, Project, ProjectId,
     ProjectName, Slug, Timestamp, Unit, UnitId, UnitStatus,
 };
-use nodal_core::runtime::ls;
 use nodal_core::runtime::processes::{Processes, Running};
+use nodal_core::runtime::{entry, ls};
 use nodal_core::store::{Store, environments, projects, units};
 use nodal_fixture::shapes::{self, Branch};
 use tempfile::TempDir;
@@ -166,6 +166,51 @@ fn record(store: &Store, project: &Project, row: &Row<'_>, now: Timestamp) -> Un
 /// The verdict a branch's clone gets, read straight from the Git facade.
 fn verdict(home: &Path) -> String {
     Git::open(home).unwrap().standing(BASE).unwrap().integration.label()
+}
+
+/// A project is found from inside it whatever name the path was given.
+///
+/// The regression this pins: macOS hands a running process the resolved name of the
+/// directory it is in, so a project recorded under `/var/folders/…` was invisible to a
+/// command run in what the person called `/var/folders/…` and the kernel called
+/// `/private/var/folders/…`. Nodal records the resolved form and looks the resolved form
+/// up. The second half of the test is the other direction: a row an earlier build
+/// recorded through a link is still reachable.
+#[cfg(unix)]
+#[test]
+fn a_project_is_found_from_inside_it_whatever_name_the_path_was_given() {
+    let directory = tempfile::tempdir().unwrap();
+    let real = directory.path().join("project");
+    std::fs::create_dir_all(real.join("packages").join("web")).unwrap();
+    let link = directory.path().join("by-another-name");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let resolved = Store::open(directory.path().join("resolved.db")).unwrap();
+    projects::insert(resolved.conn(), &project_at_root(&real.canonicalize().unwrap(), '1'))
+        .unwrap();
+    let found = entry::project_at(resolved.conn(), &link.join("packages").join("web"))
+        .unwrap()
+        .expect("a project recorded resolved is found through a link");
+    assert_eq!(found.root, real.canonicalize().unwrap());
+
+    let as_given = Store::open(directory.path().join("as-given.db")).unwrap();
+    projects::insert(as_given.conn(), &project_at_root(&link, '2')).unwrap();
+    let found = entry::project_at(as_given.conn(), &link)
+        .unwrap()
+        .expect("a project recorded through a link is still found by that name");
+    assert_eq!(found.root, link);
+}
+
+/// A project row rooted at one path, with a fixed identity.
+#[cfg(unix)]
+fn project_at_root(root: &Path, tag: char) -> Project {
+    Project {
+        id: ProjectId::parse(format!("01ARZ3NDEKTSV4RRFFQ69G5FA{tag}")).unwrap(),
+        root: root.to_path_buf(),
+        name: ProjectName::parse("fixture").unwrap(),
+        recipe_hash: Digest::parse("0".repeat(64)).unwrap(),
+        created_at: Timestamp::now(),
+    }
 }
 
 #[test]

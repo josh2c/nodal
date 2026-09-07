@@ -91,12 +91,31 @@ pub fn home_of_unit(conn: &Connection, slug: &Slug, cwd: &Path) -> Result<PathBu
 /// a clone, so its own top level is the home and not the project, and walking up from it
 /// reaches Nodal's state directory rather than the repository the work came from.
 ///
+/// A project root is recorded with its symbolic links resolved, so the walk is made on
+/// the resolved form of the directory ([`crate::lifecycle::guard::resolve`]). Without
+/// that, a project is invisible from inside itself on any host that hands a process a
+/// different name for the directory it is in, which macOS does for everything under
+/// `/tmp`. The name as it was given is walked afterwards, for a row an earlier build
+/// recorded unresolved and for a path a person named on the command line.
+///
 /// # Errors
 /// [`Error::Store`] when the registry could not be read.
 pub fn project_at(conn: &Connection, path: &Path) -> Result<Option<Project>> {
     if let Some(project) = project_of_home(conn, path)? {
         return Ok(Some(project));
     }
+    let resolved = crate::lifecycle::guard::resolve(path);
+    if let Some(project) = project_of_ancestor(conn, &resolved)? {
+        return Ok(Some(project));
+    }
+    if resolved == path {
+        return Ok(None);
+    }
+    project_of_ancestor(conn, path)
+}
+
+/// The project rooted at `path` or at any directory above it.
+fn project_of_ancestor(conn: &Connection, path: &Path) -> Result<Option<Project>> {
     for directory in path.ancestors() {
         if let Some(project) = projects::find_by_root(conn, directory)? {
             return Ok(Some(project));

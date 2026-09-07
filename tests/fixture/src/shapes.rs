@@ -12,6 +12,11 @@
 //! The working-tree shapes are made in a clone, not here, because a repository has one
 //! working tree and a unit has one home each: [`home`] makes the clone, and [`dirty`],
 //! [`detach`] and [`nest`] put it in the state the shape is named for.
+//!
+//! [`origin`] and [`home`] return the path with its symbolic links resolved, which is
+//! the form the registry records and the form a running process is given. A temporary
+//! directory on macOS is under `/var`, which is a link to `/private/var`, so a fixture
+//! that recorded the name it asked for would record a project no command could find.
 
 #![allow(
     clippy::expect_used,
@@ -69,7 +74,7 @@ pub fn origin(root: impl AsRef<Path>) -> PathBuf {
     write(&root, "base.txt", "base\n");
     commit(&root, "the first commit");
     branches(&root);
-    root
+    resolved(&root)
 }
 
 /// The settings that make a history the same on every machine.
@@ -130,7 +135,7 @@ pub fn home(origin: impl AsRef<Path>, home: impl AsRef<Path>, branch: &str) -> P
         git(&home, &["config", "--local", key, value]);
     }
     git(&home, &["switch", "--quiet", branch]);
-    home
+    resolved(&home)
 }
 
 /// Create `name` at the home's HEAD and check it out.
@@ -178,6 +183,15 @@ pub fn nest(home: impl AsRef<Path>, name: &str) -> PathBuf {
     let nested = home.join(name);
     git(home, &["worktree", "add", "--quiet", "--detach", text(&nested)]);
     nested
+}
+
+/// The path with every symbolic link on it resolved.
+///
+/// One place, so no test has to remember it. Nodal records a project root and a home in
+/// this form, and a process started in either is given this form, so a fixture that
+/// handed out any other form would build a project that cannot be listed from inside.
+fn resolved(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Write a file, creating parent directories.

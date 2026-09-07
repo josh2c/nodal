@@ -100,6 +100,38 @@ impl Fixture {
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
+
+    /// The list as the document a tool reads.
+    ///
+    /// Every count and every order in this file is read from here rather than from the
+    /// lines of the table. A host that cannot read its process table adds a note under
+    /// the table, so the number of printed lines is a property of the host and the
+    /// number of units is not.
+    fn answer(&self) -> serde_json::Value {
+        let output = self.nodal(&["ls", "--json"]);
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        serde_json::from_slice(&output.stdout).expect("--json is one document")
+    }
+
+    /// The slugs of the list, in the order the list put them in.
+    fn slugs(&self) -> Vec<String> {
+        self.answer()["units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["slug"].as_str().unwrap().to_owned())
+            .collect()
+    }
+}
+
+/// Whether this host publishes a process table, and a word about it when it does not.
+///
+/// The same seam `crates/nodal-cli/tests/ps.rs` uses. Who is attached to a unit is read
+/// from `/proc`, so on a host without one the answer is a note under the table and every
+/// session cell is empty. That is the right answer, not a failure, and the assertions
+/// about it say which host they are making a claim about.
+fn has_proc() -> bool {
+    cfg!(target_os = "linux")
 }
 
 /// One unit of the fixture: what it is called, which one it is, and where it lives.
@@ -151,14 +183,39 @@ fn record(store: &Store, project: &Project, row: &Row<'_>, now: Timestamp) {
 fn the_list_has_one_row_per_unit_and_says_what_merging_each_would_do() {
     let fixture = Fixture::new();
     let text = fixture.text(&["ls"]);
-    let rows: Vec<&str> = text.lines().skip(1).collect();
 
-    assert_eq!(rows.len(), UNITS, "{text}");
+    assert_eq!(fixture.slugs().len(), UNITS, "{text}");
+    for slug in fixture.slugs() {
+        assert!(text.contains(&slug), "no row for {slug} in:\n{text}");
+    }
     for word in ["done (ancestor)", "done (absorbed)", "conflict", "open"] {
         assert!(text.contains(word), "no {word} in:\n{text}");
     }
     assert!(text.contains("UNIT"), "{text}");
     assert!(text.contains("MAIN"), "{text}");
+}
+
+#[test]
+fn a_host_that_cannot_read_its_process_table_says_so_under_the_table() {
+    let fixture = Fixture::new();
+    let text = fixture.text(&["ls"]);
+    let answer = fixture.answer();
+    let notes: Vec<&str> =
+        answer["notes"].as_array().unwrap().iter().map(|note| note.as_str().unwrap()).collect();
+
+    if has_proc() {
+        assert!(notes.is_empty(), "a host with /proc has nothing to report: {notes:?}");
+        return;
+    }
+    let note = notes.first().expect("a host without /proc says it could not see");
+    assert!(note.starts_with("who: "), "{note}");
+    assert!(text.contains(note), "the note is under the table:\n{text}");
+    let empty = answer["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["sessions"].as_array().unwrap().is_empty());
+    assert!(empty, "no session is claimed on a host that cannot see one");
 }
 
 #[test]
@@ -180,9 +237,7 @@ fn a_bare_nodal_is_the_list_and_the_help_where_there_is_no_project() {
 #[test]
 fn the_json_answer_carries_every_fact_the_table_shows() {
     let fixture = Fixture::new();
-    let output = fixture.nodal(&["ls", "--json"]);
-    let answer: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("--json is one document");
+    let answer = fixture.answer();
 
     let rows = answer["units"].as_array().unwrap();
     assert_eq!(rows.len(), UNITS);
@@ -211,13 +266,7 @@ fn assert_squash_merge_is_done(row: &serde_json::Value) {
 #[test]
 fn the_units_the_base_has_moved_under_are_printed_first() {
     let fixture = Fixture::new();
-    let text = fixture.text(&["ls"]);
-    let slugs: Vec<String> = text
-        .lines()
-        .skip(1)
-        .filter_map(|line| line.split_whitespace().next())
-        .map(str::to_owned)
-        .collect();
+    let slugs = fixture.slugs();
 
     let done = |slug: &str| {
         slug.starts_with("merged")
@@ -238,7 +287,7 @@ fn the_units_the_base_has_moved_under_are_printed_first() {
 #[test]
 fn the_ten_unit_list_is_timed_and_the_number_is_printed() {
     let fixture = Fixture::new();
-    assert_eq!(fixture.text(&["ls"]).lines().skip(1).count(), UNITS);
+    assert_eq!(fixture.slugs().len(), UNITS);
 
     let mut timings = Vec::with_capacity(RUNS);
     for _ in 0..RUNS {
