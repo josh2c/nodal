@@ -34,6 +34,15 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 merge, prune, reclaim, gc, doctor, base, status`. Every read command accepts `--json`; `status --watch`
 emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
+`--json` and the default output are two renderings of one value, so a field a person sees is a field a
+tool can read. A read type carries the instant it was taken as `now`, and every relative time it prints
+is measured from that, so a rendering is a function of its inputs.
+
+`status --watch` polls; there is no daemon. One line is one whole `status` document, identical in shape
+to `status --json`, and a line is written only when the answer has changed — the instant moving on its
+own is not a change. A consumer therefore holds the last line as current state, and silence means
+unchanged rather than gone.
+
 ## Hooks
 Recipe hooks receive `NODAL_SOURCE`, `NODAL_HOME`, `NODAL_ID`, `NODAL_PARENT_ID`, `NODAL_UNIT` and run
 in the unit's home. Hook commands require approval on first run.

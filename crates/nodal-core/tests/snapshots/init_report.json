@@ -1,0 +1,17 @@
+{
+  "path": "/home/j/code/project/nodal.toml",
+  "existed": false,
+  "contents": "package_manager = \"pnpm\"\n",
+  "gaps": [
+    {
+      "key": "toolchain",
+      "note": null,
+      "candidates": []
+    },
+    {
+      "key": "env_required_local",
+      "note": "45 names declared",
+      "candidates": []
+    }
+  ]
+}

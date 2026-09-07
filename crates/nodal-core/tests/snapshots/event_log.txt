@@ -1,0 +1,3 @@
+  WHEN        KIND     ACTOR        HOW   WHAT
+  20 min ago  test     claude-code  saw   pnpm test: 0 failing
+  12 min ago  handoff  j2c          said  legacy date parser still fails on two-digit years
