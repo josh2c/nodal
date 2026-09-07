@@ -7,6 +7,7 @@ pub mod error;
 pub mod git;
 pub mod logging;
 pub mod model;
+pub mod store;
 
 pub use crate::error::{Error, Result};
 
