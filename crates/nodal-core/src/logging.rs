@@ -44,19 +44,29 @@ impl Verbosity {
     }
 }
 
+/// The filter directive to use: the environment overrides the flags, but an empty or
+/// blank `NODAL_LOG` is the same as not setting it.
+///
+/// `NODAL_LOG=` reaches a process as an empty value, which `EnvFilter` reads as "no
+/// directives" and which therefore silences errors as well as progress. Nothing a user
+/// can type by accident should hide an error, so blank means unset.
+fn requested_filter(from_env: Option<String>, verbosity: Verbosity) -> String {
+    match from_env {
+        Some(filter) if !filter.trim().is_empty() => filter,
+        _ => verbosity.directive().to_owned(),
+    }
+}
+
 /// Install the process-wide subscriber. Call once, early, from the binary.
 ///
 /// # Errors
 ///
-/// Returns [`Error::LogFilter`] if `NODAL_LOG` is set but unparseable, and
+/// Returns [`Error::LogFilter`] if `NODAL_LOG` is set to something unparseable, and
 /// [`Error::LoggingAlreadyInitialised`] if a subscriber is already in place.
 pub fn init(verbosity: Verbosity) -> Result<()> {
-    let filter = match std::env::var(FILTER_ENV) {
-        Ok(filter) => {
-            EnvFilter::try_new(&filter).map_err(|source| Error::LogFilter { filter, source })?
-        }
-        Err(_) => EnvFilter::new(verbosity.directive()),
-    };
+    let requested = requested_filter(std::env::var(FILTER_ENV).ok(), verbosity);
+    let filter = EnvFilter::try_new(&requested)
+        .map_err(|source| Error::LogFilter { filter: requested, source })?;
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
@@ -68,7 +78,7 @@ pub fn init(verbosity: Verbosity) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::Verbosity;
+    use super::{Verbosity, requested_filter};
 
     #[test]
     fn occurrences_saturate_at_trace() {
@@ -76,6 +86,23 @@ mod tests {
         assert_eq!(Verbosity::from_occurrences(1), Verbosity::Verbose);
         assert_eq!(Verbosity::from_occurrences(2), Verbosity::Trace);
         assert_eq!(Verbosity::from_occurrences(9), Verbosity::Trace);
+    }
+
+    #[test]
+    fn blank_env_filter_is_treated_as_unset() {
+        for blank in [String::new(), String::from("  ")] {
+            assert_eq!(
+                requested_filter(Some(blank), Verbosity::Normal),
+                Verbosity::Normal.directive(),
+                "a blank NODAL_LOG must not silence errors"
+            );
+        }
+    }
+
+    #[test]
+    fn set_env_filter_overrides_the_flags() {
+        assert_eq!(requested_filter(Some(String::from("debug")), Verbosity::Normal), "debug");
+        assert_eq!(requested_filter(None, Verbosity::Verbose), Verbosity::Verbose.directive());
     }
 
     #[test]

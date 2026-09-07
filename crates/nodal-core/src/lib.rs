@@ -5,6 +5,7 @@
 
 pub mod error;
 pub mod logging;
+pub mod model;
 
 pub use crate::error::{Error, Result};
 

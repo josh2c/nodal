@@ -1,0 +1,87 @@
+{
+  "$defs": {
+    "BaseId": {
+      "description": "Identifies a warm base: the substrate a unit's home is cloned from.",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "type": "string"
+    },
+    "CommitId": {
+      "description": "A Git object id in full, lowercase hexadecimal form.",
+      "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+      "type": "string"
+    },
+    "Digest": {
+      "description": "A content digest, lowercase hex. The algorithm is the fingerprint module's\nchoice; the model only fixes the form.",
+      "pattern": "^[0-9a-f]+$",
+      "type": "string"
+    },
+    "Platform": {
+      "description": "A target triple, for example `aarch64-apple-darwin`. Part of the workspace\nfingerprint, because a base built on one platform is not warm on another.",
+      "pattern": "^\\S+$",
+      "type": "string"
+    },
+    "ProjectId": {
+      "description": "Identifies a project: one Git repository Nodal manages units for.",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "type": "string"
+    },
+    "Timestamp": {
+      "description": "A UTC instant, serialised as an RFC 3339 string.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "WorkspaceFp": {
+      "$ref": "#/$defs/Digest",
+      "description": "The key a warm base is stored under."
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/base.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One base: a clean checkout with dependencies installed, keyed by the workspace\nfingerprint it was built for. A unit's home is a copy-on-write clone of one of these.",
+  "properties": {
+    "built_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When the build finished."
+    },
+    "commit": {
+      "$ref": "#/$defs/CommitId",
+      "description": "The commit the base was built at."
+    },
+    "id": {
+      "$ref": "#/$defs/BaseId",
+      "description": "Identity of the base."
+    },
+    "last_used": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "Last time a unit was materialised from it; the input to eviction."
+    },
+    "path": {
+      "description": "Where the base lives on this host.",
+      "type": "string"
+    },
+    "platform": {
+      "$ref": "#/$defs/Platform",
+      "description": "The target triple it was built on; a base is not warm on another platform."
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId",
+      "description": "The project this base belongs to."
+    },
+    "ws_fingerprint": {
+      "$ref": "#/$defs/WorkspaceFp",
+      "description": "The workspace fingerprint this base is warm for."
+    }
+  },
+  "required": [
+    "id",
+    "project_id",
+    "ws_fingerprint",
+    "platform",
+    "commit",
+    "path",
+    "built_at",
+    "last_used"
+  ],
+  "title": "Base",
+  "type": "object"
+}
