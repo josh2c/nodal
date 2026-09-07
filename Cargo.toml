@@ -26,6 +26,8 @@ ulid = { version = "1", default-features = false, features = ["std"] }
 # Test-only: the differential check that a scalar's validator and its exported schema
 # pattern agree. Lookahead, which `regex` does not have, is needed for branch names.
 fancy-regex = "0.16"
+# Test-only: temporary repositories and directories for the Git facade tests.
+tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = [
   "ansi",
