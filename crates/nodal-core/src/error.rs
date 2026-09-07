@@ -263,6 +263,33 @@ pub enum Error {
         kind: &'static str,
     },
 
+    /// The per-machine secrets file grants access to an account other than its owner.
+    /// Reading it is refused: the values in it are the one thing Nodal handles that a
+    /// person cannot re-derive. The mode is reported, never the contents.
+    #[error("{path} is mode {mode:o}; it must be {owner_only:o}", path = path.display(), owner_only = crate::env::secrets::OWNER_ONLY)]
+    SecretsPermissions {
+        /// The file that was refused.
+        path: PathBuf,
+        /// The mode it was found at, as the permission bits alone.
+        mode: u32,
+    },
+
+    /// A manifest could not be rendered as TOML. It holds no secret, so the underlying
+    /// error is safe to carry.
+    #[error("a manifest could not be written: {source}")]
+    ManifestEncode {
+        /// Why `toml` refused it.
+        #[source]
+        source: toml::ser::Error,
+    },
+
+    /// A directory carries no `.nodal/manifest.toml`, so it is not an activated home.
+    #[error("{path} is not a unit home; no {file} in it or any directory above it", path = path.display(), file = crate::env::files::MANIFEST)]
+    NotAHome {
+        /// The directory the search started from.
+        path: PathBuf,
+    },
+
     /// A branch that had to exist did not.
     #[error("{repo} has no branch {branch:?}", repo = repo.display())]
     GitUnknownBranch {

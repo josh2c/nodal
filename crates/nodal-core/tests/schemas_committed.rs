@@ -29,6 +29,8 @@ const EMBEDDED_TYPES: &[&str] = &[
     "Reclaim",
     "Services",
     "Sync",
+    // A line of a manifest's missing-name report, published inside `Manifest`.
+    "Missing",
 ];
 
 fn model_dir() -> PathBuf {

@@ -9,6 +9,7 @@ use std::process::ExitCode;
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use nodal_core::logging::Verbosity;
 
+use crate::commands::env::Env;
 use crate::commands::init::Init;
 
 /// The subcommands implemented so far. The rest arrive with their own tasks.
@@ -16,6 +17,8 @@ use crate::commands::init::Init;
 pub enum Command {
     /// Write `nodal.toml` for this project, with a line for every gap.
     Init(Init),
+    /// Report what the unit home you are in is activated with.
+    Env(Env),
 }
 
 /// One list for every coding agent on your project.
@@ -54,6 +57,7 @@ impl Cli {
     pub fn dispatch(&self) -> nodal_core::Result<ExitCode> {
         match &self.command {
             Some(Command::Init(init)) => init.run(),
+            Some(Command::Env(env)) => env.run(),
             None => {
                 let (store, no_hooks) = (&self.store, self.no_hooks);
                 tracing::debug!(?store, no_hooks, "no subcommand given");

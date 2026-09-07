@@ -58,6 +58,18 @@ jobs:
       - name: both renderers match their snapshots
         run: ci/acceptance-output.sh
 
+  acceptance-env:
+    name: acceptance (env)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: direnv, so the .envrc route is exercised and not skipped
+        run: sudo apt-get update && sudo apt-get install -y direnv
+      - name: an activated home carries its variables and leaks no value
+        run: ci/acceptance-env.sh
+
   acceptance-operation:
     name: acceptance (operation)
     runs-on: ${{ matrix.os }}

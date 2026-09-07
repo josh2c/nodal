@@ -56,6 +56,12 @@
       "type": "Lock"
     },
     {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/manifest.json",
+      "file": "manifest.json",
+      "name": "manifest",
+      "type": "Manifest"
+    },
+    {
       "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/recipe.json",
       "file": "recipe.json",
       "name": "recipe",
