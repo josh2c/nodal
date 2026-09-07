@@ -12,6 +12,7 @@
 # therefore allows the budget plus the runner's own spawn cost:
 #
 #   threshold = 5 ms budget + measured runner spawn overhead, rounded up
+#             = 5 ms + 0.497 ms -> 5.5 ms
 #
 # The overhead is measured, not assumed: the script times the same number of spawns of
 # a binary that does nothing (`true`) and prints that median as the reference. The
@@ -19,9 +20,14 @@
 # not how Nodal is behaving. When the reference median moves far from the number the
 # threshold was calibrated against, recalibrate the threshold and record the new numbers.
 #
-# Calibration, ubuntu-24.04 GitHub-hosted runner (see spikes/RESULTS.md, T0.12):
-#   reference `true`  median REFERENCE_MEDIAN ms
-#   `nodal --version` median NODAL_MEDIAN ms
+# Calibrated on a GitHub-hosted ubuntu-24.04 runner, 2026-09-07, 200 runs after 20
+# warm-up runs (see spikes/RESULTS.md, T0.12):
+#   reference `true`  median 0.497 ms, p95 0.588 ms, max 0.683 ms
+#   `nodal --version` median 0.802 ms, p95 0.889 ms, max 0.987 ms
+#
+# The gate has wide headroom because 5 ms is a budget, not the current cost. It catches
+# a binary that grows into the budget. It does not catch a small regression; a tighter
+# number for that is a separate decision, not this one.
 #
 # Usage: ci/startup-budget.sh [path-to-nodal]
 # Environment:
@@ -30,7 +36,7 @@
 #   NODAL_STARTUP_WARMUP        how many runs are discarded first
 set -eu
 
-threshold=${NODAL_STARTUP_THRESHOLD_MS:-50}
+threshold=${NODAL_STARTUP_THRESHOLD_MS:-5.5}
 runs=${NODAL_STARTUP_RUNS:-200}
 warmup=${NODAL_STARTUP_WARMUP:-20}
 
