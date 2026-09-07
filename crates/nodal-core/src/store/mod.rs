@@ -23,6 +23,8 @@ pub mod events;
 pub mod leases;
 pub mod locks;
 pub mod migrations;
+pub mod port_allocations;
+pub mod port_blocks;
 pub mod projects;
 pub mod row;
 pub mod sessions;

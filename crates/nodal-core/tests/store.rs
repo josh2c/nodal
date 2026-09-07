@@ -13,12 +13,12 @@ use nodal_core::error::Error;
 use nodal_core::model::{
     Actor, ActorKind, ActorName, Base, BranchName, CommitId, DbName, DbTemplate, Digest, EnvState,
     Environment, Epistemic, Event, EventId, EventKind, HostName, Lease, Lock, Objective, Platform,
-    PortName, Ports, Project, ProjectName, RawRef, RefName, ResourceKey, SchemaFp, Session, Slug,
-    Timestamp, Unit, UnitId, UnitStatus, WorkspaceFp,
+    PortAllocation, PortBlock, PortName, Ports, Project, ProjectName, RawRef, RefName, ResourceKey,
+    SchemaFp, Session, Slug, Timestamp, Unit, UnitId, UnitStatus, WorkspaceFp,
 };
 use nodal_core::store::{
-    SCHEMA_VERSION, Store, bases, environments, events, leases, locks, projects, sessions,
-    templates, units,
+    SCHEMA_VERSION, Store, bases, environments, events, leases, locks, port_allocations,
+    port_blocks, projects, sessions, templates, units,
 };
 use tempfile::TempDir;
 
@@ -484,4 +484,85 @@ fn a_row_another_row_points_at_is_not_removed_by_accident() {
     environments::insert(conn, &environment()).unwrap();
     let error = bases::delete(conn, id('3')).unwrap_err();
     assert!(matches!(error, Error::StoreConflict { .. }), "{error}");
+}
+
+#[test]
+fn a_project_has_one_port_block_and_a_range_belongs_to_one_project() {
+    let registry = Registry::seeded();
+    let conn = registry.store.conn();
+    let block = PortBlock { project_id: id('1'), first: 20_000, last: 20_099 };
+    port_blocks::insert(conn, &block).unwrap();
+    assert_eq!(port_blocks::get(conn, id('1')).unwrap(), Some(block));
+    assert_eq!(port_blocks::list(conn).unwrap(), vec![block]);
+
+    let again = PortBlock { first: 20_100, last: 20_199, ..block };
+    let error = port_blocks::insert(conn, &again).unwrap_err();
+    assert!(matches!(error, Error::StoreConflict { .. }), "one project, one block: {error}");
+
+    let mut neighbour = project();
+    neighbour.id = id('9');
+    neighbour.root = PathBuf::from("/home/dev/other");
+    projects::insert(conn, &neighbour).unwrap();
+    let other = PortBlock { project_id: neighbour.id, ..block };
+    let error = port_blocks::insert(conn, &other).unwrap_err();
+    assert!(matches!(error, Error::StoreConflict { .. }), "one range, one project: {error}");
+}
+
+/// A registry holding a project, a unit, a base and two environments of that unit.
+fn two_environments() -> Registry {
+    let registry = Registry::seeded();
+    let conn = registry.store.conn();
+    bases::insert(conn, &base()).unwrap();
+    environments::insert(conn, &environment()).unwrap();
+    let mut second = environment();
+    second.id = id('A');
+    second.attempt = 2;
+    environments::insert(conn, &second).unwrap();
+    registry
+}
+
+/// The port `app` is claimed under, in the tests below.
+fn allocation() -> PortAllocation {
+    PortAllocation {
+        port: 20_000,
+        project_id: id('1'),
+        environment_id: id('5'),
+        name: PortName::parse("app").unwrap(),
+    }
+}
+
+#[test]
+fn a_port_is_granted_to_one_environment_under_one_name() {
+    let registry = two_environments();
+    let conn = registry.store.conn();
+    let held = allocation();
+    assert!(port_allocations::claim(conn, &held).unwrap());
+    assert_eq!(port_allocations::get(conn, 20_000).unwrap(), Some(held.clone()));
+
+    let rival = PortAllocation { environment_id: id('A'), ..held.clone() };
+    assert!(!port_allocations::claim(conn, &rival).unwrap(), "a held port is not granted twice");
+    let renamed = PortAllocation { port: 20_001, ..held };
+    assert!(!port_allocations::claim(conn, &renamed).unwrap(), "one port per name");
+}
+
+#[test]
+fn ports_are_read_back_by_range_and_by_name_and_are_returned_together() {
+    let registry = two_environments();
+    let conn = registry.store.conn();
+    let app = allocation();
+    let api = PortAllocation { port: 20_001, name: PortName::parse("api").unwrap(), ..app.clone() };
+    assert!(port_allocations::claim(conn, &app).unwrap());
+    assert!(port_allocations::claim(conn, &api).unwrap());
+
+    assert_eq!(
+        port_allocations::list_in_range(conn, 20_000, 20_099).unwrap(),
+        vec![app.clone(), api]
+    );
+    assert_eq!(port_allocations::list_in_range(conn, 20_002, 20_099).unwrap(), vec![]);
+    assert_eq!(port_allocations::find_by_name(conn, id('5'), &app.name).unwrap(), Some(app));
+
+    assert_eq!(port_allocations::release_all(conn, id('A')).unwrap(), 0);
+    assert_eq!(port_allocations::release_all(conn, id('5')).unwrap(), 2);
+    assert!(port_allocations::list_for_environment(conn, id('5')).unwrap().is_empty());
+    assert_eq!(port_allocations::get(conn, 20_000).unwrap(), None);
 }

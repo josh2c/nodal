@@ -23,11 +23,12 @@ pub struct Migration {
 pub const MIGRATIONS: &[Migration] = &[
     Migration { version: 1, name: "init", sql: include_str!("migrations/0001_init.sql") },
     Migration { version: 2, name: "journal", sql: include_str!("migrations/0002_journal.sql") },
+    Migration { version: 3, name: "ports", sql: include_str!("migrations/0003_ports.sql") },
 ];
 
 /// The schema version a database is brought to by [`run`]. Kept as a literal rather
 /// than derived from the table's length, so that a version appears in a diff.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Bring `store` up to [`SCHEMA_VERSION`].
 ///

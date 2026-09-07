@@ -62,6 +62,18 @@
       "type": "Manifest"
     },
     {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/port_block.json",
+      "file": "port_block.json",
+      "name": "port_block",
+      "type": "PortBlock"
+    },
+    {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/port_allocation.json",
+      "file": "port_allocation.json",
+      "name": "port_allocation",
+      "type": "PortAllocation"
+    },
+    {
       "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/recipe.json",
       "file": "recipe.json",
       "name": "recipe",

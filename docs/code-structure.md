@@ -38,6 +38,7 @@ model/                 plain data, serde + schemars; zero IO
   ids.rs               UnitId (ulid), EnvId, BaseId, TemplateId newtypes
   unit.rs              Unit, UnitStatus
   environment.rs       Environment, EnvState, Ports
+  port.rs              PortBlock, PortAllocation
   event.rs             Event, EventKind, Epistemic
   recipe.rs            Recipe (nodal.toml) types
   fingerprint.rs       WorkspaceFp, SchemaFp, SubFp (types only)
@@ -58,6 +59,8 @@ store/                 SQLite (WAL); repository functions; no business rules
   sessions.rs
   leases.rs
   locks.rs
+  port_blocks.rs       the block of ports a project hands out from
+  port_allocations.rs  one port an environment holds, keyed by the port itself
 
 recipe/
   mod.rs               load(): parse nodal.toml, merge inferred, validate
@@ -98,6 +101,7 @@ workspace/
 services/
   mod.rs               ServiceAdapter trait; registry of adapters by recipe kind
   ports.rs             allocator + fixed-port check
+  listeners.rs         which granted ports are really bound (/proc/net/tcp*, Linux)
   postgres/
     mod.rs             adapter impl
     conn.rs            exec-in-container vs tcp (one enum, two impls)
