@@ -21,6 +21,17 @@ See `docs/code-structure.md`. The short version:
 - One module spawns each external process. No other module calls that tool directly.
 - Clippy thresholds in `clippy.toml` are hard limits.
 
+## What belongs in the repository
+
+Commit only what the project needs to build, test, and document itself. Do not commit:
+
+- editor or AI-tool configuration (`.vscode/`, `.claude/`, `CLAUDE.md`, `AGENTS.md`)
+- local environment files (`.env`, secrets, machine paths)
+- generated output, logs, or scratch files
+- large binary files
+
+A PR adds the files its task requires and nothing else.
+
 ## Documentation rules
 
 Write documentation to ASD-STE100 (Simplified Technical English) principles:

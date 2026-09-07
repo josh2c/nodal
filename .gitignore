@@ -1,2 +1,30 @@
+# build output
 target/
+
+# local tool and editor state — never commit
+.claude/
+.vscode/
+.idea/
+.zed/
+.cursor/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+.mise.toml
+mise.toml
+.envrc.local
+
+# local environment and secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS and misc noise
+.DS_Store
+Thumbs.db
+*.log
 *.bundle
+/tmp/
+scratch/
