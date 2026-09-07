@@ -95,6 +95,35 @@ to `status --json`, and a line is written only when the answer has changed — t
 own is not a change. A consumer therefore holds the last line as current state, and silence means
 unchanged rather than gone.
 
+## The list
+`nodal ls`, and `nodal` with no subcommand, answer with one row per unit of the project the
+working directory is in. The command reads. It opens no transaction, records no event and
+reconciles no session row.
+
+Each row carries what Git says about the unit's branch at the moment it was asked: how many
+paths are changed, staged and untracked; whether HEAD names a commit rather than a branch; how
+far the branch has moved from the branch it merges into; what the upstream on the remote has
+and what it does not; and one integration verdict.
+
+The verdict has four values. `integrated` means the base carries every change of the branch,
+and it names one of two reasons. `ancestor` means the branch tip is in the base's history.
+`absorbed` means the base carries the changes without the commits, which is what a squash
+merge and a rebase leave. `conflict` means merging the branch into the base would leave
+conflicts. `open` means the branch carries changes the base does not, and the merge is clean.
+`unknown` means Git could not answer, and there is then a note under the table.
+
+The verdict is read from trees, with `git merge-tree`, and never from the commit history. A
+unit whose work is on the base is finished however it got there, so a squash merge counts as
+done although no commit of the unit is on the base.
+
+The order is the answer to "which unit needs a person next". Units the base carries already
+are last. The rest come first, the one the base has moved furthest under at the top. Units
+that tie are ordered by slug, so one list of one registry is always the same list.
+
+Who is attached to each unit comes from the process table, by the same signals `nodal ps`
+reads. A host whose process table Nodal cannot read still lists every unit and says under the
+table that it could not see.
+
 ## Entry
 `nodal new` and `nodal cd` print a home path. `nodal shell-init <bash|zsh|fish>` prints a shell
 function and a prompt hook; the function turns those two printed paths into a directory change in

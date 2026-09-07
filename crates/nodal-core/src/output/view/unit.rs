@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::git::integration::{Divergence, Integration};
 use crate::model::{
-    BranchName, EnvId, EnvState, Environment, Event, FingerprintPart, Objective, Ports,
+    ActorName, BranchName, EnvId, EnvState, Environment, Event, FingerprintPart, Objective, Ports,
     ProjectName, Slug, Timestamp, Unit, UnitId, UnitStatus,
 };
 use crate::output::Render;
@@ -28,15 +29,58 @@ pub enum Freshness {
     Stale(Vec<FingerprintPart>),
 }
 
+/// How a branch stands against its upstream on a remote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Remote {
+    /// The upstream ref, as Git names it.
+    pub upstream: String,
+    /// Commits to push, and commits to pull.
+    pub divergence: Divergence,
+}
+
 /// What Git says about the unit's branch, at the moment it was asked.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Two branches are compared with, and they answer different questions. The branch the
+/// work merges into says whether the work is done and whether it would conflict. The
+/// upstream on the remote says whether the work is anywhere but this machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkTree {
-    /// Commits the branch has that its upstream does not.
-    pub ahead: u32,
-    /// Commits the upstream has that the branch does not.
-    pub behind: u32,
-    /// Files changed and not committed, staged or not.
-    pub uncommitted: u32,
+    /// Paths changed in the working tree and not staged.
+    pub dirty: u32,
+    /// Paths staged and not committed.
+    pub staged: u32,
+    /// Paths Git does not track and no ignore rule covers.
+    pub untracked: u32,
+    /// Whether HEAD names a commit rather than a branch.
+    pub detached: bool,
+    /// The revision the work merges into, as it was named.
+    pub base: String,
+    /// How far the branch has moved from that revision.
+    pub main: Divergence,
+    /// What merging the branch into that revision would do.
+    pub integration: Integration,
+    /// How the branch stands against its upstream, when it has one.
+    pub remote: Option<Remote>,
+}
+
+impl WorkTree {
+    /// Paths that carry work a commit would capture.
+    #[must_use]
+    pub const fn uncommitted(&self) -> u32 {
+        self.dirty + self.staged + self.untracked
+    }
+}
+
+/// The actors attached to a unit's home right now, counted by the tool each one is.
+///
+/// A tool is what the attribution signals name it (`crate::runtime::actor`): an agent by
+/// its own variable, a person by the account the process runs as.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolSessions {
+    /// What the tool is called.
+    pub tool: ActorName,
+    /// How many of its processes are in the unit's home.
+    pub count: u32,
 }
 
 /// A process seen running against the unit's environment.
@@ -102,6 +146,10 @@ pub struct UnitRow {
     pub work: Option<WorkTree>,
     /// Its environment, when it has one.
     pub environment: Option<EnvLine>,
+    /// When the unit was created, which its age is measured from.
+    pub created_at: Timestamp,
+    /// Who is attached to it right now, by tool.
+    pub sessions: Vec<ToolSessions>,
     /// When something was last seen happening in it.
     pub last_active: Option<Timestamp>,
 }
@@ -119,6 +167,8 @@ impl UnitRow {
             freshness: Freshness::Unknown,
             work: None,
             environment: None,
+            created_at: unit.created_at,
+            sessions: Vec::new(),
             last_active: None,
         }
     }
@@ -133,16 +183,25 @@ pub struct UnitList {
     pub now: Timestamp,
     /// The units, in the order the producer chose.
     pub units: Vec<UnitRow>,
+    /// What a signal could not answer. A note is not a failure: it is the difference
+    /// between "nothing is attached" and "I could not see".
+    pub notes: Vec<String>,
 }
 
 impl Render for UnitList {
     const KIND: &'static str = "unit list";
 
     fn doc(&self) -> Doc {
+        let mut doc = Doc::new();
         if self.units.is_empty() {
-            return Doc::from_iter([Block::line(format!("{}: no units yet", self.project))]);
+            doc.push(Block::line(format!("{}: no units yet", self.project)));
+        } else {
+            doc.push(Block::table(list_table(&self.units, self.now)));
         }
-        Doc::from_iter([Block::table(table(&self.units, self.now))])
+        for note in &self.notes {
+            doc.push(Block::line(note.clone()));
+        }
+        doc
     }
 }
 
@@ -171,7 +230,33 @@ impl Render for UnitDetail {
 }
 
 /// The columns of the unit table, in the order `docs/scenarios.md` prints them.
-const COLUMNS: [&str; 6] = ["unit", "state", "branch", "disk", "running", "last"];
+const COLUMNS: [&str; 7] = ["unit", "state", "branch", "main", "disk", "running", "last"];
+
+/// The columns of the list, in the order `nodal ls` prints them.
+///
+/// The list answers one question: which unit needs a person next. So it carries what
+/// Git says about each branch rather than what each home occupies, and `nodal status`
+/// keeps the disk and runtime columns.
+const LIST_COLUMNS: [&str; 8] =
+    ["unit", "state", "branch", "main", "remote", "who", "age", "objective"];
+
+/// The table `nodal ls` prints.
+pub(crate) fn list_table(units: &[UnitRow], now: Timestamp) -> Table {
+    let mut table = Table::new(&LIST_COLUMNS);
+    for unit in units {
+        table.push(vec![
+            unit.slug.to_string(),
+            state_cell(unit),
+            branch_cell(unit),
+            main_cell(unit),
+            remote_cell(unit),
+            who_cell(unit),
+            human::span(now, unit.created_at),
+            objective_cell(unit),
+        ]);
+    }
+    table
+}
 
 /// The unit table, which both the list and the status share.
 pub(crate) fn table(units: &[UnitRow], now: Timestamp) -> Table {
@@ -181,6 +266,7 @@ pub(crate) fn table(units: &[UnitRow], now: Timestamp) -> Table {
             unit.slug.to_string(),
             state_cell(unit),
             branch_cell(unit),
+            main_cell(unit),
             disk_cell(unit),
             running_cell(unit),
             last_cell(unit, now),
@@ -197,6 +283,10 @@ fn detail_fields(unit: &UnitRow, now: Timestamp) -> Vec<Field> {
         Field::new("branch", branch_cell(unit)),
         Field::new("freshness", freshness_cell(&unit.freshness)),
     ];
+    fields.push(Field::new("main", main_cell(unit)));
+    fields.push(Field::new("remote", remote_cell(unit)));
+    fields.push(Field::new("who", who_cell(unit)));
+    fields.push(Field::new("age", human::span(now, unit.created_at)));
     if let Some(environment) = &unit.environment {
         fields.push(Field::new("home", environment.home.display().to_string()));
         fields.push(Field::new("env", environment_label(environment)));
@@ -263,15 +353,47 @@ fn freshness_cell(freshness: &Freshness) -> String {
     }
 }
 
-/// The branch, with what Git has to say about it: `+2` ahead, `-1` behind, `*3` files
-/// changed and not committed.
+/// The branch, with the state of the working tree after it: `*2` changed and not
+/// staged, `+1` staged, `?3` untracked. A detached HEAD is said in words, because a
+/// branch name is what every other column is about.
 fn branch_cell(unit: &UnitRow) -> String {
-    let Some(work) = unit.work else { return unit.branch.to_string() };
-    let marks = [(work.ahead, '+'), (work.behind, '-'), (work.uncommitted, '*')]
-        .into_iter()
+    let Some(work) = &unit.work else { return unit.branch.to_string() };
+    let name =
+        if work.detached { format!("{} (detached)", unit.branch) } else { unit.branch.to_string() };
+    format!("{name}{}", marks(&[(work.dirty, '*'), (work.staged, '+'), (work.untracked, '?')]))
+}
+
+/// The counted marks a cell ends with, each left out when its count is zero.
+fn marks(counts: &[(u32, char)]) -> String {
+    counts
+        .iter()
         .filter(|(count, _)| *count > 0)
-        .fold(String::new(), |marks, (count, mark)| marks + &format!(" {mark}{count}"));
-    format!("{}{marks}", unit.branch)
+        .fold(String::new(), |marks, (count, mark)| marks + &format!(" {mark}{count}"))
+}
+
+/// What merging the branch would do, and how far it has moved from the branch it merges
+/// into: `open +2 -5`, `done (absorbed)`, `conflict +1 -4`.
+fn main_cell(unit: &UnitRow) -> String {
+    let Some(work) = &unit.work else { return String::from(NONE) };
+    let counts = marks(&[(work.main.ahead, '+'), (work.main.behind, '-')]);
+    format!("{}{counts}", work.integration.label())
+}
+
+/// What the remote has and what it does not: `^2 v1`. A branch with no upstream carries
+/// the placeholder, because nothing about it is known rather than nothing is different.
+fn remote_cell(unit: &UnitRow) -> String {
+    let Some(remote) = unit.work.as_ref().and_then(|work| work.remote.as_ref()) else {
+        return String::from(NONE);
+    };
+    let counts = marks(&[(remote.divergence.ahead, '^'), (remote.divergence.behind, 'v')]);
+    if counts.is_empty() { String::from("even") } else { counts.trim_start().to_owned() }
+}
+
+/// Who is attached to the unit right now, as `claude-code 2 · josh 1`.
+fn who_cell(unit: &UnitRow) -> String {
+    let named: Vec<String> =
+        unit.sessions.iter().map(|each| format!("{} {}", each.tool, each.count)).collect();
+    human::join(&named)
 }
 
 /// What the unit's home occupies, when it has been measured.

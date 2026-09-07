@@ -4,8 +4,8 @@ use rusqlite::{Connection, Row, params};
 
 use crate::Result;
 use crate::model::{
-    BaseId, DbName, EnvId, EnvState, Environment, HostName, Ports, SchemaFp, Timestamp, UnitId,
-    WorkspaceFp,
+    BaseId, DbName, EnvId, EnvState, Environment, HostName, Ports, ProjectId, SchemaFp, Timestamp,
+    UnitId, WorkspaceFp,
 };
 use crate::store::row;
 
@@ -76,6 +76,21 @@ pub fn latest_for_unit(conn: &Connection, unit_id: UnitId) -> Result<Option<Envi
         "SELECT {COLUMNS} FROM environment WHERE unit_id = ? ORDER BY attempt DESC LIMIT 1"
     );
     row::one(conn, &sql, params![unit_id.to_string()], decode)
+}
+
+/// Every materialisation of every unit of one project, by unit and then by attempt.
+///
+/// One statement rather than one per unit: a list reads the whole project in a pass and
+/// then asks Git about each home, so the registry is read once (`docs/contracts.md`).
+///
+/// # Errors
+/// As [`get`].
+pub fn list_for_project(conn: &Connection, project_id: ProjectId) -> Result<Vec<Environment>> {
+    let sql = format!(
+        "SELECT {COLUMNS} FROM environment WHERE unit_id IN \
+         (SELECT id FROM unit WHERE project_id = ?) ORDER BY unit_id, attempt"
+    );
+    row::many(conn, &sql, params![project_id.to_string()], decode)
 }
 
 /// Every environment on this machine, oldest first.

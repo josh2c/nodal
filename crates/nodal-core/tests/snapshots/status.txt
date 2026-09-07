@@ -1,4 +1,4 @@
-  UNIT            STATE                        BRANCH                     DISK    RUNNING          LAST
-  worker-import   open                         nodal/worker-import +2 *3  287 MB  —                12 min ago
-  payroll-export  open · stale (deps, schema)  nodal/payroll-export -4    301 MB  next dev :41231  now
+  UNIT            STATE                        BRANCH                        MAIN        DISK    RUNNING          LAST
+  worker-import   open                         nodal/worker-import *3 +1 ?2  open +2     287 MB  —                12 min ago
+  payroll-export  open · stale (deps, schema)  nodal/payroll-export          open +1 -4  301 MB  next dev :41231  now
   shared: supabase stack (10 containers) · pnpm store 2.4 GB

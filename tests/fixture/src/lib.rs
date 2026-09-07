@@ -27,6 +27,7 @@
 #![allow(dead_code, reason = "each caller uses the part of the fixture it needs")]
 
 mod files;
+pub mod shapes;
 
 use std::path::{Path, PathBuf};
 

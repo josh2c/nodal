@@ -55,9 +55,21 @@ Both dev servers run at once on different ports against different databases on t
 
 ```
 $ nodal
-  UNIT             STATE   BRANCH                        DISK    RUNNING          LAST
-  worker-import    open    nodal/worker-import +2        287 MB  —                12 min ago
-  payroll-export   open    nodal/payroll-export          301 MB  next dev :41231  now
+  UNIT            STATE  BRANCH                        MAIN     REMOTE  WHO            AGE     OBJECTIVE
+  worker-import   open   nodal/worker-import *3 +1 ?2  open +2  ^2      claude-code 1  2 h     worker import: handle missing supervisor_id
+  payroll-export  open   nodal/payroll-export          open +1  —       codex 1        12 min  payroll export CSV
+```
+
+The list answers one question: which unit needs you next. `MAIN` is what merging the branch
+would do, and how far it has moved from the branch it merges into. `REMOTE` is what the
+upstream has and what it does not. `nodal status` is where disk, ports and running processes
+are:
+
+```
+$ nodal status
+  UNIT             STATE   BRANCH                        MAIN     DISK    RUNNING          LAST
+  worker-import    open    nodal/worker-import *3 +1 ?2  open +2  287 MB  —                12 min ago
+  payroll-export   open    nodal/payroll-export          open +1  301 MB  next dev :41231  now
   shared: supabase stack (10 containers) · pnpm store 2.4 GB · base 7f3e (1 pinned)
 ```
 
@@ -117,7 +129,7 @@ No install, no seed, no rebuild. Her Linux home keeps a warm build cache too.
 
 ```
 $ nodal
-  payroll-export   open   STALE (deps, schema)   …
+  payroll-export  open · stale (deps, schema)  nodal/payroll-export  open +1 -14  …
 $ git rebase main                                  # you's own Git, his tools
 $ nodal sync payroll-export
   deps       lockfile changed → pnpm install (incremental) … 6 s

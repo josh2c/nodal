@@ -94,6 +94,18 @@ jobs:
       - name: what is running is attributed to its unit, with a confidence per row
         run: ci/acceptance-attribution.sh
 
+  acceptance-list:
+    name: acceptance (list)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: every branch shape gets its verdict, and the ten-unit list is timed
+        run: ci/acceptance-list.sh
+      - name: the verdicts agree with the reference tool, where it is installed
+        run: ci/compare-worktrunk.sh
+
   acceptance-operation:
     name: acceptance (operation)
     runs-on: ${{ matrix.os }}

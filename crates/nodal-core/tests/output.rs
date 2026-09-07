@@ -19,14 +19,15 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use nodal_core::git::integration::{Divergence, Integration, Reason};
 use nodal_core::model::{
     Actor, ActorKind, ActorName, Base, BaseId, BranchName, CommitId, Digest, EnvId, EnvState,
     Epistemic, Event, EventId, EventKind, FingerprintPart, HostName, Objective, Platform, PortName,
     Ports, ProjectId, ProjectName, Slug, Timestamp, UnitId, UnitStatus, WorkspaceFp,
 };
 use nodal_core::output::view::{
-    BaseList, BaseRow, EnvLine, EventLog, Freshness, InitReport, Ps, Running, SharedResource,
-    Status, UnitDetail, UnitList, UnitRow, WorkTree,
+    BaseList, BaseRow, EnvLine, EventLog, Freshness, InitReport, Ps, Remote, Running,
+    SharedResource, Status, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
 };
 use nodal_core::output::{Format, Render, render, watch};
 use nodal_core::recipe::gap::{Gap, GapKey};
@@ -55,6 +56,15 @@ fn digest(text: &str) -> Digest {
     Digest::parse(text).expect("a lowercase hex digest")
 }
 
+fn tool(name: &str, count: u32) -> ToolSessions {
+    ToolSessions { tool: ActorName::parse(name).expect("an actor name"), count }
+}
+
+/// The revision every row in these snapshots is measured against.
+fn base() -> String {
+    String::from("refs/remotes/origin/main")
+}
+
 fn ports(entries: &[(&str, u16)]) -> Ports {
     let mut map = BTreeMap::new();
     for (name, port) in entries {
@@ -77,7 +87,19 @@ fn units() -> Vec<UnitRow> {
                 Objective::parse("worker import: handle missing supervisor_id").expect("one line"),
             ),
             freshness: Freshness::Fresh,
-            work: Some(WorkTree { ahead: 2, behind: 0, uncommitted: 3 }),
+            work: Some(WorkTree {
+                dirty: 3,
+                staged: 1,
+                untracked: 2,
+                detached: false,
+                base: base(),
+                main: Divergence { ahead: 2, behind: 0 },
+                integration: Integration::Open,
+                remote: Some(Remote {
+                    upstream: String::from("origin/nodal/worker-import"),
+                    divergence: Divergence { ahead: 2, behind: 0 },
+                }),
+            }),
             environment: Some(EnvLine {
                 id: env_id("01J9X2K4Q7QW8QG4M2N5B3T6HQ"),
                 home: PathBuf::from("/home/j/.nodal/project/e/01J9X2K4"),
@@ -87,6 +109,8 @@ fn units() -> Vec<UnitRow> {
                 ports: ports(&[("app", 41_230)]),
                 running: Vec::new(),
             }),
+            created_at: at("2026-09-04T09:15:00Z"),
+            sessions: vec![tool("claude-code", 1)],
             last_active: Some(at("2026-09-06T14:10:00Z")),
         },
         UnitRow {
@@ -99,7 +123,16 @@ fn units() -> Vec<UnitRow> {
                 FingerprintPart::Dependencies,
                 FingerprintPart::Schema,
             ]),
-            work: Some(WorkTree { ahead: 0, behind: 4, uncommitted: 0 }),
+            work: Some(WorkTree {
+                dirty: 0,
+                staged: 0,
+                untracked: 0,
+                detached: false,
+                base: base(),
+                main: Divergence { ahead: 1, behind: 4 },
+                integration: Integration::Open,
+                remote: None,
+            }),
             environment: Some(EnvLine {
                 id: env_id("01J9X3M8ZK4P2R7V9N6TQW3B5J"),
                 home: PathBuf::from("/home/j/.nodal/project/e/01J9X3M8"),
@@ -109,6 +142,8 @@ fn units() -> Vec<UnitRow> {
                 ports: ports(&[("app", 41_231), ("postgrest", 54_401)]),
                 running: vec![Running { command: String::from("next dev"), port: Some(41_231) }],
             }),
+            created_at: at("2026-09-06T09:40:00Z"),
+            sessions: vec![tool("codex", 1), tool("josh", 1)],
             last_active: Some(at("2026-09-06T14:21:40Z")),
         },
     ]
@@ -127,8 +162,44 @@ fn unmeasured_unit() -> UnitRow {
         freshness: Freshness::Unknown,
         work: None,
         environment: None,
+        created_at: at("2026-09-05T08:00:00Z"),
+        sessions: Vec::new(),
         last_active: None,
     }
+}
+
+/// One row per integration verdict, so every word the `main` column can print is in a
+/// snapshot: a branch merged, a branch squash-merged, a branch that would conflict, and
+/// a home whose HEAD names a commit rather than a branch.
+fn integration_units() -> Vec<UnitRow> {
+    let shapes = [
+        ("merged-plain", Integration::Integrated(Reason::Ancestor), 0, 4, false),
+        ("squash-landed", Integration::Integrated(Reason::Absorbed), 1, 2, false),
+        ("clashes", Integration::Conflict, 1, 4, false),
+        ("detached-head", Integration::Unknown, 0, 0, true),
+    ];
+    shapes
+        .into_iter()
+        .enumerate()
+        .map(|(index, (slug, integration, ahead, behind, detached))| {
+            let mut row = unmeasured_unit();
+            row.id = unit_id(&format!("01J9X4P00000000000000000{index}0"));
+            row.slug = Slug::parse(slug).expect("a slug");
+            row.branch = BranchName::parse(format!("nodal/{slug}")).expect("a branch");
+            row.status = UnitStatus::Open;
+            row.work = Some(WorkTree {
+                dirty: 0,
+                staged: 0,
+                untracked: 0,
+                detached,
+                base: base(),
+                main: Divergence { ahead, behind },
+                integration,
+                remote: None,
+            });
+            row
+        })
+        .collect()
 }
 
 fn history() -> Vec<Event> {
@@ -265,8 +336,20 @@ fn unit_list_renders_both_ways() {
         project: ProjectName::parse("project").expect("one line"),
         now: now(),
         units: units(),
+        notes: Vec::new(),
     };
     both("unit_list", &list);
+}
+
+#[test]
+fn every_integration_verdict_renders_both_ways() {
+    let list = UnitList {
+        project: ProjectName::parse("project").expect("one line"),
+        now: now(),
+        units: integration_units(),
+        notes: vec![String::from("who: a process scan reads /proc, which mac does not have")],
+    };
+    both("unit_list_integration", &list);
 }
 
 #[test]
@@ -275,6 +358,7 @@ fn a_unit_nothing_has_been_measured_about_still_renders_a_whole_row() {
         project: ProjectName::parse("project").expect("one line"),
         now: now(),
         units: vec![unmeasured_unit()],
+        notes: Vec::new(),
     };
     both("unit_list_unmeasured", &list);
 }
@@ -285,6 +369,7 @@ fn an_empty_list_says_so_rather_than_printing_a_bare_heading() {
         project: ProjectName::parse("project").expect("one line"),
         now: now(),
         units: Vec::new(),
+        notes: Vec::new(),
     };
     both("unit_list_empty", &list);
 }
@@ -412,6 +497,8 @@ fn every_snapshot_file_is_claimed_by_a_test() {
         "unit_list.txt",
         "unit_list_empty.json",
         "unit_list_empty.txt",
+        "unit_list_integration.json",
+        "unit_list_integration.txt",
         "unit_list_unmeasured.json",
         "unit_list_unmeasured.txt",
     ];
