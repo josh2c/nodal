@@ -1,0 +1,56 @@
+{
+  "now": "2026-09-06T14:22:00Z",
+  "host": "laptop",
+  "rows": [
+    {
+      "unit": "01J9X2K4Q7QW8QG4M2N5B3T6HP",
+      "slug": "worker-import",
+      "environment": "01J9X2K4Q7QW8QG4M2N5B3T6HQ",
+      "kind": "process",
+      "what": "next dev",
+      "pid": 8812,
+      "port": null,
+      "confidence": "certain",
+      "signal": "environment"
+    },
+    {
+      "unit": "01J9X2K4Q7QW8QG4M2N5B3T6HP",
+      "slug": "worker-import",
+      "environment": "01J9X2K4Q7QW8QG4M2N5B3T6HQ",
+      "kind": "process",
+      "what": "vim",
+      "pid": 8940,
+      "port": null,
+      "confidence": "probable",
+      "signal": "cwd"
+    },
+    {
+      "unit": "01J9X2K4Q7QW8QG4M2N5B3T6HP",
+      "slug": "worker-import",
+      "environment": "01J9X2K4Q7QW8QG4M2N5B3T6HQ",
+      "kind": "container",
+      "what": "nodal-worker-import-db",
+      "pid": null,
+      "port": null,
+      "confidence": "certain",
+      "signal": "docker"
+    },
+    {
+      "unit": "01J9X2K4Q7QW8QG4M2N5B3T6HP",
+      "slug": "worker-import",
+      "environment": "01J9X2K4Q7QW8QG4M2N5B3T6HQ",
+      "kind": "listener",
+      "what": "app",
+      "pid": null,
+      "port": 41230,
+      "confidence": "probable",
+      "signal": "listener"
+    }
+  ],
+  "notes": [
+    {
+      "signal": "docker",
+      "why": "docker is not installed"
+    }
+  ]
+}

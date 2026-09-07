@@ -17,6 +17,7 @@ use crate::commands::cd::Cd;
 use crate::commands::env::Env;
 use crate::commands::init::Init;
 use crate::commands::new::New;
+use crate::commands::ps::Ps;
 use crate::commands::run::Run;
 use crate::commands::shell::Shell;
 use crate::commands::shell_init::ShellInit;
@@ -38,6 +39,8 @@ pub enum Command {
     Shell(Shell),
     /// Run a command in a unit's environment and record it in the unit's log.
     Run(Run),
+    /// Report what is running on this machine and which unit each thing belongs to.
+    Ps(Ps),
     /// List, build and collect the warm bases unit homes are cloned from.
     #[command(subcommand_required = true, arg_required_else_help = true)]
     Base(Base),
@@ -83,6 +86,7 @@ impl Cli {
             Some(Command::New(new)) => new.run(&mut self.registry()?),
             Some(Command::Cd(cd)) => cd.run(&self.registry()?),
             Some(Command::Run(run)) => run.run(&self.registry()?),
+            Some(Command::Ps(ps)) => ps.run(&self.registry()?),
             Some(Command::ShellInit(init)) => init.run(),
             Some(Command::Shell(shell)) => shell.run(),
             Some(Command::Base(base)) => base.run(&mut self.registry()?),

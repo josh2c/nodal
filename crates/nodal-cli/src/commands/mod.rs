@@ -9,6 +9,7 @@ pub mod cd;
 pub mod env;
 pub mod init;
 pub mod new;
+pub mod ps;
 pub mod run;
 pub mod shell;
 pub mod shell_init;

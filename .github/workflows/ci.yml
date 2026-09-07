@@ -82,6 +82,18 @@ jobs:
       - name: a process in an activated home carries NODAL_ID, and no shell is started
         run: ci/acceptance-entry.sh
 
+  acceptance-attribution:
+    name: acceptance (attribution)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: the daemon the docker signal reads, which the runner already has
+        run: docker info --format '{{.ServerVersion}}'
+      - name: what is running is attributed to its unit, with a confidence per row
+        run: ci/acceptance-attribution.sh
+
   acceptance-operation:
     name: acceptance (operation)
     runs-on: ${{ matrix.os }}

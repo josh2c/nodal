@@ -82,7 +82,7 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 `schemas/v1/recipe.json`.
 
 ## CLI
-`init, new, cd, adopt, ls, show, explain, env, shell, shell-init, run, start, note, ask, handoff,
+`init, new, cd, adopt, ls, show, explain, env, shell, shell-init, run, ps, start, note, ask, handoff,
 sync, done, merge, prune, reclaim, gc, doctor, base, status`. Every read command accepts `--json`; `status --watch`
 emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
@@ -104,6 +104,21 @@ asks nothing when a shell ends.
 
 Sessions are derived, not declared: a process carrying `NODAL_ID` is attached to that unit, and a
 session ends when the process is gone. Nothing has to be run on entry or on exit.
+
+## Attribution
+`nodal ps` answers what is running on this host and which unit each thing belongs to. Every row
+carries a confidence, and there are two levels. `certain` means the thing named its unit: a process
+carrying `NODAL_ID`, a container carrying the `nodal.unit` label. `probable` means Nodal inferred
+the unit. Three readings are probable: a process whose working directory is inside a home, a
+container that mounts a home, and a granted port that has a listener. A row carries no other level.
+
+Nodal labels every container it starts with `nodal.unit` (the unit identifier) and
+`nodal.environment` (the materialisation). These are the container half of the environment-variable
+contract above.
+
+A signal that cannot run gives a note under the table. It is never a failure. A host with no Docker
+daemon still answers, and so does a host whose process table Nodal cannot read. An empty answer means
+nothing runs. A note means Nodal could not read that signal.
 
 ## Hooks
 Recipe hooks receive `NODAL_SOURCE`, `NODAL_HOME`, `NODAL_ID`, `NODAL_PARENT_ID`, `NODAL_UNIT` and run

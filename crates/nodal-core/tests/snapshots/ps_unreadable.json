@@ -1,0 +1,11 @@
+{
+  "now": "2026-09-06T14:22:00Z",
+  "host": "laptop",
+  "rows": [],
+  "notes": [
+    {
+      "signal": "environment",
+      "why": "a process scan reads /proc, which macos does not have"
+    }
+  ]
+}

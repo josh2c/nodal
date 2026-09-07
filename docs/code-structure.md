@@ -176,7 +176,7 @@ main.rs                clap parse → dispatch; nothing else
 cli.rs                 the clap derive tree (one enum)
 commands/              one file per command, each ≤ 40 lines: parse args → call core → render
   init.rs · new.rs · cd.rs · adopt.rs · ls.rs · show.rs · explain.rs · shell.rs · shell_init.rs
-  run.rs · start.rs
+  run.rs · ps.rs · start.rs
   note.rs · ask.rs · handoff.rs · sync.rs · done.rs · reclaim.rs · gc.rs · doctor.rs
   base.rs · db.rs · status.rs · push.rs · pull.rs · open.rs · uninstall.rs
 ```
