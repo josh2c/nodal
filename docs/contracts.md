@@ -44,7 +44,15 @@ A secret value goes into `.nodal/env` and into the output of `nodal env --export
 else: not into a manifest, a bundle, a log line, an error message or `--json` output.
 
 ## Home path policy
-`~/.nodal/<project>/e/<id>/`, equal length for every unit of a project.
+`~/.nodal/<project>/e/<id>/`, equal length for every unit of a project. `<id>` is the last
+eight characters of the environment's identifier: they are the random part rather than the
+part derived from the clock, so two units created in the same moment do not collide.
+`NODAL_HOME` moves the whole directory, as `NODAL_STORE` moves the registry inside it; the
+registry's default path is `registry.db` in that directory.
+
+A home is refused where it would overlap a tree Nodal already knows: the project it is
+cloned from, another project's root, or another unit's home. A home inside its own project
+would make the next clone copy a copy.
 
 ## `nodal.toml`
 `backend`, `package_manager`, `commands.{dev,build,test,migrate,seed}`, `toolchain`, `db.{kind,url_var}`,

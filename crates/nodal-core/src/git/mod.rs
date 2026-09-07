@@ -81,6 +81,18 @@ impl Git {
         ))
     }
 
+    /// The root of this checkout's working tree.
+    ///
+    /// A command run in a subdirectory of a project is a command about the project, so
+    /// every operation resolves the directory it was given to this before it acts.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the checkout is bare and has no working tree.
+    pub fn top_level(&self) -> Result<PathBuf> {
+        let output = cmd::run_ok(&self.root, &["rev-parse", "--show-toplevel"])?;
+        Ok(PathBuf::from(output.text()?))
+    }
+
     /// The Git directory of this checkout.
     ///
     /// # Errors

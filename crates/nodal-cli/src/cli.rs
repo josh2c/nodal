@@ -7,10 +7,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
+use nodal_core::lifecycle::{self, Resolution, ops};
 use nodal_core::logging::Verbosity;
+use nodal_core::store::Store;
+use nodal_core::workspace::home;
 
 use crate::commands::env::Env;
 use crate::commands::init::Init;
+use crate::commands::new::New;
 
 /// The subcommands implemented so far. The rest arrive with their own tasks.
 #[derive(Debug, Subcommand)]
@@ -19,13 +23,15 @@ pub enum Command {
     Init(Init),
     /// Report what the unit home you are in is activated with.
     Env(Env),
+    /// Make a unit: a branch, a home cloned from the project, and the rows for both.
+    New(New),
 }
 
 /// One list for every coding agent on your project.
 #[derive(Debug, Parser)]
 #[command(name = "nodal", version, about, long_about = None)]
 pub struct Cli {
-    /// Path to the registry, for tests and for a second machine's store.
+    /// Path to the registry. Defaults to `registry.db` in Nodal's state directory.
     #[arg(long, global = true, value_name = "PATH", env = "NODAL_STORE")]
     pub store: Option<PathBuf>,
 
@@ -58,6 +64,7 @@ impl Cli {
         match &self.command {
             Some(Command::Init(init)) => init.run(),
             Some(Command::Env(env)) => env.run(),
+            Some(Command::New(new)) => new.run(&mut self.registry()?),
             None => {
                 let (store, no_hooks) = (&self.store, self.no_hooks);
                 tracing::debug!(?store, no_hooks, "no subcommand given");
@@ -66,6 +73,40 @@ impl Cli {
                 Ok(ExitCode::SUCCESS)
             }
         }
+    }
+
+    /// The registry this invocation works on, with every interrupted operation dealt
+    /// with before the command runs.
+    ///
+    /// This is the preamble: a `nodal` killed between two steps left work behind, and
+    /// the next `nodal` is what finishes or undoes it. What was done is printed on
+    /// standard error rather than standard output, so a command's `--json` answer stays
+    /// one document.
+    ///
+    /// Every command that reads or writes the registry goes through here, and only
+    /// those do. `init` writes a file into a project Nodal may never have heard of, and
+    /// `env` reads a home's own files, so neither creates a registry as a side effect of
+    /// being run.
+    ///
+    /// # Errors
+    ///
+    /// [`nodal_core::Error::NoHomeDirectory`] when no override and no home directory
+    /// say where the registry belongs, and whatever opening or reading it reported.
+    fn registry(&self) -> nodal_core::Result<Store> {
+        let path = match &self.store {
+            Some(chosen) => chosen.clone(),
+            None => home::registry()?,
+        };
+        let mut store = Store::open(path)?;
+        report(&lifecycle::resolve(&mut store, &ops::rebuilders())?);
+        Ok(store)
+    }
+}
+
+/// Say what became of every operation an earlier run did not finish.
+fn report(resolutions: &[Resolution]) {
+    for resolution in resolutions {
+        eprintln!("nodal: {resolution}");
     }
 }
 

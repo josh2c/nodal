@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use thiserror::Error as ThisError;
 
 use crate::git::preflight;
-use crate::model::{EnvId, OperationId};
+use crate::model::{BranchName, EnvId, OperationId, Slug, UnitId};
 
 /// Every failure `nodal-core` can return.
 #[derive(Debug, ThisError)]
@@ -353,6 +353,59 @@ pub enum Error {
         backend: &'static str,
         /// The path it was called on.
         path: PathBuf,
+    },
+
+    /// Neither the override nor the operating system says where this user's own
+    /// directory is, so Nodal cannot work out where its state belongs.
+    #[error("no home directory; set {variable} to say where Nodal keeps its state")]
+    NoHomeDirectory {
+        /// The variable that would answer the question.
+        variable: &'static str,
+    },
+
+    /// A home would overlap a tree Nodal already knows: the one it is cloned from, a
+    /// project a person works in, or another unit's home. A home inside any of those
+    /// makes the next clone copy a copy, and makes a reclaim remove what is not its own.
+    #[error("{home} overlaps {tree}, which is {what}", home = home.display(), tree = tree.display())]
+    InsideSource {
+        /// The destination that was refused.
+        home: PathBuf,
+        /// The tree it overlapped.
+        tree: PathBuf,
+        /// What that tree is, in the words the message uses.
+        what: &'static str,
+    },
+
+    /// A directory an operation was told to act on carries no `.nodal/id`, so it cannot
+    /// be shown to be the home the registry named.
+    #[error("{home} carries no marker, so it is not a home Nodal may act on", home = home.display())]
+    HomeUnmarked {
+        /// The directory that was inspected.
+        home: PathBuf,
+    },
+
+    /// A home's marker names another unit. Something moved, copied or restored the
+    /// directory, and acting on it would act on the wrong unit's work.
+    #[error("{home} is marked for unit {found}, not {expected}", home = home.display())]
+    HomeMarkedFor {
+        /// The directory that was inspected.
+        home: PathBuf,
+        /// The unit its marker names.
+        found: UnitId,
+        /// The unit the caller expected.
+        expected: UnitId,
+    },
+
+    /// Another open unit already holds the branch. The rule is the registry's partial
+    /// unique index; this is the reading of it that can name the holder.
+    #[error("branch {branch} is held by the open unit {slug} ({unit})")]
+    UnitBranchHeld {
+        /// The branch that was asked for.
+        branch: BranchName,
+        /// The handle of the unit that holds it, which is what `nodal ls` shows.
+        slug: Slug,
+        /// That unit's identity.
+        unit: UnitId,
     },
 
     /// A branch that had to exist did not.

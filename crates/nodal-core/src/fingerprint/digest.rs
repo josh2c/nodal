@@ -20,6 +20,8 @@ pub(super) const SUB_DOMAIN: &str = "nodal.fingerprint.sub.v1";
 pub(super) const WORKSPACE_DOMAIN: &str = "nodal.fingerprint.workspace.v1";
 /// The domain of a schema key.
 pub(super) const SCHEMA_DOMAIN: &str = "nodal.fingerprint.schema.v1";
+/// The domain of a recipe digest.
+pub(super) const RECIPE_DOMAIN: &str = "nodal.fingerprint.recipe.v1";
 
 /// Accumulates length-prefixed fields into one digest.
 pub(super) struct Hasher(Sha256);
