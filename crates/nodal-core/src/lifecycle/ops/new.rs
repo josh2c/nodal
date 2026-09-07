@@ -53,6 +53,7 @@ use crate::env::secrets::MachineSecrets;
 use crate::env::{Produced, resolve as resolve_env};
 use crate::fingerprint;
 use crate::git::{Git, scrub};
+use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Runner};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::owner;
 use crate::lifecycle::step::{Commit, Plan, Step};
@@ -100,7 +101,7 @@ const DEFAULT_SLUG: &str = "unit";
 const SLUG_ATTEMPTS: u32 = 1_000;
 
 /// What a person asked `nodal new` for.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Request {
     /// A directory in the project. The repository holding it is read to decide which
     /// base the unit wants; it is never what the home is cloned from.
@@ -111,6 +112,23 @@ pub struct Request {
     pub name: Option<Slug>,
     /// The branch the work starts from, when it is known.
     pub parent_branch: Option<BranchName>,
+    /// Whether the project's own hooks run. `false` is `--no-hooks`.
+    pub hooks: bool,
+}
+
+impl Default for Request {
+    /// A request that runs the project's hooks, because that is what a person who
+    /// wrote one into their recipe asked for. `--no-hooks` is the exception and is
+    /// stated.
+    fn default() -> Self {
+        Self {
+            source: PathBuf::new(),
+            objective: None,
+            name: None,
+            parent_branch: None,
+            hooks: true,
+        }
+    }
 }
 
 /// Everything the plan is built from, and the whole of what the journal keeps.
@@ -158,8 +176,39 @@ pub fn create(
 ) -> Result<Created> {
     let params = prepare(store, request, progress)?;
     let environment = params.environment.id;
+    let runner = hooks_of(&params, request.hooks)?;
+    let context = context_of(&params);
+    runner.run(Phase::PreNew, &params.project.root, &context)?;
     run(store, &plan(&params)?)?;
+    runner.run(Phase::PostNew, &params.environment.home, &context)?;
     Created::of(&params.unit, &read_back(store, environment)?, Timestamp::now())
+}
+
+/// The project's hooks and this machine's approvals for them.
+///
+/// A hook is not a step and cannot be one ([`crate::lifecycle::hooks`]), so `pre_new`
+/// runs after every refusal has been made and before the first step, and `post_new`
+/// after the registry write. `pre_new` runs in the project root, because the home it
+/// is about does not exist yet; `NODAL_ROOT` names the home it is going to be.
+fn hooks_of(params: &Params, enabled: bool) -> Result<Runner> {
+    Ok(Runner {
+        project: params.project.root.clone(),
+        hooks: params.recipe.hooks.clone(),
+        approvals: Approvals::open(hooks::path_in(&params.state_dir))?,
+        enabled,
+    })
+}
+
+/// The `NODAL_*` context both hooks of a create are given.
+fn context_of(params: &Params) -> Context {
+    Context {
+        source: params.project.root.clone(),
+        root: params.environment.home.clone(),
+        unit: params.unit.id,
+        slug: params.unit.slug.clone(),
+        parent: params.environment.base_id.map(|base| base.to_string()),
+        environment: params.environment.id,
+    }
 }
 
 /// Work out what the operation will do, and get the base it will clone.

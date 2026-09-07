@@ -37,6 +37,13 @@ const ENVIRONMENTS: &str = "e";
 /// walk of the homes of a project cannot reach a base, whatever it is looking for.
 const BASES: &str = "b";
 
+/// The segment a project's reclaimed homes sit under until `nodal gc` removes them.
+///
+/// A third segment beside the homes and the bases, for the same structural reason: a
+/// walk of the live homes of a project cannot reach a trashed one, and a walk of the
+/// trash cannot reach a live home. Nothing has to remember to skip anything.
+const TRASH: &str = "trash";
+
 /// How many characters of an environment's identifier name its home.
 ///
 /// The last eight characters of a ULID are eight of its ten random ones, which is forty
@@ -92,6 +99,30 @@ pub fn for_base(root: &Path, project: &ProjectName, base: BaseId) -> PathBuf {
 #[must_use]
 pub fn base_segment(base: BaseId) -> String {
     tail(&base.to_string())
+}
+
+/// The directory a project's reclaimed homes are moved to, under the state directory.
+///
+/// # Errors
+/// As [`directory`].
+pub fn trash(project: &ProjectName) -> Result<PathBuf> {
+    Ok(trash_in_directory(&directory()?, project))
+}
+
+/// The same directory, under a state directory the caller names.
+#[must_use]
+pub fn trash_in_directory(root: &Path, project: &ProjectName) -> PathBuf {
+    root.join(project_segment(project)).join(TRASH)
+}
+
+/// Where one reclaimed home is put: `<root>/<project>/trash/<id>`, named by the same
+/// eight characters the live home was.
+///
+/// The name is the home's, not a new one, so a person who wrote the path down before
+/// the reclaim can still find the directory afterwards.
+#[must_use]
+pub fn trashed(root: &Path, project: &ProjectName, environment: EnvId) -> PathBuf {
+    trash_in_directory(root, project).join(segment(environment))
 }
 
 /// The home of one materialisation, under the state directory.
@@ -202,6 +233,18 @@ mod tests {
             in_directory(root, &name, environment('1')).as_os_str().len(),
             "a base path and a home path are the same length"
         );
+    }
+
+    #[test]
+    fn a_reclaimed_home_keeps_its_name_and_leaves_the_live_homes() {
+        let root = Path::new("/home/u/.nodal");
+        let name = project("storefront");
+        let live = in_directory(root, &name, environment('1'));
+        let gone = super::trashed(root, &name, environment('1'));
+        assert_ne!(live, gone);
+        assert_eq!(live.file_name(), gone.file_name());
+        assert!(gone.starts_with(super::trash_in_directory(root, &name)));
+        assert!(!gone.starts_with(live.parent().unwrap()));
     }
 
     #[test]

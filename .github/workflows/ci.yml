@@ -134,6 +134,20 @@ jobs:
       - name: a unit is clean and alone, and a killed create leaves nothing
         run: ci/acceptance-new.sh
 
+  acceptance-reclaim:
+    name: acceptance (reclaim)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: dirty is refused, a reclaimed unit leaves only its trash entry, gc removes it
+        run: ci/acceptance-reclaim.sh
+
   acceptance-ports:
     name: acceptance (ports)
     runs-on: ubuntu-latest

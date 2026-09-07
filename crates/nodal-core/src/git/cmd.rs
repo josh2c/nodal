@@ -4,6 +4,7 @@
 //! mocking or swapping the backing implementation is a single seam
 //! (`docs/code-structure.md`). Nothing here interprets output beyond decoding it.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -68,9 +69,25 @@ impl Output {
 /// # Errors
 /// [`Error::GitSpawn`] when the `git` binary could not be started.
 pub fn run(repo: &Path, args: &[&str]) -> Result<Output> {
+    run_with(repo, args, &[])
+}
+
+/// The same, with extra variables set for this invocation only.
+///
+/// One caller: the work-in-progress snapshot, which builds its commit through
+/// `GIT_INDEX_FILE` so that the index a person is using is never touched. The
+/// variables are added here rather than by the caller so that this stays the one
+/// function in `nodal-core` that starts a `git` process.
+///
+/// # Errors
+/// [`Error::GitSpawn`] when the `git` binary could not be started.
+pub fn run_with(repo: &Path, args: &[&str], extra: &[(&str, &OsStr)]) -> Result<Output> {
     let mut command = Command::new("git");
     command.arg("-C").arg(repo).arg("--no-pager").args(args);
     for (key, value) in ENV {
+        command.env(key, value);
+    }
+    for (key, value) in extra {
         command.env(key, value);
     }
     let output = command.output().map_err(|source| Error::GitSpawn { source })?;
@@ -88,7 +105,16 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<Output> {
 /// [`Error::GitSpawn`] when `git` could not be started, [`Error::Git`] when it exited
 /// non-zero.
 pub fn run_ok(repo: &Path, args: &[&str]) -> Result<Output> {
-    let output = run(repo, args)?;
+    run_ok_with(repo, args, &[])
+}
+
+/// [`run_ok`], with extra variables set for this invocation only.
+///
+/// # Errors
+/// [`Error::GitSpawn`] when `git` could not be started, [`Error::Git`] when it exited
+/// non-zero.
+pub fn run_ok_with(repo: &Path, args: &[&str], extra: &[(&str, &OsStr)]) -> Result<Output> {
+    let output = run_with(repo, args, extra)?;
     if output.ok() {
         return Ok(output);
     }

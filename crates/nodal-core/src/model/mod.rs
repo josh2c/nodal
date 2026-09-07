@@ -24,6 +24,7 @@ pub mod recipe;
 pub mod schema;
 pub mod session;
 pub mod timestamp;
+pub mod trash;
 pub mod unit;
 
 pub use crate::model::actor::{Actor, ActorKind, ActorName};
@@ -50,4 +51,5 @@ pub use crate::model::recipe::{
 pub use crate::model::schema::{SCHEMA_VERSION, SchemaDoc};
 pub use crate::model::session::Session;
 pub use crate::model::timestamp::Timestamp;
+pub use crate::model::trash::{Trashed, expiry};
 pub use crate::model::unit::{BranchName, Objective, Slug, Unit, UnitStatus};

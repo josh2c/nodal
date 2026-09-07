@@ -28,11 +28,13 @@
 //! cleaned up, not left to wonder.
 
 pub mod guard;
+pub mod hooks;
 pub mod journal;
 pub mod marker;
 pub mod ops;
 pub mod owner;
 pub mod step;
+pub mod uniqueness;
 
 use crate::lifecycle::journal::{Operation, State, StepRecord, StepState};
 use crate::lifecycle::owner::{Liveness, Owner};

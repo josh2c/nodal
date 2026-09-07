@@ -15,10 +15,12 @@ use nodal_core::workspace::home;
 use crate::commands::base::Base;
 use crate::commands::cd::Cd;
 use crate::commands::env::Env;
+use crate::commands::gc::Gc;
 use crate::commands::init::Init;
 use crate::commands::ls::Ls;
 use crate::commands::new::New;
 use crate::commands::ps::Ps;
+use crate::commands::reclaim::Reclaim;
 use crate::commands::run::Run;
 use crate::commands::shell::Shell;
 use crate::commands::shell_init::ShellInit;
@@ -44,6 +46,10 @@ pub enum Command {
     Run(Run),
     /// Report what is running on this machine and which unit each thing belongs to.
     Ps(Ps),
+    /// End a unit: stop what it runs, give back its ports, and move its home to trash.
+    Reclaim(Reclaim),
+    /// Remove the trashed homes whose retention has run out.
+    Gc(Gc),
     /// List, build and collect the warm bases unit homes are cloned from.
     #[command(subcommand_required = true, arg_required_else_help = true)]
     Base(Base),
@@ -86,11 +92,13 @@ impl Cli {
         match &self.command {
             Some(Command::Init(init)) => init.run(),
             Some(Command::Env(env)) => env.run(),
-            Some(Command::New(new)) => new.run(&mut self.registry()?),
+            Some(Command::New(new)) => new.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Ls(ls)) => ls.run(&self.registry()?),
             Some(Command::Cd(cd)) => cd.run(&self.registry()?),
             Some(Command::Run(run)) => run.run(&self.registry()?),
             Some(Command::Ps(ps)) => ps.run(&self.registry()?),
+            Some(Command::Reclaim(reclaim)) => reclaim.run(&mut self.registry()?, !self.no_hooks),
+            Some(Command::Gc(gc)) => gc.run(&self.registry()?),
             Some(Command::ShellInit(init)) => init.run(),
             Some(Command::Shell(shell)) => shell.run(),
             Some(Command::Base(base)) => base.run(&mut self.registry()?),

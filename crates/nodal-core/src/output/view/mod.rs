@@ -14,6 +14,7 @@ pub mod env;
 pub mod event;
 pub mod init;
 pub mod ps;
+pub mod reclaim;
 pub mod status;
 pub mod unit;
 
@@ -23,6 +24,7 @@ pub use crate::output::view::env::{EnvReport, VarLine};
 pub use crate::output::view::event::EventLog;
 pub use crate::output::view::init::InitReport;
 pub use crate::output::view::ps::Ps;
+pub use crate::output::view::reclaim::{Leftover, Reclaimed, Swept};
 pub use crate::output::view::status::{SharedResource, Status};
 pub use crate::output::view::unit::{
     EnvLine, Freshness, Remote, Running, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,

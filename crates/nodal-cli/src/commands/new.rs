@@ -52,9 +52,9 @@ impl New {
     ///
     /// Propagates a branch another open unit holds, a home that would overlap a tree
     /// Nodal knows, and whatever Git, the filesystem or the registry reported.
-    pub fn run(&self, store: &mut Store) -> nodal_core::Result<ExitCode> {
+    pub fn run(&self, store: &mut Store, hooks: bool) -> nodal_core::Result<ExitCode> {
         let progress: Arc<dyn Reporter> = substrate::sink(self.json);
-        let report = new::create(store, &self.request()?, &progress)?;
+        let report = new::create(store, &self.request(hooks)?, &progress)?;
         output::write(&report, Format::from_json_flag(self.json), &mut std::io::stdout())?;
         if let Some(environment) = &report.unit.environment {
             entry::ask_to_enter(&environment.home)?;
@@ -63,12 +63,13 @@ impl New {
     }
 
     /// The arguments as the values the operation takes.
-    fn request(&self) -> nodal_core::Result<Request> {
+    fn request(&self, hooks: bool) -> nodal_core::Result<Request> {
         Ok(Request {
             source: self.path.clone().unwrap_or_else(|| PathBuf::from(".")),
             objective: self.objective.as_deref().map(Objective::parse).transpose()?,
             name: self.name.as_deref().map(Slug::parse).transpose()?,
             parent_branch: self.from.as_deref().map(BranchName::parse).transpose()?,
+            hooks,
         })
     }
 }

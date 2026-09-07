@@ -1,0 +1,89 @@
+{
+  "$defs": {
+    "EnvId": {
+      "description": "Identifies one materialisation of a unit. A unit re-materialised after reclaim\ngets a new environment, not a new unit.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "ProjectId": {
+      "description": "Identifies a project: one Git repository Nodal manages units for.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "Slug": {
+      "description": "The CLI handle for a unit, derived from its branch.",
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "Timestamp": {
+      "description": "A UTC instant, serialised as an RFC 3339 string.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "UnitId": {
+      "description": "Identifies a `WorkUnit`. Stable for the life of the work, across machines.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/trashed.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One reclaimed home, kept until it expires.",
+  "properties": {
+    "environment_id": {
+      "$ref": "#/$defs/EnvId",
+      "description": "The materialisation whose home this was. One row per environment: an\nenvironment is reclaimed once."
+    },
+    "expires_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "The first instant `nodal gc` may remove it."
+    },
+    "home": {
+      "description": "Where the home was while it was live.",
+      "type": "string"
+    },
+    "path": {
+      "description": "Where it is now.",
+      "type": "string"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId",
+      "description": "The project that unit belongs to, so `gc` can sweep one project's trash."
+    },
+    "slug": {
+      "$ref": "#/$defs/Slug",
+      "description": "The unit's handle, kept here so a listing reads without a join to a unit row."
+    },
+    "snapshot": {
+      "description": "The ref a `--force` reclaim committed the work to, inside the trashed\nrepository. `None` when the home was clean and nothing had to be preserved.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "trashed_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When it was moved."
+    },
+    "unit_id": {
+      "$ref": "#/$defs/UnitId",
+      "description": "The unit it belonged to."
+    }
+  },
+  "required": [
+    "environment_id",
+    "unit_id",
+    "project_id",
+    "slug",
+    "home",
+    "path",
+    "trashed_at",
+    "expires_at"
+  ],
+  "title": "Trashed",
+  "type": "object"
+}

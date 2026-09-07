@@ -1,12 +1,14 @@
 //! `nodal init`: write the project's `nodal.toml`, with a line for every gap.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Args;
+use nodal_core::lifecycle::hooks;
 use nodal_core::output::view::InitReport;
 use nodal_core::output::{self, Format};
 use nodal_core::recipe;
+use nodal_core::workspace::home;
 
 /// Arguments of `nodal init`.
 #[derive(Debug, Args)]
@@ -46,8 +48,27 @@ impl Init {
             return Ok(ExitCode::SUCCESS);
         }
         recipe::apply_init(&plan, self.force)?;
+        approve(&plan)?;
         write(&report, Format::Human)
     }
+}
+
+/// Approve, on this machine, the hooks the written recipe declares.
+///
+/// This is the moment the approval is asked for: a person has just read the recipe they
+/// are writing. What is approved is the exact text of each command, so one that changes
+/// afterwards is refused until `nodal init` is run again
+/// (`nodal_core::lifecycle::hooks`).
+///
+/// The line goes to standard error, because the command's answer on standard output is
+/// one document.
+fn approve(plan: &recipe::InitPlan) -> nodal_core::Result<()> {
+    let root = plan.path.parent().unwrap_or_else(|| Path::new("."));
+    let count = hooks::approve(&home::directory()?, root, &plan.hooks)?;
+    if count > 0 {
+        eprintln!("nodal: approved {count} hook command(s) declared by this project");
+    }
+    Ok(())
 }
 
 /// Print a read type in the format asked for. Every command ends this way, so the two

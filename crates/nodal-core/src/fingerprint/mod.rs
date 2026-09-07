@@ -128,6 +128,22 @@ pub fn compute_recipe(recipe: &Recipe) -> Result<Digest> {
     hasher.finish()
 }
 
+/// The digest of one command line: what an approval of a hook is recorded as.
+///
+/// A hook is approved by its exact text, so a command that gains an argument, a pipe or
+/// a second word is a different command and is refused until it is approved again. The
+/// digest rather than the text is stored because the text is a line from a project's
+/// recipe, and the file that records approvals belongs to the machine rather than to
+/// any one project.
+///
+/// # Errors
+/// [`Error::InvalidValue`] only if the hex encoding stopped being hex.
+pub fn compute_command(command: &str) -> Result<Digest> {
+    let mut hasher = Hasher::new(digest::COMMAND_DOMAIN);
+    hasher.text(command);
+    hasher.finish()
+}
+
 /// Fold named sub-fingerprints into a key, naming each part so that two classes
 /// swapping their inputs cannot produce the same key.
 fn fold(hasher: &mut Hasher, parts: &[SubFp]) {
