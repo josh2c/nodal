@@ -38,7 +38,7 @@ impl Processes for Table {
 fn running(pid: u32, pairs: &[(&str, &str)]) -> Running {
     let vars: BTreeMap<String, String> =
         pairs.iter().map(|(name, value)| ((*name).to_owned(), (*value).to_owned())).collect();
-    Running { pid, vars }
+    Running::new(pid, vars)
 }
 
 fn host() -> HostName {

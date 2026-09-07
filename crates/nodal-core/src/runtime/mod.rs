@@ -14,15 +14,21 @@
 //! replaces this process with the shell rather than running one under it. A session
 //! ends because a process is gone, not because something was asked.
 //!
+//! The same reading answers a second question. A process table that says who is attached
+//! also says what is running and whose it is, which is [`attribute`] and the `nodal ps`
+//! it composes into ([`ps`]).
+//!
 //! The two routes into an activated shell are file-based and both are written by
 //! `crate::env::files`: the `.envrc` direnv reads, and `nodal env --export`, which the
 //! prompt hook evaluates. They compose: the hook does nothing in a home direnv has
 //! already activated, because `NODAL_ROOT` is then already the home.
 
 pub mod actor;
+pub mod attribute;
 pub mod entry;
 pub mod init;
 pub mod processes;
+pub mod ps;
 pub mod run;
 pub mod sessions;
 pub mod shell;

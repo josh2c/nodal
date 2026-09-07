@@ -8,7 +8,10 @@
 //! [`ports`] is the allocator: a project gets a block of ports, an environment gets
 //! ports from that block, and reclaim gives them back. [`listeners`] reads what is
 //! actually bound on this host, so a port an environment was granted and a port an
-//! environment uses are two answers, not one assumption.
+//! environment uses are two answers, not one assumption. [`docker`] is the one place
+//! that spawns the `docker` binary, so a machine without a daemon is a reason a caller
+//! can print rather than a failure it has to handle.
 
+pub mod docker;
 pub mod listeners;
 pub mod ports;

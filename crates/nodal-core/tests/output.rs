@@ -25,11 +25,12 @@ use nodal_core::model::{
     Ports, ProjectId, ProjectName, Slug, Timestamp, UnitId, UnitStatus, WorkspaceFp,
 };
 use nodal_core::output::view::{
-    BaseList, BaseRow, EnvLine, EventLog, Freshness, InitReport, Running, SharedResource, Status,
-    UnitDetail, UnitList, UnitRow, WorkTree,
+    BaseList, BaseRow, EnvLine, EventLog, Freshness, InitReport, Ps, Running, SharedResource,
+    Status, UnitDetail, UnitList, UnitRow, WorkTree,
 };
 use nodal_core::output::{Format, Render, render, watch};
 use nodal_core::recipe::gap::{Gap, GapKey};
+use nodal_core::runtime::attribute::{Attributed, Confidence, Kind, Note, Source};
 
 // ---------------------------------------------------------------- fixed values
 
@@ -398,6 +399,10 @@ fn every_snapshot_file_is_claimed_by_a_test() {
         "event_log.txt",
         "init_report.json",
         "init_report.txt",
+        "ps.json",
+        "ps.txt",
+        "ps_unreadable.json",
+        "ps_unreadable.txt",
         "status.json",
         "status.txt",
         "status_stream.ndjson",
@@ -417,4 +422,68 @@ fn every_snapshot_file_is_claimed_by_a_test() {
         .collect();
     found.sort();
     assert_eq!(found, expected, "{}: an orphaned or missing snapshot", directory.display());
+}
+
+/// Every kind of row and both confidences, so a column that moves shows up as a diff.
+fn ps() -> Ps {
+    let unit = unit_id("01J9X2K4Q7QW8QG4M2N5B3T6HP");
+    let environment = env_id("01J9X2K4Q7QW8QG4M2N5B3T6HQ");
+    let slug = Slug::parse("worker-import").expect("a slug");
+    let row = |kind, what: &str, pid, port, confidence, signal| Attributed {
+        unit,
+        slug: slug.clone(),
+        environment,
+        kind,
+        what: String::from(what),
+        pid,
+        port,
+        confidence,
+        signal,
+    };
+    Ps {
+        now: now(),
+        host: HostName::parse("laptop").expect("a host name"),
+        rows: vec![
+            row(
+                Kind::Process,
+                "next dev",
+                Some(8_812),
+                None,
+                Confidence::Certain,
+                Source::Environment,
+            ),
+            row(Kind::Process, "vim", Some(8_940), None, Confidence::Probable, Source::Cwd),
+            row(
+                Kind::Container,
+                "nodal-worker-import-db",
+                None,
+                None,
+                Confidence::Certain,
+                Source::Docker,
+            ),
+            row(Kind::Listener, "app", None, Some(41_230), Confidence::Probable, Source::Listener),
+        ],
+        notes: vec![Note::new(Source::Docker, "docker is not installed")],
+    }
+}
+
+#[test]
+fn ps_renders_both_ways() {
+    both("ps", &ps());
+}
+
+/// A machine where every signal is there and nothing is running is not the same answer
+/// as a machine that could not be read, and the two must not print alike.
+#[test]
+fn a_ps_with_nothing_running_says_so_and_still_prints_its_notes() {
+    let quiet = Ps {
+        now: now(),
+        host: HostName::parse("laptop").expect("a host name"),
+        rows: Vec::new(),
+        notes: vec![Note::new(
+            Source::Environment,
+            "a process scan reads /proc, which macos does not have",
+        )],
+    };
+    both("ps_unreadable", &quiet);
 }

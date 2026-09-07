@@ -1,0 +1,6 @@
+  UNIT           KIND       WHAT                    PID   PORT   CONFIDENCE  BY
+  worker-import  process    next dev                8812  —      certain     env
+  worker-import  process    vim                     8940  —      probable    cwd
+  worker-import  container  nodal-worker-import-db  —     —      certain     docker
+  worker-import  listener   app                     —     41230  probable    listener
+  docker: docker is not installed
