@@ -30,23 +30,34 @@ pub mod templates;
 pub mod units;
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 
 pub use crate::store::migrations::SCHEMA_VERSION;
 use crate::{Error, Result};
 
-/// Settings of this connection, applied in order.
+/// Settings of this connection, applied after the busy timeout is in place.
 ///
-/// The busy timeout comes first on purpose: it is what makes every later statement wait
-/// for the write lock rather than fail. `NORMAL` synchronisation is the documented safe
-/// pairing with WAL — a crash cannot corrupt the database, only lose the last commits,
-/// and those are events the unit's own `events.jsonl` still holds.
-const PRAGMAS: &[(&str, &str)] =
-    &[("busy_timeout", BUSY_TIMEOUT_MS), ("synchronous", "NORMAL"), ("foreign_keys", "ON")];
+/// `NORMAL` synchronisation is the documented safe pairing with WAL — a crash cannot
+/// corrupt the database, only lose the last commits, and those are events the unit's
+/// own `events.jsonl` still holds.
+const PRAGMAS: &[(&str, &str)] = &[("synchronous", "NORMAL"), ("foreign_keys", "ON")];
 
-/// How long a writer waits for the write lock before giving up.
-const BUSY_TIMEOUT_MS: &str = "5000";
+/// How long an open waits for a lock another connection is holding.
+///
+/// One budget covers both waits an open can make: the busy handler's, which every
+/// statement inherits, and [`Store::engage_wal`]'s own, which stands in for the busy
+/// handler on the one path SQLite does not consult it.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long [`Store::engage_wal`] sleeps before its first retry. Each further wait
+/// doubles, up to [`WAL_BACKOFF_MAX`], so a crowd of openers spreads out instead of
+/// waking together to contend for the same lock.
+const WAL_BACKOFF_START: Duration = Duration::from_millis(1);
+
+/// The longest [`Store::engage_wal`] sleeps between retries.
+const WAL_BACKOFF_MAX: Duration = Duration::from_millis(64);
 
 /// The journal mode every connection must end up in.
 const WAL: &str = "wal";
@@ -116,28 +127,72 @@ impl Store {
 
     /// Apply this connection's settings, then make sure the file is in WAL mode.
     ///
-    /// The journal mode is a property of the database file rather than of the
-    /// connection, so it is read before it is written: switching it takes an exclusive
-    /// lock, and a registry that several processes open at once would serialise on that
-    /// lock every time for a change that is almost never needed.
+    /// The busy timeout is installed first on purpose: it is what makes every later
+    /// statement wait for a lock rather than fail.
     fn configure(&self) -> Result<()> {
+        self.conn.busy_timeout(BUSY_TIMEOUT).map_err(row::store_error(&self.conn))?;
         for (name, value) in PRAGMAS {
             self.conn
                 .execute_batch(&format!("PRAGMA {name} = {value};"))
                 .map_err(row::store_error(&self.conn))?;
         }
-        if self.journal_mode()?.eq_ignore_ascii_case(WAL) {
-            return Ok(());
+        self.engage_wal()
+    }
+
+    /// Bring the file into WAL mode, waiting out whoever else is holding it.
+    ///
+    /// The journal mode is a property of the database file rather than of the
+    /// connection, so it is read before it is written: switching it takes an exclusive
+    /// lock, and a registry that several processes open at once would serialise on that
+    /// lock every time for a change that is almost never needed.
+    ///
+    /// When the switch is needed, the wait for that exclusive lock has to be ours. The
+    /// busy handler covers most of the ways this statement can find the file taken — a
+    /// reader's shared lock, a writer's exclusive one — and against those the switch
+    /// does block for [`BUSY_TIMEOUT`] like any other statement. It does not cover a
+    /// *reserved* lock: against that one SQLite answers `SQLITE_BUSY` immediately,
+    /// without consulting the handler, no matter what the busy timeout is set to.
+    ///
+    /// A reserved lock is exactly what the losing side of this race meets, because it is
+    /// the lock the switch itself takes on its way to the exclusive one. Two openers of
+    /// a fresh registry that reach this line together are one converting the file and
+    /// one told, in no time at all, that it may not — and with fifty openers and two
+    /// cores that overlap is a matter of scheduling rather than luck. Waiting is
+    /// therefore ours to do: retry until the file is in WAL, which it will be shortly,
+    /// put there by whichever opener won.
+    ///
+    /// A busy answer is not a failure until [`BUSY_TIMEOUT`] has passed, and neither is
+    /// a switch that quietly leaves the mode alone: SQLite reports the mode it settled
+    /// on, and the losing side of the race is told the old one.
+    fn engage_wal(&self) -> Result<()> {
+        let deadline = Instant::now() + BUSY_TIMEOUT;
+        let mut backoff = WAL_BACKOFF_START;
+        let mut found = self.journal_mode()?;
+        loop {
+            if found.eq_ignore_ascii_case(WAL) {
+                return Ok(());
+            }
+            match self.set_journal_mode_wal() {
+                Ok(mode) => found = mode,
+                // Busy leaves the mode as it was, which is what the error would report.
+                Err(error) if is_busy(&error) => {}
+                Err(source) => return Err(row::store_error(&self.conn)(source)),
+            }
+            if found.eq_ignore_ascii_case(WAL) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::StoreJournalMode { path: self.path.clone(), found });
+            }
+            std::thread::sleep(backoff);
+            backoff = (backoff * 2).min(WAL_BACKOFF_MAX);
+            found = self.journal_mode()?;
         }
-        self.conn
-            .execute_batch("PRAGMA journal_mode = WAL;")
-            .map_err(row::store_error(&self.conn))?;
-        let found = self.journal_mode()?;
-        if found.eq_ignore_ascii_case(WAL) {
-            Ok(())
-        } else {
-            Err(Error::StoreJournalMode { path: self.path.clone(), found })
-        }
+    }
+
+    /// Ask for WAL, and report the mode the file is in afterwards.
+    fn set_journal_mode_wal(&self) -> std::result::Result<String, rusqlite::Error> {
+        self.conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
     }
 
     /// How this database journals writes.
@@ -145,5 +200,64 @@ impl Store {
         self.conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .map_err(row::store_error(&self.conn))
+    }
+}
+
+/// Whether a failure is another connection holding a lock, and so worth waiting out.
+fn is_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _)
+            if matches!(
+                failure.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            )
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
+
+    use std::sync::Barrier;
+    use std::time::Duration;
+
+    use rusqlite::Connection;
+    use tempfile::TempDir;
+
+    use super::{Store, WAL};
+
+    /// How long the writer in the test below holds its reserved lock. Long enough that
+    /// an open which does not wait cannot pass by luck, short against the
+    /// [`super::BUSY_TIMEOUT`] the waiting one is allowed to spend.
+    const HELD: Duration = Duration::from_millis(300);
+
+    /// Opening a registry that is not yet in WAL mode, while another connection holds a
+    /// reserved lock on it. This is the standoff behind the fifty-way race on a first
+    /// open, held still: the reserved lock is the one the WAL switch takes on its way to
+    /// the exclusive lock, so a second opener arriving mid-conversion meets it — and
+    /// meeting it is the one case SQLite refuses without consulting the busy handler,
+    /// instantly, however long the busy timeout is. Waiting is the open's own job, and
+    /// this test is what says so.
+    #[test]
+    fn opening_waits_out_a_reserved_lock_the_busy_handler_does_not_cover() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("registry.db");
+        let holder = Connection::open(&path).unwrap();
+        holder.execute_batch("PRAGMA journal_mode = DELETE; CREATE TABLE held (a);").unwrap();
+
+        let barrier = Barrier::new(2);
+        std::thread::scope(|scope| {
+            let barrier = &barrier;
+            scope.spawn(move || {
+                holder.execute_batch("BEGIN; INSERT INTO held VALUES (1);").unwrap();
+                barrier.wait();
+                std::thread::sleep(HELD);
+                holder.execute_batch("COMMIT;").unwrap();
+            });
+            barrier.wait();
+            let store = Store::open(&path).unwrap();
+            assert_eq!(store.journal_mode().unwrap(), WAL);
+        });
     }
 }
