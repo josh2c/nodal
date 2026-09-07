@@ -13,7 +13,8 @@ use schemars::generate::SchemaSettings;
 use serde_json::Value;
 
 use crate::model::{
-    Base, DbTemplate, Environment, Event, Lease, Lock, Manifest, Project, Recipe, Session, Unit,
+    Base, DbTemplate, Environment, Event, Lease, Lock, Manifest, PortAllocation, PortBlock,
+    Project, Recipe, Session, Unit,
 };
 
 /// The version of the schema set. Bumped only for a breaking change.
@@ -79,6 +80,8 @@ pub fn catalog() -> Vec<SchemaDoc> {
         document::<Lease>("lease"),
         document::<Lock>("lock"),
         document::<Manifest>("manifest"),
+        document::<PortBlock>("port_block"),
+        document::<PortAllocation>("port_allocation"),
         document::<Recipe>("recipe"),
     ]
 }

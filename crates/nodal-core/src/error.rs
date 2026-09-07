@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use thiserror::Error as ThisError;
 
 use crate::git::preflight;
-use crate::model::OperationId;
+use crate::model::{EnvId, OperationId};
 
 /// Every failure `nodal-core` can return.
 #[derive(Debug, ThisError)]
@@ -288,6 +288,53 @@ pub enum Error {
     NotAHome {
         /// The directory the search started from.
         path: PathBuf,
+    },
+
+    /// A row another row's foreign key points at was not there. No sequence of
+    /// operations produces that, so the registry has been written to by something else.
+    #[error("{table} row {id} is referenced but is not there")]
+    StoreMissingRow {
+        /// The table the row should have been in.
+        table: &'static str,
+        /// The identifier that was followed.
+        id: String,
+    },
+
+    /// Every port block in the range is taken, so a new project cannot be given one.
+    #[error("no port block is free between {first} and {last}")]
+    PortBlockRangeFull {
+        /// The lowest port the range covers.
+        first: u16,
+        /// The highest port the range covers.
+        last: u16,
+    },
+
+    /// Every port in a project's block is held, so the environment gets none.
+    #[error("ports {first} to {last} are all held")]
+    PortBlockFull {
+        /// The environment that asked for a port.
+        environment: EnvId,
+        /// The lowest port in the block.
+        first: u16,
+        /// The highest port in the block.
+        last: u16,
+    },
+
+    /// A fixed port was refused, and by the time the holder was read it had let go,
+    /// repeatedly. Something is taking and releasing that port in a loop.
+    #[error("port {port} changed hands during each of {attempts} attempts to claim it")]
+    PortFixedContended {
+        /// The port that was being claimed.
+        port: u16,
+        /// How many times the claim was attempted.
+        attempts: usize,
+    },
+
+    /// A listener scan was asked for on a host that does not publish the table it reads.
+    #[error("a listener scan reads /proc/net/tcp, which {host} does not have")]
+    ListenerScanUnsupported {
+        /// The operating system the process is running on.
+        host: &'static str,
     },
 
     /// A branch that had to exist did not.

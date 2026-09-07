@@ -12,6 +12,7 @@ pub mod logging;
 pub mod model;
 pub mod output;
 pub mod recipe;
+pub mod services;
 pub mod store;
 
 pub use crate::error::{Error, Result};

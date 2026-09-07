@@ -1,0 +1,40 @@
+{
+  "$defs": {
+    "ProjectId": {
+      "description": "Identifies a project: one Git repository Nodal manages units for.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/port_block.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The range of ports one project hands out from.\n\nA project is given a block the first time it needs a port, and keeps it. Blocks are\nequal in length and do not overlap, so a port number says which project holds it.",
+  "properties": {
+    "first": {
+      "description": "The lowest port in the block.",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "last": {
+      "description": "The highest port in the block.",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId",
+      "description": "The project the block belongs to."
+    }
+  },
+  "required": [
+    "project_id",
+    "first",
+    "last"
+  ],
+  "title": "PortBlock",
+  "type": "object"
+}

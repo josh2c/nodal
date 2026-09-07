@@ -1,0 +1,54 @@
+{
+  "$defs": {
+    "EnvId": {
+      "description": "Identifies one materialisation of a unit. A unit re-materialised after reclaim\ngets a new environment, not a new unit.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "PortName": {
+      "description": "The name a recipe gives a port, for example `app` or `api`.",
+      "maxLength": 255,
+      "pattern": "^[\\x21-\\x7E]+$",
+      "type": "string"
+    },
+    "ProjectId": {
+      "description": "Identifies a project: one Git repository Nodal manages units for.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/port_allocation.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One port an environment holds, under the name the recipe gave it.\n\nThe port is the identity of the row. Two environments cannot hold one port, and an\nenvironment holds one port per name.",
+  "properties": {
+    "environment_id": {
+      "$ref": "#/$defs/EnvId",
+      "description": "The environment that holds it."
+    },
+    "name": {
+      "$ref": "#/$defs/PortName",
+      "description": "What the recipe calls this port, for example `app`."
+    },
+    "port": {
+      "description": "The port itself.",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "project_id": {
+      "$ref": "#/$defs/ProjectId",
+      "description": "The project whose block the port came from."
+    }
+  },
+  "required": [
+    "port",
+    "project_id",
+    "environment_id",
+    "name"
+  ],
+  "title": "PortAllocation",
+  "type": "object"
+}
