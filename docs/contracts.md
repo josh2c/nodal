@@ -78,6 +78,11 @@ would make the next clone copy a copy.
 (in days). Alongside those, and additive to them: `package_manager_pin`, `monorepo`, `task_cache`,
 `dockerfile`, `compose`, `commands.{lint,typecheck,reset}`, `db.{tool,migrations_dir,fixed_ports}`.
 
+`base.exclude` never drops a path the project tracks. A copy that is missing a tracked path is dirty the
+moment it is made: `git status` in it reports one deletion for every file under that path. Inference reads
+`git ls-tree` before it proposes a row, and a copy refuses a list that holds a tracked path and names each
+one it found.
+
 Every key is optional and unknown keys are rejected, so a typo is a message rather than a line silently
 ignored. Most keys are inferred by `nodal init` from the project's own files; only the gaps need a human
 line, and `init` writes each gap as a comment above the empty key it belongs to. Published as

@@ -268,10 +268,15 @@ impl Materialise {
     }
 
     /// Copy the nearest base, which costs metadata on a filesystem that shares blocks.
+    ///
+    /// The exclusion list is checked against the source's own commit first. A base that
+    /// is missing a path the commit tracks is dirty before a unit is cloned from it.
     fn copy(&self, source: &Path, into: &Path) -> Result<()> {
         let parent = self.destination.parent().unwrap_or(Path::new("."));
         let backend = workspace::select_backend(parent);
-        let report = backend.clone_tree(source, into, &Excludes::with_recipe(&self.excludes))?;
+        let excludes = Excludes::with_recipe(&self.excludes);
+        workspace::tracked::refuse(source, &excludes)?;
+        let report = backend.clone_tree(source, into, &excludes)?;
         self.progress.line(&format!(
             "copied {files} file(s) with the {backend} backend",
             files = report.files,
