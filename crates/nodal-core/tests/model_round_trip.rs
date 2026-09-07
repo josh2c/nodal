@@ -9,10 +9,14 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use nodal_core::model::recipe::{
+    Backend, CommandLine, DbKind, EnvName, MigrationTool, PackageManager, ServiceName, TaskCache,
+    ToolName, ToolVersion,
+};
 use nodal_core::model::{
     Actor, ActorKind, ActorName, Base, BaseId, BranchName, CommitId, DbName, DbTemplate, Digest,
     EnvId, EnvState, Environment, Epistemic, Event, EventId, EventKind, HostName, Lease, Lock,
-    Objective, Platform, PortName, Ports, Project, ProjectId, ProjectName, RawRef, RefName,
+    Objective, Platform, PortName, Ports, Project, ProjectId, ProjectName, RawRef, Recipe, RefName,
     ResourceKey, SchemaFp, Session, SessionId, Slug, TemplateId, Timestamp, Unit, UnitId,
     UnitStatus, WorkspaceFp,
 };
@@ -160,6 +164,38 @@ fn lock() -> Lock {
     }
 }
 
+fn recipe() -> Recipe {
+    let mut recipe = Recipe {
+        backend: Some(Backend::Native),
+        package_manager: Some(PackageManager::Pnpm),
+        package_manager_pin: Some(ToolVersion::parse("pnpm@9.12.3").unwrap()),
+        monorepo: Some(true),
+        task_cache: Some(TaskCache::Turborepo),
+        dockerfile: Some(PathBuf::from("Dockerfile")),
+        compose: vec![PathBuf::from("compose.yml")],
+        ..Recipe::default()
+    };
+    recipe
+        .toolchain
+        .insert(ToolName::parse("node").unwrap(), ToolVersion::parse("22.11.0").unwrap());
+    recipe.commands.test = Some(CommandLine::parse("pnpm run test").unwrap());
+    recipe.db.kind = Some(DbKind::SupabaseLocal);
+    recipe.db.tool = Some(MigrationTool::Supabase);
+    recipe.db.migrations_dir = Some(PathBuf::from("supabase/migrations"));
+    recipe.db.url_var = vec![EnvName::parse("DATABASE_URL").unwrap()];
+    recipe.db.fixed_ports.insert(PortName::parse("api").unwrap(), 54321);
+    recipe.services.shared = vec![ServiceName::parse("db").unwrap()];
+    recipe.services.per_unit = vec![ServiceName::parse("postgrest").unwrap()];
+    recipe.env.required_local = vec![EnvName::parse("LOG_LEVEL").unwrap()];
+    recipe.env.generated = vec![EnvName::parse("PORT").unwrap()];
+    recipe.env.secrets = vec![EnvName::parse("RESEND_API_KEY").unwrap()];
+    recipe.base.exclude = vec![PathBuf::from(".next")];
+    recipe.hooks.post_new = Some(CommandLine::parse("pnpm install").unwrap());
+    recipe.sync.auto_irreversible = Some(false);
+    recipe.reclaim.trash_retention = Some(14);
+    recipe
+}
+
 /// Serialise, parse back, and require the value to be unchanged.
 fn round_trip<T>(value: &T, label: &str)
 where
@@ -182,6 +218,7 @@ fn every_record_type_round_trips() {
     round_trip(&event(), "event");
     round_trip(&lease(), "lease");
     round_trip(&lock(), "lock");
+    round_trip(&recipe(), "recipe");
 }
 
 #[test]

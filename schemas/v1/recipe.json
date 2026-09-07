@@ -1,0 +1,632 @@
+{
+  "$defs": {
+    "Backend": {
+      "description": "Where a unit's commands run.",
+      "oneOf": [
+        {
+          "const": "native",
+          "description": "Directly on the host, with the toolchain the host provides.",
+          "type": "string"
+        },
+        {
+          "const": "devcontainer",
+          "description": "Inside the project's dev container.",
+          "type": "string"
+        },
+        {
+          "const": "nix",
+          "description": "Inside a Nix shell defined by the project.",
+          "type": "string"
+        }
+      ]
+    },
+    "BaseSpec": {
+      "additionalProperties": false,
+      "description": "What a base clone leaves out.",
+      "properties": {
+        "exclude": {
+          "default": [],
+          "description": "Paths, relative to the project root, that no unit home receives.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "CommandLine": {
+      "description": "A shell command line a recipe runs, for example `pnpm run dev`.",
+      "maxLength": 255,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
+      "type": "string"
+    },
+    "Commands": {
+      "additionalProperties": false,
+      "description": "The commands a project is driven by. Every one is optional: a project that has no\ntest command is a project Nodal still manages.",
+      "properties": {
+        "build": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Build the project."
+        },
+        "dev": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Start the development server."
+        },
+        "lint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Lint."
+        },
+        "migrate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Apply outstanding migrations."
+        },
+        "reset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Drop and rebuild the database from migrations and seed."
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Load seed data."
+        },
+        "test": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Run the test suite."
+        },
+        "typecheck": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Type-check."
+        }
+      },
+      "type": "object"
+    },
+    "Db": {
+      "additionalProperties": false,
+      "description": "The database a project develops against, and how its schema is applied.",
+      "properties": {
+        "fixed_ports": {
+          "additionalProperties": false,
+          "default": {},
+          "description": "Ports the stack pins, by the name its own configuration gives them. A pinned\nport can be held by only one environment at a time.",
+          "patternProperties": {
+            "^[\\x21-\\x7E]+$": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DbKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What the database is."
+        },
+        "migrations_dir": {
+          "default": null,
+          "description": "The migrations directory, relative to the project root.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MigrationTool"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The tool that owns the migrations."
+        },
+        "url_var": {
+          "default": [],
+          "description": "The variables a connection string is published in, in the order tried.",
+          "items": {
+            "$ref": "#/$defs/EnvName"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "DbKind": {
+      "description": "What kind of database the project develops against.",
+      "oneOf": [
+        {
+          "const": "supabase-local",
+          "description": "A local Supabase stack, with its own fixed ports.",
+          "type": "string"
+        },
+        {
+          "const": "postgres",
+          "description": "A Postgres server the project connects to directly.",
+          "type": "string"
+        }
+      ]
+    },
+    "Env": {
+      "additionalProperties": false,
+      "description": "The environment variables a unit's home needs.\n\nA name belongs to exactly one of these lists. `generated` is what Nodal writes per\nunit; `secrets` is what a secret source supplies and what is never written into a\nmanifest, bundle or log; `required_local` is what a person had to say.",
+      "properties": {
+        "generated": {
+          "default": [],
+          "description": "Names Nodal generates for each unit.",
+          "items": {
+            "$ref": "#/$defs/EnvName"
+          },
+          "type": "array"
+        },
+        "required_local": {
+          "default": [],
+          "description": "Names local development needs that Nodal cannot work out on its own.",
+          "items": {
+            "$ref": "#/$defs/EnvName"
+          },
+          "type": "array"
+        },
+        "secrets": {
+          "default": [],
+          "description": "Names whose values come from a secret source.",
+          "items": {
+            "$ref": "#/$defs/EnvName"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "EnvName": {
+      "description": "The name of an environment variable, as it appears left of `=` in a dotenv file.",
+      "maxLength": 255,
+      "pattern": "^[A-Z_][A-Z0-9_]*$",
+      "type": "string"
+    },
+    "Hooks": {
+      "additionalProperties": false,
+      "description": "Commands the project runs around lifecycle operations. They receive the `NODAL_*`\ncontext variables and run in the unit's home.",
+      "properties": {
+        "post_new": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "After a unit is created."
+        },
+        "post_reclaim": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "After a unit is reclaimed."
+        },
+        "pre_new": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Before a unit is created."
+        },
+        "pre_reclaim": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Before a unit is reclaimed."
+        }
+      },
+      "type": "object"
+    },
+    "MigrationTool": {
+      "description": "The tool that owns a project's migrations.",
+      "oneOf": [
+        {
+          "const": "supabase",
+          "description": "The Supabase CLI.",
+          "type": "string"
+        },
+        {
+          "const": "prisma",
+          "description": "Prisma Migrate.",
+          "type": "string"
+        },
+        {
+          "const": "drizzle",
+          "description": "Drizzle Kit.",
+          "type": "string"
+        },
+        {
+          "const": "alembic",
+          "description": "Alembic.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "A migrations directory whose tool could not be named.",
+          "type": "string"
+        }
+      ]
+    },
+    "PackageManager": {
+      "description": "The package manager a project installs dependencies with.",
+      "oneOf": [
+        {
+          "const": "pnpm",
+          "description": "`pnpm`.",
+          "type": "string"
+        },
+        {
+          "const": "yarn",
+          "description": "`yarn`.",
+          "type": "string"
+        },
+        {
+          "const": "npm",
+          "description": "`npm`.",
+          "type": "string"
+        },
+        {
+          "const": "bun",
+          "description": "`bun`.",
+          "type": "string"
+        },
+        {
+          "const": "cargo",
+          "description": "`cargo`.",
+          "type": "string"
+        },
+        {
+          "const": "uv",
+          "description": "`uv`.",
+          "type": "string"
+        },
+        {
+          "const": "poetry",
+          "description": "`poetry`.",
+          "type": "string"
+        }
+      ]
+    },
+    "Reclaim": {
+      "additionalProperties": false,
+      "description": "How long reclaimed homes stay recoverable.",
+      "properties": {
+        "trash_retention": {
+          "default": null,
+          "description": "Days a trashed home is kept before `nodal gc` may delete it.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ServiceName": {
+      "description": "A service a project runs, by the name its stack gives it.",
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "Services": {
+      "additionalProperties": false,
+      "description": "Which of a project's services are shared between units and which each unit gets its\nown copy of.",
+      "properties": {
+        "per_unit": {
+          "default": [],
+          "description": "Services each unit gets its own instance of.",
+          "items": {
+            "$ref": "#/$defs/ServiceName"
+          },
+          "type": "array"
+        },
+        "shared": {
+          "default": [],
+          "description": "Services one instance of which serves every unit.",
+          "items": {
+            "$ref": "#/$defs/ServiceName"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Sync": {
+      "additionalProperties": false,
+      "description": "How much of a sync runs without being asked twice.",
+      "properties": {
+        "auto_irreversible": {
+          "default": null,
+          "description": "Whether irreversible steps run without `--apply`. Off unless a project says so.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "TaskCache": {
+      "description": "The task runner that caches build output across units, when a project has one.",
+      "oneOf": [
+        {
+          "const": "turborepo",
+          "description": "Turborepo.",
+          "type": "string"
+        },
+        {
+          "const": "nx",
+          "description": "Nx.",
+          "type": "string"
+        }
+      ]
+    },
+    "ToolVersion": {
+      "description": "The version a toolchain pins a tool to, as written in the pin file.",
+      "maxLength": 255,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/recipe.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A project's recipe: `nodal.toml`, the inference of it, or the merge of both.",
+  "properties": {
+    "backend": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Backend"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Where commands run."
+    },
+    "base": {
+      "$ref": "#/$defs/BaseSpec",
+      "default": {
+        "exclude": []
+      },
+      "description": "What a base clone leaves out."
+    },
+    "commands": {
+      "$ref": "#/$defs/Commands",
+      "default": {
+        "build": null,
+        "dev": null,
+        "lint": null,
+        "migrate": null,
+        "reset": null,
+        "seed": null,
+        "test": null,
+        "typecheck": null
+      },
+      "description": "The commands the project is driven by."
+    },
+    "compose": {
+      "default": [],
+      "description": "Compose files the project defines services in.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "db": {
+      "$ref": "#/$defs/Db",
+      "default": {
+        "fixed_ports": {},
+        "kind": null,
+        "migrations_dir": null,
+        "tool": null,
+        "url_var": []
+      },
+      "description": "The database, when the project has one."
+    },
+    "dockerfile": {
+      "default": null,
+      "description": "The image definition, when the project has one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "env": {
+      "$ref": "#/$defs/Env",
+      "default": {
+        "generated": [],
+        "required_local": [],
+        "secrets": []
+      },
+      "description": "Environment variables."
+    },
+    "hooks": {
+      "$ref": "#/$defs/Hooks",
+      "default": {
+        "post_new": null,
+        "post_reclaim": null,
+        "pre_new": null,
+        "pre_reclaim": null
+      },
+      "description": "Lifecycle hooks."
+    },
+    "monorepo": {
+      "default": null,
+      "description": "Whether the repository holds more than one package.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "package_manager": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PackageManager"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The package manager."
+    },
+    "package_manager_pin": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ToolVersion"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The exact package-manager version the project pins, as written in its manifest."
+    },
+    "reclaim": {
+      "$ref": "#/$defs/Reclaim",
+      "default": {
+        "trash_retention": null
+      },
+      "description": "Reclaim behaviour."
+    },
+    "services": {
+      "$ref": "#/$defs/Services",
+      "default": {
+        "per_unit": [],
+        "shared": []
+      },
+      "description": "Service topology."
+    },
+    "sync": {
+      "$ref": "#/$defs/Sync",
+      "default": {
+        "auto_irreversible": null
+      },
+      "description": "Sync behaviour."
+    },
+    "task_cache": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TaskCache"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The cross-unit task cache, when there is one."
+    },
+    "toolchain": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "Tool versions the project pins, by tool.",
+      "patternProperties": {
+        "^[\\x21-\\x7E]+$": {
+          "$ref": "#/$defs/ToolVersion"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "title": "Recipe",
+  "type": "object"
+}

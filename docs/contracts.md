@@ -20,8 +20,14 @@ generated variables (`PORT`, `APP_URL`, service URLs).
 ## `nodal.toml`
 `backend`, `package_manager`, `commands.{dev,build,test,migrate,seed}`, `toolchain`, `db.{kind,url_var}`,
 `services.{shared,per_unit}`, `env.{required_local,generated,secrets}`, `base.exclude`,
-`hooks.{pre_new,post_new,pre_reclaim,post_reclaim}`, `sync.auto_irreversible`, `reclaim.trash_retention`.
-Most keys are inferred by `nodal init`; only the gaps need a human line.
+`hooks.{pre_new,post_new,pre_reclaim,post_reclaim}`, `sync.auto_irreversible`, `reclaim.trash_retention`
+(in days). Alongside those, and additive to them: `package_manager_pin`, `monorepo`, `task_cache`,
+`dockerfile`, `compose`, `commands.{lint,typecheck,reset}`, `db.{tool,migrations_dir,fixed_ports}`.
+
+Every key is optional and unknown keys are rejected, so a typo is a message rather than a line silently
+ignored. Most keys are inferred by `nodal init` from the project's own files; only the gaps need a human
+line, and `init` writes each gap as a comment above the empty key it belongs to. Published as
+`schemas/v1/recipe.json`.
 
 ## CLI
 `init, new, adopt, ls, show, explain, shell, shell-init, run, start, note, ask, handoff, sync, done,
