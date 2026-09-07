@@ -4,6 +4,7 @@
 //! (`docs/code-structure.md`). This file re-exports module facades and holds no logic.
 
 pub mod error;
+pub mod fingerprint;
 pub mod git;
 pub mod logging;
 pub mod model;
