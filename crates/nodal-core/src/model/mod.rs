@@ -18,6 +18,7 @@ pub mod ids;
 pub mod lease;
 pub mod lock;
 pub mod project;
+pub mod recipe;
 pub mod schema;
 pub mod session;
 pub mod timestamp;
@@ -35,6 +36,11 @@ pub use crate::model::ids::{BaseId, EnvId, EventId, ProjectId, SessionId, Templa
 pub use crate::model::lease::{Lease, ResourceKey};
 pub use crate::model::lock::Lock;
 pub use crate::model::project::{Project, ProjectName};
+pub use crate::model::recipe::{
+    Backend, BaseSpec, CommandLine, Commands, DEFAULT_TRASH_RETENTION_DAYS, Db, DbKind, Env,
+    EnvName, Hooks, MigrationTool, PackageManager, Recipe, Reclaim, ServiceName, Services, Sync,
+    TaskCache, ToolName, ToolVersion,
+};
 pub use crate::model::schema::{SCHEMA_VERSION, SchemaDoc};
 pub use crate::model::session::Session;
 pub use crate::model::timestamp::Timestamp;

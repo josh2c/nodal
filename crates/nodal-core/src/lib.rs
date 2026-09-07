@@ -8,6 +8,7 @@ pub mod fingerprint;
 pub mod git;
 pub mod logging;
 pub mod model;
+pub mod recipe;
 pub mod store;
 
 pub use crate::error::{Error, Result};
