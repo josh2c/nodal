@@ -52,6 +52,11 @@ pub enum FingerprintPart {
     Schema,
     /// Container and service definitions.
     Services,
+    /// The recipe and the files it is inferred from: `nodal.toml`, the monorepo task
+    /// graph, the declared environment file. Named separately from `Dependencies`
+    /// because it is close to static where dependencies move every few weeks, so a
+    /// sync that reports "the recipe moved" means something quite different.
+    Recipe,
     /// Recipe-generated environment values.
     Generated,
     /// The names (never the values) of secrets the recipe requires.
