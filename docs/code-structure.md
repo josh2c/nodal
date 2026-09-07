@@ -117,6 +117,16 @@ services/
     api_layer.rs       per-unit postgrest + gotrue + router containers
   docker.rs            thin wrapper: run/rm/inspect/label queries
 
+doctor/                what this machine has left behind; reads only, never removes (DL-015)
+  mod.rs               survey(): the two sections, and which one a path belongs to
+  size.rs              apparent bytes and newest modification of a directory (no writes)
+  worktrees.rs         nested checkouts from `git worktree list`; a locked one is read no further
+  caches.rs            build caches nothing has written to for a fortnight (table of names)
+  containers.rs        exited containers and unreferenced volumes, attributed like ps does
+  databases.rs         directories named as a Nodal database with no registry row
+  units.rs             a project over the open-unit threshold, and the disk its homes hold
+  intent.rs            the first prompt of the Claude Code session that made a worktree
+
 env/
   mod.rs               activate(env) -> Vec<EnvVar> (pure assembly)
   files.rs             write .nodal/env, .envrc, manifest; hide via info/exclude
@@ -172,6 +182,7 @@ output/
   watch.rs             Source trait + polling loop; writes only changed answers
   view/                the read types themselves, one file per command family
     unit.rs · status.rs · event.rs · base.rs · init.rs · env.rs · created.rs · reclaim.rs
+    doctor.rs
 ```
 
 ## crates/nodal-cli/src
