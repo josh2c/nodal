@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::fingerprint::{Platform, WorkspaceFp};
 use crate::model::ids::{BaseId, ProjectId};
-use crate::model::scalar::{OBJECT_ID_PATTERN, is_object_id, string_newtype};
+use crate::model::scalar::{self, string_newtype};
 use crate::model::timestamp::Timestamp;
 
 string_newtype! {
     /// A Git object id in full, lowercase hexadecimal form.
-    CommitId, kind = "commit id", pattern = OBJECT_ID_PATTERN, validate = is_object_id
+    CommitId, kind = "commit id", shape = scalar::OBJECT_ID
 }
 
 /// One base: a clean checkout with dependencies installed, keyed by the workspace

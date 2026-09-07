@@ -25,6 +25,9 @@ pub const SCHEMA_BASE_URL: &str = "https://github.com/josh2c/nodal/blob/main/sch
 pub struct SchemaDoc {
     /// File stem, in snake case: `db_template` for [`DbTemplate`].
     pub name: &'static str,
+    /// The Rust type this was generated from, so a test can tie the catalogue back to
+    /// the model rather than to a hand-kept list of names.
+    pub type_name: String,
     /// The schema itself, draft 2020-12.
     pub schema: Value,
 }
@@ -54,7 +57,7 @@ fn document<T: JsonSchema>(name: &'static str) -> SchemaDoc {
         String::from("$id"),
         Value::String(format!("{SCHEMA_BASE_URL}/v{SCHEMA_VERSION}/{name}.json")),
     );
-    SchemaDoc { name, schema: schema.to_value() }
+    SchemaDoc { name, type_name: T::schema_name().into_owned(), schema: schema.to_value() }
 }
 
 /// Every type the schema set publishes, in the order of the data model.
@@ -76,14 +79,15 @@ pub fn catalog() -> Vec<SchemaDoc> {
     ]
 }
 
-/// The index document: what version this set is and what it contains.
+/// The index document for an already-generated catalogue.
 #[must_use]
-pub fn index() -> SchemaDoc {
-    let entries: Vec<Value> = catalog()
-        .into_iter()
+pub fn index(catalog: &[SchemaDoc]) -> SchemaDoc {
+    let entries: Vec<Value> = catalog
+        .iter()
         .map(|doc| {
             serde_json::json!({
                 "name": doc.name,
+                "type": doc.type_name,
                 "file": format!("{}.json", doc.name),
                 "$id": doc.schema.get("$id").cloned().unwrap_or(Value::Null),
             })
@@ -91,6 +95,7 @@ pub fn index() -> SchemaDoc {
         .collect();
     SchemaDoc {
         name: "index",
+        type_name: String::from("Index"),
         schema: serde_json::json!({
             "version": SCHEMA_VERSION,
             "generated_by": concat!("nodal-core ", env!("CARGO_PKG_VERSION")),
@@ -99,11 +104,13 @@ pub fn index() -> SchemaDoc {
     }
 }
 
-/// Every document that belongs in `schemas/`, the index included.
+/// Every document that belongs in `schemas/`, the index included. The catalogue is
+/// generated once and the index is built from it.
 #[must_use]
 pub fn documents() -> Vec<SchemaDoc> {
     let mut documents = catalog();
-    documents.push(index());
+    let index = index(&documents);
+    documents.push(index);
     documents
 }
 
@@ -129,17 +136,26 @@ mod tests {
 
     #[test]
     fn paths_carry_the_version() {
-        assert_eq!(index().path(), format!("v{SCHEMA_VERSION}/index.json"));
+        assert_eq!(index(&catalog()).path(), format!("v{SCHEMA_VERSION}/index.json"));
     }
 
     #[test]
     fn documents_are_the_catalogue_plus_the_index() {
-        assert_eq!(documents().len(), catalog().len() + 1);
+        let documents = documents();
+        assert_eq!(documents.len(), catalog().len() + 1);
+        assert_eq!(documents.last().map(|doc| doc.name), Some("index"));
+    }
+
+    #[test]
+    fn every_document_names_the_type_it_came_from() {
+        for doc in catalog() {
+            assert!(!doc.type_name.is_empty(), "{} has no type name", doc.name);
+        }
     }
 
     #[test]
     fn rendering_ends_in_one_newline() {
-        let rendered = index().render();
+        let rendered = index(&catalog()).render();
         assert!(rendered.ends_with("}\n"), "{rendered}");
     }
 }

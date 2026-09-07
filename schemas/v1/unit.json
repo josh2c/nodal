@@ -2,21 +2,25 @@
   "$defs": {
     "BranchName": {
       "description": "A Git branch name.",
-      "pattern": "^[^\\s~^:?*\\[\\\\]+$",
+      "maxLength": 255,
+      "pattern": "^(?![-/])(?!.*(?:\\.\\.|//|@\\{))(?!.*[/.]$)(?!.*\\.lock$)[^\\s~^:?*\\[\\\\\\x00-\\x1F\\x7F-\\x9F]+$",
       "type": "string"
     },
     "Objective": {
       "description": "What the unit is for, in one line, as the person or agent stated it.",
-      "pattern": "^.+$",
+      "maxLength": 255,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
       "type": "string"
     },
     "ProjectId": {
       "description": "Identifies a project: one Git repository Nodal manages units for.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
     "Slug": {
       "description": "The CLI handle for a unit, derived from its branch.",
+      "maxLength": 64,
       "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
       "type": "string"
     },
@@ -27,7 +31,8 @@
     },
     "UnitId": {
       "description": "Identifies a `WorkUnit`. Stable for the life of the work, across machines.",
-      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
     "UnitStatus": {

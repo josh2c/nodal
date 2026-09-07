@@ -6,12 +6,12 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::model::scalar::{LINE_PATTERN, is_line, string_newtype};
+use crate::model::scalar::{self, string_newtype};
 
 string_newtype! {
     /// What the actor is called: a tool name such as `claude-code`, or a person's
     /// handle. Never a credential.
-    ActorName, kind = "actor name", pattern = LINE_PATTERN, validate = is_line
+    ActorName, kind = "actor name", shape = scalar::LINE
 }
 
 /// Whether the actor is a person or a program acting on its own.

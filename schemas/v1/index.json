@@ -4,47 +4,56 @@
     {
       "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/project.json",
       "file": "project.json",
-      "name": "project"
+      "name": "project",
+      "type": "Project"
     },
     {
       "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/base.json",
       "file": "base.json",
-      "name": "base"
+      "name": "base",
+      "type": "Base"
     },
     {
       "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/db_template.json",
       "file": "db_template.json",
-      "name": "db_template"
+      "name": "db_template",
+      "type": "DbTemplate"
     },
     {
       "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/unit.json",
       "file": "unit.json",
-      "name": "unit"
+      "name": "unit",
+      "type": "Unit"
     },
     {
       "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/environment.json",
       "file": "environment.json",
-      "name": "environment"
+      "name": "environment",
+      "type": "Environment"
     },
     {
       "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/session.json",
       "file": "session.json",
-      "name": "session"
+      "name": "session",
+      "type": "Session"
     },
     {
       "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/event.json",
       "file": "event.json",
-      "name": "event"
+      "name": "event",
+      "type": "Event"
     },
     {
       "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/lease.json",
       "file": "lease.json",
-      "name": "lease"
+      "name": "lease",
+      "type": "Lease"
     },
     {
       "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/lock.json",
       "file": "lock.json",
-      "name": "lock"
+      "name": "lock",
+      "type": "Lock"
     }
   ],
   "version": 1
