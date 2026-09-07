@@ -1,34 +1,65 @@
 # Nodal
 
-**One list for every coding agent on your project. Cheap work units instead of full checkouts. Nothing left behind.**
+> **Warning: pre-alpha.** The foundation layer is built and tested. The commands below are under construction. Interfaces and on-disk formats may change without notice.
+
+One list for every coding agent on your project. Cheap work units instead of full checkouts. Nothing left behind.
+
+- work units are copy-on-write clones: seconds to create, a few megabytes each
+- one list across every tool: how far behind main, what changed, what runs, what is done
+- each unit knows what its sibling units changed, so agents do not answer from stale code
+- deterministic cleanup: trash, gc, and a doctor that reports and never deletes
+- no daemon, no cloud, no new version control; Git and GitHub do not change
 
 ## The problem
 
-Run several coding agents on one project. Each agent creates a worktree. Each worktree installs dependencies, builds, and starts a dev server. The worktrees share one local database, or each starts its own service stack. Disk fills. Nobody knows which worktrees are done. An agent in an old worktree answers from code that main replaced weeks ago.
+Run several coding agents on one project. Each agent creates a worktree. Each worktree installs dependencies, builds, and starts a dev server. Disk fills. Nobody knows which worktrees are done. An agent in an old worktree answers from code that main replaced weeks ago.
 
-## What Nodal is
+## The unit of work
 
-Nodal is one CLI (`nodal`) and a local store. It has no daemon, no cloud, and no new version control. Git and GitHub do not change.
-
-The unit of work is a **WorkUnit**: a branch with a home directory and a memory.
+A **WorkUnit** is a branch with a home directory and a memory.
 
 - **Branch**: an identity every tool understands. One WorkUnit is one PR-sized change.
 - **Home directory**: a normal folder with its own repository. Any terminal, IDE, or agent can open it. The folder supplies the correct ports and environment. No plugin is necessary.
 - **Memory**: a `WORKUNIT.md` file. Nodal writes it again on each command. It states the unit's condition and what sibling units changed. The next agent or engineer continues without a transcript.
 
-## How it works
+## Platforms
 
-- `nodal new "fix worker import"` clones a warm **golden base** with a copy-on-write clone. The clone takes approximately two seconds and a few megabytes on APFS or btrfs. The unit is an independent repository on a new branch, with its own port and environment.
+| Platform | Backend |
+| --- | --- |
+| macOS (APFS) | `clonefile` per entry, filtered walk for excludes |
+| Linux (btrfs) | subvolume snapshots and reflink copies |
+| Linux (XFS and other reflink filesystems) | `FICLONE` per file |
+| Windows | via WSL2, as Linux |
+
+## Commands
+
+- `nodal new "fix worker import"` clones a warm **golden base** as an independent repository on a new branch, with its own port and environment. The clone takes approximately two seconds.
 - `nodal` lists every unit: how far behind main, what it touched, what runs, whether it is done. Done detection includes squash merges.
 - `nodal merge` commits, squashes, rebases, fast-forwards, and removes the unit in one command. It shows the plan first.
-- `nodal doctor` reports what agents left behind. It deletes nothing.
-- `nodal reclaim` moves a unit to trash. It refuses if the unit holds work that exists nowhere else. `nodal gc` empties the trash later.
+- `nodal adopt` brings an existing worktree or checkout under management without moving it.
+- `nodal doctor` reports what tools left behind: stale worktrees, dead containers, orphan caches. It deletes nothing.
+- `nodal reclaim` moves a unit to trash. It refuses if the unit holds work that exists nowhere else. `nodal gc` empties the trash after a retention period.
 
-With Claude Code, Nodal installs as hooks. `claude --worktree` and desktop sessions then create Nodal units instead of bare worktrees. The session receives the unit's context at start. Cleanup is deterministic.
+## Agents
+
+Nodal is agent-neutral. A unit is a folder; the environment comes from the folder. Any tool that can open a directory can use a unit, with no integration at all.
+
+Optional per-tool integrations go further:
+
+| Tool | Integration |
+| --- | --- |
+| Claude Code | hooks: worktree requests become units, context loads at session start, cleanup is deterministic |
+| Codex | an `AGENTS.md` pointer line; unit context in `WORKUNIT.md` |
+| Cursor, VS Code, any IDE | open the unit folder; the integrated terminal is already activated |
+| Plain terminal | `nodal shell-init` for your shell, or `cd` and `.envrc` |
+
+Adoption works in the other direction too: worktrees that other tools already created can be adopted with their original intent recovered where the tool recorded it.
 
 ## Status
 
-Pre-alpha. The foundation layer is complete: domain model, published JSON schemas, registry, git operations, environment fingerprints, project recipes, and an operation journal with crash recovery. The commands above are under construction. See `docs/contracts.md`, `docs/code-structure.md`, and `docs/scenarios.md`.
+The foundation layer is complete and tested: domain model, published JSON schemas (`schemas/v1/`), SQLite registry, git operations, environment fingerprints, project recipes with inference, an output layer, and an operation journal with crash recovery. The command surface is under construction.
+
+See `docs/contracts.md`, `docs/code-structure.md`, and `docs/scenarios.md`. Contributions: `CONTRIBUTING.md`.
 
 ## License
 
