@@ -42,7 +42,7 @@ pub const KIND: &str = "base build";
 /// The remote a base is cloned from and fetched from.
 pub const ORIGIN: &str = "origin";
 
-/// What the directory a base is being assembled in is called, until it is one.
+/// What the end of a directory's name says, while a base is being assembled in it.
 const PARTIAL_SUFFIX: &str = ".partial";
 
 /// Where a base's content comes from.
@@ -229,11 +229,42 @@ struct Materialise {
 }
 
 impl Materialise {
-    /// Where the content is put together, before it is given the name a base has.
+    /// A directory of this attempt's own, beside the destination, to assemble in.
+    ///
+    /// Of this attempt's own, and not one name reused, because a `nodal` that a kill
+    /// stops does not take its `git` with it. The clone keeps running, keeps writing,
+    /// and finishes into a directory nobody is waiting for. An attempt that tried to
+    /// clear that directory first would be racing a live writer, and would fail
+    /// against it: a directory being written to cannot be removed. So each attempt
+    /// takes a name no other attempt has, and what an orphan is still writing to is
+    /// simply not in the way.
     fn partial(&self) -> PathBuf {
+        self.beside(&format!(".{id}{PARTIAL_SUFFIX}", id = ulid::Ulid::new()))
+    }
+
+    /// A sibling of the destination, named by adding to the destination's own name.
+    fn beside(&self, suffix: &str) -> PathBuf {
         let mut name = self.destination.as_os_str().to_os_string();
-        name.push(PARTIAL_SUFFIX);
+        name.push(suffix);
         PathBuf::from(name)
+    }
+
+    /// Remove what earlier attempts left beside the destination, and say nothing when
+    /// one will not go: an orphan may still hold it, and the attempt after this one
+    /// will find it free.
+    fn sweep(&self) {
+        let Some(parent) = self.destination.parent() else { return };
+        let Some(name) = self.destination.file_name().and_then(std::ffi::OsStr::to_str) else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(parent) else { return };
+        for entry in entries.flatten() {
+            let found = entry.file_name();
+            let Some(found) = found.to_str() else { continue };
+            if found.starts_with(&format!("{name}.")) && found.ends_with(PARTIAL_SUFFIX) {
+                drop(std::fs::remove_dir_all(entry.path()));
+            }
+        }
     }
 
     /// Copy the nearest base, which costs metadata on a filesystem that shares blocks.
@@ -267,10 +298,10 @@ impl Step for Materialise {
             self.progress.line("the base directory is already there");
             return Ok(());
         }
-        let partial = self.partial();
-        remove(&partial)?;
         let parent = self.destination.parent().unwrap_or(Path::new("."));
         std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
+        self.sweep();
+        let partial = self.partial();
         self.progress.line(&format!("building from {}", self.origin.describe()));
         match &self.origin {
             Origin::Remote { url } => {
@@ -288,7 +319,7 @@ impl Step for Materialise {
     }
 
     fn undo(&self) -> Result<()> {
-        remove(&self.partial())?;
+        self.sweep();
         remove(&self.destination)
     }
 }
