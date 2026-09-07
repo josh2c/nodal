@@ -417,6 +417,7 @@ version = "0.1.0"
 dependencies = [
  "fancy-regex",
  "libc",
+ "nodal-fixture",
  "rusqlite",
  "schemars",
  "serde",
@@ -429,6 +430,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ulid",
+]
+
+[[package]]
+name = "nodal-fixture"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]

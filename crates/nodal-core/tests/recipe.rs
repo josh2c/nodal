@@ -1,11 +1,15 @@
-//! Acceptance for the recipe engine (T0.4).
+//! Acceptance for the recipe engine (T0.4) over the fixture project (T0.8).
 //!
 //! Two checks, and they ask different things.
 //!
-//! The one CI runs is the fixture: a project of the shape the engine was built for,
-//! generated in a temporary directory, whose recipe must come out with **zero gaps**.
-//! Every key it needs is somewhere in the project, so anything left unanswered is the
-//! engine failing to read a file it should have read.
+//! The one CI runs is the fixture ([`nodal_fixture`]): a project of the shape the engine
+//! was built for, generated in a temporary directory, whose recipe must come out with
+//! **zero gaps**. Every key it needs is stated somewhere in the project, so anything
+//! left unanswered is the engine failing to read a file it should have read. All but one
+//! of those keys is read out of the project's own files; the exception is which Compose
+//! services are safe to share, which the fixture's own `nodal.toml` answers because no
+//! file of a project ever states it. Deleting that file must leave exactly that one gap,
+//! which is what holds the rest of the fixture to being inferred rather than declared.
 //!
 //! The second compares inference on a real project against a reference recorded
 //! elsewhere, and runs only when `NODAL_RECIPE_ROOT` and `NODAL_RECIPE_REFERENCE` point
@@ -14,8 +18,6 @@
 //! the serialised recipe, so a drift anywhere shows up as a diff.
 
 #![allow(clippy::expect_used)]
-
-mod fixture;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -29,8 +31,8 @@ use nodal_core::recipe::{self, Effective};
 /// Infer over a freshly written fixture in its own temporary directory.
 fn fixture_recipe() -> (tempfile::TempDir, Effective) {
     let directory = tempfile::tempdir().expect("a temporary directory");
-    fixture::write(directory.path());
-    let effective = recipe::load(directory.path()).expect("the fixture is a readable project");
+    let root = nodal_fixture::write(directory.path());
+    let effective = recipe::load(&root).expect("the fixture is a readable project");
     (directory, effective)
 }
 
@@ -43,7 +45,27 @@ fn the_fixture_infers_with_zero_gaps() {
     let (_directory, effective) = fixture_recipe();
     let unanswered: Vec<GapKey> = effective.gaps.iter().map(|gap| gap.key).collect();
     assert_eq!(unanswered, Vec::<GapKey>::new(), "the fixture should leave nothing to a person");
-    assert!(!effective.written, "the fixture has no nodal.toml of its own");
+    assert!(effective.written, "the fixture carries the recipe that answers its one judgement");
+}
+
+#[test]
+fn the_only_thing_the_fixture_declares_is_the_one_no_file_states() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = nodal_fixture::write(directory.path());
+    std::fs::remove_file(root.join(nodal_fixture::RECIPE)).expect("the fixture's recipe");
+
+    let effective = recipe::load(&root).expect("a readable project");
+    let unanswered: Vec<GapKey> = effective.gaps.iter().map(|gap| gap.key).collect();
+    assert_eq!(
+        unanswered,
+        [GapKey::Services],
+        "everything but the service split is read out of the project"
+    );
+    assert_eq!(
+        effective.recipe.compose,
+        [PathBuf::from("compose.yaml")],
+        "the gap names the file it could not split"
+    );
 }
 
 #[test]
@@ -60,6 +82,7 @@ fn the_fixture_infers_the_shape_of_the_repository() {
     assert!(recipe.monorepo());
     assert_eq!(recipe.task_cache, Some(TaskCache::Turborepo));
     assert_eq!(recipe.dockerfile, Some(PathBuf::from("Dockerfile")));
+    assert_eq!(recipe.compose, [PathBuf::from("compose.yaml")]);
 
     let toolchain: BTreeMap<String, String> =
         recipe.toolchain.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
@@ -72,7 +95,9 @@ fn the_fixture_infers_every_command_its_scripts_state() {
     let (_directory, effective) = fixture_recipe();
     let commands = &effective.recipe.commands;
     assert_eq!(commands.dev.as_ref().map(ToString::to_string).as_deref(), Some("pnpm run dev"));
+    assert_eq!(commands.build.as_ref().map(ToString::to_string).as_deref(), Some("pnpm run build"));
     assert_eq!(commands.test.as_ref().map(ToString::to_string).as_deref(), Some("pnpm run test"));
+    assert_eq!(commands.lint.as_ref().map(ToString::to_string).as_deref(), Some("pnpm run lint"));
     assert_eq!(
         commands.typecheck.as_ref().map(ToString::to_string).as_deref(),
         Some("pnpm run typecheck")
@@ -92,8 +117,46 @@ fn the_fixture_infers_every_command_its_scripts_state() {
 }
 
 #[test]
-fn the_fixture_infers_its_database_and_the_ports_the_stack_pins() {
+fn the_fixture_infers_its_database_from_the_directory_and_the_scripts() {
     let (_directory, effective) = fixture_recipe();
+    let db = effective.recipe.db;
+    assert_eq!(
+        db.tool,
+        Some(MigrationTool::Unknown),
+        "a plain migrations directory is a convention several tools share"
+    );
+    assert_eq!(db.migrations_dir, Some(PathBuf::from("migrations")));
+    assert!(db.fixed_ports.is_empty(), "nothing in the project pins a port");
+
+    // The two keys the project's files cannot state, which its recipe does.
+    assert_eq!(db.kind, Some(DbKind::Postgres));
+    assert_eq!(strings(&db.url_var), ["DATABASE_URL"]);
+}
+
+/// The Supabase stack states things a plain Postgres project does not, and the fixture
+/// is not one. This is the smallest project that exercises those readings.
+#[test]
+fn a_supabase_stack_states_its_kind_its_ports_and_where_it_publishes_its_url() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = directory.path();
+    let config = "[api]\nport = 54321\n\n[db]\nport = 54322\n\n[db.pooler]\nport = 54329\n";
+    std::fs::create_dir_all(root.join("supabase/migrations")).expect("the migrations directory");
+    std::fs::write(root.join("supabase/config.toml"), config).expect("the stack configuration");
+    std::fs::write(root.join("supabase/migrations/0001_init.sql"), "select 1;\n")
+        .expect("a migration");
+
+    let effective = recipe::load(root).expect("a readable project");
+    assert_eq!(
+        effective.recipe.commands.migrate.as_ref().map(ToString::to_string).as_deref(),
+        Some("supabase db push"),
+        "with no script to prefer, the tool's own command stands"
+    );
+    assert_eq!(
+        strings(&effective.recipe.services.per_unit),
+        ["postgrest", "gotrue"],
+        "the stack's split is known, so it is proposed rather than asked"
+    );
+
     let db = effective.recipe.db;
     assert_eq!(db.kind, Some(DbKind::SupabaseLocal));
     assert_eq!(db.tool, Some(MigrationTool::Supabase));
@@ -108,7 +171,6 @@ fn the_fixture_infers_its_database_and_the_ports_the_stack_pins() {
             (String::from("api"), 54321),
             (String::from("db"), 54322),
             (String::from("db.pooler"), 54329),
-            (String::from("studio"), 54323),
         ]),
         "only the tables that pin a port are ports"
     );
@@ -120,17 +182,12 @@ fn the_fixture_sorts_every_declared_name_into_who_supplies_it() {
     let env = effective.recipe.env;
     assert_eq!(
         strings(&env.generated),
-        [
-            "APP_URL",
-            "DATABASE_URL",
-            "NEXT_PUBLIC_SUPABASE_ANON_KEY",
-            "NEXT_PUBLIC_SUPABASE_URL",
-            "PORT",
-        ]
+        ["APP_URL", "DATABASE_URL", "NEXT_PUBLIC_APP_URL", "PORT"],
+        "the union of both declaration files, with PORT named once"
     );
     assert_eq!(
         strings(&env.secrets),
-        ["CRON_SECRET", "RESEND_API_KEY", "SUPABASE_SERVICE_ROLE_KEY"]
+        ["CRON_SECRET", "POSTGRES_PASSWORD", "RESEND_API_KEY", "SENTRY_DSN", "SESSION_SECRET"]
     );
     assert!(env.required_local.is_empty(), "nothing is left for a person to name");
 }
@@ -143,9 +200,11 @@ fn the_fixture_excludes_the_directories_it_regenerates() {
         [PathBuf::from("test-results"), PathBuf::from("coverage")],
         "in the order of the exclusion table, and only what is there"
     );
+    assert_eq!(strings(&effective.recipe.services.shared), ["db", "mailpit"]);
     assert_eq!(
-        effective.recipe.services.per_unit.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        ["postgrest", "gotrue"]
+        strings(&effective.recipe.services.per_unit),
+        ["redis"],
+        "the split the fixture's own recipe states, because Compose does not"
     );
 }
 
@@ -165,8 +224,11 @@ fn what_init_writes_reads_back_as_the_same_recipe() {
 
 #[test]
 fn init_writes_once_refuses_twice_and_keeps_what_a_person_wrote() {
-    let (directory, _) = fixture_recipe();
-    let root = directory.path();
+    // The fixture as it was before anyone adopted it: its own recipe removed.
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = nodal_fixture::write(directory.path());
+    std::fs::remove_file(root.join(nodal_fixture::RECIPE)).expect("the fixture's recipe");
+    let root = root.as_path();
 
     let plan = recipe::plan_init(root).expect("a plan");
     assert!(!plan.existed);
@@ -184,9 +246,10 @@ fn init_writes_once_refuses_twice_and_keeps_what_a_person_wrote() {
 #[test]
 fn a_written_key_wins_over_the_inferred_one_and_closes_its_gap() {
     let directory = tempfile::tempdir().expect("a temporary directory");
-    let root = directory.path();
-    fixture::write(root);
-    // Remove every toolchain pin, which opens the toolchain gap.
+    let root = nodal_fixture::write(directory.path());
+    let root = root.as_path();
+    std::fs::remove_file(root.join(nodal_fixture::RECIPE)).expect("the fixture's recipe");
+    // Remove every toolchain pin, which opens the toolchain gap beside the services one.
     std::fs::remove_file(root.join(".node-version")).expect("the pin file");
     std::fs::write(
         root.join("package.json"),
@@ -195,7 +258,10 @@ fn a_written_key_wins_over_the_inferred_one_and_closes_its_gap() {
     .expect("a manifest with no engines field");
 
     let opened = recipe::load(root).expect("a readable project");
-    assert_eq!(opened.gaps.iter().map(|gap| gap.key).collect::<Vec<_>>(), [GapKey::Toolchain]);
+    assert_eq!(
+        opened.gaps.iter().map(|gap| gap.key).collect::<Vec<_>>(),
+        [GapKey::Toolchain, GapKey::Services]
+    );
     assert_eq!(
         opened.recipe.commands.test.as_ref().map(ToString::to_string).as_deref(),
         Some("pnpm run test"),
@@ -204,7 +270,8 @@ fn a_written_key_wins_over_the_inferred_one_and_closes_its_gap() {
 
     std::fs::write(
         root.join(recipe::FILE_NAME),
-        "[toolchain]\nnode = \"20.0.0\"\n\n[commands]\ntest = \"just test\"\n",
+        "[toolchain]\nnode = \"20.0.0\"\n\n[commands]\ntest = \"just test\"\n\n\
+         [services]\nshared = [\"db\"]\n",
     )
     .expect("a hand-written recipe");
 
