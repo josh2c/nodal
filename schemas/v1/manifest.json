@@ -1,0 +1,166 @@
+{
+  "$defs": {
+    "EnvId": {
+      "description": "Identifies one materialisation of a unit. A unit re-materialised after reclaim\ngets a new environment, not a new unit.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "EnvName": {
+      "description": "The name of an environment variable, as it appears left of `=` in a dotenv file.",
+      "maxLength": 255,
+      "pattern": "^[A-Z_][A-Z0-9_]*$",
+      "type": "string"
+    },
+    "HostName": {
+      "description": "The name of a host a unit can live on.",
+      "maxLength": 255,
+      "pattern": "^[\\x21-\\x7E]+$",
+      "type": "string"
+    },
+    "Missing": {
+      "description": "A declared name that activation could not fill.\n\nA missing name is a line of a report, never a failure: a working copy of a project\nwhose mail credential is absent still runs everything that does not send mail.",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/EnvName",
+          "description": "The name nothing answered."
+        },
+        "want": {
+          "$ref": "#/$defs/Want",
+          "description": "Which list of the recipe declares it."
+        }
+      },
+      "required": [
+        "name",
+        "want"
+      ],
+      "type": "object"
+    },
+    "Origin": {
+      "description": "Who supplied an environment variable's value.\n\nThe order of the variants is the order the resolver tries: a name a unit generated\nfor itself beats the same name in a machine-wide file, because a generated value is\nbound to resources only this unit has.",
+      "oneOf": [
+        {
+          "const": "identity",
+          "description": "Nodal itself: the `NODAL_*` variables that say which unit this is.",
+          "type": "string"
+        },
+        {
+          "const": "generated",
+          "description": "A value the unit minted for its own services: a port, a URL, a database role.",
+          "type": "string"
+        },
+        {
+          "const": "machine",
+          "description": "The per-machine file, `~/.nodal/secrets.env`.",
+          "type": "string"
+        }
+      ]
+    },
+    "ProjectName": {
+      "description": "A project's display name, taken from its directory or its remote.",
+      "maxLength": 255,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
+      "type": "string"
+    },
+    "Slug": {
+      "description": "The CLI handle for a unit, derived from its branch.",
+      "maxLength": 64,
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "type": "string"
+    },
+    "Timestamp": {
+      "description": "A UTC instant, serialised as an RFC 3339 string.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "UnitId": {
+      "description": "Identifies a `WorkUnit`. Stable for the life of the work, across machines.",
+      "maxLength": 26,
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "Want": {
+      "description": "Why a declared name has no value.",
+      "oneOf": [
+        {
+          "const": "generated",
+          "description": "The recipe declares it under `env.generated` and no service produced it.",
+          "type": "string"
+        },
+        {
+          "const": "secret",
+          "description": "The recipe declares it under `env.secrets` and no secret source has it.",
+          "type": "string"
+        },
+        {
+          "const": "required_local",
+          "description": "The recipe declares it under `env.required_local` and no source has it.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/manifest.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`.nodal/manifest.toml`: what this home is, and which names it was activated with.",
+  "properties": {
+    "env": {
+      "additionalProperties": false,
+      "description": "Every name `.nodal/env` assigns, and who supplied it. Names only.",
+      "patternProperties": {
+        "^[A-Z_][A-Z0-9_]*$": {
+          "$ref": "#/$defs/Origin"
+        }
+      },
+      "type": "object"
+    },
+    "environment": {
+      "$ref": "#/$defs/EnvId",
+      "description": "The materialisation itself."
+    },
+    "home": {
+      "description": "The home directory this file sits in.",
+      "type": "string"
+    },
+    "host": {
+      "$ref": "#/$defs/HostName",
+      "description": "The host that holds this copy."
+    },
+    "missing": {
+      "description": "Every declared name nothing answered.",
+      "items": {
+        "$ref": "#/$defs/Missing"
+      },
+      "type": "array"
+    },
+    "project": {
+      "$ref": "#/$defs/ProjectName",
+      "description": "The project the unit belongs to."
+    },
+    "slug": {
+      "$ref": "#/$defs/Slug",
+      "description": "The unit's CLI handle."
+    },
+    "unit": {
+      "$ref": "#/$defs/UnitId",
+      "description": "The unit this home is a materialisation of."
+    },
+    "written_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When the file was written."
+    }
+  },
+  "required": [
+    "unit",
+    "environment",
+    "slug",
+    "project",
+    "host",
+    "home",
+    "written_at",
+    "env",
+    "missing"
+  ],
+  "title": "Manifest",
+  "type": "object"
+}

@@ -9,12 +9,14 @@
 //! moment they matter, and `model/` is the shape of what the registry stores.
 
 pub mod base;
+pub mod env;
 pub mod event;
 pub mod init;
 pub mod status;
 pub mod unit;
 
 pub use crate::output::view::base::{BaseList, BaseRow};
+pub use crate::output::view::env::{EnvReport, VarLine};
 pub use crate::output::view::event::EventLog;
 pub use crate::output::view::init::InitReport;
 pub use crate::output::view::status::{SharedResource, Status};

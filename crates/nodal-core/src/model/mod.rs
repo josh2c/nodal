@@ -17,6 +17,7 @@ pub mod fingerprint;
 pub mod ids;
 pub mod lease;
 pub mod lock;
+pub mod manifest;
 pub mod project;
 pub mod recipe;
 pub mod schema;
@@ -37,6 +38,7 @@ pub use crate::model::ids::{
 };
 pub use crate::model::lease::{Lease, ResourceKey};
 pub use crate::model::lock::Lock;
+pub use crate::model::manifest::{Manifest, Missing, Origin, Want};
 pub use crate::model::project::{Project, ProjectName};
 pub use crate::model::recipe::{
     Backend, BaseSpec, CommandLine, Commands, DEFAULT_TRASH_RETENTION_DAYS, Db, DbKind, Env,

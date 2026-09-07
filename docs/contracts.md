@@ -10,9 +10,38 @@ A unit's home contains `.nodal/id` (marker, verified against the registry), `.no
 `.nodal/manifest.toml`, `WORKUNIT.md` (facts about the unit and its siblings), `.envrc` (`dotenv .nodal/env`),
 and a normal `.git` directory. Nothing else is required for a terminal, IDE or agent to integrate.
 
+Nodal adds `.nodal/` and `.envrc` to `.git/info/exclude`, so `git status` in a unit stays clean.
+
+`.nodal/manifest.toml` states the identity of the home, every environment name it carries, the
+origin of each name, and every declared name that no source answered. It holds no value. Its shape
+is published as `schemas/v1/manifest.json`.
+
 ## Environment variables
 `NODAL_ID`, `NODAL_UNIT` (slug), `NODAL_PROJECT`, `NODAL_HOST`, `NODAL_ROOT`, plus recipe-declared
 generated variables (`PORT`, `APP_URL`, service URLs).
+
+A shell reads them by one of two routes. direnv reads `.envrc`, which reads `.nodal/env`. A shell
+with no direnv evaluates `nodal env --export`. Nodal spawns no subshell for either route.
+
+## Secrets
+A recipe declares names. It never holds a value. Three tiers supply the values, and Nodal asks them
+in this order:
+
+1. the unit itself, for a value it minted for its own services;
+2. the per-machine file `~/.nodal/secrets.env`;
+3. nothing, in which case the name is a line of the report.
+
+A unit-generated value wins over a machine-wide value of the same name, because only the unit-
+generated value is bound to the unit's own resources. `NODAL_SECRETS_FILE` moves the per-machine
+file, as `NODAL_STORE` moves the registry.
+
+Nodal creates `~/.nodal/secrets.env` with mode `0600`. Nodal refuses to read the file when its mode
+gives any access to group or other, and reports the mode alone.
+
+A name that no tier answers is a line of the report. It never stops a unit from being created.
+
+A secret value goes into `.nodal/env` and into the output of `nodal env --export`. It goes nowhere
+else: not into a manifest, a bundle, a log line, an error message or `--json` output.
 
 ## Home path policy
 `~/.nodal/<project>/e/<id>/`, equal length for every unit of a project.
@@ -30,8 +59,8 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 `schemas/v1/recipe.json`.
 
 ## CLI
-`init, new, adopt, ls, show, explain, shell, shell-init, run, start, note, ask, handoff, sync, done,
-merge, prune, reclaim, gc, doctor, base, status`. Every read command accepts `--json`; `status --watch`
+`init, new, adopt, ls, show, explain, env, shell, shell-init, run, start, note, ask, handoff, sync,
+done, merge, prune, reclaim, gc, doctor, base, status`. Every read command accepts `--json`; `status --watch`
 emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
 `--json` and the default output are two renderings of one value, so a field a person sees is a field a
