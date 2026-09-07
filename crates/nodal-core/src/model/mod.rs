@@ -32,7 +32,9 @@ pub use crate::model::event::{Epistemic, Event, EventKind, RawRef, RefName};
 pub use crate::model::fingerprint::{
     Digest, FingerprintPart, Platform, SchemaFp, SubFp, WorkspaceFp,
 };
-pub use crate::model::ids::{BaseId, EnvId, EventId, ProjectId, SessionId, TemplateId, UnitId};
+pub use crate::model::ids::{
+    BaseId, EnvId, EventId, OperationId, ProjectId, SessionId, TemplateId, UnitId,
+};
 pub use crate::model::lease::{Lease, ResourceKey};
 pub use crate::model::lock::Lock;
 pub use crate::model::project::{Project, ProjectName};

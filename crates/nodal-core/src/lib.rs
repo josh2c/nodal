@@ -6,6 +6,7 @@
 pub mod error;
 pub mod fingerprint;
 pub mod git;
+pub mod lifecycle;
 pub mod logging;
 pub mod model;
 pub mod output;
