@@ -12,9 +12,13 @@ use nodal_core::logging::Verbosity;
 use nodal_core::store::Store;
 use nodal_core::workspace::home;
 
+use crate::commands::cd::Cd;
 use crate::commands::env::Env;
 use crate::commands::init::Init;
 use crate::commands::new::New;
+use crate::commands::run::Run;
+use crate::commands::shell::Shell;
+use crate::commands::shell_init::ShellInit;
 
 /// The subcommands implemented so far. The rest arrive with their own tasks.
 #[derive(Debug, Subcommand)]
@@ -25,6 +29,14 @@ pub enum Command {
     Env(Env),
     /// Make a unit: a branch, a home cloned from the project, and the rows for both.
     New(New),
+    /// Print the home of a unit, and enter it when the shell function is installed.
+    Cd(Cd),
+    /// Print the shell integration for bash, zsh or fish.
+    ShellInit(ShellInit),
+    /// Become a shell that carries a unit's environment.
+    Shell(Shell),
+    /// Run a command in a unit's environment and record it in the unit's log.
+    Run(Run),
 }
 
 /// One list for every coding agent on your project.
@@ -65,6 +77,10 @@ impl Cli {
             Some(Command::Init(init)) => init.run(),
             Some(Command::Env(env)) => env.run(),
             Some(Command::New(new)) => new.run(&mut self.registry()?),
+            Some(Command::Cd(cd)) => cd.run(&self.registry()?),
+            Some(Command::Run(run)) => run.run(&self.registry()?),
+            Some(Command::ShellInit(init)) => init.run(),
+            Some(Command::Shell(shell)) => shell.run(),
             None => {
                 let (store, no_hooks) = (&self.store, self.no_hooks);
                 tracing::debug!(?store, no_hooks, "no subcommand given");

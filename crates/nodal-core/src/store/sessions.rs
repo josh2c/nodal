@@ -65,6 +65,16 @@ pub fn list_open(conn: &Connection, environment_id: EnvId) -> Result<Vec<Session
     row::many(conn, &sql, params![environment_id.to_string()], decode)
 }
 
+/// Every session still open, over every environment: what a scan of the process table
+/// is reconciled against.
+///
+/// # Errors
+/// As [`get`].
+pub fn list_open_all(conn: &Connection) -> Result<Vec<Session>> {
+    let sql = format!("SELECT {COLUMNS} FROM session WHERE ended_at IS NULL ORDER BY id");
+    row::many(conn, &sql, params![], decode)
+}
+
 /// Record an actor detaching; `false` when the session is unknown or already ended.
 ///
 /// Only an open session is closed, so a second detach — a shell hook that fires twice —

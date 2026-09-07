@@ -121,8 +121,14 @@ env/
 
 runtime/
   mod.rs
-  shell.rs             spawn user shell with env + rc hook; session row
-  run.rs               run a command, record observed event
+  shells.rs            the shells Nodal speaks: names, rc files, assignment dialects (data)
+  init.rs              shell-init: render one of shims/nodal.{bash,zsh,fish}
+  entry.rs             which home a target names; the NODAL_CD_FILE channel
+  shell.rs             become the user's shell with the home's env (exec, no child)
+  run.rs               run a command, record observed event, redact values
+  actor.rs             who is running this: NODAL_ACTOR, then a table of agent signals
+  processes.rs         Processes trait; /proc scan for the variables a process carries
+  sessions.rs          derive sessions from processes; reconcile registry rows
   attribute/           Attributor trait; one file per signal
     process_env.rs · cwd.rs · docker.rs · listeners.rs
   ps.rs                merge signals into Attributed rows with confidence
@@ -168,7 +174,8 @@ output/
 main.rs                clap parse → dispatch; nothing else
 cli.rs                 the clap derive tree (one enum)
 commands/              one file per command, each ≤ 40 lines: parse args → call core → render
-  init.rs · new.rs · adopt.rs · ls.rs · show.rs · explain.rs · shell.rs · run.rs · start.rs
+  init.rs · new.rs · cd.rs · adopt.rs · ls.rs · show.rs · explain.rs · shell.rs · shell_init.rs
+  run.rs · start.rs
   note.rs · ask.rs · handoff.rs · sync.rs · done.rs · reclaim.rs · gc.rs · doctor.rs
   base.rs · db.rs · status.rs · push.rs · pull.rs · open.rs · uninstall.rs
 ```

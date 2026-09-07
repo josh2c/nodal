@@ -18,10 +18,25 @@ is published as `schemas/v1/manifest.json`.
 
 ## Environment variables
 `NODAL_ID`, `NODAL_UNIT` (slug), `NODAL_PROJECT`, `NODAL_HOST`, `NODAL_ROOT`, plus recipe-declared
-generated variables (`PORT`, `APP_URL`, service URLs).
+generated variables (`PORT`, `APP_URL`, service URLs). Every process started in an activated home
+carries them, which is what makes attribution and session state readable.
 
 A shell reads them by one of two routes. direnv reads `.envrc`, which reads `.nodal/env`. A shell
-with no direnv evaluates `nodal env --export`. Nodal spawns no subshell for either route.
+with no direnv evaluates `nodal env --export`, which is what the hook `nodal shell-init` installs
+does. Nodal spawns no subshell for either route.
+
+The rc hook is the default route, because it needs no second program and no per-directory approval.
+The `.envrc` stays and is always written: an IDE with a direnv extension activates a terminal from
+it with no shell integration at all. The two compose. The hook does nothing in a home direnv has
+already activated, because `NODAL_ROOT` is then already the home.
+
+`nodal env --export` ends with `NODAL_EXPORTED`, which names every variable those lines set. A
+prompt hook unsets exactly those on the way out of a home, so it removes what Nodal added and never
+what a person exported. `--shell fish` renders the same set as `set -gx` assignments.
+
+`NODAL_CD_FILE` names a file a waiting shell reads a directory from. A command that names a
+directory writes the path there and prints it on standard output. The shell function makes the file;
+a shell without the function gets the path and nothing changes for it.
 
 ## Secrets
 A recipe declares names. It never holds a value. Three tiers supply the values, and Nodal asks them
@@ -67,8 +82,8 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 `schemas/v1/recipe.json`.
 
 ## CLI
-`init, new, adopt, ls, show, explain, env, shell, shell-init, run, start, note, ask, handoff, sync,
-done, merge, prune, reclaim, gc, doctor, base, status`. Every read command accepts `--json`; `status --watch`
+`init, new, cd, adopt, ls, show, explain, env, shell, shell-init, run, start, note, ask, handoff,
+sync, done, merge, prune, reclaim, gc, doctor, base, status`. Every read command accepts `--json`; `status --watch`
 emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
 `--json` and the default output are two renderings of one value, so a field a person sees is a field a
@@ -79,6 +94,16 @@ is measured from that, so a rendering is a function of its inputs.
 to `status --json`, and a line is written only when the answer has changed — the instant moving on its
 own is not a change. A consumer therefore holds the last line as current state, and silence means
 unchanged rather than gone.
+
+## Entry
+`nodal new` and `nodal cd` print a home path. `nodal shell-init <bash|zsh|fish>` prints a shell
+function and a prompt hook; the function turns those two printed paths into a directory change in
+the shell a person is already in. `nodal shell` replaces its own process with the shell, for a
+script, a remote host or a terminal with no integration. Nodal starts no shell under another one and
+asks nothing when a shell ends.
+
+Sessions are derived, not declared: a process carrying `NODAL_ID` is attached to that unit, and a
+session ends when the process is gone. Nothing has to be run on entry or on exit.
 
 ## Hooks
 Recipe hooks receive `NODAL_SOURCE`, `NODAL_HOME`, `NODAL_ID`, `NODAL_PARENT_ID`, `NODAL_UNIT` and run

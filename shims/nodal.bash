@@ -1,0 +1,113 @@
+# The nodal integration for bash. Install it with one line in ~/.bashrc:
+#
+#     eval "$(nodal shell-init bash)"
+#
+# It adds two things and no more. First, `nodal` becomes a function, so that the two
+# commands which name a directory, `nodal new` and `nodal cd`, can move this shell into
+# it; every other command goes straight to the binary. Second, a prompt hook exports the
+# environment of the unit home the shell is in, and unsets it again on the way out.
+#
+# Nodal starts no shell of its own and asks nothing when a shell ends.
+
+__nodal_bin='@NODAL_BIN@'
+[ -x "$__nodal_bin" ] || __nodal_bin='nodal'
+
+# The nearest directory at or above the working directory that carries a manifest.
+# The walk is shell code on purpose: it runs on every prompt, and a prompt that starts a
+# process to learn that nothing has changed is a prompt a person feels.
+__nodal_home() {
+  local dir="$PWD"
+  while [ -n "$dir" ] && [ "$dir" != '/' ]; do
+    if [ -f "$dir/@NODAL_MANIFEST@" ]; then
+      printf '%s' "$dir"
+      return 0
+    fi
+    dir="${dir%/*}"
+  done
+  return 1
+}
+
+# Unset what the last activation exported. NODAL_EXPORTED names those variables, so
+# this removes what nodal added and never what the person set.
+__nodal_leave() {
+  local name
+  for name in ${NODAL_EXPORTED-}; do
+    unset "$name"
+  done
+  unset NODAL_EXPORTED
+  __nodal_entered=''
+}
+
+# Export the environment of the home in $1.
+__nodal_enter() {
+  local exports
+  exports="$("$__nodal_bin" env --export --shell bash "$1")" || return 1
+  eval "$exports"
+  __nodal_entered="$1"
+}
+
+# What runs on each prompt: activate on the way in, deactivate on the way out.
+# A home direnv has already activated is left alone, because NODAL_ROOT is then the
+# home the shell is in and there is nothing to do.
+__nodal_hook() {
+  local home
+  home="$(__nodal_home)" || home=''
+  if [ "$home" = "${NODAL_ROOT-}" ] || [ "$home" = "${__nodal_entered-}" ]; then
+    return 0
+  fi
+  __nodal_leave
+  [ -n "$home" ] && __nodal_enter "$home"
+  return 0
+}
+
+# The subcommand in an argument list, skipping global options and their values, so that
+# `nodal -v cd unit` and `nodal --store db cd unit` are read the same as `nodal cd unit`.
+__nodal_read_verb() {
+  __nodal_verb=''
+  local skip=0 arg
+  for arg in "$@"; do
+    if [ "$skip" = 1 ]; then
+      skip=0
+      continue
+    fi
+    case "$arg" in
+      --store) skip=1 ;;
+      -*) ;;
+      *)
+        __nodal_verb="$arg"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+nodal() {
+  __nodal_read_verb "$@"
+  case "$__nodal_verb" in
+    cd | new) ;;
+    *)
+      command "$__nodal_bin" "$@"
+      return $?
+      ;;
+  esac
+  local file answer
+  file="$(mktemp "${TMPDIR:-/tmp}/nodal-cd.XXXXXX")" || return 1
+  NODAL_CD_FILE="$file" command "$__nodal_bin" "$@"
+  answer=$?
+  if [ -s "$file" ]; then
+    builtin cd -- "$(cat "$file")" && __nodal_hook
+  fi
+  rm -f "$file"
+  return $answer
+}
+
+case "${PROMPT_COMMAND-}" in
+  *__nodal_hook*) ;;
+  '') PROMPT_COMMAND='__nodal_hook' ;;
+  *) PROMPT_COMMAND="__nodal_hook;${PROMPT_COMMAND}" ;;
+esac
+
+# A shell that starts inside a home is activated at once, which is what an IDE terminal
+# opened on a unit needs.
+__nodal_hook
