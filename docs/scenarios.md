@@ -35,8 +35,8 @@ $ nodal new "worker import: handle missing supervisor_id"
 $ claude                                      # shell-init already cd'd you in; or cd there yourself
 ```
 
-Claude reads `WORKUNIT.md` (objective, empty history), investigates, edits, runs `pnpm test` (the shim
-records: 3 failing → 0 failing), commits twice. you closes the session.
+Claude reads `WORKUNIT.md` (objective, empty history), edits, and runs `pnpm test`. The shim records
+the result: 3 failing, then 0 failing. Claude commits twice. You close the session.
 
 ```
 $ nodal handoff "legacy date parser still fails on two-digit years"     # explicit; nothing prompts at exit

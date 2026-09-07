@@ -1,7 +1,7 @@
 # Code structure and complexity rules
 
-Goal: a tree a new engineer (human or AI) can navigate in ten minutes, where every file has one job,
-branching lives in small pure functions, and the linter refuses complexity instead of a reviewer noticing it.
+Goal: a tree a new engineer, human or AI, can navigate in ten minutes. Every file has one job.
+Branching lives in small pure functions. The linter refuses complexity; a reviewer does not have to.
 
 ## Workspace
 
