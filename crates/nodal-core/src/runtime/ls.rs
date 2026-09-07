@@ -15,6 +15,11 @@
 //! A home that Git cannot answer for is a note under the table, not a failure. A list
 //! that refuses to print because one directory was removed is worth less than a list
 //! that prints nine rows and says which one it could not read.
+//!
+//! A reclaimed materialisation is not one of those. It is `absent` because a reclaim
+//! moved it away on purpose, so there is no directory to ask Git about and no note to
+//! make; the unit is listed with no home, the way it is before it is materialised. This
+//! is the rule [`crate::runtime::ps::scope`] already applies, for the same reason.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -23,7 +28,7 @@ use rusqlite::Connection;
 
 use crate::git::status::{Change, Head, State, Summary};
 use crate::git::{Divergence, Git, Standing};
-use crate::model::{ActorName, Environment, Project, Timestamp, Unit};
+use crate::model::{ActorName, EnvState, Environment, Project, Timestamp, Unit};
 use crate::output::view::{EnvLine, Remote, ToolSessions, UnitList, UnitRow, WorkTree};
 use crate::runtime::processes::Processes;
 use crate::runtime::sessions;
@@ -81,6 +86,9 @@ pub fn order(rows: &mut [UnitRow]) {
 fn latest_homes(environments: &[Environment]) -> BTreeMap<String, Environment> {
     let mut latest = BTreeMap::new();
     for environment in environments {
+        if environment.state == EnvState::Absent {
+            continue;
+        }
         latest.insert(environment.unit_id.to_string(), environment.clone());
     }
     latest

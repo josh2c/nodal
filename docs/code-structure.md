@@ -43,6 +43,7 @@ model/                 plain data, serde + schemars; zero IO
   recipe.rs            Recipe (nodal.toml) types
   fingerprint.rs       WorkspaceFp, SchemaFp, SubFp (types only)
   manifest.rs          Manifest (.nodal/manifest.toml)
+  trash.rs             Trashed (one reclaimed home) and its retention arithmetic
   bundle.rs            Bundle envelope
 
 store/                 SQLite (WAL); repository functions; no business rules
@@ -59,6 +60,7 @@ store/                 SQLite (WAL); repository functions; no business rules
   sessions.rs
   leases.rs
   locks.rs
+  trash.rs             the homes reclaim moved aside and gc will remove
   port_blocks.rs       the block of ports a project hands out from
   port_allocations.rs  one port an environment holds, keyed by the port itself
 
@@ -79,6 +81,7 @@ git/
   refs.rs              read/write refs, WIP snapshot ref
   status.rs            porcelain parsing -> StatusSummary
   scrub.rs             post-clone scrub (remove worktrees dir, set HEAD, gc.auto, hooks)
+  snapshot.rs          the work-in-progress commit, built in a temporary index
   preflight.rs         refuse in-progress state
 
 substrate/
@@ -133,6 +136,7 @@ runtime/
   attribute/           Attributor trait; one file per signal
     process_env.rs · cwd.rs · docker.rs · listeners.rs
   ps.rs                merge signals into Attributed rows with confidence
+  stop.rs              Signals trait; SIGTERM, a grace period, then SIGKILL
 
 context/
   mod.rs
@@ -157,6 +161,7 @@ lifecycle/             the only module that composes others; each op = plan() pu
   ops/
     new.rs · adopt.rs · sync.rs · reclaim.rs · gc.rs · done.rs · transfer.rs · doctor.rs
   uniqueness.rs        the single uniqueness_check
+  hooks.rs             recipe hooks: the four phases, the context, and approval by digest
   states.rs            transition tables as data (unit, environment, session)
   idle.rs              idle detection (pure over timestamps + process list)
 
@@ -166,7 +171,7 @@ output/
   json.rs              pretty for --json, compact for one line of a stream
   watch.rs             Source trait + polling loop; writes only changed answers
   view/                the read types themselves, one file per command family
-    unit.rs · status.rs · event.rs · base.rs · init.rs · env.rs · created.rs
+    unit.rs · status.rs · event.rs · base.rs · init.rs · env.rs · created.rs · reclaim.rs
 ```
 
 ## crates/nodal-cli/src

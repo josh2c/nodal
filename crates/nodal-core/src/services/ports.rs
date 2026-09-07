@@ -20,6 +20,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 
 use crate::model::{
     EnvId, Lease, PortAllocation, PortBlock, PortName, Ports, ProjectId, ResourceKey, Slug,
@@ -79,7 +80,7 @@ pub struct FixedPortConflict {
 }
 
 /// What reclaim gave back.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Released {
     /// Ports returned to the project's block, lowest first.
     pub allocated: Vec<u16>,

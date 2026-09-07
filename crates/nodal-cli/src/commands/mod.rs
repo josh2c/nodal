@@ -7,10 +7,12 @@
 pub mod base;
 pub mod cd;
 pub mod env;
+pub mod gc;
 pub mod init;
 pub mod ls;
 pub mod new;
 pub mod ps;
+pub mod reclaim;
 pub mod run;
 pub mod shell;
 pub mod shell_init;

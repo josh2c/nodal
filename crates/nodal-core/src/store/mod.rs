@@ -29,6 +29,7 @@ pub mod projects;
 pub mod row;
 pub mod sessions;
 pub mod templates;
+pub mod trash;
 pub mod units;
 
 use std::path::{Path, PathBuf};

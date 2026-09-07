@@ -74,15 +74,46 @@ pub fn home(target: Option<&str>, cwd: &Path, conn: &Connection) -> Result<PathB
 /// # Errors
 /// As [`home`].
 pub fn home_of_unit(conn: &Connection, slug: &Slug, cwd: &Path) -> Result<PathBuf> {
+    materialized_home(conn, &unit_of(conn, slug, cwd)?)
+}
+
+/// The unit a target names: a slug, or the unit the working directory is in.
+///
+/// The same rule as [`home`], answering with the row rather than the path, which is
+/// what an operation on a unit needs. Nothing here reads a disk except the marker of
+/// the home a bare invocation is standing in.
+///
+/// # Errors
+/// [`Error::NotAHome`] when no target was given and the working directory is in no
+/// home, and as [`home_of_unit`] otherwise.
+pub fn unit_named(conn: &Connection, target: Option<&str>, cwd: &Path) -> Result<Unit> {
+    let Some(target) = target else { return unit_here(conn, cwd) };
+    let path = Path::new(target);
+    if path.is_dir() {
+        return unit_here(conn, path);
+    }
+    unit_of(conn, &Slug::parse(target)?, cwd)
+}
+
+/// The unit whose home holds `cwd`, read from the marker that home carries.
+fn unit_here(conn: &Connection, cwd: &Path) -> Result<Unit> {
+    let home = crate::env::files::find_home(cwd)?;
+    let id = crate::lifecycle::marker::read(&home)?
+        .ok_or_else(|| Error::HomeUnmarked { home: home.clone() })?;
+    units::get(conn, id)?
+        .ok_or_else(|| Error::StoreMissingRow { table: "unit", id: id.to_string() })
+}
+
+/// The one unit a slug names, searching the project the caller stands in first.
+fn unit_of(conn: &Connection, slug: &Slug, cwd: &Path) -> Result<Unit> {
     let unit = match project_at(conn, cwd)? {
         Some(project) => units::find_by_slug(conn, project.id, slug)?,
         None => None,
     };
-    let unit = match unit {
-        Some(unit) => unit,
-        None => search_every_project(conn, slug)?,
-    };
-    materialized_home(conn, &unit)
+    match unit {
+        Some(unit) => Ok(unit),
+        None => search_every_project(conn, slug),
+    }
 }
 
 /// The project a directory belongs to, if the registry knows one.

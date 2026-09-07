@@ -78,6 +78,12 @@
       "file": "recipe.json",
       "name": "recipe",
       "type": "Recipe"
+    },
+    {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/trashed.json",
+      "file": "trashed.json",
+      "name": "trashed",
+      "type": "Trashed"
     }
   ],
   "version": 1

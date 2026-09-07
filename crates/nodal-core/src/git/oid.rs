@@ -3,13 +3,20 @@
 use std::fmt;
 use std::str::FromStr;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::{Error, Result};
 
 /// Accepted hexadecimal lengths: SHA-1 and SHA-256 object ids.
 const LENGTHS: [usize; 2] = [40, 64];
 
 /// A full Git object id, lower-case hexadecimal.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// The `serde` form is the text itself, and reading one back parses it, so an id that
+/// reaches a report or a journal entry has been through the same rule as one that came
+/// out of `git`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct Oid(String);
 
 impl Oid {
@@ -45,6 +52,20 @@ impl FromStr for Oid {
 
     fn from_str(text: &str) -> Result<Self> {
         Self::parse(text)
+    }
+}
+
+impl TryFrom<String> for Oid {
+    type Error = Error;
+
+    fn try_from(text: String) -> Result<Self> {
+        Self::parse(&text)
+    }
+}
+
+impl From<Oid> for String {
+    fn from(oid: Oid) -> Self {
+        oid.0
     }
 }
 

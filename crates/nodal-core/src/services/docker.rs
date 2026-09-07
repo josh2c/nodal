@@ -137,6 +137,54 @@ pub fn survey(docker: &dyn Docker) -> Result<Survey> {
     Ok(Survey::Ran(containers))
 }
 
+/// What removing a unit's containers did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Removed {
+    /// The containers that are no longer there, by the name Docker shows.
+    pub containers: Vec<String>,
+    /// Why fewer went than were asked for, when there is a reason worth printing. A
+    /// machine with no daemon is one of these, and never a failure: a unit whose
+    /// containers cannot be reached is still a unit whose home can be reclaimed.
+    pub why: Option<String>,
+}
+
+/// Remove containers by name, stopping them first.
+///
+/// `docker rm --force` is one call rather than a stop and then a remove, because the
+/// two-call form has a window in between: a container that exits on its own between
+/// them makes the second call fail on a container that is already the state that was
+/// wanted. Removing one that is not there is not a failure either — the name is simply
+/// not in the answer.
+///
+/// # Errors
+/// [`Error::Tool`] only for a failure that is not the daemon being unreachable, which
+/// is reported as [`Removed::why`].
+pub fn remove(docker: &dyn Docker, names: &[String]) -> Result<Removed> {
+    if names.is_empty() {
+        return Ok(Removed::default());
+    }
+    let mut removed = Removed::default();
+    for batch in names.chunks(BATCH) {
+        let mut args = vec!["rm", "--force", "--volumes"];
+        args.extend(batch.iter().map(String::as_str));
+        match run(docker, &args)? {
+            Ok(output) => removed.containers.extend(
+                output
+                    .stdout
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_owned),
+            ),
+            Err(why) => {
+                removed.why = Some(why);
+                return Ok(removed);
+            }
+        }
+    }
+    Ok(removed)
+}
+
 /// How many containers one `docker inspect` is asked about. An identifier is 64
 /// characters, so a batch is about 16 kB of arguments whatever the machine is running.
 const BATCH: usize = 200;

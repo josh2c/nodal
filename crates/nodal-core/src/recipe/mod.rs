@@ -77,6 +77,10 @@ pub struct InitPlan {
     /// Whether a recipe was already there. Its keys are in `contents`: init proposes
     /// around what a person wrote, it never drops it.
     pub existed: bool,
+    /// The lifecycle hooks the effective recipe declares. `nodal init` approves them as
+    /// a set when it writes the file, and they are here so that it does not have to
+    /// read the recipe a second time to know what it is approving.
+    pub hooks: crate::model::Hooks,
 }
 
 /// Work out what `nodal init` should write for the project at `root`. Reads only.
@@ -92,6 +96,7 @@ pub fn plan_init(root: impl AsRef<Path>) -> Result<InitPlan> {
         contents: render::render(&effective.recipe, &effective.gaps),
         gaps: effective.gaps,
         existed: effective.written,
+        hooks: effective.recipe.hooks,
     })
 }
 

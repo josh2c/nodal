@@ -12,6 +12,7 @@ pub mod preflight;
 pub mod refs;
 pub mod remote;
 pub mod scrub;
+pub mod snapshot;
 pub mod status;
 pub mod tree;
 pub mod worktree;
@@ -404,6 +405,18 @@ impl Git {
             return Ok(());
         }
         Err(Error::GitInProgress { repo: self.root.clone(), states: report.states })
+    }
+
+    /// Commit everything this repository holds to a ref, without touching its index.
+    ///
+    /// The safety net `nodal reclaim --force` takes before it removes a home
+    /// ([`snapshot`]). `None` when the repository has no commit to build on.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when a plumbing command failed, [`Error::Io`] when the temporary
+    /// index could not be removed.
+    pub fn snapshot(&self, reference: &str, message: &str) -> Result<Option<snapshot::Snapshot>> {
+        snapshot::take(&self.root, &self.git_dir()?, reference, message)
     }
 
     /// Scrub the Git state a copy-on-write clone inherited from its base.

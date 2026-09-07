@@ -63,7 +63,9 @@ else: not into a manifest, a bundle, a log line, an error message or `--json` ou
 eight characters of the environment's identifier: they are the random part rather than the
 part derived from the clock, so two units created in the same moment do not collide.
 `NODAL_HOME` moves the whole directory, as `NODAL_STORE` moves the registry inside it; the
-registry's default path is `registry.db` in that directory.
+registry's default path is `registry.db` in that directory. A project keeps its homes under `e/`,
+its bases under `b/` and its reclaimed homes under `trash/`, so a walk of one cannot reach
+another.
 
 A home is refused where it would overlap a tree Nodal already knows: the project it is
 cloned from, another project's root, or another unit's home. A home inside its own project
@@ -150,8 +152,47 @@ daemon still answers, and so does a host whose process table Nodal cannot read. 
 nothing runs. A note means Nodal could not read that signal.
 
 ## Hooks
-Recipe hooks receive `NODAL_SOURCE`, `NODAL_HOME`, `NODAL_ID`, `NODAL_PARENT_ID`, `NODAL_UNIT` and run
-in the unit's home. Hook commands require approval on first run.
+Recipe hooks receive `NODAL_SOURCE` (the project checkout), `NODAL_ROOT` (the unit's home),
+`NODAL_ID`, `NODAL_UNIT`, `NODAL_ENV`, and `NODAL_PARENT_ID`. `NODAL_PARENT_ID` names the base the
+home was cloned from. It is empty for a checkout adopted in place.
+
+Hooks do not receive `NODAL_HOME`. That variable moves Nodal's whole state directory. A hook that
+set it and then ran `nodal` would write into the unit's home. `NODAL_ROOT` names the home, as it
+does in an activated shell.
+
+Each hook runs in a directory that exists. `pre_new` runs in the project root, before the home is
+made. `post_new` runs in the home. `pre_reclaim` runs in the home. `post_reclaim` runs in the
+project root, and `NODAL_ROOT` then names the home in the trash.
+
+Hook commands require approval. `nodal init` approves the set the project declares. It pins each
+command by the digest of its exact text. The record is per machine, in `<state>/hooks.toml`;
+`NODAL_HOOKS_FILE` moves that file. A command that has changed refuses to run, and the message
+shows the command. A command nobody approved refuses in the same way. `--no-hooks` runs no hook
+and needs no approval.
+
+## Reclaim, trash and gc
+Every destructive path calls one uniqueness check. It reports three things: uncommitted changes,
+untracked files that no ignore rule covers, and commits that no remote and no other tree on this
+machine has. A hit refuses the operation and names the paths. `--force` does not skip the check.
+It first commits the whole home to `refs/nodal/<unit>/wip`, then goes on.
+
+A reclaim stops what the unit runs. It gives back the unit's ports and leases in the transaction
+that records the reclaim. It moves the home to `<state>/<project>/trash/<id>`, under the name the
+home had. It then reads back everything the unit had, by identifier, and reports what is still
+there. It does not claim that the machine is clean.
+
+Nodal never trashes two things. A checkout adopted in place is unregistered, and the directory
+stays where it is. A base is not a home; `nodal base gc` collects it.
+
+A reclaim reads the two signals `nodal ps` reads: the process table and the container daemon. A
+signal Nodal cannot read becomes a note, never silence. A host with no readable process table
+still reclaims the home and still gives back the ports. The verification there says that it found
+nothing, not that nothing is left, and the note says which signal went unread.
+
+`nodal gc` removes a trashed home when `reclaim.trash_retention` days have passed. Nodal stamps
+that window on the row when it moves the home. A recipe edited later cannot shorten a retention
+that somebody relies on. `gc` also gives back lapsed leases. It stops runtime that belongs to a
+unit whose materialisations have all been reclaimed. It never stops the runtime of a live unit.
 
 ## Event schema
 `id, unit, environment, ts, actor {kind, name}, kind, epistemic {observed, stated}, body, refs, raw_ref`.

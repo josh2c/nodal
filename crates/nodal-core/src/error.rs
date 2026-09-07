@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use thiserror::Error as ThisError;
 
 use crate::git::preflight;
+use crate::lifecycle::hooks::Phase;
+use crate::lifecycle::uniqueness::Finding;
 use crate::model::{BaseId, BranchName, EnvId, OperationId, Slug, UnitId};
 
 /// Every failure `nodal-core` can return.
@@ -493,6 +495,59 @@ pub enum Error {
         /// Why it could not be.
         #[source]
         source: std::io::Error,
+    },
+
+    /// A unit holds work that exists nowhere but this machine, so a destructive
+    /// operation refused it.
+    #[error("{slug} holds work that is only here: {found}", found = Finding::summarise(findings))]
+    NotUnique {
+        /// The unit that was not removed.
+        slug: Slug,
+        /// What was found, in the order the check makes it.
+        findings: Vec<Finding>,
+    },
+
+    /// A unit was asked for that has already been reclaimed.
+    #[error("{slug} was reclaimed already")]
+    AlreadyReclaimed {
+        /// The unit that was asked for.
+        slug: Slug,
+    },
+
+    /// A recipe hook was reached whose exact command line nobody has approved.
+    #[error(
+        "the {phase} hook of {project} is not approved: {command:?}; \
+         run `nodal init` in that project to approve the hooks it declares",
+        phase = phase.key(),
+        project = project.display()
+    )]
+    HookNotApproved {
+        /// Which hook it is.
+        phase: Phase,
+        /// The project whose recipe declares it.
+        project: PathBuf,
+        /// The command line as the recipe writes it.
+        command: String,
+    },
+
+    /// A recipe hook ran and exited non-zero.
+    #[error(
+        "the {phase} hook failed: {command:?} {outcome}: {stderr}",
+        phase = phase.key(),
+        outcome = code.map_or_else(
+            || String::from("was ended by a signal"),
+            |code| format!("exited {code}")
+        )
+    )]
+    HookFailed {
+        /// Which hook it is.
+        phase: Phase,
+        /// The command line that was run.
+        command: String,
+        /// Its exit code, or `None` when a signal ended it.
+        code: Option<i32>,
+        /// What it wrote to standard error.
+        stderr: String,
     },
 
     /// A tool a base build ran exited non-zero.
