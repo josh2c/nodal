@@ -21,13 +21,23 @@
 //! make; the unit is listed with no home, the way it is before it is materialised. This
 //! is the rule [`crate::runtime::ps::scope`] already applies, for the same reason.
 //!
-//! **The one thing the list writes.** A unit whose work the base carries and whose
-//! branch is on a remote has been merged somewhere else, and the list is where Nodal
-//! first sees it ([`crate::lifecycle::states`]). That flip is recorded rather than
-//! rendered: the retention `nodal gc` measures runs from it, so it has to be an instant
-//! the registry holds and not a verdict recomputed on every read. Nothing else here
-//! writes — no transaction, no event, no session row — and the extra Git call the
-//! second signal costs is paid only by a unit whose work already reads as integrated.
+//! **What the list writes** (`docs/contracts.md`, The list): "The list's reading is
+//! pure. After reading, the command layer records at most two things it learned or
+//! derived: a unit's flip to merged, and each touched unit's recomputed `WORKUNIT.md`.
+//! It records no event, reconciles no session, and never contacts the network."
+//!
+//! The first of the two is here, because it is the reading that finds it. A unit whose
+//! work the base carries and whose branch is on a remote has been merged somewhere
+//! else, and the list is where Nodal first sees it ([`crate::lifecycle::states`]). That
+//! flip is recorded rather than rendered: the retention `nodal gc` measures runs from
+//! it, so it has to be an instant the registry holds and not a verdict recomputed on
+//! every read. The extra Git call the second signal costs is paid only by a unit whose
+//! work already reads as integrated.
+//!
+//! The second is not here. Compiling a unit's memory ([`crate::context`]) reads every
+//! home of the project again, and it is the command that asks for it, after this
+//! answer is in hand. Nothing else in this module writes: no transaction, no event, no
+//! session row.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -219,14 +229,18 @@ fn is_untracked(state: &State) -> bool {
 /// the work merges into is the same in all of them. The first home that answers decides
 /// the name; the rest use it and pay one Git call rather than a search.
 #[derive(Debug, Default)]
-struct Bases {
+pub struct Bases {
     /// The full ref name that answered last, when one has.
     chosen: Option<String>,
 }
 
 impl Bases {
     /// Where a unit's branch stands against the branch it merges into.
-    fn standing(&mut self, git: &Git, unit: &Unit) -> Result<Standing> {
+    ///
+    /// # Errors
+    /// [`Error::GitUnknownBranch`] when no candidate is a revision the home has, and
+    /// whatever Git reported for the last one tried.
+    pub fn standing(&mut self, git: &Git, unit: &Unit) -> Result<Standing> {
         let mut last = None;
         for candidate in self.candidates(unit) {
             match git.standing(&candidate) {

@@ -13,6 +13,8 @@ use nodal_core::runtime::run::Mode;
 use nodal_core::runtime::{run, sessions};
 use nodal_core::store::Store;
 
+use crate::commands::context;
+
 /// Arguments of `nodal run`.
 #[derive(Debug, Args)]
 pub struct Run {
@@ -42,6 +44,7 @@ impl Run {
         let home = files::find_home(&cwd)?;
         let ran = run::execute(&home, &cwd, &self.argv, Some(store.conn()), self.mode())?;
         sessions::observe_quietly(store.conn());
+        context::refresh_at(store, &home);
         if let Some(pgid) = ran.tether {
             eprintln!("nodal: the tether is still running as process group {pgid}");
         }

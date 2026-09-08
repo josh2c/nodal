@@ -154,6 +154,20 @@ jobs:
       - name: a unit is clean and alone, and a killed create leaves nothing
         run: ci/acceptance-new.sh
 
+  acceptance-context:
+    name: acceptance (context)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: a crash with no handoff loses nothing, and a dozen siblings still fit
+        run: ci/acceptance-context.sh
+
   acceptance-merge:
     name: acceptance (merge)
     runs-on: ${{ matrix.os }}

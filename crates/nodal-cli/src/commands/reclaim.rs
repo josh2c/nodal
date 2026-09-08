@@ -8,6 +8,8 @@ use nodal_core::lifecycle::ops::reclaim::{self, Request};
 use nodal_core::output::{self, Format};
 use nodal_core::store::Store;
 
+use crate::commands::context;
+
 /// Arguments of `nodal reclaim`.
 #[derive(Debug, Args)]
 pub struct Reclaim {
@@ -46,7 +48,11 @@ impl Reclaim {
             hooks,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         };
+        let project = context::project_of(store, self.unit.as_deref(), &request.cwd);
         let report = reclaim::reclaim(store, &request)?;
+        if let Some(project) = &project {
+            context::refresh(store, project);
+        }
         let left = !report.leftovers.is_empty();
         output::write(&report, Format::from_json_flag(self.json), &mut std::io::stdout())?;
         Ok(if left { ExitCode::FAILURE } else { ExitCode::SUCCESS })

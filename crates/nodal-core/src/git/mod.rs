@@ -6,6 +6,7 @@
 //! detection, for adopting an existing checkout in place.
 
 pub mod cmd;
+pub mod history;
 pub mod host;
 pub mod integration;
 pub mod merge;
@@ -22,6 +23,7 @@ pub mod worktree;
 
 use std::path::{Path, PathBuf};
 
+pub use self::history::{Commit, FileChange};
 pub use self::integration::{Divergence, Integration, Standing};
 pub use self::oid::Oid;
 use crate::error::{Error, Result};
@@ -183,6 +185,56 @@ impl Git {
     /// [`Error::GitParse`] when a count or a tree identifier could not be read.
     pub fn standing(&self, base: &str) -> Result<integration::Standing> {
         integration::standing(&self.root, base)
+    }
+
+    /// The commits in `range`, newest first, at most `limit` of them.
+    ///
+    /// The limit is the reader's, not the range's: a ledger prints a few lines about a
+    /// sibling and says how many it left out, and the count it says that with comes
+    /// from `git rev-list` rather than from the length of this answer.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the range is not one this repository has,
+    /// [`Error::GitParse`] on a record that is not a commit.
+    pub fn log(&self, range: &str, limit: u32) -> Result<Vec<history::Commit>> {
+        let count = limit.to_string();
+        let args = [
+            "log",
+            "-z",
+            "--no-decorate",
+            "--format=%H %s",
+            "--max-count",
+            count.as_str(),
+            "--end-of-options",
+            range,
+        ];
+        history::commits(&cmd::run_ok(&self.root, &args)?)
+    }
+
+    /// Which files differ across `range`, and how each one differs.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the range is not one this repository has,
+    /// [`Error::GitParse`] on a status with no path after it.
+    pub fn changed_files(&self, range: &str) -> Result<Vec<history::FileChange>> {
+        let args =
+            ["diff", "--name-status", "-z", "--find-renames", "--end-of-options", range, "--"];
+        history::changes(&cmd::run_ok(&self.root, &args)?)
+    }
+
+    /// Which of `paths` this repository tracks, asked once for the whole set.
+    ///
+    /// A tracked file is one a write would put in a commit, so it is the question that
+    /// decides whether Nodal may write in a file it did not create.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git ls-files` failed, [`Error::GitEncoding`] when a path is
+    /// not UTF-8.
+    pub fn tracked(&self, paths: &[&str]) -> Result<Vec<PathBuf>> {
+        let mut args = vec!["ls-files", "-z", "--"];
+        args.extend_from_slice(paths);
+        let output = cmd::run_ok(&self.root, &args)?;
+        Ok(output.records()?.into_iter().map(PathBuf::from).collect())
     }
 
     /// The branch HEAD names, `None` when HEAD is detached.

@@ -10,11 +10,52 @@ A unit's home contains `.nodal/id` (marker, verified against the registry), `.no
 `.nodal/manifest.toml`, `WORKUNIT.md` (facts about the unit and its siblings), `.envrc` (`dotenv .nodal/env`),
 and a normal `.git` directory. Nothing else is required for a terminal, IDE or agent to integrate.
 
-Nodal adds `.nodal/` and `.envrc` to `.git/info/exclude`, so `git status` in a unit stays clean.
+Nodal adds `.nodal/`, `.envrc` and `WORKUNIT.md` to `.git/info/exclude`, so `git status` in a unit
+stays clean. A vendor file Nodal itself created is added there too.
 
 `.nodal/manifest.toml` states the identity of the home, every environment name it carries, the
 origin of each name, and every declared name that no source answered. It holds no value. Its shape
 is published as `schemas/v1/manifest.json`.
+
+## The unit's memory
+`WORKUNIT.md` in a unit's home states what the unit is and what changed around it. The next agent,
+terminal or person reads it to continue the work. Every nodal command that touches a unit writes the
+file again. `nodal show` writes it on demand.
+
+Nodal compiles the file from the registry and from Git. The last copy of the file is never an input to
+the next one. A session that ends with no handoff therefore loses no fact, because no fact in the file
+came from that session.
+
+The file has three sections, in this order.
+
+**Facts** states what is true now:
+
+- the objective, the state, the branch and the home;
+- the base revision, and the commit where the branch left it;
+- how far the base moved under the branch, and what a merge would do;
+- what the working tree holds, and which files the branch changed against its base commit;
+- the branch's commits;
+- the last commands, from the event log;
+- the last test result. A result states counts when an event carries them. If no event carries them,
+  the line states what the recipe's test command last exited with.
+
+**Stated** holds the notes and handoffs a person or an agent wrote down (`Epistemic::Stated`). Each
+line carries its time and its actor. Nodal never mixes them with the facts. Nodal writes every line
+that comes from an event body on one line, so text from outside Nodal cannot change the shape of the
+file.
+
+**Project ledger** states, for every other open unit: its branch, its commits, and the files those
+commits changed against its own base. It also states what the branch this unit merges into gained
+since this unit's base commit. Each sibling takes 40 lines at most. The cap states how many commits
+and files it dropped.
+
+The write is atomic. Nodal writes the text to a file beside the memory, then renames it onto the
+memory. A reader therefore gets one whole answer, never half of two.
+
+`CLAUDE.md` and `AGENTS.md` in the home each carry one line that names `WORKUNIT.md`. The line is
+idempotent, and it keeps its place in a file a person wrote. Nodal leaves a file the project tracks
+exactly as it is, and states that it did not write there. Nodal never changes a file under version
+control.
 
 ## Environment variables
 `NODAL_ID`, `NODAL_UNIT` (slug), `NODAL_PROJECT`, `NODAL_HOST`, `NODAL_ROOT`, plus recipe-declared
@@ -151,15 +192,18 @@ unchanged rather than gone.
 
 ## The list
 `nodal ls`, and `nodal` with no subcommand, answer with one row per unit of the project the
-working directory is in. The command reads. It opens no transaction, records no event and
-reconciles no session row.
+working directory is in.
+
+The list's reading is pure. After reading, the command layer records at most two things it learned
+or derived: a unit's flip to merged, and each touched unit's recomputed `WORKUNIT.md`. It records no
+event, reconciles no session, and never contacts the network.
 
 Each row carries what Git says about the unit's branch at the moment it was asked: how many
 paths are changed, staged and untracked; whether HEAD names a commit rather than a branch; how
 far the branch has moved from the branch it merges into; what the upstream on the remote has
 and what it does not; and one integration verdict.
 
-The list writes exactly one thing, and it is a state a command could not have written. A unit whose
+**The flip to merged** is a state no command could have written. A unit whose
 verdict is `integrated` **and** whose branch is contained in a remote has been merged somewhere else —
 by a reviewer, on a website — and the list is where Nodal first sees it. That unit moves to `merged`,
 and the move is recorded rather than rendered: the retention `nodal gc` measures runs from it. Both
@@ -167,6 +211,13 @@ signals are required. Integration alone is a base somebody rebased under an unpu
 containment alone is the state before review, not after it. The second signal costs one `git rev-list`
 and is asked for only of a unit that already reads as integrated. The list still fetches nothing, so a
 home hears about a merge when the person's own `git` next does.
+
+**The memory** is derived, not learned: it is this reading, written where the next agent reads it
+(see The unit's memory). The command writes one `WORKUNIT.md` per unit of the project, not only for
+the unit a person named, because a ledger is a statement about the others. It writes no registry row
+to do so, and it rewrites a file only when the compiled bytes differ from the bytes that file already
+holds. The list is the command a person types most, so it is the command that keeps the memory of a
+unit nobody touched today current.
 
 The verdict has four values. `integrated` means the base carries every change of the branch,
 and it names one of two reasons. `ancestor` means the branch tip is in the base's history.

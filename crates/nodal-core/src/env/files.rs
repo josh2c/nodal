@@ -51,8 +51,8 @@ pub const PATHS: &[&str] = &[ENV, ENVRC, MANIFEST];
 /// uniqueness check calls dirty, and no one could ever reclaim it.
 const EXCLUDE_LINES: &[&str] = &["/.nodal/", "/.envrc"];
 
-/// The marker `.git/info/exclude` carries, so the lines are added once.
-const EXCLUDE_MARKER: &str = "# nodal";
+/// The marker `.git/info/exclude` carries, so a reader can see which lines are Nodal's.
+pub const EXCLUDE_MARKER: &str = "# nodal";
 
 /// Write the activation files into `home`.
 ///
@@ -96,6 +96,24 @@ pub fn remove(home: &Path) -> Result<()> {
 /// # Errors
 /// [`Error::Io`] if the file cannot be read or written.
 pub fn hide(git_dir: &Path) -> Result<bool> {
+    Ok(!exclude(git_dir, EXCLUDE_LINES)?.is_empty())
+}
+
+/// Tell a repository to leave `lines` alone, and say which of them it did not already.
+///
+/// The file is read before it is written and only the missing lines are added, because
+/// a home is told about more paths than the activation over its life: the compiled
+/// memory arrives after the create that made the home, and a home written by an older
+/// version of Nodal has to be able to learn about it. Adding the whole set again
+/// whenever one line is new would make a person's own exclude file grow on every
+/// command.
+///
+/// The marker line is written once, above the first line Nodal adds, so that a person
+/// reading the file can see whose lines these are.
+///
+/// # Errors
+/// [`Error::Io`] if the file cannot be read or written.
+pub fn exclude<'a>(git_dir: &Path, lines: &[&'a str]) -> Result<Vec<&'a str>> {
     let info = git_dir.join("info");
     let path = info.join("exclude");
     let existing = match std::fs::read_to_string(&path) {
@@ -103,22 +121,28 @@ pub fn hide(git_dir: &Path) -> Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(Error::io(&path)(error)),
     };
-    if existing.contains(EXCLUDE_MARKER) {
-        return Ok(false);
+    let present: Vec<String> = existing.lines().map(|line| line.trim_end().to_owned()).collect();
+    let has = |wanted: &str| present.iter().any(|line| line == wanted);
+    let adding: Vec<&'a str> = lines.iter().copied().filter(|line| !has(line)).collect();
+    if adding.is_empty() {
+        return Ok(adding);
     }
     std::fs::create_dir_all(&info).map_err(Error::io(&info))?;
+    let marked = has(EXCLUDE_MARKER);
     let mut text = existing;
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(EXCLUDE_MARKER);
-    text.push('\n');
-    for line in EXCLUDE_LINES {
+    if !marked {
+        text.push_str(EXCLUDE_MARKER);
+        text.push('\n');
+    }
+    for line in &adding {
         text.push_str(line);
         text.push('\n');
     }
     std::fs::write(&path, text).map_err(Error::io(&path))?;
-    Ok(true)
+    Ok(adding)
 }
 
 /// The dotenv rendering: what `.nodal/env` holds and what direnv reads.

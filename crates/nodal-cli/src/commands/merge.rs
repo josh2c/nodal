@@ -9,6 +9,8 @@ use nodal_core::lifecycle::ops::merge::{self, Request, STAGES, Stages};
 use nodal_core::output::{self, Format};
 use nodal_core::store::Store;
 
+use crate::commands::context;
+
 /// What a person types to agree to the plan.
 const AGREED: [&str; 2] = ["y", "yes"];
 
@@ -100,7 +102,11 @@ impl Merge {
             eprintln!("nodal: nothing was done");
             return Ok(ExitCode::FAILURE);
         }
+        let project = context::project_of(store, self.unit.as_deref(), &request.cwd);
         let report = merge::merge(store, &request)?;
+        if let Some(project) = &project {
+            context::refresh(store, project);
+        }
         output::write(&report, format, &mut std::io::stdout())?;
         Ok(if report.is_complete() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
     }

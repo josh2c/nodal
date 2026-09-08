@@ -10,6 +10,8 @@ use nodal_core::output::{self, Format};
 use nodal_core::runtime::{entry, ls, processes};
 use nodal_core::store::Store;
 
+use crate::commands::context;
+
 /// Arguments of `nodal ls`.
 #[derive(Debug, Default, Args)]
 pub struct Ls {
@@ -32,7 +34,19 @@ impl Ls {
     pub fn run(&self, store: &Store) -> nodal_core::Result<ExitCode> {
         let path = self.directory()?;
         let answer = self.answer(store)?.ok_or(nodal_core::Error::ProjectNotFound { path })?;
+        self.refresh(store);
         self.print(&answer)
+    }
+
+    /// Write every unit's memory again.
+    ///
+    /// The list is the command a person types most, so it is the one that keeps the
+    /// memories current for the units nobody has touched today. The reading itself
+    /// stays a reading: `runtime::ls` writes nothing, and the compile that does happens
+    /// here, after the answer is in hand.
+    pub fn refresh(&self, store: &Store) {
+        let Ok(path) = self.directory() else { return };
+        context::refresh_at(store, &path);
     }
 
     /// The list, or `None` when the directory is in no project Nodal records.

@@ -12,6 +12,8 @@ use nodal_core::runtime::entry;
 use nodal_core::store::Store;
 use nodal_core::substrate::{self, Reporter};
 
+use crate::commands::context;
+
 /// Arguments of `nodal new`.
 #[derive(Debug, Args)]
 pub struct New {
@@ -55,6 +57,9 @@ impl New {
     pub fn run(&self, store: &mut Store, hooks: bool) -> nodal_core::Result<ExitCode> {
         let progress: Arc<dyn Reporter> = substrate::sink(self.json);
         let report = new::create(store, &self.request(hooks)?, &progress)?;
+        if let Some(environment) = &report.unit.environment {
+            context::refresh_at(store, &environment.home);
+        }
         output::write(&report, Format::from_json_flag(self.json), &mut std::io::stdout())?;
         if let Some(environment) = &report.unit.environment {
             entry::ask_to_enter(&environment.home)?;

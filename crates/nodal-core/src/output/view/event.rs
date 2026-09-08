@@ -48,7 +48,8 @@ pub(crate) fn table(events: &[Event], now: Timestamp) -> Table {
 }
 
 /// The word an event kind carries in output, in one place.
-fn kind_label(kind: EventKind) -> &'static str {
+#[must_use]
+pub fn kind_label(kind: EventKind) -> &'static str {
     match kind {
         EventKind::Attached => "attached",
         EventKind::Detached => "detached",
