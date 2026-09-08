@@ -1,0 +1,50 @@
+# nodal.toml — what this project needs to be a working copy.
+#
+# Written by `nodal init` from the project's own files. Lines marked GAP are the ones
+# it could not read anywhere: answer those. Everything else is a confirmation, so
+# correct what is wrong and leave what is right.
+
+backend = "native"
+package_manager = "cargo"
+monorepo = false
+
+[toolchain]
+rust = "stable"
+
+[commands]
+
+[db]
+# none: this project has no database
+
+[services]
+# none: this project runs no services
+# no service definition was found.
+shared = []
+per_unit = []
+
+[env]
+required_local = []
+generated = []
+secrets = []
+
+[base]
+# Paths no unit home receives. Regenerated output belongs here.
+exclude = []
+# Paths a home removes because their content records the path it was made at.
+invalidate = []
+
+[hooks]
+# Run around a lifecycle operation, with the NODAL_* variables set and
+# {branch}, {repo_root}, {unit_path}, {hash_port} and {sanitize} filled in.
+# pre_new = ""
+# post_new = ""
+# pre_merge = ""
+# post_merge = ""
+# pre_reclaim = ""
+# post_reclaim = ""
+
+[sync]
+# auto_irreversible = false
+
+[reclaim]
+# trash_retention = 14
