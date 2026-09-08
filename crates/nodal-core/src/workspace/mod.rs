@@ -13,6 +13,11 @@
 //! the content that recorded the path it was made at, and it runs once the copy is
 //! there.
 //!
+//! A copy also has to be taken away again. [`remove`] is how, and it is one function
+//! for every tree Nodal owns: a base holds content written read-only, so a home cloned
+//! from one holds it too, and a removal that cannot open a read-only directory leaves a
+//! directory behind that nothing will ever clear.
+//!
 //! A copy also has to be complete. [`tracked`] is the gate before one starts: it
 //! refuses an exclusion list that would leave out a path the source commit tracks,
 //! because a copy missing such a path is dirty the moment it is made.
@@ -24,6 +29,7 @@ pub mod home;
 pub mod meta;
 pub mod reflink;
 pub mod relocate;
+pub mod remove;
 pub mod tracked;
 pub mod tree;
 pub mod walk;

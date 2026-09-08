@@ -17,7 +17,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use nodal_core::workspace::{Excludes, Materializer, Report, copy::CopyFallback, select_backend};
+use nodal_core::workspace::{
+    Excludes, Materializer, Report, copy::CopyFallback, remove, select_backend,
+};
 
 /// The backends every test runs on: the one this machine selects, and the fallback.
 ///
@@ -250,6 +252,98 @@ fn both_backends_produce_the_same_tree() {
         .collect();
     for (name, found) in &shapes[1..] {
         assert_eq!(found, &shapes[0].1, "{name} and {} disagree", shapes[0].0);
+    }
+}
+
+#[test]
+fn a_read_only_file_that_carries_an_attribute_is_cloned() {
+    let case = Case::new();
+    let source = case.source();
+    let locked = source.join("objects/pack/pack-0123456789abcdef.idx");
+    write(&locked, "an index git wrote once");
+    let name = "user.nodal.test";
+    if !set_attribute(&locked, name, b"provenance") {
+        eprintln!("this filesystem holds no extended attributes; nothing to prove here");
+        return;
+    }
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+    for (label, backend) in backends() {
+        let (clone, report) = clone_with((label, &*backend), &case, &source, &Excludes::default());
+        let copy = clone.join("objects/pack/pack-0123456789abcdef.idx");
+        assert_eq!(
+            std::fs::symlink_metadata(&copy).unwrap().permissions().mode() & 0o777,
+            0o444,
+            "{label}: the copy kept another mode than the source had"
+        );
+        assert_eq!(
+            read_attribute(&copy, name).as_deref(),
+            Some(&b"provenance"[..]),
+            "{label}: the attribute did not survive"
+        );
+        assert_eq!(report.attributes, 1, "{label}");
+        assert_eq!(contents(&copy), "an index git wrote once", "{label}");
+    }
+}
+
+#[test]
+fn a_read_only_file_in_a_read_only_directory_is_cloned() {
+    let case = Case::new();
+    let source = case.source();
+    let store = source.join("vendor/store");
+    let locked = store.join("library");
+    write(&locked, "bytes a package manager wrote");
+    let name = "user.nodal.test";
+    let marked = set_attribute(&locked, name, b"provenance");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o444)).unwrap();
+    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    for (label, backend) in backends() {
+        let (clone, _) = clone_with((label, &*backend), &case, &source, &Excludes::default());
+        let copy = clone.join("vendor/store/library");
+        assert_eq!(
+            std::fs::symlink_metadata(clone.join("vendor/store")).unwrap().permissions().mode()
+                & 0o777,
+            0o555,
+            "{label}: the directory kept another mode than the source had"
+        );
+        assert_eq!(
+            std::fs::symlink_metadata(&copy).unwrap().permissions().mode() & 0o777,
+            0o444,
+            "{label}: the file kept another mode than the source had"
+        );
+        if marked {
+            assert_eq!(read_attribute(&copy, name).as_deref(), Some(&b"provenance"[..]), "{label}");
+        }
+        remove::tree(&clone).unwrap();
+    }
+    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn the_fixture_a_clone_is_measured_against_carries_the_condition() {
+    let case = Case::new();
+    let source = nodal_fixture::write(case.source());
+    let locked = source.join(nodal_fixture::read_only::LOCKED);
+    if !nodal_fixture::read_only::marked(&locked) {
+        eprintln!("this filesystem holds no extended attributes; nothing to prove here");
+        return;
+    }
+    assert_eq!(
+        std::fs::symlink_metadata(&locked).unwrap().permissions().mode() & 0o777,
+        0o444,
+        "the fixture no longer carries a file that denies every write"
+    );
+
+    for (label, backend) in backends() {
+        let (clone, _) = clone_with((label, &*backend), &case, &source, &Excludes::default());
+        let copy = clone.join(nodal_fixture::read_only::LOCKED);
+        assert!(nodal_fixture::read_only::marked(&copy), "{label}: the attribute did not survive");
+        assert_eq!(
+            std::fs::symlink_metadata(&copy).unwrap().permissions().mode() & 0o777,
+            0o444,
+            "{label}: the copy kept another mode"
+        );
     }
 }
 

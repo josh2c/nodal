@@ -79,6 +79,7 @@ use crate::runtime::processes::{Processes, Running};
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
 use crate::services::docker;
 use crate::store::{Store, environments, leases, projects, sessions, trash, units};
+use crate::workspace::remove::tree as remove_tree;
 
 use super::reclaim;
 use crate::{Error, Result};
@@ -420,12 +421,13 @@ fn release_lapsed(
 }
 
 /// Remove a directory and everything under it. One that is not there is already gone.
+///
+/// A trashed home is the home a unit had, so it holds the read-only content its base
+/// held, and `gc` is the last thing that will ever look at it. It uses the removal that
+/// opens what it must, because a directory `gc` walks past is a directory nobody
+/// collects.
 fn remove(path: &Path) -> Result<()> {
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(Error::io(path)(error)),
-    }
+    remove_tree(path)
 }
 
 /// What a directory occupies, as the sum of the sizes of the files under it.

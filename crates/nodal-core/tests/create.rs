@@ -18,6 +18,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -36,8 +37,9 @@ use tempfile::TempDir;
 
 /// A project, the base built from it, a state directory, and the registry in it.
 struct Fixture {
-    /// Kept so that the temporary directory outlives the test.
-    _root: TempDir,
+    /// Everything the test makes. Kept so that the temporary directory outlives the
+    /// test, and read by the drop that opens what the test locked.
+    root: TempDir,
     /// The person's checkout. Read to decide the base; never cloned into a home.
     source: PathBuf,
     /// Nodal's state directory.
@@ -66,13 +68,37 @@ impl Fixture {
         let state = root.path().join("state");
         let base = state.join("project").join("b").join("00000004");
         clone_to_base(&source, &base);
-        Self { _root: root, source, state, base }
+        Self { root, source, state, base }
     }
 
     fn store(&self) -> Store {
         Store::open(self.state.join("registry.db")).unwrap()
     }
+}
 
+/// Open everything the test made before the temporary directory is removed.
+///
+/// A test here plants the read-only content a base really holds, and a directory that
+/// denies a write is a directory `TempDir` cannot remove: without this, every run of the
+/// suite would leave one behind in the temporary directory, which is the very fault
+/// these tests exist to catch. It runs before the `TempDir` field is dropped, and it
+/// runs when a test panics as well as when it passes.
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let mut pending = vec![self.root.path().to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            nodal_fixture::read_only::open(&directory);
+            let Ok(entries) = std::fs::read_dir(&directory) else { continue };
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    pending.push(entry.path());
+                }
+            }
+        }
+    }
+}
+
+impl Fixture {
     /// The base row the environment names, which its foreign key requires.
     fn base_row(&self) -> Base {
         let at = Timestamp::parse("2026-09-07T09:00:00Z").unwrap();
@@ -274,6 +300,82 @@ fn a_run_whose_process_is_gone_is_rebuilt_and_rolled_back_to_nothing() {
     assert!(environments::get(store.conn(), params.environment.id).unwrap().is_none());
     assert_eq!(journal::get(store.conn(), record.id).unwrap().unwrap().state, State::RolledBack);
     assert_eq!(lifecycle::resolve(&mut store, &ops::rebuilders()).unwrap(), Vec::new());
+}
+
+#[test]
+fn a_base_that_holds_what_a_real_one_holds_is_cloned() {
+    let fixture = Fixture::new();
+    let marked = nodal_fixture::read_only::mark_git_objects(&fixture.base);
+    if marked == 0 {
+        eprintln!("this filesystem holds no extended attributes; nothing to prove here");
+        return;
+    }
+    let locked = fixture.base.join("vendor/store/library");
+    std::fs::create_dir_all(locked.parent().unwrap()).unwrap();
+    std::fs::write(&locked, "bytes a package manager wrote").unwrap();
+    assert!(nodal_fixture::read_only::mark(&locked));
+    nodal_fixture::read_only::lock(&locked);
+    nodal_fixture::read_only::lock(locked.parent().unwrap());
+
+    let params = fixture.params();
+    let home = params.environment.home.clone();
+    let plan = new::plan(&params).unwrap();
+    for step in &plan.steps {
+        step.apply().expect("a base a real machine would produce is cloned");
+    }
+
+    let object = home.join(".git/objects");
+    assert!(object.is_dir(), "the clone has no object directory");
+    assert!(
+        nodal_fixture::read_only::marked(&home.join("vendor/store/library")),
+        "the attribute on a file nothing may write did not survive"
+    );
+
+    for step in plan.steps.iter().rev() {
+        step.undo().unwrap();
+    }
+    assert!(!home.exists(), "a home holding a read-only directory was left behind");
+}
+
+#[test]
+fn a_materialize_that_fails_part_way_leaves_no_home_and_no_row() {
+    let fixture = Fixture::new();
+    // SAFETY: `geteuid` takes no argument, reads no memory the caller owns and has no
+    // failure case; it is unsafe only because it is a foreign function.
+    let effective_user = unsafe { libc::geteuid() };
+    if effective_user == 0 {
+        eprintln!("root reads a file whatever its mode; nothing to prove here");
+        return;
+    }
+    // A file the copier reaches and cannot read, so the clone stops with the home part
+    // made, which is the state the undo has to take away.
+    let shut = fixture.base.join("vendor/store/unreadable");
+    std::fs::create_dir_all(shut.parent().unwrap()).unwrap();
+    std::fs::write(&shut, "bytes nobody may read").unwrap();
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+    nodal_fixture::read_only::lock(shut.parent().unwrap());
+
+    let params = fixture.params();
+    let home = params.environment.home.clone();
+    let store = fixture.store();
+    projects::insert(store.conn(), &params.project).unwrap();
+    bases::insert(store.conn(), &fixture.base_row()).unwrap();
+    drop(store);
+
+    let plan = new::plan(&params).unwrap();
+    let materialize = plan.steps.first().expect("the plan has a first step");
+    assert_eq!(materialize.key(), "home.materialize");
+    let failed = materialize.apply().expect_err("a file nobody may read stopped the clone");
+    assert!(failed.to_string().contains("unreadable"), "{failed}");
+    assert!(home.exists(), "the failed clone left a part-made home, which is what undo is for");
+
+    materialize.undo().expect("the undo removes a part-made home");
+    assert!(!home.exists(), "a part-made home was left behind");
+    assert!(materialize.undo().is_ok(), "undoing again is not a failure");
+
+    let store = fixture.store();
+    assert!(units::get(store.conn(), params.unit.id).unwrap().is_none(), "a row was written");
+    assert!(environments::get(store.conn(), params.environment.id).unwrap().is_none());
 }
 
 #[test]

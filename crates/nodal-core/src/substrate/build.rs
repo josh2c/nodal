@@ -34,6 +34,7 @@ use crate::model::recipe::{PackageManager, Recipe};
 use crate::model::{Base, BaseId, CommitId, Platform, ProjectId, Timestamp, WorkspaceFp};
 use crate::store::bases;
 use crate::substrate::progress::Reporter;
+use crate::workspace::remove::tree as remove_tree;
 use crate::workspace::{self, Excludes};
 use crate::{Error, Result};
 
@@ -453,12 +454,11 @@ fn run(dir: &Path, argv: &[String]) -> Result<()> {
 }
 
 /// Remove a directory if it is there. Idempotent, which is what every undo has to be.
+///
+/// A base part-way through a build already holds a checkout, so it uses the removal
+/// that opens read-only content rather than stopping at it.
 fn remove(path: &Path) -> Result<()> {
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(Error::io(path)(error)),
-    }
+    remove_tree(path)
 }
 
 /// Installing dependencies, as the recipe's package manager spells it.
