@@ -18,6 +18,7 @@
 use std::path::Path;
 
 use nodal_core::context;
+use nodal_core::context::survey::Snapshot;
 use nodal_core::model::Project;
 use nodal_core::runtime::entry;
 use nodal_core::store::Store;
@@ -28,6 +29,15 @@ pub fn refresh(store: &Store, project: &Project) {
         Ok(report) => context::report_notes(&report),
         Err(error) => eprintln!("nodal: context: {error}"),
     }
+}
+
+/// The same, from a survey the caller has already taken.
+///
+/// The commands that list units survey the project themselves, because the rows they
+/// print are built from that survey ([`nodal_core::runtime::ls::rows`]). Handing it
+/// here is what keeps one `nodal ls` to one pass over the homes.
+pub fn compile(project: &Project, surveyed: &[Snapshot]) {
+    context::report_notes(&context::compile(project, surveyed));
 }
 
 /// The same, for the project a path is in. A path in no project writes nothing.

@@ -58,13 +58,23 @@
 //! tomorrow, and the retention window `nodal gc` measures from has to start somewhere.
 //! Writing it down is what makes the state a fact of the registry rather than a
 //! rendering of whatever Git happened to say the last time somebody looked.
+//!
+//! ## Where the write happens
+//!
+//! [`settle`] is the write, and the commands that list units call it on the rows they
+//! are about to print. It is not in [`crate::runtime::ls`], which is the reading:
+//! `docs/contracts.md` says "the list's reading is pure. After reading, **the command
+//! layer** records at most two things it learned or derived", and a write inside the
+//! reading made that sentence true of what `nodal ls` does and false of where the code
+//! is. The reading now writes nothing at all.
 
 use rusqlite::Connection;
 
 use crate::Result;
 use crate::git::remote::Containment;
-use crate::git::{Divergence, Integration};
-use crate::model::{Timestamp, Unit, UnitStatus};
+use crate::git::{Divergence, Git, Integration};
+use crate::model::{Timestamp, UnitStatus};
+use crate::output::view::UnitRow;
 use crate::store::units;
 
 /// Whether the branch has work of its own that the base has taken.
@@ -94,12 +104,44 @@ pub fn is_merged(
         && contained.is_contained()
 }
 
-/// Write the flip down, and say whether this call is the one that made it.
+/// Record every row whose work has landed as merged, and show it so.
 ///
-/// # Errors
-/// [`Error::Store`] when the registry could not be written.
-pub fn record_merged(conn: &Connection, unit: &Unit, now: Timestamp) -> Result<bool> {
-    units::update_status(conn, unit.id, UnitStatus::Merged, now)
+/// This is the command layer's half of a list: the rows are what the reading answered
+/// with, and this settles the one state the reading is allowed to have learned.
+///
+/// The remote signal costs one `git rev-list`, so it is asked for only of a unit that
+/// has commits of its own and has had them taken by the base ([`has_landed`]) — which a
+/// unit nobody has begun has not. A failure to read it, or to write the row, is
+/// returned as a note rather than raised: a list that refuses to print because one
+/// unit's remote could not be read is worth less than a list that prints every row and
+/// says which unit it could not settle.
+pub fn settle(conn: &Connection, rows: &mut [UnitRow], now: Timestamp) -> Vec<String> {
+    let mut notes = Vec::new();
+    for row in rows {
+        match flip(conn, row, now) {
+            Ok(true) => row.status = UnitStatus::Merged,
+            Ok(false) => {}
+            Err(error) => notes.push(format!("{}: {error}", row.slug)),
+        }
+    }
+    notes
+}
+
+/// Ask the remote signal of one row and write the flip down, answering whether it
+/// happened. A row that cannot have landed anything is not asked.
+fn flip(conn: &Connection, row: &UnitRow, now: Timestamp) -> Result<bool> {
+    let Some(work) = row.work.as_ref().filter(|work| has_landed(work.integration, work.main))
+    else {
+        return Ok(false);
+    };
+    let Some(home) = row.environment.as_ref().map(|environment| &environment.home) else {
+        return Ok(false);
+    };
+    let contained = Git::at(home).remote_containment(row.branch.as_str())?;
+    if !is_merged(row.status, work.integration, work.main, &contained) {
+        return Ok(false);
+    }
+    units::update_status(conn, row.id, UnitStatus::Merged, now)
 }
 
 #[cfg(test)]

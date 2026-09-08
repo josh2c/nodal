@@ -142,11 +142,12 @@ impl Cli {
     ///
     /// Whatever the registry or Git reported.
     fn bare(&self) -> nodal_core::Result<ExitCode> {
-        let listing = Ls::default();
+        let command = Ls::default();
         let store = self.registry()?;
-        if let Some(answer) = listing.answer(&store)? {
-            listing.refresh(&store);
-            return listing.print(&answer);
+        if let Some(mut listing) = command.read(&store)? {
+            listing.settle(&store);
+            listing.compile();
+            return command.print(&listing.list);
         }
         tracing::debug!("no subcommand given and no project here");
         Self::command().print_help().map_err(nodal_core::Error::io("<stdout>"))?;

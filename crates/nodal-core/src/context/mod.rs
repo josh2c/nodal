@@ -74,17 +74,28 @@ pub struct Report {
 /// written is a note, not a failure: the command that called this did its own work, and
 /// losing the memory of one unit is not a reason to report that the work failed.
 pub fn refresh(conn: &Connection, project: &Project) -> Result<Report> {
-    let snapshots = survey::project(conn, project)?;
+    Ok(compile(project, &survey::project(conn, project)?))
+}
+
+/// The same, from a survey the caller has already taken.
+///
+/// The `ls` and `show` commands take the survey themselves, because they answer from it
+/// as well as write from it ([`crate::runtime::ls::rows`]). Every other command calls
+/// [`refresh`], which takes one and hands it here.
+#[must_use]
+pub fn compile(project: &Project, surveyed: &[survey::Snapshot]) -> Report {
     let command = test_command(&project.root);
     let mut report = Report::default();
-    for subject in &snapshots {
+    for subject in surveyed {
         report.notes.extend(subject.notes.clone());
-        let Some(home) = &subject.home else { continue };
+        let Some(home) = subject.home.as_ref().map(|environment| &environment.home) else {
+            continue;
+        };
         if !home.is_dir() {
             report.notes.push(format!("{}: its home is not on this disk", subject.unit.slug));
             continue;
         }
-        let ledger = ledger::of(subject, &snapshots);
+        let ledger = ledger::of(subject, surveyed);
         let text = render::memory(subject, &ledger, command.as_deref());
         match write_home(home, &text) {
             Ok(notes) => {
@@ -94,7 +105,7 @@ pub fn refresh(conn: &Connection, project: &Project) -> Result<Report> {
             Err(error) => report.notes.push(format!("{}: {error}", subject.unit.slug)),
         }
     }
-    Ok(report)
+    report
 }
 
 /// The same, for the project a path is in. A path in no project writes nothing.

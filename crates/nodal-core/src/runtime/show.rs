@@ -7,33 +7,26 @@
 //! The reading is the list's, not a second one. A row of `nodal ls` already joins the
 //! registry with what Git says about the home and with who is attached to it, and a
 //! second way of computing the same row is a second row that can disagree with the
-//! first.
+//! first. So the list is what this is given, already read and already settled, and all
+//! it adds is the log.
 
 use rusqlite::Connection;
 
-use crate::model::{Project, Timestamp, Unit};
-use crate::output::view::UnitDetail;
-use crate::runtime::ls;
-use crate::runtime::processes::Processes;
+use crate::model::Unit;
+use crate::output::view::{UnitDetail, UnitList};
 use crate::store::events;
 use crate::{Error, Result};
 
 /// How many events of the unit's log the answer carries, newest last.
 const HISTORY: u32 = 20;
 
-/// Everything known about one unit.
+/// Everything known about one unit: its row of `listed`, and its log under it.
 ///
 /// # Errors
-/// [`Error::UnitNotFound`] when the project has no such unit, and whatever the registry
-/// or Git reported.
-pub fn detail(
-    conn: &Connection,
-    processes: &dyn Processes,
-    project: &Project,
-    unit: &Unit,
-    now: Timestamp,
-) -> Result<UnitDetail> {
-    let listed = ls::list(conn, processes, project, now)?;
+/// [`Error::UnitNotFound`] when the list has no such unit, and [`Error::Store`] when the
+/// log could not be read.
+pub fn detail(conn: &Connection, listed: UnitList, unit: &Unit) -> Result<UnitDetail> {
+    let now = listed.now;
     let row = listed
         .units
         .into_iter()

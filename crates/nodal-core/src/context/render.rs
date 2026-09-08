@@ -103,10 +103,10 @@ fn objective(subject: &Snapshot) -> String {
 
 /// Where the unit's home is.
 fn home(subject: &Snapshot) -> String {
-    subject
-        .home
-        .as_ref()
-        .map_or_else(|| String::from("none on this machine"), |path| path.display().to_string())
+    subject.home.as_ref().map_or_else(
+        || String::from("none on this machine"),
+        |environment| environment.home.display().to_string(),
+    )
 }
 
 /// Where the branch stands, and what the tree holds.
