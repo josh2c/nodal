@@ -1,5 +1,7 @@
-# The nodal integration for fish. Install it with one line in
-# ~/.config/fish/config.fish:
+# The nodal integration for fish. `nodal shell-init --install fish` writes this file
+# into Nodal's state directory and puts one line in
+# ~/.config/fish/config.fish that sources it, and `nodal uninstall` removes both
+# again. To load it without installing anything, put this line in that file instead:
 #
 #     nodal shell-init fish | source
 #

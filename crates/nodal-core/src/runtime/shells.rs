@@ -106,6 +106,15 @@ impl Shell {
         self.dialect().rc_file
     }
 
+    /// This shell's start-up file under the directory `home`.
+    ///
+    /// The table writes the path the way a person reads it, under `~`. This is the same
+    /// path for a program: the one the install writes to and the uninstall reads.
+    #[must_use]
+    pub fn rc_path(self, home: &Path) -> std::path::PathBuf {
+        home.join(self.rc_file().trim_start_matches("~/"))
+    }
+
     /// The line that installs the integration into that file.
     #[must_use]
     pub fn install_line(self) -> &'static str {

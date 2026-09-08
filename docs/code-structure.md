@@ -164,6 +164,13 @@ context/               WORKUNIT.md: recomputed from the project, never from the 
   capture.rs           Capture writer (store + jsonl), used by shims/hooks via CLI
   rules.rs             default agent rules text
 
+setup/                 what nodal puts on a machine outside its state, and how it takes it back
+  mod.rs
+  rc.rs                the marked block in a start-up file; add and remove are byte inverses
+  shims.rs             the shell script on disk: <state>/shims/nodal.<shell>
+  plan.rs              install; survey what an uninstall removes, then remove exactly that
+  channel.rs           which channel installed this binary, and the command that upgrades it
+
 adapters/
   mod.rs               AgentAdapter trait
   claude_code.rs       hooks json, session start/stop
@@ -192,7 +199,7 @@ output/
   watch.rs             Source trait + polling loop; writes only changed answers
   view/                the read types themselves, one file per command family
     unit.rs · status.rs · event.rs · base.rs · init.rs · env.rs · created.rs
-    reclaim.rs · doctor.rs · merge.rs · done.rs · explain.rs
+    reclaim.rs · doctor.rs · merge.rs · done.rs · explain.rs · setup.rs
 ```
 
 ## crates/nodal-cli/src
@@ -204,7 +211,7 @@ commands/              one file per command, each ≤ 40 lines: parse args → c
   init.rs · new.rs · cd.rs · adopt.rs · ls.rs · show.rs · explain.rs · shell.rs · shell_init.rs
   run.rs · ps.rs · start.rs
   note.rs · ask.rs · handoff.rs · sync.rs · done.rs · merge.rs · reclaim.rs · gc.rs · doctor.rs
-  base.rs · db.rs · status.rs · push.rs · pull.rs · open.rs · uninstall.rs
+  base.rs · db.rs · status.rs · push.rs · pull.rs · open.rs · uninstall.rs · upgrade.rs
 ```
 
 ## Rules the linter enforces (workspace lints, CI fails on any)

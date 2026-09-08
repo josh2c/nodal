@@ -19,6 +19,7 @@ pub mod init;
 pub mod merge;
 pub mod ps;
 pub mod reclaim;
+pub mod setup;
 pub mod status;
 pub mod unit;
 
@@ -33,6 +34,7 @@ pub use crate::output::view::init::InitReport;
 pub use crate::output::view::merge::{Conflict, Merged, StageLine};
 pub use crate::output::view::ps::Ps;
 pub use crate::output::view::reclaim::{Idle, Leftover, Reclaimed, Retired, Swept};
+pub use crate::output::view::setup::{Installed, Uninstall, Upgrade};
 pub use crate::output::view::status::{SharedResource, Status};
 pub use crate::output::view::unit::{
     EnvLine, Freshness, Remote, Running, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,

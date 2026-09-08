@@ -23,3 +23,5 @@ pub mod run;
 pub mod shell;
 pub mod shell_init;
 pub mod show;
+pub mod uninstall;
+pub mod upgrade;

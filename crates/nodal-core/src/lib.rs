@@ -16,6 +16,7 @@ pub mod output;
 pub mod recipe;
 pub mod runtime;
 pub mod services;
+pub mod setup;
 pub mod store;
 pub mod substrate;
 pub mod workspace;

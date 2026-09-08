@@ -1,4 +1,7 @@
-# The nodal integration for zsh. Install it with one line in ~/.zshrc:
+# The nodal integration for zsh. `nodal shell-init --install zsh` writes this file
+# into Nodal's state directory and puts one line in ~/.zshrc that sources it, and
+# `nodal uninstall` removes both again. To load it without installing anything, put
+# this line in ~/.zshrc instead:
 #
 #     eval "$(nodal shell-init zsh)"
 #

@@ -124,9 +124,31 @@ impl Planted {
 
     /// The report produced by running in `cwd`, with `state` as the state directory.
     fn report_from(&self, docker: &dyn Docker, cwd: &Path, state: &Path) -> Doctor {
+        self.report_of(&doctor::Registry::Open(self.store.conn()), docker, cwd, state)
+    }
+
+    /// The report produced from a registry of a given shape.
+    fn report_of(
+        &self,
+        registry: &doctor::Registry<'_>,
+        docker: &dyn Docker,
+        cwd: &Path,
+        state: &Path,
+    ) -> Doctor {
         let machine = Machine::here(cwd, state, Some(&self.sessions));
-        doctor::survey(self.store.conn(), docker, &machine, Timestamp::now())
+        doctor::survey(registry, docker, &machine, Timestamp::now())
             .expect("a machine doctor can read")
+    }
+
+    /// The report this machine produces when the registry is one a later Nodal wrote.
+    fn report_without_a_registry(&self) -> Doctor {
+        let refused = doctor::Registry::TooNew(doctor::Mismatch {
+            path: self.state.join("registry.db"),
+            found: 99,
+            supported: 6,
+            upgrade: String::from("cargo install nodal --force"),
+        });
+        self.report_of(&refused, &Daemon, &self.checkout, &self.state)
     }
 }
 
@@ -601,4 +623,67 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, Option<SystemTime>)> {
         }
     }
     found
+}
+
+// ---------------------------------------------------------------------------
+// A registry a later Nodal wrote (DL-034).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_registry_that_is_too_new_still_gets_the_worktrees_and_the_caches() {
+    let machine = plant();
+
+    let report = machine.report_without_a_registry();
+
+    assert!(
+        report.here.iter().any(|finding| finding.kind == Kind::Worktree),
+        "the worktrees need no registry: {report:?}"
+    );
+    assert!(
+        report.here.iter().any(|finding| finding.kind == Kind::StaleCache),
+        "and neither do the caches: {report:?}"
+    );
+}
+
+#[test]
+fn a_registry_that_is_too_new_claims_nothing_it_could_not_read() {
+    let machine = plant();
+
+    let report = machine.report_without_a_registry();
+
+    for kind in [Kind::OrphanDatabase, Kind::UnitCount] {
+        assert!(
+            !report.here.iter().chain(&report.elsewhere).any(|finding| finding.kind == kind),
+            "{kind:?} is answered out of the registry, and the registry was not read: {report:?}"
+        );
+    }
+    assert!(
+        report.elsewhere.is_empty(),
+        "another project is a registry row, so nothing can be said to be another's: {report:?}"
+    );
+}
+
+#[test]
+fn the_mismatch_is_a_note_that_names_both_versions_and_the_upgrade_command() {
+    let machine = plant();
+
+    let report = machine.report_without_a_registry();
+
+    let note = report.notes.iter().find(|note| note.source == "store").expect("the store note");
+    assert!(note.why.contains("schema 99"), "{}", note.why);
+    assert!(note.why.contains("schema 6"), "{}", note.why);
+    assert!(note.why.contains("nothing in the registry was read"), "{}", note.why);
+    assert!(note.why.contains("cargo install nodal --force"), "{}", note.why);
+}
+
+#[test]
+fn a_registry_that_opened_adds_no_note_of_its_own() {
+    let machine = plant();
+
+    let report = machine.report();
+
+    assert!(
+        !report.notes.iter().any(|note| note.source == "store"),
+        "a registry that answered is not news: {report:?}"
+    );
 }

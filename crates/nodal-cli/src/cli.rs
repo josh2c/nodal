@@ -30,6 +30,8 @@ use crate::commands::run::Run;
 use crate::commands::shell::Shell;
 use crate::commands::shell_init::ShellInit;
 use crate::commands::show::Show;
+use crate::commands::uninstall::Uninstall;
+use crate::commands::upgrade::Upgrade;
 
 /// The subcommands implemented so far. The rest arrive with their own tasks.
 #[derive(Debug, Subcommand)]
@@ -70,6 +72,12 @@ pub enum Command {
     Gc(Gc),
     /// Report what tools left behind on this machine. It removes nothing.
     Doctor(Doctor),
+    /// Remove the shell integration, and with `--state` everything Nodal keeps.
+    Uninstall(Uninstall),
+    /// Report how this copy of Nodal was installed and what upgrades it. It fetches
+    /// nothing.
+    #[command(visible_alias = "update")]
+    Upgrade(Upgrade),
     /// List, build and collect the warm bases unit homes are cloned from.
     #[command(subcommand_required = true, arg_required_else_help = true)]
     Base(Base),
@@ -124,9 +132,11 @@ impl Cli {
             Some(Command::Merge(merge)) => merge.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Reclaim(reclaim)) => reclaim.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Gc(gc)) => gc.run(&mut self.registry()?, !self.no_hooks),
-            Some(Command::Doctor(doctor)) => doctor.run(&self.registry()?),
+            Some(Command::Doctor(doctor)) => doctor.run(self.registry()),
             Some(Command::ShellInit(init)) => init.run(),
             Some(Command::Shell(shell)) => shell.run(),
+            Some(Command::Uninstall(uninstall)) => uninstall.run(),
+            Some(Command::Upgrade(upgrade)) => upgrade.run(),
             Some(Command::Base(base)) => base.run(&mut self.registry()?),
             None => self.bare(),
         }
