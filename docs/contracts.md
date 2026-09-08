@@ -124,10 +124,13 @@ would make the next clone copy a copy.
 (in days). Alongside those, and additive to them: `package_manager_pin`, `monorepo`, `task_cache`,
 `dockerfile`, `compose`, `commands.{lint,typecheck,reset}`, `db.{tool,migrations_dir,fixed_ports}`.
 
-`base.exclude` never drops a path the project tracks. A copy that is missing a tracked path is dirty the
-moment it is made: `git status` in it reports one deletion for every file under that path. Inference reads
-`git ls-tree` before it proposes a row, and a copy refuses a list that holds a tracked path and names each
-one it found.
+No copy drops a path the project tracks. A copy that is missing a tracked path is dirty the moment it is
+made: `git status` in it reports one deletion for every file under that path. Inference reads `git ls-tree`
+before it proposes a row, and a copy reads it again before it starts. What the copy then does depends on
+who wrote the row. A row the project wrote in `base.exclude` is refused, and the message names each tracked
+path it found. A row of Nodal's own default table yields instead, because no recipe key can take such a row
+off the list: the copy keeps the directory and the report carries one note naming the row and why it was
+kept.
 
 Every key is optional and unknown keys are rejected, so a typo is a message rather than a line silently
 ignored. Most keys are inferred by `nodal init` from the project's own files; only the gaps need a human

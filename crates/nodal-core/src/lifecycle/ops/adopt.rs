@@ -80,7 +80,7 @@ use crate::services::ports;
 use crate::store::{Store, environments, events, units};
 use crate::substrate::{self, Reporter};
 use crate::workspace::relocate::{self, InvalidateCache};
-use crate::workspace::{Excludes, home, select_backend};
+use crate::workspace::{Excludes, home, select_backend, tracked};
 use crate::{Error, Result};
 
 /// What this operation is called in the journal.
@@ -187,9 +187,12 @@ pub fn adopt(
 ) -> Result<Created> {
     let params = prepare(store, request, progress)?;
     let environment = params.environment.id;
-    run(store, &plan(&params)?)?;
+    let kept = Arc::new(OnceLock::new());
+    run(store, &plan(&params, &kept)?)?;
     post_new(&params, request.hooks)?;
-    Created::of(&params.unit, &new::read_back(store, environment)?, Timestamp::now())
+    let created =
+        Created::of(&params.unit, &new::read_back(store, environment)?, Timestamp::now())?;
+    Ok(created.keeping(kept.get().cloned().unwrap_or_default()))
 }
 
 /// Run `post_new` in the home, for the form of adoption that made one (DL-042).
@@ -308,7 +311,7 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
 ///
 /// # Errors
 /// [`Error::Render`] when the parameters cannot be written to the journal.
-pub fn plan(params: &Params) -> Result<Plan> {
+pub fn plan(params: &Params, kept: &Arc<OnceLock<Vec<tracked::Kept>>>) -> Result<Plan> {
     let home = params.environment.home.clone();
     let value = serde_json::to_value(params)
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
@@ -322,6 +325,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
                 home: home.clone(),
                 excludes: Excludes::with_recipe(&params.recipe.base.exclude),
                 backend: select_backend(&params.state_dir),
+                kept: Arc::clone(kept),
             })
             .then(new::Relocate {
                 home: home.clone(),
@@ -433,7 +437,9 @@ impl Rebuild for Adopt {
         let params: Params = serde_json::from_value(record.params.clone()).map_err(|_| {
             Error::InvalidValue { kind: "adoption parameters", value: record.id.to_string() }
         })?;
-        plan(&params)
+        // A resumed run finishes the home and writes no report, so the notes it would
+        // have carried have nowhere to go.
+        plan(&params, &Arc::new(OnceLock::new()))
     }
 }
 

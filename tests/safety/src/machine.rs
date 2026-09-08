@@ -77,11 +77,39 @@ impl Machine {
     /// made, which is a machine no property can be asserted on.
     #[must_use]
     pub fn tracking(forced: &[&str]) -> Self {
+        Self::built(forced, &[])
+    }
+
+    /// The same again, with `exclude` written into the project's own `nodal.toml`.
+    ///
+    /// A row here is one the person wrote, which is what tells the copy apart from a row
+    /// of Nodal's default table: the person asked for it, so a tracked path under it is
+    /// refused rather than kept.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`], and if the recipe could not be written.
+    #[must_use]
+    pub fn excluding(forced: &[&str], exclude: &[&str]) -> Self {
+        Self::built(forced, exclude)
+    }
+
+    /// The fixture project as a repository, with what it tracks and what it excludes.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    fn built(forced: &[&str], exclude: &[&str]) -> Self {
         let root = TempDir::new().expect("a temporary directory");
         let source = nodal_fixture::write(root.path().join("project"));
         let state = root.path().join("state");
         let tools = root.path().join("tools");
         write_stub(&tools);
+
+        if !exclude.is_empty() {
+            write_exclude(&source, exclude);
+        }
 
         git(&source, &["init", "--quiet", "--initial-branch", "main"]);
         for (key, value) in IDENTITY {
@@ -285,6 +313,15 @@ impl Default for Machine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Add a `base.exclude` table to the fixture's own recipe, as a person would write it.
+fn write_exclude(source: &Path, exclude: &[&str]) {
+    let path = source.join(nodal_fixture::RECIPE);
+    let recipe = std::fs::read_to_string(&path).expect("the fixture has a recipe");
+    let rows: Vec<String> = exclude.iter().map(|path| format!("\"{path}\"")).collect();
+    let written = format!("{recipe}\n[base]\nexclude = [{rows}]\n", rows = rows.join(", "));
+    std::fs::write(&path, written).expect("the recipe is written");
 }
 
 /// Write the stub package manager into `directory` and make it runnable.

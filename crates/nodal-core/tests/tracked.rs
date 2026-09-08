@@ -1,4 +1,4 @@
-//! Acceptance for T1.4b: `base.exclude` never drops a path the project tracks.
+//! Acceptance for T1.4b and T1.4c: an exclusion list against what the project tracks.
 //!
 //! The fixture project ([`nodal_fixture`]) has two heavy directories the exclusion
 //! table names, `test-results` and `coverage`, and a `.gitignore` that ignores both.
@@ -6,14 +6,18 @@
 //! project does when it commits a baseline report. The name still says the content is
 //! generated; the commit says it is the project's own, and the commit wins.
 //!
-//! Both ends are checked, because either one alone leaves the hole open:
+//! What "the commit wins" costs depends on who wrote the row, and both answers are
+//! checked here:
 //!
 //!   - inference proposes `test-results` and not `coverage`, so a recipe Nodal writes
 //!     never carries the row;
-//!   - the copy refuses a list that holds `coverage` whatever wrote it, and the message
-//!     names the path, so a recipe a person wrote by hand is caught as well.
+//!   - a row the **project wrote** in `base.exclude` is refused, and the message names
+//!     the path, so a recipe a person wrote by hand is caught;
+//!   - a **default** row of Nodal's own table yields instead: no recipe key can override
+//!     such a row, so a refusal would leave the project unable to make any unit at all.
+//!     The copy keeps the directory and answers with one note naming the row (T1.4c).
 //!
-//! The cost of the hole is what the second check measures: a copy made with the bad
+//! The cost of the hole is what the fourth check measures: a copy made with the bad
 //! list is missing every tracked file under the directory, and `git status` in it
 //! reports one deletion for each.
 
@@ -91,8 +95,9 @@ fn inference_proposes_the_heavy_directory_the_project_does_not_track() {
 #[test]
 fn a_copy_that_would_drop_a_tracked_path_is_refused_by_a_message_naming_it() {
     let (_directory, root) = fixture_repository();
-    let list = Excludes::with_recipe(&[PathBuf::from(TRACKED)]);
-    let refused = tracked::refuse(&root, &list).expect_err("a tracked exclude must be refused");
+    let mut list = Excludes::with_recipe(&[PathBuf::from(TRACKED)]);
+    let refused =
+        tracked::enforce(&root, &mut list).expect_err("a tracked exclude must be refused");
     let message = refused.to_string();
     assert!(message.contains(TRACKED), "the message does not name the path: {message}");
     assert!(
@@ -122,19 +127,52 @@ fn the_copy_the_refusal_prevents_is_dirty_at_birth() {
 #[test]
 fn a_list_that_drops_nothing_tracked_is_allowed() {
     let (_directory, root) = fixture_repository();
-    let list = Excludes::from_paths([Path::new(UNTRACKED)]);
-    tracked::refuse(&root, &list).expect("an untracked exclude is allowed");
+    let mut list = Excludes::from_paths([Path::new(UNTRACKED)]);
+    let kept = tracked::enforce(&root, &mut list).expect("an untracked exclude is allowed");
+    assert!(kept.is_empty(), "a row nothing tracks was reported as kept: {kept:?}");
+    assert!(list.excludes(Path::new(UNTRACKED)), "the row is still on the list");
 }
 
-/// The gate reads the whole list, and Nodal's own table is part of it.
+/// The gate reads the whole list, and Nodal's own table yields where it is wrong.
 ///
-/// `coverage` is a row of [`nodal_core::workspace::exclude::ROWS`]. On a project that
-/// tracks that directory the default list is refused too, so the rule holds for the
-/// rows Nodal ships and not only for the rows a project adds.
+/// `coverage` is a row of [`nodal_core::workspace::exclude::ROWS`], which no recipe key
+/// can take off the list. On a project that tracks that directory the row yields: the
+/// copy keeps the directory, and one note names the row and why it was kept. Refusing
+/// here would leave such a project unable to make a unit at all (T1.4c).
 #[test]
-fn the_default_table_is_refused_when_the_project_tracks_one_of_its_rows() {
+fn a_default_row_the_project_tracks_yields_and_the_copy_says_which() {
     let (_directory, root) = fixture_repository();
-    let refused =
-        tracked::refuse(&root, &Excludes::default_list()).expect_err("the table is checked too");
-    assert!(refused.to_string().contains(TRACKED), "{refused}");
+    let mut list = Excludes::default_list();
+    let kept = tracked::enforce(&root, &mut list).expect("a default row yields, never refuses");
+
+    let paths: Vec<&Path> = kept.iter().map(|one| one.path.as_path()).collect();
+    assert_eq!(paths, [Path::new(TRACKED)], "the wrong set of rows yielded");
+    assert!(!list.excludes(Path::new(TRACKED)), "the yielded row still leaves the path out");
+    assert!(list.excludes(Path::new(UNTRACKED)), "a row nothing tracks was taken off the list");
+
+    let note = kept[0].to_string();
+    assert!(note.contains(TRACKED), "the note does not name the row: {note}");
+    assert!(
+        note.contains("output of a run that did not happen here"),
+        "the note does not say why the row is on the list: {note}"
+    );
+}
+
+/// The copy such a note is about carries the tracked directory and is clean.
+///
+/// This is the other half of `the_copy_the_refusal_prevents_is_dirty_at_birth`: with the
+/// row yielded, the same clone has nothing to report.
+#[test]
+fn the_copy_a_yielded_row_allows_is_clean_at_birth() {
+    let (_directory, root) = fixture_repository();
+    let elsewhere = tempfile::tempdir().expect("a temporary directory");
+    let home = elsewhere.path().join("home");
+    let mut list = Excludes::default_list();
+    tracked::enforce(&root, &mut list).expect("a default row yields");
+
+    select_backend(elsewhere.path()).clone_tree(&root, &home, &list).expect("a copy");
+
+    assert!(home.join(TRACKED).is_dir(), "the tracked directory was left out of the copy");
+    assert!(!home.join(UNTRACKED).exists(), "an untracked heavy directory was carried in");
+    assert!(status(&home).is_empty(), "the copy is dirty: {:?}", status(&home));
 }

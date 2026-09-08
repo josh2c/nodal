@@ -10,10 +10,23 @@
 //! starts with a working tree they did not change and cannot explain. One heavy
 //! directory of a real project produced 99 deletions this way.
 //!
-//! So this is the gate. [`refuse`] runs before a copy starts, reads the tree of the
-//! commit the source is at, and returns [`Error::ExcludesTrackedPath`] naming every
-//! path the list would drop. It reads and writes nothing else: `git ls-tree` is one
-//! read of the object database.
+//! So this is the gate. [`enforce`] runs before a copy starts and reads the tree of the
+//! commit the source is at. What it does with what it finds depends on which source put
+//! the row on the list, because the two are not the same claim:
+//!
+//! * A **default** row ([`super::exclude::ROWS`]) is Nodal's guess from a directory's
+//!   name. A commit is the project's own statement about the content under that name,
+//!   and it beats a guess: the row yields, the copy keeps the directory, and the
+//!   operation carries one note saying which row was kept and why. Without this, a
+//!   project that commits a baseline report into `test-results` could make no unit at
+//!   all, and no recipe key could give it one.
+//! * A **recipe** row is what the project wrote in `base.exclude`. The person asked for
+//!   a copy that drops content the same project tracks, which is a mistake only they can
+//!   settle, so the copy is refused with [`Error::ExcludesTrackedPath`] naming every
+//!   such path.
+//!
+//! The gate reads and writes nothing else: `git ls-tree` is one read of the object
+//! database.
 //!
 //! The gate is here, at the copy, and not only at the source of the list. Inference
 //! also checks the tree before it proposes a row ([`crate::recipe::infer::layout`]),
@@ -23,7 +36,9 @@
 
 use std::path::{Path, PathBuf};
 
-use super::exclude::Excludes;
+use serde::{Deserialize, Serialize};
+
+use super::exclude::{Excluded, Excludes, Origin, reason_for};
 use crate::git::Git;
 use crate::{Error, Result};
 
@@ -36,8 +51,28 @@ const REVISION: &str = "HEAD";
 /// read such a row as a glob and answer about paths the list does not name.
 const LITERAL: &str = ":(literal)";
 
-/// Every path in `excludes` that `rev` tracks in `git`, in the order the list holds
-/// them.
+/// A default row a copy kept because the source tree tracks what it names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Kept {
+    /// The path the row names.
+    pub path: PathBuf,
+    /// Why the default list holds the row, in the words the table uses.
+    pub reason: String,
+}
+
+impl std::fmt::Display for Kept {
+    /// The note a report prints: the row, and why it yielded.
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            out,
+            "{path} is excluded by default ({reason}), but the commit tracks it, so the copy keeps it",
+            path = self.path.display(),
+            reason = self.reason
+        )
+    }
+}
+
+/// Every row of `excludes` that `rev` tracks in `git`, in the order the list holds them.
 ///
 /// An empty list is an empty answer, and so is a revision the repository does not have:
 /// a repository with no commit yet tracks nothing.
@@ -46,46 +81,64 @@ const LITERAL: &str = ":(literal)";
 /// [`Error::InvalidValue`] when an excluded path is not UTF-8, [`Error::Git`] when
 /// `git ls-tree` failed for a reason other than an unknown revision, [`Error::GitParse`]
 /// on an unreadable record.
-pub fn tracked(git: &Git, rev: &str, excludes: &Excludes) -> Result<Vec<PathBuf>> {
+pub fn tracked(git: &Git, rev: &str, excludes: &Excludes) -> Result<Vec<Excluded>> {
     if excludes.is_empty() || git.rev_parse_opt(rev)?.is_none() {
         return Ok(Vec::new());
     }
-    let mut pathspecs = Vec::with_capacity(excludes.paths().len());
-    for path in excludes.paths() {
-        let text = path.to_str().ok_or_else(|| Error::InvalidValue {
+    let mut pathspecs = Vec::with_capacity(excludes.rows().len());
+    for row in excludes.rows() {
+        let text = row.path.to_str().ok_or_else(|| Error::InvalidValue {
             kind: "excluded path",
-            value: path.to_string_lossy().into_owned(),
+            value: row.path.to_string_lossy().into_owned(),
         })?;
         pathspecs.push(format!("{LITERAL}{text}"));
     }
     let borrowed: Vec<&str> = pathspecs.iter().map(String::as_str).collect();
     let entries = git.ls_tree(rev, false, &borrowed)?;
     Ok(excludes
-        .paths()
+        .rows()
         .iter()
-        .filter(|path| entries.iter().any(|entry| entry.path.starts_with(path)))
+        .filter(|row| entries.iter().any(|entry| entry.path.starts_with(&row.path)))
         .cloned()
         .collect())
 }
 
-/// Refuse to copy `source` when `excludes` would leave a tracked path out of the copy.
+/// Settle `excludes` against what `source` tracks, before a copy is made from it.
 ///
-/// A `source` that is not a Git repository tracks nothing, so the copy goes ahead. That
-/// is not a hole: every tree Nodal copies from is a repository, and a directory that is
-/// not one has no tracked path for a list to drop.
+/// A recipe row the tree tracks refuses the copy. A default row the tree tracks is
+/// taken off `excludes`, so the copy keeps the directory, and is answered here for the
+/// operation to report.
+///
+/// A `source` that is not a Git repository tracks nothing, so the copy goes ahead with
+/// the list as given. That is not a hole: every tree Nodal copies from is a repository,
+/// and a directory that is not one has no tracked path for a list to drop.
 ///
 /// # Errors
-/// [`Error::ExcludesTrackedPath`] naming every path the list would drop; otherwise as
-/// [`tracked`].
-pub fn refuse(source: &Path, excludes: &Excludes) -> Result<()> {
+/// [`Error::ExcludesTrackedPath`] naming every path a recipe row would drop; otherwise
+/// as [`tracked`].
+pub fn enforce(source: &Path, excludes: &mut Excludes) -> Result<Vec<Kept>> {
     let Ok(git) = Git::open(source) else {
-        return Ok(());
+        return Ok(Vec::new());
     };
-    let paths = tracked(&git, REVISION, excludes)?;
-    if paths.is_empty() {
-        return Ok(());
+    let rows = tracked(&git, REVISION, excludes)?;
+    let asked_for: Vec<PathBuf> = rows
+        .iter()
+        .filter(|row| row.origin == Origin::Recipe)
+        .map(|row| row.path.clone())
+        .collect();
+    if !asked_for.is_empty() {
+        return Err(Error::ExcludesTrackedPath {
+            source_tree: source.to_owned(),
+            paths: asked_for,
+        });
     }
-    Err(Error::ExcludesTrackedPath { source_tree: source.to_owned(), paths })
+    let mut kept = Vec::with_capacity(rows.len());
+    for row in rows {
+        excludes.keep(&row.path);
+        let reason = reason_for(&row.path).unwrap_or("a default row of the exclusion table");
+        kept.push(Kept { path: row.path, reason: String::from(reason) });
+    }
+    Ok(kept)
 }
 
 #[cfg(test)]
@@ -94,7 +147,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    use super::{Excludes, refuse, tracked};
+    use super::{Excludes, Origin, enforce, tracked};
     use crate::Error;
     use crate::git::Git;
 
@@ -133,7 +186,10 @@ mod tests {
         let root = repository(&["src/main.rs", "test-results/report.xml"]);
         let git = Git::open(root.path()).unwrap();
         let list = Excludes::default_list();
-        assert_eq!(tracked(&git, "HEAD", &list).unwrap(), [PathBuf::from("test-results")]);
+        let rows = tracked(&git, "HEAD", &list).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].path, PathBuf::from("test-results"));
+        assert_eq!(rows[0].origin, Origin::Default);
     }
 
     #[test]
@@ -142,27 +198,49 @@ mod tests {
         std::fs::create_dir_all(root.path().join("test-results")).unwrap();
         let git = Git::open(root.path()).unwrap();
         assert!(tracked(&git, "HEAD", &Excludes::default_list()).unwrap().is_empty());
-        assert!(refuse(root.path(), &Excludes::default_list()).is_ok());
+        let mut list = Excludes::default_list();
+        assert_eq!(enforce(root.path(), &mut list).unwrap(), []);
+        assert!(list.excludes(Path::new("test-results")), "the row is still on the list");
     }
 
     #[test]
-    fn a_copy_is_refused_and_the_message_names_every_tracked_path() {
+    fn every_tracked_default_row_yields_and_is_named_in_the_notes() {
         let root = repository(&["coverage/index.html", "test-results/report.xml"]);
-        let refused = refuse(root.path(), &Excludes::default_list()).unwrap_err();
+        let mut list = Excludes::default_list();
+        let kept = enforce(root.path(), &mut list).unwrap();
+
+        let paths: Vec<&Path> = kept.iter().map(|one| one.path.as_path()).collect();
+        assert_eq!(paths, [Path::new("test-results"), Path::new("coverage")]);
+        assert!(!list.excludes(Path::new("coverage/index.html")), "a yielded row still excludes");
+        assert!(!list.excludes(Path::new("test-results/report.xml")), "so does the other one");
+        assert!(list.excludes(Path::new(".nodal")), "the rest of the table was dropped");
+
+        let note = kept[0].to_string();
+        assert!(note.contains("test-results"), "the note does not name the row: {note}");
+        assert!(
+            note.contains("output of a run that did not happen here"),
+            "the note does not say why the row is on the list: {note}"
+        );
+    }
+
+    #[test]
+    fn a_recipe_row_is_refused_and_the_message_names_every_tracked_path() {
+        let root = repository(&["coverage/index.html", "var/run/app.sock"]);
+        let mut list = Excludes::with_recipe(&[PathBuf::from("var/run")]);
+        let refused = enforce(root.path(), &mut list).unwrap_err();
         let Error::ExcludesTrackedPath { paths, .. } = &refused else {
             panic!("a tracked exclude was not refused: {refused}");
         };
-        assert_eq!(paths, &[PathBuf::from("test-results"), PathBuf::from("coverage")]);
+        assert_eq!(paths, &[PathBuf::from("var/run")], "a default row was named in a refusal");
         let message = refused.to_string();
-        assert!(message.contains("test-results"), "{message}");
-        assert!(message.contains("coverage"), "{message}");
+        assert!(message.contains("var/run"), "{message}");
     }
 
     #[test]
-    fn a_recipe_row_is_checked_with_the_rest_of_the_list() {
-        let root = repository(&["var/run/app.sock"]);
-        let list = Excludes::with_recipe(&[PathBuf::from("var/run")]);
-        let refused = refuse(root.path(), &list).unwrap_err();
+    fn a_default_row_the_recipe_repeats_is_the_project_own_and_is_refused() {
+        let root = repository(&["coverage/index.html"]);
+        let mut list = Excludes::with_recipe(&[PathBuf::from("coverage")]);
+        let refused = enforce(root.path(), &mut list).unwrap_err();
         assert!(matches!(refused, Error::ExcludesTrackedPath { .. }), "{refused}");
     }
 
@@ -170,13 +248,13 @@ mod tests {
     fn a_directory_that_is_not_a_repository_tracks_nothing() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("test-results")).unwrap();
-        assert!(refuse(root.path(), &Excludes::default_list()).is_ok());
+        assert_eq!(enforce(root.path(), &mut Excludes::default_list()).unwrap(), []);
     }
 
     #[test]
     fn a_repository_with_no_commit_tracks_nothing() {
         let root = tempfile::tempdir().unwrap();
         run(root.path(), &["init", "--quiet", "."]);
-        assert!(refuse(root.path(), &Excludes::default_list()).is_ok());
+        assert_eq!(enforce(root.path(), &mut Excludes::default_list()).unwrap(), []);
     }
 }
