@@ -8,10 +8,10 @@
 # have a stated ceiling, and it reports the rest.
 #
 # Every ceiling below states the value measured when the ceiling was written. The
-# baselines come from the refactor-readiness audit of 2026-09-08, which measured
-# `origin/main` at 2cbbad5. Where this script's own definition gives a different number
-# from the audit's, both are stated and the ceiling follows this script, because this
-# script is what CI runs.
+# baselines were measured on this workspace at commit 2cbbad5 on 2026-09-08. Where an
+# earlier measurement of the same quantity used a different definition and read a
+# different number, both are stated and the ceiling follows this script, because this
+# script is what CI runs and its definitions are the ones stated here.
 #
 # A ceiling is set just above the worst current acceptable state, not at a target. Each
 # one ratchets down as the hotspot behind it is fixed; the row says what to lower it to.
@@ -44,7 +44,7 @@ report() {
     printf '  %-44s %10s %-14s %s\n' "$1" "$2" "$3" "${4:-}"
 }
 
-echo "measure: structural ceilings, baselines from the audit of 2026-09-08 at 2cbbad5"
+echo "measure: structural ceilings, baselines measured at 2cbbad5 on 2026-09-08"
 echo
 
 # ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@ SHIM
     per_row=$(awk -v total="$list_total" -v units="$units" 'BEGIN { printf "%.1f", total / units }')
 
     # Baseline 9.0 per row at 10 units on the shapes fixture, where every unit sits at
-    # the base tip. A project whose units are ahead of the base measured 11.0 (DL-047),
+    # the base tip. A project whose units are ahead of the base measured 11.0 per row,
     # so the ceiling holds both shapes. Ratchet to 10 after the pointer change, then 8.
     gate "git processes per list row" "$per_row" 12 "per row" \
         "baseline 9.0 at 10 units; ratchet to 10, then 8"
@@ -151,12 +151,12 @@ duplication=$(python3 "$root/ci/duplication.py" "$root" --json)
 product_percent=$(printf '%s' "$duplication" | python3 -c 'import json,sys; print(f"{json.load(sys.stdin)["product"]["percent"]:.1f}")')
 test_percent=$(printf '%s' "$duplication" | python3 -c 'import json,sys; print(f"{json.load(sys.stdin)["test"]["percent"]:.1f}")')
 
-# Baseline 3.0% by this script. The audit measured 3.3% with the same method over a
-# corpus it did not commit; this script's corpus is stated in its own header and is what
-# the ceiling follows. The four lifecycle operations are the whole of it. Ratchet to 3%
-# after the shared subject and the sweep land.
+# Baseline 3.0% by this script. An earlier measurement with the same window method, over
+# a corpus that was never committed, read 3.3%. This script's corpus is stated in its own
+# header and is what the ceiling follows. The four lifecycle operations are the whole of
+# it. Ratchet to 3% after the shared subject and the sweep land.
 gate "duplication, product" "$product_percent" 4.0 "percent" \
-    "baseline 3.0% here, 3.3% in the audit; ratchet to 3%"
+    "baseline 3.0%; ratchet to 3%"
 
 # Baseline 7.3% by this script, which counts the inline test modules of the product
 # files in the test corpus as well as the test crates. It was 7.1% before the behaviour
@@ -179,10 +179,10 @@ importers=$(
         grep -rn 'nodal_core::lifecycle' --include='*.rs' "$root/crates/nodal-cli/src" || true
     } | grep -vE ':[0-9]+: *//' | cut -d: -f1 | sort -u | wc -l | tr -d ' '
 )
-# Baseline 26 files: 14 in the core outside the module, and 12 in the CLI. The audit
-# counted 24 by reading the doc links out by hand rather than by this filter. The
-# framework and the operations are one module with one name; the move to its own module
-# takes this to 0.
+# Baseline 26 files: 14 in the core outside the module, and 12 in the CLI. An earlier
+# count read 24, because it removed the doc links by reading rather than by this filter.
+# The framework and the operations are one module with one name; the move to its own
+# module takes this to 0.
 gate "files importing lifecycle" "$importers" 26 "files" "baseline 26; ratchet to 0"
 
 sinks=$(grep -r 'Arc<OnceLock' --include='*.rs' "$root/crates"/*/src | wc -l | tr -d ' ')
@@ -218,7 +218,7 @@ undocumented=$(
 # block in the workspace now states why it is sound. The ceiling is 0 from here on, so a
 # new block without a comment fails the build rather than joining a backlog.
 gate "undocumented unsafe blocks" "$undocumented" 0 "blocks" \
-    "the audit measured 8, all in xattr.rs; every one is now documented"
+    "8 blocks were undocumented, all in xattr.rs; every one is now documented"
 echo
 
 if [ "$failures" -ne 0 ]; then

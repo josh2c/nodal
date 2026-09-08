@@ -40,7 +40,8 @@
 //!
 //! Both are the specification for the step-output change: give a step a typed output,
 //! write it into the journal beside `applied`, and hand the outputs to the commit. When
-//! that lands, both tests pass on their own.
+//! that lands, both tests pass on their own, and `Recovery::Resume` becomes a choice an
+//! operation is allowed to make.
 //!
 //! ## How the two are gated
 //!
@@ -56,15 +57,22 @@
 //! equality passes. That is the one edit CI needs the day the step-output change lands,
 //! and `ci/acceptance-behaviour-lock.sh` runs both ways round.
 //!
-//! ## What is *not* claimed here
+//! ## What is *not* claimed here, and what the two locks are for
 //!
-//! All four operations recover by [`Recovery::RollBack`] today, so no invocation of
-//! `nodal` reaches the resume path for them: a killed create or reclaim is undone, not
-//! finished, and the commit never runs a second time. The defect these two tests
-//! reproduce is therefore latent and not live. It is reproduced by journalling the run
-//! as [`Recovery::Resume`], which is the one line that separates the two, and it
-//! becomes live the moment any of the four is given that recovery mode or any caller
-//! drives a rebuilt plan forward. The base build already uses `Recovery::Resume`.
+//! Neither divergence damages data today. All four operations recover by
+//! [`Recovery::RollBack`], so no invocation of `nodal` reaches the resume path for
+//! them: a killed create or reclaim is undone, not finished, and its commit never runs
+//! a second time. The one operation that does resume is the base build, which carries
+//! no sink at all, so it has no step output for a rebuild to lose. Both divergences are
+//! therefore latent. They are reproduced here by journalling the run as
+//! [`Recovery::Resume`], which is the single line that separates the two paths.
+//!
+//! That is what these two locks are for. Journalled step outputs are the **precondition
+//! for ever granting [`Recovery::Resume`] to a lifecycle operation**, not a repair of
+//! live damage. Any operation given that recovery mode before the outputs reach the
+//! journal starts losing the values its commit reads, silently, on exactly the runs a
+//! person cannot watch. The two tests below are the gate on that order of work: while
+//! they still reproduce, no lifecycle operation may be moved to `Resume`.
 //!
 //! The per-machine secrets file activation reads is `secrets.env` in the state
 //! directory, and every fixture here has a temporary one, so no test in this file reads
@@ -80,7 +88,7 @@ use nodal_core::lifecycle::{Plan, Recovery, ops};
 use support::{World, expected_failure, journal_of};
 
 /// What the step-output change is called where a comment has to name it.
-const STEP_OUTPUTS: &str = "the step-output column (audit section 4, H1)";
+const STEP_OUTPUTS: &str = "the journalled step-output column";
 
 // ---------------------------------------------------------------------------
 // The plans.
