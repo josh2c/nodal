@@ -12,18 +12,26 @@
 //! A home Git cannot answer for is a note on that unit and nothing more. The other
 //! units are surveyed, the memory is still written, and the note says which fact is
 //! missing and why — the rule [`crate::runtime::ls`] already applies to a list.
+//!
+//! The list is the other reader. [`crate::runtime::ls`] builds its rows from this
+//! survey rather than taking its own reading, so each home is asked each question once.
+//! That is why [`Work`] carries the counts and the upstream a row shows as well as the
+//! logs a memory shows: both come from the one `git status` this module already runs,
+//! and reading the home twice made a list of eight units pay for four Git invocations
+//! per unit that it had already paid for.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use rusqlite::Connection;
 
-use crate::Result;
 use crate::git::history::{Commit, FileChange};
-use crate::git::status::{Change, State, Summary};
-use crate::git::{Divergence, Git, Integration, Oid};
+use crate::git::status::{Change, Head, State, Summary};
+use crate::git::{Divergence, Git, Integration, Oid, Standing};
 use crate::model::{EnvState, Environment, Epistemic, Event, EventKind, Project, Unit, UnitStatus};
-use crate::runtime::ls::Bases;
+use crate::output::view::Remote;
 use crate::store::{environments, events, units};
+use crate::{Error, Result};
 
 /// How many of a unit's own commands the memory carries. Enough to see what the last
 /// session was doing; not a transcript.
@@ -39,6 +47,11 @@ const TESTS: u32 = 1;
 /// nothing is read that could never be shown.
 const COMMITS: u32 = 64;
 
+/// The revisions a unit's base is looked for under, in order, once the unit's own parent
+/// branch has been tried. `origin/HEAD` is what a clone recorded as the project's own
+/// default; the two names after it are what a repository without that ref uses.
+const FALLBACK_BRANCHES: [&str; 2] = ["main", "master"];
+
 /// Where a unit's branch stands, and what it and the base have done since they parted.
 #[derive(Debug, Clone)]
 pub struct Work {
@@ -50,6 +63,16 @@ pub struct Work {
     pub divergence: Divergence,
     /// What merging the branch into the base would do.
     pub integration: Integration,
+    /// Paths changed in the working tree and not staged.
+    pub dirty: u32,
+    /// Paths staged and not committed.
+    pub staged: u32,
+    /// Paths Git does not track and no ignore rule covers.
+    pub untracked: u32,
+    /// Whether HEAD names a commit rather than a branch.
+    pub detached: bool,
+    /// How the branch stands against its upstream, when it has one.
+    pub remote: Option<Remote>,
     /// What the working tree holds that no commit does.
     pub uncommitted: Vec<FileChange>,
     /// Which files the branch's commits changed, against the base commit.
@@ -65,8 +88,8 @@ pub struct Work {
 pub struct Snapshot {
     /// The registry's row for the unit.
     pub unit: Unit,
-    /// Its home, when it has one on this machine.
-    pub home: Option<PathBuf>,
+    /// Its newest materialisation that is not absent, when it has one on this machine.
+    pub home: Option<Environment>,
     /// What Git says about that home, when Git could be asked.
     pub work: Option<Work>,
     /// The commands run in it, newest first.
@@ -104,10 +127,7 @@ pub fn project(conn: &Connection, project: &Project) -> Result<Vec<Snapshot>> {
     let mut bases = Bases::default();
     let mut snapshots = Vec::new();
     for unit in units::list(conn, project.id)? {
-        let home = homes
-            .iter()
-            .find(|environment| environment.unit_id == unit.id)
-            .map(|environment| environment.home.clone());
+        let home = homes.iter().find(|environment| environment.unit_id == unit.id).cloned();
         snapshots.push(one(conn, unit, home, &mut bases)?);
     }
     Ok(snapshots)
@@ -117,12 +137,12 @@ pub fn project(conn: &Connection, project: &Project) -> Result<Vec<Snapshot>> {
 fn one(
     conn: &Connection,
     unit: Unit,
-    home: Option<PathBuf>,
+    home: Option<Environment>,
     bases: &mut Bases,
 ) -> Result<Snapshot> {
     let mut notes = Vec::new();
     let work = match &home {
-        Some(home) => match work(&Git::at(home), &unit, bases) {
+        Some(environment) => match work(&Git::at(&environment.home), &unit, bases) {
             Ok(work) => Some(work),
             Err(error) => {
                 notes.push(format!("{}: {error}", unit.slug));
@@ -167,6 +187,14 @@ fn work(git: &Git, unit: &Unit, bases: &mut Bases) -> Result<Work> {
         base_commit,
         divergence: standing.divergence,
         integration: standing.integration,
+        dirty: count(&summary, side_worktree),
+        staged: count(&summary, side_index),
+        untracked: count(&summary, is_untracked),
+        detached: matches!(summary.head, Head::Detached(_)),
+        remote: summary.upstream.clone().map(|upstream| Remote {
+            upstream,
+            divergence: Divergence { ahead: summary.ahead, behind: summary.behind },
+        }),
         uncommitted: uncommitted(&summary),
         touched,
         commits,
@@ -184,6 +212,31 @@ fn since(
     let commits = git.log(&format!("{commit}..HEAD"), COMMITS)?;
     let gained = git.log(&format!("{commit}..{base}"), COMMITS)?;
     Ok((touched, commits, gained))
+}
+
+/// How many entries of a status answer a question.
+fn count(summary: &Summary, asks: fn(&State) -> bool) -> u32 {
+    let counted = summary.entries.iter().filter(|entry| asks(&entry.state)).count();
+    u32::try_from(counted).unwrap_or(u32::MAX)
+}
+
+/// Whether the working tree differs from the index, an unresolved merge included.
+fn side_worktree(state: &State) -> bool {
+    match state {
+        State::Tracked { worktree, .. } => *worktree != Change::Unmodified,
+        State::Unmerged => true,
+        State::Untracked | State::Ignored => false,
+    }
+}
+
+/// Whether the index differs from HEAD.
+fn side_index(state: &State) -> bool {
+    matches!(state, State::Tracked { index, .. } if *index != Change::Unmodified)
+}
+
+/// Whether Git tracks the path at all.
+fn is_untracked(state: &State) -> bool {
+    *state == State::Untracked
 }
 
 /// What the working tree holds that no commit does, as the same shape a diff reads as.
@@ -234,6 +287,64 @@ fn live_homes(environments: &[Environment]) -> Vec<Environment> {
         }
     }
     live
+}
+
+/// The revision each home is measured against, remembered once for the project.
+///
+/// Every home of a project is a clone of the same base, so the ref that names the branch
+/// the work merges into is the same in all of them. The first home that answers decides
+/// the name; the rest use it and pay one Git call rather than a search.
+#[derive(Debug, Default)]
+pub struct Bases {
+    /// The full ref name that answered last, when one has.
+    chosen: Option<String>,
+}
+
+impl Bases {
+    /// Where a unit's branch stands against the branch it merges into.
+    ///
+    /// # Errors
+    /// [`Error::GitUnknownBranch`] when no candidate is a revision the home has, and
+    /// whatever Git reported for the last one tried.
+    pub fn standing(&mut self, git: &Git, unit: &Unit) -> Result<Standing> {
+        let mut last = None;
+        for candidate in self.candidates(unit) {
+            match git.standing(&candidate) {
+                Ok(standing) => {
+                    self.chosen = Some(candidate);
+                    return Ok(standing);
+                }
+                Err(error) => last = Some(error),
+            }
+        }
+        Err(last.unwrap_or_else(|| Error::GitUnknownBranch {
+            repo: PathBuf::from(git.root()),
+            branch: String::from("main"),
+        }))
+    }
+
+    /// The revisions to try, best first, without repeats.
+    fn candidates(&self, unit: &Unit) -> Vec<String> {
+        let mut names: Vec<String> = self.chosen.iter().cloned().collect();
+        if let Some(parent) = &unit.parent_branch {
+            push_branch(&mut names, parent.as_str());
+        }
+        names.push(String::from("refs/remotes/origin/HEAD"));
+        for fallback in FALLBACK_BRANCHES {
+            push_branch(&mut names, fallback);
+        }
+        let mut seen = BTreeSet::new();
+        names.retain(|name| seen.insert(name.clone()));
+        names
+    }
+}
+
+/// The two refs a branch name can be: the remote's copy, then this repository's own.
+/// The remote's copy comes first, because integration is a question about the branch
+/// everybody merges into rather than about a local copy of it.
+fn push_branch(names: &mut Vec<String>, branch: &str) {
+    names.push(format!("refs/remotes/origin/{branch}"));
+    names.push(format!("refs/heads/{branch}"));
 }
 
 /// Read one of an event's references.
