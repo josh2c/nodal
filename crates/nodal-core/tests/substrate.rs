@@ -338,6 +338,7 @@ fn pin(store: &Store, project: &Project, base: &nodal_core::model::BaseId) {
         project_id: project.id,
         slug: Slug::parse("holds-the-base").unwrap(),
         objective: None,
+        objective_epistemic: None,
         branch: "nodal/holds-the-base".parse().unwrap(),
         parent_branch: None,
         status: UnitStatus::Open,

@@ -365,6 +365,7 @@ fn unit_row(project: nodal_core::model::ProjectId, index: usize) -> nodal_core::
         project_id: project,
         slug: nodal_core::model::Slug::parse(format!("unit-{index}")).expect("a slug"),
         objective: None,
+        objective_epistemic: None,
         branch: nodal_core::model::BranchName::parse(format!("nodal/unit-{index}"))
             .expect("a branch"),
         parent_branch: None,

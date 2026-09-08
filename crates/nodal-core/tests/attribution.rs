@@ -49,6 +49,7 @@ fn registry(root: &Path, home: &Path, ports: Ports) -> Store {
         project_id: ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap(),
         slug: Slug::parse("worker-import").unwrap(),
         objective: None,
+        objective_epistemic: None,
         branch: BranchName::parse("nodal/worker-import").unwrap(),
         parent_branch: None,
         status: UnitStatus::Open,

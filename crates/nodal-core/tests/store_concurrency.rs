@@ -148,6 +148,7 @@ fn seeded(dir: &Path) -> PathBuf {
             project_id: project_id(),
             slug: Slug::parse("fix-worker-import").unwrap(),
             objective: Some(Objective::parse("fix the worker import").unwrap()),
+            objective_epistemic: Some(Epistemic::Stated),
             branch: BranchName::parse("nodal/fix-worker-import").unwrap(),
             parent_branch: None,
             status: UnitStatus::Open,

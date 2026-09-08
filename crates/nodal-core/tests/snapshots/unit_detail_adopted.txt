@@ -1,0 +1,14 @@
+  unit       payroll-export  (open)
+  objective  payroll export CSV (recovered)
+  branch     nodal/payroll-export
+  freshness  stale (deps, schema)
+  main       open +1 -4
+  remote     —
+  who        codex 1 · josh 1
+  age        4 h
+  home       /home/j/code/app/.claude/worktrees/payroll
+  env        running · unmanaged: never reclaimed
+  ports      app 41231 · postgrest 54401
+  running    next dev :41231
+  disk       301 MB
+  last       now

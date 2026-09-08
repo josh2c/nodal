@@ -1,0 +1,18 @@
+{
+  "now": "2026-09-06T14:22:00Z",
+  "slug": "payroll-export",
+  "home": "/home/j/code/app/.claude/worktrees/payroll",
+  "origin": {
+    "origin": "adopted",
+    "root": true
+  },
+  "excluded": [],
+  "invalidated": [],
+  "ports": [
+    {
+      "name": "app",
+      "port": 41231,
+      "source": "the block 41230-41329 this project was granted"
+    }
+  ]
+}

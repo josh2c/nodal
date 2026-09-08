@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::integration::{Divergence, Integration};
 use crate::model::{
-    ActorName, BranchName, EnvId, EnvState, Environment, Event, FingerprintPart, Objective, Ports,
-    ProjectName, Slug, Timestamp, Unit, UnitId, UnitStatus,
+    ActorName, BranchName, EnvId, EnvState, Environment, Epistemic, Event, FingerprintPart,
+    Objective, Ports, ProjectName, Slug, Timestamp, Unit, UnitId, UnitStatus,
 };
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, NONE, Table};
@@ -140,6 +140,9 @@ pub struct UnitRow {
     pub branch: BranchName,
     /// What it is for, when it was stated or recovered.
     pub objective: Option<Objective>,
+    /// How that is known: stated by a person or an agent, or observed by an adoption
+    /// that recovered it from the records of the session that made the checkout.
+    pub objective_epistemic: Option<Epistemic>,
     /// How current its environment is.
     pub freshness: Freshness,
     /// What Git says about the branch, when it was asked.
@@ -164,6 +167,7 @@ impl UnitRow {
             status: unit.status,
             branch: unit.branch.clone(),
             objective: unit.objective.clone(),
+            objective_epistemic: unit.objective_epistemic,
             freshness: Freshness::Unknown,
             work: None,
             environment: None,
@@ -398,7 +402,7 @@ fn who_cell(unit: &UnitRow) -> String {
 }
 
 /// What the unit's home occupies, when it has been measured.
-fn disk_cell(unit: &UnitRow) -> String {
+pub(crate) fn disk_cell(unit: &UnitRow) -> String {
     unit.environment
         .as_ref()
         .and_then(|environment| environment.disk_bytes)
@@ -420,7 +424,7 @@ fn running_cell(unit: &UnitRow) -> String {
 }
 
 /// The ports allocated to an environment, as `app 41230 · postgrest 54401`.
-fn ports_cell(environment: &EnvLine) -> String {
+pub(crate) fn ports_cell(environment: &EnvLine) -> String {
     let named: Vec<String> =
         environment.ports.0.iter().map(|(name, port)| format!("{name} {port}")).collect();
     human::join(&named)
@@ -433,11 +437,19 @@ fn environment_label(environment: &EnvLine) -> String {
 }
 
 /// The objective, or the placeholder when nothing has stated one.
-fn objective_cell(unit: &UnitRow) -> String {
-    unit.objective.as_ref().map_or_else(|| String::from(NONE), ToString::to_string)
+///
+/// A recovered objective is marked as one wherever it is printed. It is a reading of an
+/// opening prompt rather than a statement of intent, and a person choosing what to do
+/// with the unit has to be able to see the difference at a glance.
+pub(crate) fn objective_cell(unit: &UnitRow) -> String {
+    let Some(objective) = &unit.objective else { return String::from(NONE) };
+    match unit.objective_epistemic {
+        Some(Epistemic::Observed) => format!("{objective} (recovered)"),
+        Some(Epistemic::Stated) | None => objective.to_string(),
+    }
 }
 
 /// How long ago the unit was last active.
-fn last_cell(unit: &UnitRow, now: Timestamp) -> String {
+pub(crate) fn last_cell(unit: &UnitRow, now: Timestamp) -> String {
     unit.last_active.map_or_else(|| String::from(NONE), |at| human::since(now, at))
 }

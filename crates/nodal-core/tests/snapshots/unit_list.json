@@ -8,6 +8,7 @@
       "status": "open",
       "branch": "nodal/worker-import",
       "objective": "worker import: handle missing supervisor_id",
+      "objective_epistemic": "stated",
       "freshness": {
         "state": "fresh"
       },
@@ -58,6 +59,7 @@
       "status": "open",
       "branch": "nodal/payroll-export",
       "objective": "payroll export CSV",
+      "objective_epistemic": "observed",
       "freshness": {
         "state": "stale",
         "parts": [

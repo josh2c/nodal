@@ -119,6 +119,7 @@ impl Registry {
                 project_id: project,
                 slug: Slug::parse(format!("unit-{n}")).unwrap(),
                 objective: None,
+                objective_epistemic: None,
                 branch: BranchName::parse(format!("nodal/unit-{n}")).unwrap(),
                 parent_branch: None,
                 status: UnitStatus::Open,

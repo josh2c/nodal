@@ -168,6 +168,20 @@ jobs:
       - name: a crash with no handoff loses nothing, and a dozen siblings still fit
         run: ci/acceptance-context.sh
 
+  acceptance-adopt:
+    name: acceptance (adopt)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: an adopted checkout keeps its git status, its intent is recovered, and a reclaim gives it back
+        run: ci/acceptance-adopt.sh
+
   acceptance-merge:
     name: acceptance (merge)
     runs-on: ${{ matrix.os }}

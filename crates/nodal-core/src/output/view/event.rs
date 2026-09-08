@@ -69,7 +69,7 @@ pub fn kind_label(kind: EventKind) -> &'static str {
 
 /// Whether Nodal saw the event or was told about it. The distinction is on every row
 /// because an agent's claim and a recorded command are not the same kind of fact.
-fn epistemic_label(epistemic: Epistemic) -> &'static str {
+pub(crate) fn epistemic_label(epistemic: Epistemic) -> &'static str {
     match epistemic {
         Epistemic::Observed => "saw",
         Epistemic::Stated => "said",

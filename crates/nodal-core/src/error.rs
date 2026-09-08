@@ -440,6 +440,49 @@ pub enum Error {
         unit: UnitId,
     },
 
+    /// The directory offered for adoption is the project's own checkout.
+    #[error("{root} is the project's own checkout, not a unit of it; `nodal new` makes a unit beside it", root = root.display())]
+    AdoptProjectRoot {
+        /// The checkout that was offered.
+        root: std::path::PathBuf,
+    },
+
+    /// The directory offered for adoption already carries a unit's marker.
+    #[error("{home} is already the home of unit {unit}", home = home.display())]
+    AdoptAlreadyAUnit {
+        /// The directory that was offered.
+        home: std::path::PathBuf,
+        /// The unit whose marker it carries.
+        unit: UnitId,
+    },
+
+    /// The checkout offered for adoption is on a commit rather than on a branch. A unit
+    /// owns a branch, which is the identity every other tool sees.
+    #[error("{checkout} has no branch checked out; `git switch --create <name>` there first, then adopt it", checkout = checkout.display())]
+    AdoptDetached {
+        /// The checkout that was offered.
+        checkout: std::path::PathBuf,
+    },
+
+    /// A branch was named for adoption and a checkout on this machine already holds it.
+    /// Making a second home for it would leave whatever is uncommitted in that checkout
+    /// behind, so the answer is to adopt the checkout rather than the branch.
+    #[error("branch {branch} is checked out at {checkout}; adopt it where it stands with --in-place", checkout = checkout.display())]
+    AdoptBranchCheckedOut {
+        /// The branch that was named.
+        branch: BranchName,
+        /// The checkout that holds it.
+        checkout: std::path::PathBuf,
+    },
+
+    /// A directory was named for adoption without `--in-place`. Nodal does not move a
+    /// checkout a person is working in, so there is nothing else the request can mean.
+    #[error("{checkout} is a checkout; adopt it where it stands with --in-place", checkout = checkout.display())]
+    AdoptNeedsInPlace {
+        /// The directory that was named.
+        checkout: std::path::PathBuf,
+    },
+
     /// A shell was named that Nodal does not write an integration for.
     #[error("{name:?} is not a shell nodal speaks; it speaks {shells}", shells = crate::runtime::Shell::names().join(", "))]
     UnknownShell {

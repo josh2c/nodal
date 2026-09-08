@@ -1,0 +1,41 @@
+{
+  "now": "2026-09-06T14:22:00Z",
+  "slug": "worker-import",
+  "home": "/home/j/.nodal/project/e/01J9X2K4",
+  "origin": {
+    "origin": "cloned",
+    "base": "01J9W0000000000000000BASE1",
+    "path": "/home/j/.nodal/project/b/01J9W000",
+    "fingerprint": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "platform": "aarch64-apple-darwin",
+    "commit": "ffffffffffffffffffffffffffffffffffffffff",
+    "built_at": "2026-09-06T09:00:00Z"
+  },
+  "excluded": [
+    {
+      "path": ".claude/worktrees",
+      "reason": "checkouts another tool made, which the clone would multiply",
+      "decided_by": "nodal"
+    },
+    {
+      "path": "var/log",
+      "reason": "named by the project in base.exclude",
+      "decided_by": "project"
+    }
+  ],
+  "invalidated": [
+    {
+      "at": "2026-09-06T09:02:00Z",
+      "removed": "2",
+      "from": "/home/j/.nodal/project/b/01J9W000",
+      "body": "Removed 2 caches from the new home."
+    }
+  ],
+  "ports": [
+    {
+      "name": "app",
+      "port": 41230,
+      "source": "the block 41230-41329 this project was granted"
+    }
+  ]
+}

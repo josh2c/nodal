@@ -144,6 +144,7 @@ runtime/
   entry.rs             which home a target names; the NODAL_CD_FILE channel
   shell.rs             become the user's shell with the home's env (exec, no child)
   show.rs              one unit in full: the list's row for it, with its log
+  explain.rs           why a home is as it is: its base, what it did not receive, what was removed
   run.rs               run a command, record observed event, redact values; --tether's process group
   actor.rs             who is running this: NODAL_ACTOR, then a table of agent signals
   processes.rs         Processes trait; /proc scan for the variables a process carries
@@ -191,7 +192,7 @@ output/
   watch.rs             Source trait + polling loop; writes only changed answers
   view/                the read types themselves, one file per command family
     unit.rs · status.rs · event.rs · base.rs · init.rs · env.rs · created.rs
-    reclaim.rs · doctor.rs · merge.rs · done.rs
+    reclaim.rs · doctor.rs · merge.rs · done.rs · explain.rs
 ```
 
 ## crates/nodal-cli/src

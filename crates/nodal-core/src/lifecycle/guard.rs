@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 use crate::lifecycle::marker;
+use crate::model::EnvState;
 use crate::store::{environments, projects};
 use crate::{Error, Result};
 
@@ -46,6 +47,49 @@ pub fn placement(conn: &Connection, home: &Path, source: &Path) -> Result<()> {
         refuse_overlap(&placed, home, &environment.home, HOME)?;
     }
     refuse_marked_ancestor(&placed, home)
+}
+
+/// Refuse a checkout that cannot become a unit where it stands.
+///
+/// Adoption is the one placement that is allowed to sit inside the project, and it has
+/// to be: the checkouts worth adopting are the ones another tool made under `.claude/`
+/// or `.worktrees/` in the person's own repository. Nothing copies a root, so the
+/// failure [`placement`] exists to prevent — a clone that copies a copy — cannot happen
+/// here. What is still refused is everything that would give one directory two owners:
+/// the project's own checkout, another project, another unit's home, and a directory
+/// under one.
+///
+/// A materialisation that has been reclaimed is not one of the homes this refuses
+/// against. Its row stays in the registry as the record of a unit that once stood
+/// there, and for an adopted checkout the directory it names is the person's own, still
+/// where it always was. Adopting it a second time has to be possible, or a reclaim
+/// would be a way of losing a directory rather than of letting go of one.
+///
+/// # Errors
+/// [`Error::AdoptProjectRoot`] when the checkout is the project itself,
+/// [`Error::AdoptAlreadyAUnit`] when it already carries a marker,
+/// [`Error::InsideSource`] when it overlaps another project or another unit's home,
+/// and [`Error::Store`] when the registry could not be read.
+pub fn adoption(conn: &Connection, checkout: &Path, project: &Path) -> Result<()> {
+    let placed = resolve(checkout);
+    if placed == resolve(project) {
+        return Err(Error::AdoptProjectRoot { root: checkout.to_path_buf() });
+    }
+    if let Some(unit) = marker::read(checkout)? {
+        return Err(Error::AdoptAlreadyAUnit { home: checkout.to_path_buf(), unit });
+    }
+    for other in projects::list(conn)? {
+        if other.root != project {
+            refuse_overlap(&placed, checkout, &other.root, PROJECT)?;
+        }
+    }
+    for environment in environments::list_all(conn)? {
+        if environment.state == EnvState::Absent {
+            continue;
+        }
+        refuse_overlap(&placed, checkout, &environment.home, HOME)?;
+    }
+    refuse_marked_ancestor(placed.parent().unwrap_or(&placed), checkout)
 }
 
 /// Refuse a destination that holds `other` or sits inside it.

@@ -5,6 +5,7 @@
 //! steps, the registry write that finishes them, and a [`Rebuild`] so that a run of it
 //! interrupted by a kill can be found again from the journal.
 
+pub mod adopt;
 pub mod done;
 pub mod gc;
 pub mod merge;
@@ -21,5 +22,11 @@ use crate::lifecycle::Rebuild;
 /// a line here.
 #[must_use]
 pub fn rebuilders() -> Vec<&'static dyn Rebuild> {
-    vec![&new::New, &merge::Merge, &reclaim::Reclaim, &crate::substrate::build::BaseBuild]
+    vec![
+        &new::New,
+        &adopt::Adopt,
+        &merge::Merge,
+        &reclaim::Reclaim,
+        &crate::substrate::build::BaseBuild,
+    ]
 }

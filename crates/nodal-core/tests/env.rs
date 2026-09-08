@@ -59,6 +59,7 @@ fn unit() -> Unit {
         project_id: ProjectId::from_ulid(Ulid::from_string("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap()),
         slug: Slug::parse("fix-worker-import").unwrap(),
         objective: None,
+        objective_epistemic: None,
         branch: BranchName::parse("nodal/fix-worker-import").unwrap(),
         parent_branch: None,
         status: UnitStatus::Open,

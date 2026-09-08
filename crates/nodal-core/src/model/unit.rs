@@ -3,6 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::model::event::Epistemic;
 use crate::model::ids::{ProjectId, UnitId};
 use crate::model::scalar::{self, string_newtype};
 use crate::model::timestamp::Timestamp;
@@ -48,8 +49,15 @@ pub struct Unit {
     pub project_id: ProjectId,
     /// The CLI handle.
     pub slug: Slug,
-    /// The stated intent, when there is one. Adoption may recover it later.
+    /// The intent, when there is one. Adoption may recover it later.
     pub objective: Option<Objective>,
+    /// How the objective is known, when there is one: `stated` when a person or an
+    /// agent said what the unit is for, `observed` when adoption recovered it from the
+    /// records of the session that made the checkout. A recovered line is a reading of
+    /// somebody's opening prompt, not a statement of intent, and a person deciding what
+    /// to do with a unit three weeks later needs to be told which of the two they are
+    /// reading.
+    pub objective_epistemic: Option<Epistemic>,
     /// The branch this unit owns. Unique among open units, enforced by the registry.
     pub branch: BranchName,
     /// The branch the work started from, when it is known.

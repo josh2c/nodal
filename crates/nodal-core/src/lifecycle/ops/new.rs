@@ -226,7 +226,8 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
     let project = ensure_project(store, &source, &effective.recipe)?;
     let block = ports::ensure_block(store, project.id)?;
 
-    let name = choose_name(store.conn(), project.id, request)?;
+    let name =
+        choose_name(store.conn(), project.id, request.name.as_ref(), request.objective.as_ref())?;
     let branch = branch_of(&name.branch)?;
     refuse_held_branch(store.conn(), project.id, &branch)?;
 
@@ -286,7 +287,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
             branch: params.unit.branch.clone(),
             start: params.unit.parent_branch.clone(),
         })
-        .then(Hide { home: home.clone() })
+        .then(files::Hide { home: home.clone() })
         .then(marker::WriteMarker { home, unit: params.unit.id })
         .then(Activate {
             project: params.project.clone(),
@@ -325,7 +326,7 @@ fn commit_of(params: &Params, relocation: &Arc<OnceLock<relocate::Report>>) -> C
 ///
 /// A relocation that removed nothing is not an event. The log is what a person reads to
 /// understand a unit, and a line saying that nothing happened is noise in it.
-fn record_relocation(
+pub(super) fn record_relocation(
     tx: &Transaction<'_>,
     unit: UnitId,
     environment: EnvId,
@@ -382,16 +383,16 @@ impl Rebuild for New {
 // ---------------------------------------------------------------------------
 
 /// Clone the base into the home.
-struct Materialize {
+pub(super) struct Materialize {
     /// The base being cloned. A warm tree at the workspace's commit, with the
     /// dependencies installed and nothing uncommitted in it.
-    base: PathBuf,
+    pub(super) base: PathBuf,
     /// Where it is cloned to.
-    home: PathBuf,
+    pub(super) home: PathBuf,
     /// What the clone leaves out.
-    excludes: Excludes,
+    pub(super) excludes: Excludes,
     /// The one backend chosen for this operation, before it started.
-    backend: Box<dyn Materializer>,
+    pub(super) backend: Box<dyn Materializer>,
 }
 
 impl Step for Materialize {
@@ -427,17 +428,17 @@ impl Step for Materialize {
 /// exclusion list keeps one out of the clone where it sits at the root of the tree;
 /// this step is what finds the ones under a second package, and it is what reports the
 /// removal so that the operation can record it.
-struct Relocate {
+pub(super) struct Relocate {
     /// The home that was cloned.
-    home: PathBuf,
+    pub(super) home: PathBuf,
     /// The base it was cloned from, which is the path its content was made at.
-    base: PathBuf,
+    pub(super) base: PathBuf,
     /// What is removed, and why.
-    relocator: InvalidateCache,
+    pub(super) relocator: InvalidateCache,
     /// Where the report is left for the registry write that ends the operation. A step
     /// cannot hand a value to the step after it, and this hands nothing to one: the
     /// commit is not a step, and it is the only place a unit row exists to name.
-    report: Arc<OnceLock<relocate::Report>>,
+    pub(super) report: Arc<OnceLock<relocate::Report>>,
 }
 
 impl Step for Relocate {
@@ -470,9 +471,9 @@ impl Step for Relocate {
 }
 
 /// Take the Git state the clone inherited from its source out of the copy.
-struct Scrub {
+pub(super) struct Scrub {
     /// The home that was cloned.
-    home: PathBuf,
+    pub(super) home: PathBuf,
 }
 
 impl Step for Scrub {
@@ -493,14 +494,14 @@ impl Step for Scrub {
 }
 
 /// Create the unit's branch and check it out.
-struct TakeBranch {
+pub(super) struct TakeBranch {
     /// The home whose repository the branch is created in.
-    home: PathBuf,
+    pub(super) home: PathBuf,
     /// The branch the unit owns.
-    branch: BranchName,
+    pub(super) branch: BranchName,
     /// The branch the work starts from. `None` starts it where the clone's HEAD is,
     /// which is the branch the project was on when it was cloned.
-    start: Option<BranchName>,
+    pub(super) start: Option<BranchName>,
 }
 
 impl Step for TakeBranch {
@@ -529,39 +530,18 @@ impl Step for TakeBranch {
     }
 }
 
-/// Tell the home's repository to ignore the files Nodal writes into it.
-struct Hide {
-    /// The home.
-    home: PathBuf,
-}
-
-impl Step for Hide {
-    fn key(&self) -> String {
-        String::from("git.hide")
-    }
-
-    fn apply(&self) -> Result<()> {
-        files::hide(&Git::open(&self.home)?.git_dir()?).map(drop)
-    }
-
-    /// Nothing, for the reason [`Scrub::undo`] gives.
-    fn undo(&self) -> Result<()> {
-        Ok(())
-    }
-}
-
 /// Assemble the home's environment and write the files that deliver it.
-struct Activate {
+pub(super) struct Activate {
     /// The project, for the identity variables.
-    project: Project,
+    pub(super) project: Project,
     /// The unit, for the same.
-    unit: Unit,
+    pub(super) unit: Unit,
     /// The materialisation, for the same.
-    environment: Environment,
+    pub(super) environment: Environment,
     /// What the project declares it needs.
-    recipe: Recipe,
+    pub(super) recipe: Recipe,
     /// Where the per-machine secrets file lives.
-    state_dir: PathBuf,
+    pub(super) state_dir: PathBuf,
 }
 
 impl Step for Activate {
@@ -590,7 +570,7 @@ impl Step for Activate {
 
 /// Remove a directory and everything under it. Removing one that is not there is not a
 /// failure: an undo runs against a world it may never have changed.
-fn remove_tree(path: &Path) -> Result<()> {
+pub(super) fn remove_tree(path: &Path) -> Result<()> {
     match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -652,23 +632,32 @@ fn name_of(root: &Path) -> ProjectName {
 }
 
 /// The handle a unit is given and the name its branch is built from.
-struct Name {
+pub(super) struct Name {
     /// The handle, unique among every unit of the project.
-    slug: Slug,
+    pub(super) slug: Slug,
     /// The name the person asked for, which the branch carries even when the handle had
     /// to be given a suffix to stay unique.
-    branch: String,
+    pub(super) branch: String,
 }
 
 /// Choose the unit's handle, and the name its branch is built from.
 ///
-/// A handle a person chose is used as it is; one derived from an objective is given a
+/// A handle a person chose is used as it is; one derived from a line of text is given a
 /// suffix until it is free. The branch never takes the suffix: two units of one name
 /// are two attempts at the same work, and the second's refusal has to name the first.
-fn choose_name(conn: &rusqlite::Connection, project: ProjectId, request: &Request) -> Result<Name> {
-    let asked = match &request.name {
+///
+/// `derive_from` is what the handle is made of when nobody chose one. A create passes
+/// the objective; an adoption passes the branch, because the branch is the name every
+/// other tool already shows for that work ([`super::adopt`]).
+pub(super) fn choose_name(
+    conn: &rusqlite::Connection,
+    project: ProjectId,
+    chosen: Option<&Slug>,
+    derive_from: Option<&Objective>,
+) -> Result<Name> {
+    let asked = match chosen {
         Some(name) => name.clone(),
-        None => derive_slug(request.objective.as_ref())?,
+        None => derive_slug(derive_from)?,
     };
     let branch = asked.to_string();
     for attempt in 1..=SLUG_ATTEMPTS {
@@ -708,7 +697,7 @@ fn derive_slug(objective: Option<&Objective>) -> Result<Slug> {
 }
 
 /// The branch a name owns.
-fn branch_of(name: &str) -> Result<BranchName> {
+pub(super) fn branch_of(name: &str) -> Result<BranchName> {
     BranchName::parse(format!("{BRANCH_PREFIX}{name}"))
 }
 
@@ -717,7 +706,7 @@ fn branch_of(name: &str) -> Result<BranchName> {
 /// The rule itself is the registry's partial unique index, and that is what decides a
 /// race between two creates. This read is what turns the rule into an answer: a person
 /// told only that a write conflicted still has to go and find out who has the branch.
-fn refuse_held_branch(
+pub(super) fn refuse_held_branch(
     conn: &rusqlite::Connection,
     project: ProjectId,
     branch: &BranchName,
@@ -740,6 +729,7 @@ fn new_unit(project: ProjectId, slug: &Slug, branch: &BranchName, request: &Requ
         project_id: project,
         slug: slug.clone(),
         objective: request.objective.clone(),
+        objective_epistemic: request.objective.as_ref().map(|_| Epistemic::Stated),
         branch: branch.clone(),
         parent_branch: request.parent_branch.clone(),
         status: UnitStatus::Open,
@@ -749,7 +739,7 @@ fn new_unit(project: ProjectId, slug: &Slug, branch: &BranchName, request: &Requ
 }
 
 /// The environment row a create will write, before its ports are granted.
-fn new_environment(
+pub(super) fn new_environment(
     unit: UnitId,
     project: &ProjectName,
     state_dir: &Path,
@@ -777,7 +767,7 @@ fn new_environment(
 
 /// The names a unit is granted ports under: the development server, and one for each
 /// service the project gives every unit its own copy of.
-fn port_names(recipe: &Recipe) -> Vec<PortName> {
+pub(super) fn port_names(recipe: &Recipe) -> Vec<PortName> {
     let mut names = Vec::with_capacity(recipe.services.per_unit.len() + 1);
     names.extend(PortName::parse(APP_PORT));
     for service in &recipe.services.per_unit {
@@ -787,7 +777,7 @@ fn port_names(recipe: &Recipe) -> Vec<PortName> {
 }
 
 /// The environment row as the commit left it, with its ports.
-fn read_back(store: &Store, id: EnvId) -> Result<Environment> {
+pub(super) fn read_back(store: &Store, id: EnvId) -> Result<Environment> {
     environments::get(store.conn(), id)?
         .ok_or_else(|| Error::StoreMissingRow { table: "environment", id: id.to_string() })
 }

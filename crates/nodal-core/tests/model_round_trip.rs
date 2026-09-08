@@ -90,6 +90,7 @@ fn unit() -> Unit {
         project_id: project_id(),
         slug: Slug::parse("fix-worker-import").expect("sample slug is dash separated"),
         objective: Some(Objective::parse("fix worker import").expect("sample objective is a line")),
+        objective_epistemic: Some(Epistemic::Stated),
         branch: BranchName::parse("nodal/fix-worker-import").expect("sample branch is valid"),
         parent_branch: Some(BranchName::parse("main").expect("sample branch is valid")),
         status: UnitStatus::Open,

@@ -6,6 +6,7 @@
     "status": "open",
     "branch": "nodal/worker-import",
     "objective": "worker import: handle missing supervisor_id",
+    "objective_epistemic": "stated",
     "freshness": {
       "state": "fresh"
     },

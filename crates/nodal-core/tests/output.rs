@@ -26,8 +26,9 @@ use nodal_core::model::{
     Ports, ProjectId, ProjectName, Slug, Timestamp, UnitId, UnitStatus, WorkspaceFp,
 };
 use nodal_core::output::view::{
-    BaseList, BaseRow, Done, EnvLine, EventLog, Freshness, InitReport, Ps, Remote, Running,
-    SharedResource, Status, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
+    BaseList, BaseRow, Done, EnvLine, EventLog, Exclusion, Explained, Freshness, InitReport,
+    Invalidation, Origin, PortLine, Ps, Remote, Running, SharedResource, Status, ToolSessions,
+    UnitDetail, UnitList, UnitRow, WorkTree,
 };
 use nodal_core::output::{Format, Render, render, watch};
 use nodal_core::recipe::gap::{Gap, GapKey};
@@ -86,6 +87,7 @@ fn units() -> Vec<UnitRow> {
             objective: Some(
                 Objective::parse("worker import: handle missing supervisor_id").expect("one line"),
             ),
+            objective_epistemic: Some(Epistemic::Stated),
             freshness: Freshness::Fresh,
             work: Some(WorkTree {
                 dirty: 3,
@@ -119,6 +121,9 @@ fn units() -> Vec<UnitRow> {
             status: UnitStatus::Open,
             branch: BranchName::parse("nodal/payroll-export").expect("a branch"),
             objective: Some(Objective::parse("payroll export CSV").expect("one line")),
+            // Recovered rather than stated: this is the unit `nodal adopt` made of a
+            // worktree another tool left behind, and every rendering has to say so.
+            objective_epistemic: Some(Epistemic::Observed),
             freshness: Freshness::Stale(vec![
                 FingerprintPart::Dependencies,
                 FingerprintPart::Schema,
@@ -159,6 +164,7 @@ fn unmeasured_unit() -> UnitRow {
         status: UnitStatus::Review,
         branch: BranchName::parse("feature/auth-refresh").expect("a branch"),
         objective: None,
+        objective_epistemic: None,
         freshness: Freshness::Unknown,
         work: None,
         environment: None,
@@ -380,6 +386,85 @@ fn unit_detail_renders_both_ways() {
     both("unit_detail", &detail);
 }
 
+/// The other shape of a unit: a checkout adopted where it stood, whose objective was
+/// read out of a session record rather than stated, and whose home Nodal must never
+/// move. Every one of those three facts has to be on the page.
+#[test]
+fn the_detail_of_an_adopted_unit_says_it_is_one() {
+    let mut unit = units().swap_remove(1);
+    if let Some(environment) = unit.environment.as_mut() {
+        environment.managed = false;
+        environment.home = PathBuf::from("/home/j/code/app/.claude/worktrees/payroll");
+    }
+    let detail = UnitDetail { now: now(), unit, history: Vec::new() };
+    both("unit_detail_adopted", &detail);
+}
+
+/// A unit whose home was cloned from a base: the whole of what `nodal explain` has to
+/// answer — which tree, why that one, what the clone left out, what was taken out of the
+/// copy afterwards, and where the ports came from.
+#[test]
+fn an_explanation_of_a_cloned_home_renders_both_ways() {
+    let explained = Explained {
+        now: now(),
+        slug: Slug::parse("worker-import").expect("a slug"),
+        home: Some(PathBuf::from("/home/j/.nodal/project/e/01J9X2K4")),
+        origin: Origin::Cloned {
+            base: "01J9W0000000000000000BASE1".parse().expect("a canonical ULID"),
+            path: PathBuf::from("/home/j/.nodal/project/b/01J9W000"),
+            fingerprint: WorkspaceFp(digest(&"a1".repeat(32))),
+            platform: Platform::parse("aarch64-apple-darwin").expect("a target triple"),
+            commit: CommitId::parse("f".repeat(40)).expect("an object id"),
+            built_at: at("2026-09-06T09:00:00Z"),
+        },
+        excluded: vec![
+            Exclusion {
+                path: String::from(".claude/worktrees"),
+                reason: String::from("checkouts another tool made, which the clone would multiply"),
+                decided_by: String::from("nodal"),
+            },
+            Exclusion {
+                path: String::from("var/log"),
+                reason: String::from("named by the project in base.exclude"),
+                decided_by: String::from("project"),
+            },
+        ],
+        invalidated: vec![Invalidation {
+            at: at("2026-09-06T09:02:00Z"),
+            removed: String::from("2"),
+            from: String::from("/home/j/.nodal/project/b/01J9W000"),
+            body: String::from("Removed 2 caches from the new home."),
+        }],
+        ports: vec![PortLine {
+            name: String::from("app"),
+            port: 41_230,
+            source: String::from("the block 41230-41329 this project was granted"),
+        }],
+    };
+    both("explanation", &explained);
+}
+
+/// The other origin: a checkout adopted where it stood. Nothing was copied, so the two
+/// sections about copying have nothing in them and each says why rather than being
+/// left blank.
+#[test]
+fn an_explanation_of_an_adopted_checkout_renders_both_ways() {
+    let explained = Explained {
+        now: now(),
+        slug: Slug::parse("payroll-export").expect("a slug"),
+        home: Some(PathBuf::from("/home/j/code/app/.claude/worktrees/payroll")),
+        origin: Origin::Adopted { root: true },
+        excluded: Vec::new(),
+        invalidated: Vec::new(),
+        ports: vec![PortLine {
+            name: String::from("app"),
+            port: 41_231,
+            source: String::from("the block 41230-41329 this project was granted"),
+        }],
+    };
+    both("explanation_adopted", &explained);
+}
+
 #[test]
 fn event_log_renders_both_ways() {
     let log = EventLog {
@@ -506,6 +591,10 @@ fn every_snapshot_file_is_claimed_by_a_test() {
         "done.txt",
         "event_log.json",
         "event_log.txt",
+        "explanation.json",
+        "explanation.txt",
+        "explanation_adopted.json",
+        "explanation_adopted.txt",
         "init_report.json",
         "init_report.txt",
         "ps.json",
@@ -517,6 +606,8 @@ fn every_snapshot_file_is_claimed_by_a_test() {
         "status_stream.ndjson",
         "unit_detail.json",
         "unit_detail.txt",
+        "unit_detail_adopted.json",
+        "unit_detail_adopted.txt",
         "unit_list.json",
         "unit_list.txt",
         "unit_list_empty.json",

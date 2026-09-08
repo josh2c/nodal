@@ -1,0 +1,18 @@
+  unit    worker-import
+  home    /home/j/.nodal/project/e/01J9X2K4
+  origin  a clone of base 01J9W0000000000000000BASE1
+  why     it is the base warm for this workspace (a1a1a1a1a1a1) on aarch64-apple-darwin, built at commit ffffffffffff
+  base    /home/j/.nodal/project/b/01J9W000 · built 5 h ago
+
+  what the home did not receive
+    PATH               DECIDED BY  WHY
+    .claude/worktrees  nodal       checkouts another tool made, which the clone would multiply
+    var/log            project     named by the project in base.exclude
+
+  what was removed from it after it was made
+    WHEN     REMOVED  MADE AT
+    5 h ago  2        /home/j/.nodal/project/b/01J9W000
+
+  where the ports came from
+    NAME  PORT   FROM
+    app   41230  the block 41230-41329 this project was granted

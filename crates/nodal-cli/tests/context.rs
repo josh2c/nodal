@@ -203,6 +203,7 @@ fn record(store: &Store, project: &Project, slug: &str, index: usize, home: &Pat
         project_id: project.id,
         slug: Slug::parse(slug).unwrap(),
         objective: None,
+        objective_epistemic: None,
         branch: BranchName::parse(slug).unwrap(),
         parent_branch: None,
         status: UnitStatus::Open,

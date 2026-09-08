@@ -20,7 +20,7 @@
 use crate::context::ledger::{CAP, Entry, Gained, Ledger};
 use crate::context::survey::{Snapshot, reference};
 use crate::git::history::FileChange;
-use crate::model::Event;
+use crate::model::{Epistemic, Event};
 use crate::output::view::event::kind_label;
 use crate::output::view::unit::status_label;
 use crate::runtime::run::EXIT_CODE;
@@ -87,9 +87,18 @@ fn facts(subject: &Snapshot, test_command: Option<&str>) -> Vec<String> {
     lines
 }
 
-/// What the unit was made for.
+/// What the unit was made for, and how that is known.
+///
+/// An objective a person stated and one an adoption recovered from a session record are
+/// not the same claim ([`crate::model::Epistemic`]), so the recovered one says so here
+/// exactly as it says so in `nodal ls`, in `nodal show` and in the adoption's own
+/// report. A memory that flattened the two would be a memory that invents intent.
 fn objective(subject: &Snapshot) -> String {
-    subject.unit.objective.as_ref().map_or_else(|| String::from("none stated"), ToString::to_string)
+    let Some(objective) = &subject.unit.objective else { return String::from("none stated") };
+    match subject.unit.objective_epistemic {
+        Some(Epistemic::Observed) => format!("{objective} (recovered)"),
+        Some(Epistemic::Stated) | None => objective.to_string(),
+    }
 }
 
 /// Where the unit's home is.
