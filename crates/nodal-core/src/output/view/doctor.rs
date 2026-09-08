@@ -11,6 +11,14 @@
 //! belongs to another project, and it carries a name and a size and nothing else: no
 //! state, no intent, and no suggestion that a person do anything about it. A person
 //! cleaning up one project must not be led into another project's work.
+//!
+//! A third section carries the local branches with no worktree ([`Branches`]), and its
+//! rendering is the one place in this file where the two renderings differ in what they
+//! show. A measured machine held 306 such branches and 22 of them held commits that
+//! exist on no remote. Printing 306 rows at one weight puts the 22 inside the 284. So
+//! the loud bucket prints a row each and the two safe buckets print one line each with
+//! a count, and `--all` ([`Branches::expand`]) opens them. `--json` carries every row
+//! either way: the flag chooses how much is shown, never what was found.
 
 use std::path::PathBuf;
 
@@ -25,6 +33,15 @@ const HERE: [&str; 5] = ["what", "kind", "size", "state", "intent"];
 
 /// The columns of the section for other projects. Names and sizes, and no more.
 const ELSEWHERE: [&str; 3] = ["what", "kind", "size"];
+
+/// The columns of the loud bucket of the branch section.
+const UNPUSHED: [&str; 4] = ["branch", "unpushed", "last commit", "upstream"];
+
+/// The columns the safe buckets print under `--all`.
+const SAFE: [&str; 3] = ["branch", "last commit", "where its commits are"];
+
+/// Git's word for an upstream that is not there any more.
+const GONE: &str = "gone";
 
 /// How many characters of a recovered intent a row shows.
 const INTENT_WIDTH: usize = 56;
@@ -129,6 +146,79 @@ impl Finding {
     }
 }
 
+/// Where a local branch's commits already are, which is what says whether losing the
+/// branch would lose work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Standing {
+    /// Commits of this branch exist on no remote-tracking ref. This is the only bucket
+    /// that holds work a machine could lose.
+    Unpushed,
+    /// The default branch does not hold it, and every commit of it is on a remote.
+    OnRemote,
+    /// The default branch already holds it.
+    Merged,
+}
+
+impl Standing {
+    /// What this bucket is called in a report.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Unpushed => "unpushed",
+            Self::OnRemote => "on a remote",
+            Self::Merged => "merged",
+        }
+    }
+}
+
+/// One local branch that no worktree has checked out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchRow {
+    /// The short name, without `refs/heads/`.
+    pub name: String,
+    /// Which bucket it is in.
+    pub standing: Standing,
+    /// How many of its commits exist on no remote.
+    pub unpushed: usize,
+    /// The remote-tracking branch it is set to follow, `None` when it follows none.
+    #[serde(default)]
+    pub upstream: Option<String>,
+    /// When the commit at its tip was made.
+    pub committed: Timestamp,
+    /// Whether the upstream it names is not there any more. A `fetch --prune` after
+    /// somebody deleted the remote branch leaves this shape, and it is the case where a
+    /// person's own tool has stopped telling them where the work is.
+    #[serde(default)]
+    pub upstream_gone: bool,
+}
+
+/// The local branches of the surveyed checkout that no worktree has checked out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Branches {
+    /// The branch the merged bucket is measured against, `None` when this repository
+    /// has none.
+    #[serde(default)]
+    pub base: Option<String>,
+    /// Every branch, loudest first.
+    #[serde(default)]
+    pub rows: Vec<BranchRow>,
+    /// Whether the safe buckets print row by row (`--all`).
+    ///
+    /// A rendering choice and not an answer. Both renderings carry every row; this
+    /// decides how many of them the human one prints.
+    #[serde(default, skip_serializing)]
+    pub expand: bool,
+}
+
+impl Branches {
+    /// The rows of one bucket, in the order they were found.
+    #[must_use]
+    pub fn bucket(&self, standing: Standing) -> Vec<&BranchRow> {
+        self.rows.iter().filter(|row| row.standing == standing).collect()
+    }
+}
+
 /// The checkout the command was run in, and the project it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkout {
@@ -160,6 +250,9 @@ pub struct Doctor {
     pub here: Vec<Finding>,
     /// What belongs to another project, largest first. Names and sizes only.
     pub elsewhere: Vec<Finding>,
+    /// The local branches of this checkout that no worktree has checked out.
+    #[serde(default)]
+    pub branches: Branches,
     /// What a source could not read.
     pub notes: Vec<Note>,
 }
@@ -176,6 +269,13 @@ impl Render for Doctor {
             Block::fields(vec![Field::new("not this project", "other projects' leftovers")]).at(0),
         );
         doc.push(section(&self.elsewhere, &ELSEWHERE, "nothing of another project is here"));
+        doc.push(Block::blank());
+        doc.push(
+            Block::fields(vec![Field::new("branches", "local branches with no worktree")]).at(0),
+        );
+        for block in self.branch_blocks() {
+            doc.push(block);
+        }
         if !self.notes.is_empty() {
             doc.push(Block::blank());
         }
@@ -200,6 +300,88 @@ impl Doctor {
             .as_ref()
             .map_or_else(|| root.clone(), |name| format!("{name}{}{root}", human::JOIN))
     }
+}
+
+impl Doctor {
+    /// The branch section: the loud bucket in full, and the safe buckets as counts.
+    ///
+    /// This is the one place a rendering shows less than it holds. A machine with 306
+    /// branches and 22 of them unbacked-up needs the 22 read, and 284 rows above them
+    /// is how a person stops reading. `--all` opens the safe buckets.
+    fn branch_blocks(&self) -> Vec<Block> {
+        if self.branches.rows.is_empty() {
+            return vec![Block::line("no local branch is without a worktree")];
+        }
+        let mut blocks = vec![self.loud()];
+        for standing in [Standing::Merged, Standing::OnRemote] {
+            blocks.extend(self.safe(standing));
+        }
+        blocks
+    }
+
+    /// The unpushed branches, one row each, or a line saying there are none.
+    fn loud(&self) -> Block {
+        let unpushed = self.branches.bucket(Standing::Unpushed);
+        if unpushed.is_empty() {
+            return Block::line("no branch holds commits that exist on no remote");
+        }
+        let mut table = Table::new(&UNPUSHED);
+        for row in unpushed {
+            table.push(vec![
+                row.name.clone(),
+                row.unpushed.to_string(),
+                human::span(self.now, row.committed),
+                upstream(row),
+            ]);
+        }
+        Block::table(table)
+    }
+
+    /// One safe bucket: a count, and the rows themselves under `--all`.
+    fn safe(&self, standing: Standing) -> Vec<Block> {
+        let rows = self.branches.bucket(standing);
+        if rows.is_empty() {
+            return Vec::new();
+        }
+        let count = Block::line(format!("{} {}", rows.len(), self.bucket_name(standing)));
+        if !self.branches.expand {
+            return vec![count];
+        }
+        let mut table = Table::new(&SAFE);
+        for row in rows {
+            table.push(vec![
+                row.name.clone(),
+                human::span(self.now, row.committed),
+                self.bucket_name(standing),
+            ]);
+        }
+        vec![count, Block::table(table)]
+    }
+
+    /// What a bucket is called in this report, with the branch a merge is measured
+    /// against named rather than implied.
+    fn bucket_name(&self, standing: Standing) -> String {
+        match (standing, &self.branches.base) {
+            (Standing::Merged, Some(base)) => format!("merged into {base}"),
+            (Standing::Merged, None) => String::from("merged"),
+            (Standing::OnRemote, _) => String::from("unmerged, every commit on a remote"),
+            (Standing::Unpushed, _) => String::from("unpushed"),
+        }
+    }
+}
+
+/// What a branch's upstream column says: the upstream it follows, that the upstream is
+/// not there any more, or that it follows none.
+///
+/// `gone` is git's own word for the second, printed in `%(upstream:track)`. Doctor
+/// states git's verdict and does not rephrase it, and the word it would otherwise reach
+/// for is one a read-only report may not use ([`super::doctor`] is checked against
+/// them).
+fn upstream(row: &BranchRow) -> String {
+    if row.upstream_gone {
+        return String::from(GONE);
+    }
+    row.upstream.clone().unwrap_or_else(|| String::from(human::NONE))
 }
 
 /// One section: a table of findings, or a line saying there are none.
@@ -241,7 +423,9 @@ fn shorten(intent: Option<&str>) -> String {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests fail by panicking")]
 mod tests {
-    use super::{CLOSING, Checkout, Doctor, Finding, Kind, Note, shorten};
+    use super::{
+        BranchRow, Branches, CLOSING, Checkout, Doctor, Finding, Kind, Note, Standing, shorten,
+    };
     use crate::model::Timestamp;
     use crate::output::Render;
 
@@ -266,11 +450,90 @@ mod tests {
             elsewhere: vec![
                 Finding::new(Kind::StaleCache, "/home/j/other/.next").sized(3_330_000_000, true),
             ],
+            branches: branches(),
             notes: vec![Note {
                 source: String::from("docker"),
                 why: String::from("docker is not installed"),
             }],
         }
+    }
+
+    /// One branch of each bucket, and one whose upstream was deleted.
+    fn branches() -> Branches {
+        Branches {
+            base: Some(String::from("origin/main")),
+            rows: vec![
+                branch("importer/retry", Standing::Unpushed, 33, true),
+                branch("hotfix/logs", Standing::Unpushed, 2, false),
+                branch("shipped", Standing::Merged, 0, false),
+                branch("review/api", Standing::OnRemote, 0, false),
+            ],
+            expand: false,
+        }
+    }
+
+    fn branch(name: &str, standing: Standing, unpushed: usize, gone: bool) -> BranchRow {
+        BranchRow {
+            name: String::from(name),
+            standing,
+            unpushed,
+            upstream: gone.then(|| format!("origin/{name}")),
+            committed: at("2026-09-01T12:00:00Z"),
+            upstream_gone: gone,
+        }
+    }
+
+    /// The branch section, and the loud bucket printed in full.
+    ///
+    /// A machine with 306 branches and 22 of them holding commits no remote has needs
+    /// the 22 read. Every one of them is a row, with the count, the age and the state of
+    /// its upstream.
+    #[test]
+    fn every_branch_holding_commits_no_remote_has_is_a_row_of_its_own() {
+        let text = report().doc().to_string();
+        let line = text.lines().find(|line| line.contains("importer/retry")).expect("the row");
+        assert!(line.contains("33"), "the count of commits nobody else has: {line}");
+        assert!(line.contains('d'), "how old the last commit is: {line}");
+        assert!(line.contains("gone"), "and that its upstream is not there: {line}");
+        assert!(text.contains("hotfix/logs"), "{text}");
+    }
+
+    /// The safe buckets are counts, so that they cannot bury the loud one.
+    #[test]
+    fn a_branch_whose_commits_are_elsewhere_is_a_count_and_not_a_row() {
+        let text = report().doc().to_string();
+        assert!(text.contains("1 merged into origin/main"), "{text}");
+        assert!(text.contains("1 unmerged, every commit on a remote"), "{text}");
+        assert!(!text.contains("shipped"), "a safe branch is not a row by default: {text}");
+        assert!(!text.contains("review/api"), "{text}");
+    }
+
+    #[test]
+    fn all_opens_the_safe_buckets_without_changing_what_was_found() {
+        let mut opened = report();
+        opened.branches.expand = true;
+        let text = opened.doc().to_string();
+        assert!(text.contains("shipped"), "{text}");
+        assert!(text.contains("review/api"), "{text}");
+        assert!(text.contains("1 merged into origin/main"), "the counts stay: {text}");
+        assert!(text.contains("importer/retry"), "and so does the loud bucket: {text}");
+    }
+
+    #[test]
+    fn a_checkout_whose_branches_all_have_worktrees_says_so() {
+        let mut quiet = report();
+        quiet.branches = Branches::default();
+        let text = quiet.doc().to_string();
+        assert!(text.contains("no local branch is without a worktree"), "{text}");
+    }
+
+    #[test]
+    fn a_checkout_with_no_unpushed_branch_says_that_and_still_counts_the_rest() {
+        let mut safe = report();
+        safe.branches.rows.retain(|row| row.standing != Standing::Unpushed);
+        let text = safe.doc().to_string();
+        assert!(text.contains("no branch holds commits that exist on no remote"), "{text}");
+        assert!(text.contains("1 merged into origin/main"), "{text}");
     }
 
     #[test]

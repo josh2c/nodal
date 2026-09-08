@@ -25,6 +25,9 @@ pub struct Doctor {
     /// Print the answer as JSON.
     #[arg(long)]
     pub json: bool,
+    /// Print every branch, not only the ones holding commits no remote has.
+    #[arg(long)]
+    pub all: bool,
 }
 
 impl Doctor {
@@ -39,6 +42,12 @@ impl Doctor {
     /// in the middle of ([`crate::cli::Cli`]), and that preamble writes. It says what it
     /// did on standard error, and it is the same preamble `nodal ls` and `nodal ps` run.
     /// Nothing doctor itself does writes anything.
+    ///
+    /// `--all` opens the branch section. The survey reads every branch either way and
+    /// `--json` carries every row either way; the flag decides how many of the safe
+    /// buckets the human rendering prints. A machine with 306 branches and 22 of them
+    /// unbacked-up needs the 22 read, and 284 safe rows above them is how a person
+    /// stops reading.
     ///
     /// `registry` is a `Result` on purpose. A registry a later Nodal wrote is refused by
     /// the store, and this is the one command where that must not end the answer:
@@ -61,7 +70,8 @@ impl Doctor {
         let state_dir = home::directory()?;
         let sessions = doctor::intent::config_directory();
         let machine = doctor::Machine::here(&cwd, &state_dir, sessions.as_deref());
-        let answer = doctor::survey(&source, &docker::Cli, &machine, Timestamp::now())?;
+        let mut answer = doctor::survey(&source, &docker::Cli, &machine, Timestamp::now())?;
+        answer.branches.expand = self.all;
         output::write(&answer, Format::from_json_flag(self.json), &mut std::io::stdout())?;
         Ok(ExitCode::SUCCESS)
     }

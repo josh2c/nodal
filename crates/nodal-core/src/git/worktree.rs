@@ -55,6 +55,15 @@ pub struct Registered {
     /// The reason a lock was taken, when the worktree is locked. An empty string is a
     /// lock with no reason given, which is still a lock.
     pub locked: Option<String>,
+    /// Why the repository calls this worktree prunable, when it does. An empty string
+    /// is the verdict with no reason given, which is still the verdict.
+    ///
+    /// Git decides this, and nothing else may soften it. The usual reason is a `gitdir`
+    /// file that points at a location which is not there. That is a statement about the
+    /// repository's own record, not about the directory: a reaper that removes the
+    /// files of a worktree and leaves its directories behind produces a path that
+    /// exists and a worktree that is still prunable.
+    pub prunable: Option<String>,
 }
 
 impl Registered {
@@ -62,6 +71,12 @@ impl Registered {
     #[must_use]
     pub const fn is_locked(&self) -> bool {
         self.locked.is_some()
+    }
+
+    /// Whether the repository calls this worktree prunable.
+    #[must_use]
+    pub const fn is_prunable(&self) -> bool {
+        self.prunable.is_some()
     }
 }
 
@@ -79,7 +94,7 @@ pub(super) fn list(repo: &Path) -> Result<Vec<Registered>> {
 ///
 /// One block per worktree, separated by an empty line. The first line of a block names
 /// the path; the lines after it are single words or `word value` pairs, and this reads
-/// the two it needs.
+/// the three it needs.
 fn parse_list(text: &str) -> Vec<Registered> {
     let mut worktrees: Vec<Registered> = Vec::new();
     for line in text.lines() {
@@ -89,6 +104,7 @@ fn parse_list(text: &str) -> Vec<Registered> {
                 path: PathBuf::from(value),
                 branch: None,
                 locked: None,
+                prunable: None,
             }),
             "branch" => {
                 if let Some(last) = worktrees.last_mut() {
@@ -98,6 +114,11 @@ fn parse_list(text: &str) -> Vec<Registered> {
             "locked" => {
                 if let Some(last) = worktrees.last_mut() {
                     last.locked = Some(value.to_owned());
+                }
+            }
+            "prunable" => {
+                if let Some(last) = worktrees.last_mut() {
+                    last.prunable = Some(value.to_owned());
                 }
             }
             _ => {}
@@ -139,6 +160,29 @@ mod tests {
         assert_eq!(listed[1].branch, None, "a detached worktree names no branch");
         assert_eq!(listed[2].locked.as_deref(), Some("an agent is here"));
         assert!(listed[2].is_locked());
+    }
+
+    /// Git's own verdict, read as git states it.
+    ///
+    /// `git worktree list --porcelain` prints `prunable` with the reason on the same
+    /// line. Both shapes of a reaped worktree carry it: the one whose directory is gone
+    /// and the hollow shell whose directory is still there.
+    #[test]
+    fn a_prunable_worktree_carries_gits_verdict_and_its_reason() {
+        let listed = parse_list(concat!(
+            "worktree /r\nHEAD abc\nbranch refs/heads/main\n\n",
+            "worktree /tmp/gone\nHEAD abc\nbranch refs/heads/gone\n",
+            "prunable gitdir file points to non-existent location\n\n",
+            "worktree /tmp/hollow\nHEAD abc\nbranch refs/heads/hollow\nprunable\n",
+        ));
+        assert_eq!(listed.len(), 3);
+        assert!(!listed[0].is_prunable());
+        assert_eq!(
+            listed[1].prunable.as_deref(),
+            Some("gitdir file points to non-existent location")
+        );
+        assert!(listed[2].is_prunable(), "a verdict with no reason is still the verdict");
+        assert_eq!(listed[2].prunable.as_deref(), Some(""));
     }
 
     #[test]

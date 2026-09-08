@@ -687,3 +687,213 @@ fn a_registry_that_opened_adds_no_note_of_its_own() {
         "a registry that answered is not news: {report:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Attribution by resource name (S17: sixteen Docker rows, 740 MB, filed here).
+// ---------------------------------------------------------------------------
+
+/// The Docker leftovers of a machine that holds two projects.
+///
+/// Two containers named for `storefront`, which is not the project the command is run
+/// in, and one named for nothing this machine knows. This is the shape a measured
+/// machine had: a compose file writes `<project>_db` and `supabase_db_<project>`, and
+/// neither container mounts a host path or carries a Nodal label, so a report that asks
+/// only paths has nothing to attribute them with.
+const NAMED: &str = concat!(
+    r#"{"Name":"/supabase_db_storefront","Config":{"Image":"supabase/postgres:15",
+    "Labels":null},"State":{"FinishedAt":"2026-08-10T09:00:00Z"},"SizeRw":740000000,
+    "Mounts":[]}"#,
+    "\n",
+    r#"{"Name":"/storefront_db","Config":{"Image":"postgres:16","Labels":null},
+    "State":{"FinishedAt":"2026-08-10T09:00:00Z"},"SizeRw":120000000,"Mounts":[]}"#,
+    "\n",
+    r#"{"Name":"/redis-cache","Config":{"Image":"redis:7","Labels":null},
+    "State":{"FinishedAt":"2026-08-10T09:00:00Z"},"SizeRw":1000,"Mounts":[]}"#,
+    "\n",
+);
+
+/// One volume named for the other project, and one named for this checkout.
+const NAMED_VOLUMES: &str = concat!(
+    r#"{"Volumes":[{"Name":"storefront_pgdata","Links":0,"Size":"1.4GB"},"#,
+    r#"{"Name":"app_pgdata","Links":0,"Size":"200MB"}]}"#,
+    "\n"
+);
+
+/// A Docker whose leftovers are named after projects rather than mounted from them.
+struct NamedDaemon;
+
+impl Docker for NamedDaemon {
+    fn run(&self, args: &[&str]) -> nodal_core::Result<Output> {
+        let stdout = match args.first().copied() {
+            Some("ps") => String::from("1\n2\n3\n"),
+            Some("inspect") => NAMED.replace("\n    ", ""),
+            Some("system") => String::from(NAMED_VOLUMES),
+            _ => String::new(),
+        };
+        Ok(Output { stdout, stderr: String::new(), code: Some(0) })
+    }
+}
+
+/// Plant a second project called `storefront`, so that doctor knows the name.
+fn second_project(machine: &Planted) -> PathBuf {
+    let root = machine.root().join("code/storefront");
+    write(&root.join("README.md"), "# storefront\n");
+    git(&root, &["init", "--quiet", "."]);
+    commit(&root, "the other project");
+    let mut row = project_row(&root);
+    row.name = nodal_core::model::ProjectName::parse("storefront").expect("a name");
+    nodal_core::store::projects::insert(machine.store.conn(), &row).expect("a second project");
+    root
+}
+
+/// The defect S17 found: a Docker leftover named for another project, filed here.
+///
+/// The two containers mount nothing and carry no label, so the only evidence of whose
+/// they are is their names. Both names hold the whole name of a project this machine
+/// holds and the command was not run in. That is the second section.
+#[test]
+fn a_docker_leftover_named_for_another_project_is_that_projects() {
+    let machine = plant();
+    second_project(&machine);
+
+    let report = machine.report_with(&NamedDaemon);
+
+    for named in ["supabase_db_storefront", "storefront_db"] {
+        let row = one(&report.elsewhere, Kind::ExitedContainer, named);
+        assert!(row.bytes.is_some(), "another project's leftover is still sized: {row:?}");
+        assert!(
+            !report.here.iter().any(|finding| finding.what == named),
+            "{named} is named for another project and was filed under this one: {:#?}",
+            report.here
+        );
+    }
+    let volume = one(&report.elsewhere, Kind::DanglingVolume, "storefront_pgdata");
+    assert!(volume.bytes.is_some());
+}
+
+/// The other half of the same claim, which is what stops the fix from being a new bug.
+///
+/// A name that matches nothing doctor knows is not evidence that a thing is somebody
+/// else's, and a name that matches this checkout is evidence that it is this one's.
+/// Both stay in the first section, and the second section holds only positive matches.
+#[test]
+fn a_docker_leftover_named_for_nothing_or_for_this_project_stays_here() {
+    let machine = plant();
+    second_project(&machine);
+
+    let report = machine.report_with(&NamedDaemon);
+
+    assert!(one(&report.here, Kind::ExitedContainer, "redis-cache").bytes.is_some());
+    assert!(one(&report.here, Kind::DanglingVolume, "app_pgdata").bytes.is_some());
+}
+
+/// A machine with one project knows one name, and attributes nothing to anybody.
+#[test]
+fn a_machine_that_knows_no_other_project_files_every_leftover_here() {
+    let machine = plant();
+
+    let report = machine.report_with(&NamedDaemon);
+
+    assert!(report.elsewhere.is_empty(), "there is no other project to name: {report:#?}");
+    for named in ["supabase_db_storefront", "storefront_db", "redis-cache"] {
+        assert!(one(&report.here, Kind::ExitedContainer, named).bytes.is_some());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Git's verdict is the report (S17: a prunable worktree reported softer).
+// ---------------------------------------------------------------------------
+
+/// Add a worktree to the planted checkout and then reap it, `hollow` deciding which of
+/// the two shapes a reaper leaves behind.
+///
+/// A whole removal is the plain shape. `hollow` is the shape `/private/tmp`'s reaper
+/// leaves: the files are gone and the directories are still there, so the path exists
+/// and the worktree is prunable anyway.
+fn reaped(machine: &Planted, name: &str, hollow: bool) -> PathBuf {
+    let path = machine.root().join(name);
+    let branch = format!("reaped-{name}");
+    git(&machine.checkout, &["worktree", "add", "--quiet", "-b", &branch, path.to_str().unwrap()]);
+    write(&path.join("deep/file.txt"), "work\n");
+    if hollow {
+        for entry in walkdown(&path) {
+            if entry.is_file() || entry.is_symlink() {
+                std::fs::remove_file(&entry).unwrap();
+            }
+        }
+    } else {
+        std::fs::remove_dir_all(&path).unwrap();
+    }
+    path
+}
+
+/// Every path under `root`, deepest first.
+fn walkdown(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut queue = vec![root.to_path_buf()];
+    while let Some(directory) = queue.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if std::fs::symlink_metadata(&path).unwrap().is_dir() {
+                queue.push(path.clone());
+            }
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// Both shapes of a reaped worktree, and one word for both of them.
+///
+/// Git decides what prunable means, from its own record, and doctor states the verdict.
+/// The second shape is the one that makes a path check useless: the directories are
+/// still there, so anything that asks the filesystem sees a worktree that is fine.
+#[test]
+fn a_worktree_git_calls_prunable_is_reported_as_prunable_in_both_shapes() {
+    let machine = plant();
+    let gone = reaped(&machine, "gone", false);
+    let hollow = reaped(&machine, "hollow", true);
+    assert!(!gone.exists(), "the fixture's first shape has no directory");
+    assert!(hollow.exists(), "and its second shape still has every directory");
+
+    let report = machine.report();
+
+    for path in [&gone, &hollow] {
+        let name = nodal_core::lifecycle::guard::resolve(path).display().to_string();
+        let row = one(&report.here, Kind::Worktree, &name);
+        assert_eq!(
+            row.state.first().map(String::as_str),
+            Some("prunable"),
+            "git calls this worktree prunable and doctor must say so: {row:?}"
+        );
+        assert!(
+            row.state.iter().any(|word| word.contains("non-existent location")),
+            "the reason git gave is reported: {:?}",
+            row.state
+        );
+    }
+}
+
+/// The word doctor may not reach for instead.
+///
+/// Before this fix a reaped worktree failed `Git::open` and the row said `not a
+/// checkout`, which is true of a directory and says nothing about the repository's
+/// record. A worktree that is prunable and reported as anything softer is doctor
+/// disagreeing with git about git's own data.
+#[test]
+fn a_prunable_worktree_is_never_reported_as_merely_not_a_checkout() {
+    let machine = plant();
+    let hollow = reaped(&machine, "hollow", true);
+    let name = nodal_core::lifecycle::guard::resolve(&hollow).display().to_string();
+
+    let report = machine.report();
+    let row = one(&report.here, Kind::Worktree, &name);
+
+    assert!(
+        !row.state.iter().any(|word| word == "not a checkout"),
+        "a softer phrase than git's own: {:?}",
+        row.state
+    );
+    assert!(row.bytes.is_some(), "a hollow shell is still directories on this disk: {row:?}");
+}
