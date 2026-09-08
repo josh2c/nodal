@@ -1,4 +1,7 @@
-# The nodal integration for bash. Install it with one line in ~/.bashrc:
+# The nodal integration for bash. `nodal shell-init --install bash` writes this file
+# into Nodal's state directory and puts one line in ~/.bashrc that sources it, and
+# `nodal uninstall` removes both again. To load it without installing anything, put
+# this line in ~/.bashrc instead:
 #
 #     eval "$(nodal shell-init bash)"
 #

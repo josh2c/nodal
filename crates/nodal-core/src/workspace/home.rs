@@ -65,6 +65,18 @@ pub fn directory() -> Result<PathBuf> {
     Ok(home.join(DIRECTORY_NAME))
 }
 
+/// The person's own directory, as the operating system publishes it.
+///
+/// The start-up files the shell integration goes in are under it, and they are not
+/// under the state directory: `NODAL_HOME` moves Nodal's state and never moves a
+/// person's `~/.bashrc`.
+///
+/// # Errors
+/// [`Error::NoHomeDirectory`] when the platform's own variable does not say where it is.
+pub fn user() -> Result<PathBuf> {
+    user_directory().ok_or(Error::NoHomeDirectory { variable: DIRECTORY_VAR })
+}
+
 /// The registry's default path: `registry.db` in the state directory.
 ///
 /// # Errors

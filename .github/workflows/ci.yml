@@ -238,6 +238,20 @@ jobs:
       - name: a tethered group dies whole, and an orphaned tether is still found
         run: ci/acceptance-tether.sh
 
+  acceptance-uninstall:
+    name: acceptance (uninstall)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: a start-up file comes back byte for byte, a v1 registry upgrades, and neither verb fetches anything
+        run: ci/acceptance-uninstall.sh
+
   acceptance-safety:
     name: acceptance (safety)
     runs-on: ${{ matrix.os }}

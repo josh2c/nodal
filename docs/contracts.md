@@ -68,7 +68,8 @@ carries them, which is what makes attribution and session state readable.
 
 A shell reads them by one of two routes. direnv reads `.envrc`, which reads `.nodal/env`. A shell
 with no direnv evaluates `nodal env --export`, which is what the hook `nodal shell-init` installs
-does. Nodal spawns no subshell for either route.
+does. That one evaluation is the only one in the hook, and what it evaluates is Nodal's own output,
+quoted so that no character of a value is interpreted. Nodal spawns no subshell for either route.
 
 The rc hook is the default route, because it needs no second program and no per-directory approval.
 The `.envrc` stays and is always written: an IDE with a direnv extension activates a terminal from
@@ -135,8 +136,24 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 
 ## CLI
 `init, new, cd, adopt, ls, show, explain, env, shell, shell-init, run, ps, start, note, ask, handoff,
-sync, done, merge, prune, reclaim, gc, doctor, base, status`. Every read command accepts `--json`; `status --watch`
-emits newline-delimited JSON. Global `--store` and `--no-hooks`.
+sync, done, merge, prune, reclaim, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
+`--json`; `status --watch` emits newline-delimited JSON. Global `--store` and `--no-hooks`.
+
+`nodal shell-init <shell> --install` writes the script into `<state directory>/shims/` and adds one marked block
+to that shell's start-up file. The block sources the file. It evaluates nothing and starts no process, because it
+runs in every shell a person opens. `nodal shell-init <shell>` on its own still prints the same script, and
+`eval "$(nodal shell-init bash)"` in a start-up file still works.
+
+`nodal uninstall` removes the block, the scripts, and with `--state` the state directory. It prints one item per
+thing before it removes any of them, and it asks once; a terminal nothing is watching is refused rather than
+waited on. A start-up file is byte-identical to the file it was before the install. `--state` runs
+`lifecycle::uniqueness` over every unit home first and refuses while one holds work that exists nowhere else;
+`--force` accepts that and says what it accepted.
+
+`nodal upgrade`, and `nodal update`, report how this copy was installed — a cargo bin directory, a Homebrew
+cellar, a system package path, or a binary placed by hand — and print the one command that upgrades it there.
+Nodal has no self-updater and **makes no network call of its own** (DL-034): no update check, no telemetry, no
+version comparison. `tests/safety/tests/no_network.rs` asserts that no code path in either crate could make one.
 
 `done <unit>` sends a unit's work for review. It pushes two refs — the unit's branch, and a
 work-in-progress snapshot of everything the home holds that no commit does — with **one** `git push`,

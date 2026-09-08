@@ -41,6 +41,8 @@ A **WorkUnit** is a branch with a home directory and a memory.
 - `nodal doctor` reports what tools left behind: stale worktrees, dead containers, orphan caches. It deletes nothing.
 - `nodal run --tether <command>` gives the command a process group the unit owns. `nodal reclaim` stops the whole group, and a group that outlived the `nodal run` that started it is still stopped.
 - `nodal reclaim` moves a unit to trash. It refuses if the unit holds work that exists nowhere else. `nodal gc` empties the trash after a retention period.
+- `nodal uninstall` takes back what Nodal put on the machine. It names every item first, then removes the lines in your shell start-up file and the scripts they load. `--state` also removes the state directory, and it refuses while a unit home holds work that exists nowhere else.
+- `nodal upgrade` reports how this copy was installed and prints the one command that upgrades it. `nodal update` is the same command. Nodal makes no network calls of its own: no update check, no telemetry. The only network activity Nodal causes is the `git` you configured talking to the remotes you configured.
 
 ## Agents
 
