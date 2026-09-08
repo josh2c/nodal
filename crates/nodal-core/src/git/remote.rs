@@ -32,11 +32,18 @@ impl Containment {
 /// [`Error::Git`](crate::Error::Git) when the revision is unknown, [`Error::GitOid`](crate::Error::GitOid)
 /// on unreadable output.
 pub(super) fn containment(repo: &Path, rev: &str) -> Result<Containment> {
-    let remotes =
-        cmd::run_ok(repo, &["remote"])?.lines()?.iter().map(|r| (*r).to_owned()).collect();
+    let remotes = names(repo)?;
     let listed = cmd::run_ok(repo, &["rev-list", rev, "--not", "--remotes"])?;
     let unpushed = listed.lines()?.iter().map(|line| Oid::parse(line)).collect::<Result<_>>()?;
     Ok(Containment { remotes, unpushed })
+}
+
+/// Every remote this repository names, in the order `git remote` lists them.
+///
+/// # Errors
+/// [`Error::Git`](crate::Error::Git) when `git remote` failed.
+pub(super) fn names(repo: &Path) -> Result<Vec<String>> {
+    Ok(cmd::run_ok(repo, &["remote"])?.lines()?.iter().map(|name| (*name).to_owned()).collect())
 }
 
 /// The URL a remote fetches from, `None` when the repository has no such remote.

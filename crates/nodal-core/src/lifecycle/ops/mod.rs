@@ -5,6 +5,7 @@
 //! steps, the registry write that finishes them, and a [`Rebuild`] so that a run of it
 //! interrupted by a kill can be found again from the journal.
 
+pub mod done;
 pub mod gc;
 pub mod merge;
 pub mod new;

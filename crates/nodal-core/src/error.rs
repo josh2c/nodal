@@ -493,6 +493,30 @@ pub enum Error {
         branch: String,
     },
 
+    /// A push was asked for in a repository that names nowhere to push to.
+    #[error(
+        "{repo} names no remote to push to; add one with `git remote add`",
+        repo = repo.display()
+    )]
+    GitNoRemote {
+        /// The repository that was to be pushed from.
+        repo: PathBuf,
+    },
+
+    /// A repository names several remotes and none of them is `origin`, so which one a
+    /// push goes to is not decided.
+    #[error(
+        "{repo} names {remotes} and none of them is origin; say which with --remote",
+        repo = repo.display(),
+        remotes = remotes.join(", ")
+    )]
+    GitRemoteAmbiguous {
+        /// The repository that was to be pushed from.
+        repo: PathBuf,
+        /// The remotes it names.
+        remotes: Vec<String>,
+    },
+
     /// The commit a base is keyed to is in neither the remote nor the checkout.
     #[error("commit {commit} is not in the remote or the checkout it was asked for")]
     BaseCommitMissing {
