@@ -271,6 +271,14 @@ fn the_ledger_names_what_a_sibling_touched_and_what_the_base_gained() {
     let first = workspace.create("worker-import", "worker import");
     let second = workspace.create("payroll-export", "payroll export CSV");
 
+    // Both units carry work of their own. A unit that has committed nothing is
+    // integrated with its base and contained by every remote, so the list records it as
+    // merged and it leaves the ledger — which is the list's rule, not this test's
+    // subject.
+    write(&first, "src/parse.ts", "export const parse = 2;\n");
+    git(&first, &["add", "--all"]);
+    git(&first, &["commit", "--quiet", "--message", "fix the parser"]);
+
     write(&second, "src/export.ts", "export const csv = 1;\n");
     git(&second, &["add", "--all"]);
     git(&second, &["commit", "--quiet", "--message", "add the CSV writer"]);
@@ -324,6 +332,34 @@ fn every_command_that_touches_a_unit_writes_the_memory_again() {
     workspace.ok(&["reclaim", "second-look"], &workspace.source);
     let after = read(&memory);
     assert!(!after.contains("second-look · "), "a reclaimed unit leaves the ledger:\n{after}");
+}
+
+#[test]
+fn a_unit_under_review_is_still_a_unit_a_sibling_is_told_about() {
+    let workspace = Workspace::new();
+    let first = workspace.create("worker-import", "worker import");
+    let second = workspace.create("payroll-export", "payroll export CSV");
+
+    write(&second, "src/export.ts", "export const csv = 1;\n");
+    git(&second, &["add", "--all"]);
+    git(&second, &["commit", "--quiet", "--message", "add the CSV writer"]);
+
+    // A remote to send the work to, so `nodal done` has somewhere to push.
+    let remote = workspace.directory.path().join("remote.git");
+    git(&workspace.source, &["init", "--quiet", "--bare", text_of(&remote).as_str()]);
+    git(&second, &["remote", "add", "review", text_of(&remote).as_str()]);
+    let done = workspace.nodal(&["done", "--remote", "review"], &second);
+    assert!(done.status.success(), "{}", text(&done.stderr));
+
+    let memory = read(&second.join(context::FILE));
+    assert!(memory.contains("- state: review"), "the unit's own state moved:\n{memory}");
+
+    let sibling = read(&first.join(context::FILE));
+    assert!(
+        sibling.contains("payroll-export · nodal/payroll-export"),
+        "work under review is work this unit can still collide with:\n{sibling}"
+    );
+    assert!(sibling.contains("src/export.ts"), "{sibling}");
 }
 
 #[test]
@@ -527,6 +563,11 @@ fn settle(repo: &Path) {
     ] {
         git(repo, &["config", "--local", key, value]);
     }
+}
+
+/// A path as the text a git argument takes.
+fn text_of(path: &Path) -> String {
+    path.display().to_string()
 }
 
 /// Output bytes as text.

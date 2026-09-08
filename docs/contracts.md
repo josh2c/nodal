@@ -192,20 +192,18 @@ unchanged rather than gone.
 
 ## The list
 `nodal ls`, and `nodal` with no subcommand, answer with one row per unit of the project the
-working directory is in. The reading is a reading: it opens no transaction, records no event and
-reconciles no session row.
+working directory is in.
 
-The command then writes each unit's memory again (see The unit's memory). It writes no registry
-row to do so, and it writes a `WORKUNIT.md` only when the compiled bytes differ from the bytes
-the file already holds. The list is the command a person types most, so it is the command that
-keeps the memory of a unit nobody touched today current.
+The list's reading is pure. After reading, the command layer records at most two things it learned
+or derived: a unit's flip to merged, and each touched unit's recomputed `WORKUNIT.md`. It records no
+event, reconciles no session, and never contacts the network.
 
 Each row carries what Git says about the unit's branch at the moment it was asked: how many
 paths are changed, staged and untracked; whether HEAD names a commit rather than a branch; how
 far the branch has moved from the branch it merges into; what the upstream on the remote has
 and what it does not; and one integration verdict.
 
-The list writes exactly one thing, and it is a state a command could not have written. A unit whose
+**The flip to merged** is a state no command could have written. A unit whose
 verdict is `integrated` **and** whose branch is contained in a remote has been merged somewhere else —
 by a reviewer, on a website — and the list is where Nodal first sees it. That unit moves to `merged`,
 and the move is recorded rather than rendered: the retention `nodal gc` measures runs from it. Both
@@ -213,6 +211,13 @@ signals are required. Integration alone is a base somebody rebased under an unpu
 containment alone is the state before review, not after it. The second signal costs one `git rev-list`
 and is asked for only of a unit that already reads as integrated. The list still fetches nothing, so a
 home hears about a merge when the person's own `git` next does.
+
+**The memory** is derived, not learned: it is this reading, written where the next agent reads it
+(see The unit's memory). The command writes one `WORKUNIT.md` per unit of the project, not only for
+the unit a person named, because a ledger is a statement about the others. It writes no registry row
+to do so, and it rewrites a file only when the compiled bytes differ from the bytes that file already
+holds. The list is the command a person types most, so it is the command that keeps the memory of a
+unit nobody touched today current.
 
 The verdict has four values. `integrated` means the base carries every change of the branch,
 and it names one of two reasons. `ancestor` means the branch tip is in the base's history.

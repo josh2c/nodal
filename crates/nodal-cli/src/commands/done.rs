@@ -7,6 +7,8 @@ use nodal_core::lifecycle::ops::done::{self, Request};
 use nodal_core::output::{self, Format};
 use nodal_core::store::Store;
 
+use crate::commands::context;
+
 /// Arguments of `nodal done`.
 #[derive(Debug, Args)]
 pub struct Done {
@@ -26,6 +28,10 @@ pub struct Done {
 impl Done {
     /// Push the branch and the work-in-progress ref, and put the unit up for review.
     ///
+    /// The unit's memory is written again afterwards, because the state in it has
+    /// changed: a unit under review is still work off the base, and every sibling's
+    /// ledger still names it, but its own file now says what became of it.
+    ///
     /// # Errors
     ///
     /// Propagates a unit with no home, a repository that does not decide which remote a
@@ -37,7 +43,11 @@ impl Done {
             remote: self.remote.clone(),
             cwd: std::env::current_dir().map_err(nodal_core::Error::io("."))?,
         };
+        let project = context::project_of(store, self.unit.as_deref(), &request.cwd);
         let report = done::done(store, &request)?;
+        if let Some(project) = &project {
+            context::refresh(store, project);
+        }
         output::write(&report, Format::from_json_flag(self.json), &mut std::io::stdout())?;
         Ok(ExitCode::SUCCESS)
     }

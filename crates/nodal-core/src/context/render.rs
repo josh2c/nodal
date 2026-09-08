@@ -201,7 +201,7 @@ fn project_ledger(ledger: &Ledger) -> Vec<String> {
     let mut lines = vec![String::from("## Project ledger"), String::new()];
     lines.extend(gained(ledger.gained.as_ref()));
     if ledger.siblings.is_empty() {
-        lines.push(String::from("No other unit of this project is open."));
+        lines.push(String::from("No other unit of this project has work off the base."));
         lines.push(String::new());
     }
     for sibling in &ledger.siblings {

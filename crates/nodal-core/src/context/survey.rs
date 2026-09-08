@@ -80,10 +80,18 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Whether this unit is one a sibling's ledger names: open, and not the reader.
+    /// Whether a sibling's ledger names this unit.
+    ///
+    /// Open and under review, and nothing else. The ledger answers one question — what
+    /// has another unit changed that this one has not seen — so the test is whether the
+    /// work is still off the base. A unit under review has changed files that no base
+    /// carries yet, and leaving it out would make the ledger wrong in the one direction
+    /// that costs something. A merged unit's work is on the base, where the same file
+    /// reports it as what the base gained; an archived unit's is nobody's to collide
+    /// with.
     #[must_use]
-    pub fn is_open(&self) -> bool {
-        self.unit.status == UnitStatus::Open
+    pub fn is_in_flight(&self) -> bool {
+        matches!(self.unit.status, UnitStatus::Open | UnitStatus::Review)
     }
 }
 

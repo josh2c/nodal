@@ -8,7 +8,9 @@
 //! merges into has gained since this unit left it.
 //!
 //! Every line comes from Git in the sibling's home. No unit reports itself here, and
-//! nothing a person wrote in a sibling's memory is copied into this one.
+//! nothing a person wrote in a sibling's memory is copied into this one. A unit is
+//! named while its work is off the base — open or under review
+//! ([`Snapshot::is_in_flight`]) — because that is the work this unit can collide with.
 //!
 //! Each sibling is capped at [`CAP`] lines, and the cap states what it dropped. A
 //! ledger that silently kept the first forty lines would read exactly like a ledger of
@@ -70,7 +72,7 @@ pub fn of(subject: &Snapshot, project: &[Snapshot]) -> Ledger {
         gained: gained(subject),
         siblings: project
             .iter()
-            .filter(|other| other.unit.id != subject.unit.id && other.is_open())
+            .filter(|other| other.unit.id != subject.unit.id && other.is_in_flight())
             .map(entry)
             .collect(),
     }
