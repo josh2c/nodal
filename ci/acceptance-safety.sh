@@ -16,7 +16,8 @@
 #     names is refused, and the message names the path;
 #   - reclaim refusal: each of the three kinds of work that exists nowhere else refuses
 #     the reclaim, and the home and the work are still there afterwards;
-#   - doctor: the checkout and the whole state directory are the same bytes afterwards.
+#   - doctor: the checkout, a worktree of that checkout that lives beside it rather than
+#     inside it, and the whole state directory are the same bytes afterwards.
 #
 # The suite is then run a second time with the temporary directory reached through a
 # symbolic link, as `ci/acceptance-list.sh` and `ci/acceptance-doctor.sh` do and for the

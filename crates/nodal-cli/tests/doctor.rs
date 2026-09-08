@@ -76,9 +76,7 @@ fn the_json_answer_carries_the_same_rows() {
     let parsed: serde_json::Value = serde_json::from_str(&text).expect("one JSON document");
     let here = parsed["here"].as_array().expect("the first section");
     assert!(
-        here.iter().any(|row| {
-            row["kind"] == "nested_worktree" && row["what"] == ".claude/worktrees/side"
-        }),
+        here.iter().any(|row| row["kind"] == "worktree" && row["what"] == ".claude/worktrees/side"),
         "{text}"
     );
     assert!(parsed["elsewhere"].is_array(), "{text}");

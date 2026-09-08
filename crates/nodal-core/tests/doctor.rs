@@ -1,10 +1,19 @@
 //! Acceptance for T1.0: `nodal doctor` reports what a machine has left behind.
 //!
-//! The machine is built here rather than found: a checkout with two nested worktrees,
-//! one of them locked, a build cache nothing has written to for a month, an orphan
-//! database directory under Nodal's state, and a Docker that answers with one exited
-//! container and one unreferenced volume. Every claim of the task is then a check
-//! against that one machine.
+//! The machine is built here rather than found: a checkout with three worktrees inside
+//! it, one of them locked, two more worktrees of that same checkout that live outside
+//! it, a build cache nothing has written to for a month, an orphan database directory
+//! under Nodal's state, and a Docker that answers with one exited container and one
+//! unreferenced volume. Every claim of the task is then a check against that one
+//! machine.
+//!
+//! The two outside worktrees are the shape a real machine had. Twenty-eight worktrees
+//! of one repository sat beside its checkout rather than under it, and a survey that
+//! walked for the ones underneath reported that machine as holding none. One of the two
+//! here is beside the checkout and one is on the other side of the machine entirely, and
+//! both are built to be the same worktree as the nested `loose`: the same commit nobody
+//! else has, the same uncommitted file, the same session record. What the test then
+//! asks is that the three rows say the same things.
 //!
 //! The last check is the one the command exists for. Doctor is read-only
 //! (`decisions/DL-015`), so this records the name, the size and the modification time of
@@ -90,6 +99,19 @@ impl Planted {
         self.directory.path()
     }
 
+    /// The worktree beside the checkout, as the report names it: by its whole path,
+    /// resolved, because it is not inside the checkout to be named relative to.
+    fn beside(&self) -> String {
+        nodal_core::lifecycle::guard::resolve(&self.root().join("code/beside"))
+            .display()
+            .to_string()
+    }
+
+    /// The worktree nowhere near the checkout, named the same way.
+    fn away(&self) -> String {
+        nodal_core::lifecycle::guard::resolve(&self.root().join("far/away")).display().to_string()
+    }
+
     /// The report this machine produces, from a daemon that answers.
     fn report(&self) -> Doctor {
         self.report_with(&Daemon)
@@ -128,7 +150,8 @@ fn plant() -> Planted {
     git(&checkout, &["remote", "add", "origin", remote.to_str().unwrap()]);
     git(&checkout, &["push", "--quiet", "origin", "HEAD"]);
 
-    // Two nested worktrees, the way another tool makes them. One is locked.
+    // Three worktrees inside the checkout, the way another tool makes them. One of the
+    // three is locked.
     git(&checkout, &["worktree", "add", "--quiet", "-b", "loose", ".claude/worktrees/loose"]);
     write(&checkout.join(".claude/worktrees/loose/note.md"), "unpushed work\n");
     commit(&checkout.join(".claude/worktrees/loose"), "work nobody else has");
@@ -143,6 +166,18 @@ fn plant() -> Planted {
         &["worktree", "lock", "--reason", "an agent is running here", ".claude/worktrees/held"],
     );
 
+    // Two more worktrees of that same checkout that are not inside it: one beside it,
+    // and one nowhere near it. Both are made the same way `loose` was, so that the
+    // report has to say the same things about all three or fail.
+    for outside in [root.join("code/beside"), root.join("far/away")] {
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        let branch = outside.file_name().unwrap().to_str().unwrap().to_owned();
+        git(&checkout, &["worktree", "add", "--quiet", "-b", &branch, outside.to_str().unwrap()]);
+        write(&outside.join("note.md"), "unpushed work\n");
+        commit(&outside, "work nobody else has");
+        write(&outside.join("dirty.md"), "uncommitted\n");
+    }
+
     // A build cache nothing has written to for a month.
     let cache = checkout.join("apps/web/.next/build.json");
     write(&cache, &"c".repeat(2048));
@@ -151,16 +186,33 @@ fn plant() -> Planted {
     // A database directory under Nodal's state that no registry row names.
     write(&state.join("app").join(ORPHAN).join("base"), &"d".repeat(512));
 
-    // The record of the session that made the loose worktree.
-    //
-    // Under the resolved path, because that is the path the tool itself writes: it
-    // records the directory the operating system gives it, with every link already
-    // followed. On a host whose temporary directory is a link this is not the path
-    // this test built, which is the whole reason the symlink test below exists.
-    let worktree = nodal_core::lifecycle::guard::resolve(&checkout.join(".claude/worktrees/loose"));
-    let encoded = doctor::intent::encode(&worktree);
+    // The records of the sessions that made the three unlocked worktrees, so that every
+    // one of them has an intent to recover.
+    for made in
+        [checkout.join(".claude/worktrees/loose"), root.join("code/beside"), root.join("far/away")]
+    {
+        session(&sessions, &made);
+    }
+
+    // A second name for the whole machine, so a test can reach it the way macOS does:
+    // `/var/folders/...` is a link and `/private/var/folders/...` is the directory.
+    let link = root.join("by-another-name");
+    std::os::unix::fs::symlink(root, &link).unwrap();
+
+    let store = Store::open(root.join("registry.db")).expect("a registry");
+    Planted { directory, checkout, state, sessions, store, link }
+}
+
+/// The record Claude Code keeps of a session that ran in `worktree`.
+///
+/// It is written under the resolved path, because that is the path the tool itself
+/// writes: it records the directory the operating system gives it, with every link
+/// already followed. On a host whose temporary directory is a link this is not the path
+/// this test built, which is the whole reason the symlink test below exists.
+fn session(sessions: &Path, worktree: &Path) {
+    let worktree = nodal_core::lifecycle::guard::resolve(worktree);
     write(
-        &sessions.join("projects").join(encoded).join("s.jsonl"),
+        &sessions.join("projects").join(doctor::intent::encode(&worktree)).join("s.jsonl"),
         &format!(
             concat!(
                 r#"{{"type":"user","isSidechain":false,"cwd":{cwd},"timestamp":"2026-08-19T23:37:11Z","#,
@@ -170,14 +222,6 @@ fn plant() -> Planted {
             cwd = serde_json::to_string(&worktree).unwrap()
         ),
     );
-
-    // A second name for the whole machine, so a test can reach it the way macOS does:
-    // `/var/folders/...` is a link and `/private/var/folders/...` is the directory.
-    let link = root.join("by-another-name");
-    std::os::unix::fs::symlink(root, &link).unwrap();
-
-    let store = Store::open(root.join("registry.db")).expect("a registry");
-    Planted { directory, checkout, state, sessions, store, link }
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -235,7 +279,7 @@ fn every_kind_of_leftover_is_found_and_sized() {
     let machine = plant();
     let report = machine.report();
 
-    let loose = one(&report.here, Kind::NestedWorktree, "loose");
+    let loose = one(&report.here, Kind::Worktree, "loose");
     assert!(loose.bytes.is_some_and(|bytes| bytes > 0), "{loose:?}");
     assert!(loose.state.iter().any(|word| word == "unpushed 1"), "{:?}", loose.state);
     assert!(loose.state.iter().any(|word| word == "dirty 1"), "{:?}", loose.state);
@@ -263,7 +307,7 @@ fn every_kind_of_leftover_is_found_and_sized() {
 fn a_locked_worktree_is_reported_as_locked_and_read_no_further() {
     let machine = plant();
     let report = machine.report();
-    let held = one(&report.here, Kind::NestedWorktree, "held");
+    let held = one(&report.here, Kind::Worktree, "held");
     assert!(held.state.iter().any(|word| word == "locked"), "{:?}", held.state);
     assert!(
         held.state.iter().any(|word| word == "an agent is running here"),
@@ -290,7 +334,7 @@ fn a_locked_worktree_is_reported_as_locked_and_read_no_further() {
 fn a_worktree_with_no_commits_of_its_own_is_reported_as_pushed_and_never_as_merged() {
     let machine = plant();
     let report = machine.report();
-    let fresh = one(&report.here, Kind::NestedWorktree, "fresh");
+    let fresh = one(&report.here, Kind::Worktree, "fresh");
 
     assert!(fresh.state.iter().any(|word| word == "pushed"), "{:?}", fresh.state);
     for word in ["merged", "unmerged"] {
@@ -300,6 +344,80 @@ fn a_worktree_with_no_commits_of_its_own_is_reported_as_pushed_and_never_as_merg
             fresh.state
         );
     }
+}
+
+/// The finding this task came from: worktrees of the surveyed project that do not live
+/// inside it.
+///
+/// A real machine held twenty-eight of them beside the checkout rather than under it,
+/// and doctor said the machine held none, because the survey walked for the ones
+/// underneath instead of reading the record the repository keeps. The record names every
+/// worktree wherever its directory is, so every one of them is a row.
+///
+/// What makes this a fix rather than three more rows is that the three rows are the
+/// same row. The machine builds `loose` inside the checkout and `beside` and `away`
+/// outside it as the same worktree — one commit no remote has, one uncommitted file, one
+/// session record — and this compares every fact column of the three.
+#[test]
+fn a_worktree_outside_the_checkout_is_reported_with_the_facts_a_nested_one_gets() {
+    let machine = plant();
+    let report = machine.report();
+
+    let nested = one(&report.here, Kind::Worktree, ".claude/worktrees/loose");
+    let beside = one(&report.here, Kind::Worktree, &machine.beside());
+    let away = one(&report.here, Kind::Worktree, &machine.away());
+
+    // The first word of the state is the branch, which is the one fact that differs
+    // because the three are three worktrees. Every word after it is the same word.
+    for (finding, branch) in [(nested, "loose"), (beside, "beside"), (away, "away")] {
+        assert_eq!(finding.state.first().map(String::as_str), Some(branch), "{finding:?}");
+        assert_eq!(
+            finding.state[1..],
+            nested.state[1..],
+            "a worktree outside the checkout says less than one inside it: {finding:?}"
+        );
+        assert_eq!(
+            finding.intent, nested.intent,
+            "the intent of a worktree outside the checkout was not recovered: {finding:?}"
+        );
+        assert!(finding.bytes.is_some_and(|bytes| bytes > 0), "it was not sized: {finding:?}");
+        assert!(!finding.partial, "the size is whole: {finding:?}");
+    }
+
+    // And the facts are the ones the task names, not merely three equal empty rows.
+    assert!(nested.state.iter().any(|word| word == "unpushed 1"), "{:?}", nested.state);
+    assert!(nested.state.iter().any(|word| word == "dirty 1"), "{:?}", nested.state);
+    assert_eq!(nested.intent.as_deref(), Some("Make the importer retry a failed row"));
+}
+
+/// The shape of the real machine, stated as its own claim: a worktree registered outside
+/// the directory the survey was pointed at is this project's.
+///
+/// `far/away` shares no ancestor with the checkout below the machine root, so nothing
+/// about where it sits could put it in this project's section. What puts it there is the
+/// repository that names it, and the section is the answer to "whose is this", not to
+/// "what is this under". A row in the second section here would be doctor handing a
+/// person their own unfinished work as somebody else's.
+#[test]
+fn a_worktree_registered_outside_the_survey_root_is_still_this_projects() {
+    let machine = plant();
+    let away = machine.away();
+    assert!(
+        !Path::new(&away).starts_with(&machine.checkout),
+        "the fixture stopped being the shape this test is about: {away}"
+    );
+
+    let report = machine.report();
+    assert!(
+        report.here.iter().any(|finding| finding.what == away),
+        "a worktree of this project outside the checkout is missing from its section: {:#?}",
+        report.here
+    );
+    assert!(
+        !report.elsewhere.iter().any(|finding| finding.what == away),
+        "this project's own worktree was reported as another project's: {:#?}",
+        report.elsewhere
+    );
 }
 
 #[test]
@@ -319,7 +437,7 @@ fn another_projects_leftovers_are_a_section_of_their_own_with_names_and_sizes_on
         "another project's worktree is in this project's section: {:#?}",
         report.here
     );
-    let elsewhere = one(&report.elsewhere, Kind::NestedWorktree, ".claude/worktrees/w");
+    let elsewhere = one(&report.elsewhere, Kind::Worktree, ".claude/worktrees/w");
     assert!(elsewhere.bytes.is_some(), "another project's leftover is still sized");
     assert!(elsewhere.state.is_empty(), "the second section states nothing: {elsewhere:?}");
     assert!(elsewhere.intent.is_none(), "the second section recovers no intent");
@@ -402,7 +520,7 @@ fn a_machine_reached_by_another_name_reports_the_same_things() {
     let report = machine.report_from(&Daemon, &by_link("code/app"), &by_link("state"));
 
     // This project, reached through the link, is still this project.
-    let loose = one(&report.here, Kind::NestedWorktree, "loose");
+    let loose = one(&report.here, Kind::Worktree, "loose");
     assert_eq!(loose.what, ".claude/worktrees/loose", "named relative to the checkout");
     assert_eq!(
         loose.intent.as_deref(),
@@ -414,7 +532,7 @@ fn a_machine_reached_by_another_name_reports_the_same_things() {
 
     // The other project's row named a path through the link. It is still another
     // project, and its worktree is still in the second section.
-    assert!(one(&report.elsewhere, Kind::NestedWorktree, ".claude/worktrees/w").bytes.is_some());
+    assert!(one(&report.elsewhere, Kind::Worktree, ".claude/worktrees/w").bytes.is_some());
     assert!(
         report.here.iter().all(|finding| !finding.what.contains("code/other")),
         "another project's worktree reached the first section: {:#?}",
@@ -434,7 +552,7 @@ fn a_machine_with_no_docker_gets_a_note_and_the_rest_of_the_report() {
         "a machine with no daemon reports no container"
     );
     assert!(
-        report.here.iter().any(|finding| finding.kind == Kind::NestedWorktree),
+        report.here.iter().any(|finding| finding.kind == Kind::Worktree),
         "the rest of the report is unaffected"
     );
 }
