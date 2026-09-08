@@ -41,7 +41,7 @@ const REASON: &str = "nodal: work-in-progress snapshot";
 /// whatever the machine offered would fail on a machine with no global identity — which
 /// is every continuous-integration runner — and would otherwise attribute a machine's
 /// safety net to a person who did not write it.
-const AUTHOR: [(&str, &str); 4] = [
+pub(super) const IDENTITY: [(&str, &str); 4] = [
     ("GIT_AUTHOR_NAME", "nodal"),
     ("GIT_AUTHOR_EMAIL", "nodal@localhost"),
     ("GIT_COMMITTER_NAME", "nodal"),
@@ -104,7 +104,7 @@ fn build(repo: &Path, index: &Path, head: &Oid, message: &str) -> Result<(Oid, O
     cmd::run_ok_with(repo, &["add", "--all", "--", "."], &variable)?;
     let tree = Oid::parse(cmd::run_ok_with(repo, &["write-tree"], &variable)?.text()?)?;
     let mut committing: Vec<(&str, &OsStr)> = vec![(INDEX_VAR, index.as_os_str())];
-    committing.extend(AUTHOR.iter().map(|(name, value)| (*name, OsStr::new(value))));
+    committing.extend(IDENTITY.iter().map(|(name, value)| (*name, OsStr::new(value))));
     let made = cmd::run_ok_with(
         repo,
         &["commit-tree", tree.as_str(), "-p", head.as_str(), "-m", message],

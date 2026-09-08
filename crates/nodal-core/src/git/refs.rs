@@ -24,6 +24,22 @@ pub fn wip(unit_id: &str) -> String {
     format!("{NAMESPACE}{unit_id}/wip")
 }
 
+/// The ref that holds a unit's branch as it was before a merge squashed it.
+///
+/// The one place the commits a squash folded stay reachable. It is written before the
+/// squash and never overwritten, it travels to the trash with the home, and `nodal gc`
+/// removing that home is what finally lets go of it.
+#[must_use]
+pub fn premerge(unit_id: &str) -> String {
+    format!("{NAMESPACE}{unit_id}/premerge")
+}
+
+/// The ref a merge fetches the branch it merges into onto.
+#[must_use]
+pub fn target(unit_id: &str) -> String {
+    format!("{NAMESPACE}{unit_id}/target")
+}
+
 /// Read a full ref name, returning `None` when it does not exist.
 ///
 /// # Errors
@@ -47,6 +63,21 @@ pub(super) fn read(repo: &Path, name: &str) -> Result<Option<Oid>> {
 pub(super) fn write(repo: &Path, name: &str, oid: &Oid, reason: &str) -> Result<()> {
     cmd::run_ok(repo, &["update-ref", "-m", reason, name, oid.as_str()])?;
     Ok(())
+}
+
+/// What a symbolic ref points at, in full, `None` when there is no such ref.
+///
+/// `refs/remotes/origin/HEAD` is the one a project's default branch is read from: a
+/// clone records it, and it is what the remote said its default branch was.
+///
+/// # Errors
+/// [`Error::GitEncoding`] when the answer is not UTF-8.
+pub(super) fn symbolic(repo: &Path, name: &str) -> Result<Option<String>> {
+    let output = cmd::run(repo, &["symbolic-ref", "--quiet", "--", name])?;
+    if !output.ok() {
+        return Ok(None);
+    }
+    Ok(Some(output.text()?.to_owned()))
 }
 
 /// Delete a ref. Deleting a ref that does not exist succeeds.

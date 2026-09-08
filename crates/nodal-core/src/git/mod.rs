@@ -7,6 +7,7 @@
 
 pub mod cmd;
 pub mod integration;
+pub mod merge;
 pub mod oid;
 pub mod preflight;
 pub mod refs;
@@ -439,6 +440,118 @@ impl Git {
     /// the head branch does not exist, [`Error::Io`] when a removal failed.
     pub fn scrub(&self, options: &scrub::Options) -> Result<scrub::Report> {
         scrub::apply(&self.root, &self.layout()?, options)
+    }
+
+    /// Commit everything the working tree holds, untracked files included.
+    ///
+    /// # Errors
+    /// As [`merge::commit_all`].
+    pub fn commit_all(&self, message: &str) -> Result<Option<Oid>> {
+        merge::commit_all(&self.root, message)
+    }
+
+    /// Fold what the branch has since its merge base with `onto` into one commit.
+    ///
+    /// # Errors
+    /// As [`merge::squash`].
+    pub fn squash(&self, onto: &Oid, message: &str) -> Result<Option<Oid>> {
+        merge::squash(&self.root, onto, message)
+    }
+
+    /// Rebase the checked-out branch onto a commit, or carry on a rebase in progress.
+    ///
+    /// # Errors
+    /// As [`merge::rebase`].
+    pub fn rebase(&self, onto: &Oid) -> Result<merge::Outcome> {
+        merge::rebase(&self.root, &self.git_dir()?, onto)
+    }
+
+    /// Carry on a rebase whose conflicts a person has resolved.
+    ///
+    /// # Errors
+    /// As [`merge::resume`].
+    pub fn resume_rebase(&self) -> Result<merge::Outcome> {
+        merge::resume(&self.root, &self.git_dir()?)
+    }
+
+    /// Stop a rebase and put the branch back where it was.
+    ///
+    /// # Errors
+    /// As [`merge::abort`].
+    pub fn abort_rebase(&self) -> Result<()> {
+        merge::abort(&self.root, &self.git_dir()?)
+    }
+
+    /// Whether this repository is in the middle of a rebase.
+    ///
+    /// # Errors
+    /// As [`Git::layout`].
+    pub fn is_rebasing(&self) -> Result<bool> {
+        Ok(merge::rebasing(&self.git_dir()?))
+    }
+
+    /// The branch a rebase in progress will put back when it finishes.
+    ///
+    /// # Errors
+    /// As [`Git::layout`].
+    pub fn rebasing_branch(&self) -> Result<Option<String>> {
+        Ok(merge::rebasing_branch(&self.git_dir()?))
+    }
+
+    /// The commit two revisions last had in common.
+    ///
+    /// # Errors
+    /// As [`merge::merge_base`].
+    pub fn merge_base(&self, left: &str, right: &str) -> Result<Oid> {
+        merge::merge_base(&self.root, left, right)
+    }
+
+    /// Whether every commit of `earlier` is in `later`.
+    ///
+    /// # Errors
+    /// As [`merge::is_ancestor`].
+    pub fn is_ancestor(&self, earlier: &str, later: &str) -> Result<bool> {
+        merge::is_ancestor(&self.root, earlier, later)
+    }
+
+    /// How many commits a range holds.
+    ///
+    /// # Errors
+    /// As [`merge::count`].
+    pub fn count(&self, range: &str) -> Result<u32> {
+        merge::count(&self.root, range)
+    }
+
+    /// Move a local branch to a commit, and only when that is a fast-forward.
+    ///
+    /// # Errors
+    /// As [`merge::fast_forward`].
+    pub fn fast_forward(&self, branch: &str, to: &Oid) -> Result<bool> {
+        merge::fast_forward(&self.root, branch, to)
+    }
+
+    /// Put a local branch back at the commit it pointed at.
+    ///
+    /// # Errors
+    /// As [`merge::restore`].
+    pub fn restore_branch(&self, branch: &str, to: &Oid) -> Result<()> {
+        merge::restore(&self.root, branch, to)
+    }
+
+    /// Fetch one branch of a repository on this machine onto a ref of Nodal's own.
+    ///
+    /// # Errors
+    /// As [`merge::fetch_branch`].
+    pub fn fetch_branch(&self, from: &Path, branch: &str, into: &str) -> Result<Oid> {
+        merge::fetch_branch(&self.root, from, branch, into)
+    }
+
+    /// What a symbolic ref points at, `None` when there is no such ref.
+    ///
+    /// # Errors
+    /// [`Error::GitEncoding`] when the answer is not UTF-8.
+    pub fn symbolic_ref(&self, name: &str) -> Result<Option<String>> {
+        refs::symbolic(&self.root, name)
     }
 }
 

@@ -140,11 +140,14 @@ fn policy(out: &mut String, recipe: &Recipe) {
     let hooks = [
         ("pre_new", &recipe.hooks.pre_new),
         ("post_new", &recipe.hooks.post_new),
+        ("pre_merge", &recipe.hooks.pre_merge),
+        ("post_merge", &recipe.hooks.post_merge),
         ("pre_reclaim", &recipe.hooks.pre_reclaim),
         ("post_reclaim", &recipe.hooks.post_reclaim),
     ];
     section(out, "hooks");
-    out.push_str("# Run in the unit's home, with the NODAL_* variables set.\n");
+    out.push_str("# Run around a lifecycle operation, with the NODAL_* variables set and\n");
+    out.push_str("# {branch}, {repo_root}, {unit_path}, {hash_port} and {sanitize} filled in.\n");
     for (name, line) in hooks {
         match line {
             Some(line) => key_string(out, name, line.as_str()),

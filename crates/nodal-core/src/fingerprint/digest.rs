@@ -24,6 +24,9 @@ pub(super) const SCHEMA_DOMAIN: &str = "nodal.fingerprint.schema.v1";
 pub(super) const RECIPE_DOMAIN: &str = "nodal.fingerprint.recipe.v1";
 /// The domain of a hook command digest.
 pub(super) const COMMAND_DOMAIN: &str = "nodal.fingerprint.command.v1";
+/// The domain of the digest a hashed port is read from. Bumping the version moves
+/// every hashed port, so a project's services would move with it.
+pub(super) const PORT_DOMAIN: &str = "nodal.fingerprint.port.v1";
 
 /// Accumulates length-prefixed fields into one digest.
 pub(super) struct Hasher(Sha256);

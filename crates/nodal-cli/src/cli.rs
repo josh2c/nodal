@@ -19,6 +19,7 @@ use crate::commands::env::Env;
 use crate::commands::gc::Gc;
 use crate::commands::init::Init;
 use crate::commands::ls::Ls;
+use crate::commands::merge::Merge;
 use crate::commands::new::New;
 use crate::commands::ps::Ps;
 use crate::commands::reclaim::Reclaim;
@@ -47,6 +48,8 @@ pub enum Command {
     Run(Run),
     /// Report what is running on this machine and which unit each thing belongs to.
     Ps(Ps),
+    /// Merge a unit: commit, squash, rebase, fast-forward the target, and remove it.
+    Merge(Merge),
     /// End a unit: stop what it runs, give back its ports, and move its home to trash.
     Reclaim(Reclaim),
     /// Remove the trashed homes whose retention has run out.
@@ -100,6 +103,7 @@ impl Cli {
             Some(Command::Cd(cd)) => cd.run(&self.registry()?),
             Some(Command::Run(run)) => run.run(&self.registry()?),
             Some(Command::Ps(ps)) => ps.run(&self.registry()?),
+            Some(Command::Merge(merge)) => merge.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Reclaim(reclaim)) => reclaim.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Gc(gc)) => gc.run(&self.registry()?),
             Some(Command::Doctor(doctor)) => doctor.run(&self.registry()?),

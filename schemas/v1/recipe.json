@@ -267,8 +267,20 @@
     },
     "Hooks": {
       "additionalProperties": false,
-      "description": "Commands the project runs around lifecycle operations. They receive the `NODAL_*`\ncontext variables and run in the unit's home.",
+      "description": "Commands the project runs around lifecycle operations. Each receives the `NODAL_*`\ncontext variables, runs in the directory `docs/contracts.md` gives for its phase, and\nmay name the template variables that document lists.",
       "properties": {
+        "post_merge": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "After a unit is merged, and before it is removed."
+        },
         "post_new": {
           "anyOf": [
             {
@@ -292,6 +304,18 @@
           ],
           "default": null,
           "description": "After a unit is reclaimed."
+        },
+        "pre_merge": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandLine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Before a unit is merged."
         },
         "pre_new": {
           "anyOf": [
@@ -551,8 +575,10 @@
     "hooks": {
       "$ref": "#/$defs/Hooks",
       "default": {
+        "post_merge": null,
         "post_new": null,
         "post_reclaim": null,
+        "pre_merge": null,
         "pre_new": null,
         "pre_reclaim": null
       },

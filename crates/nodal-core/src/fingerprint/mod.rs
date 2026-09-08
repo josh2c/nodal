@@ -144,6 +144,19 @@ pub fn compute_command(command: &str) -> Result<Digest> {
     hasher.finish()
 }
 
+/// The digest a hashed port is read from ([`crate::services::ports::hashed`]).
+///
+/// Its own domain, so the port a branch hashes to does not move when the digest of a
+/// hook command changes, and so no other digest of the same text is this one.
+///
+/// # Errors
+/// [`Error::InvalidValue`] only if the hex encoding stopped being hex.
+pub fn compute_port(name: &str) -> Result<Digest> {
+    let mut hasher = Hasher::new(digest::PORT_DOMAIN);
+    hasher.text(name);
+    hasher.finish()
+}
+
 /// Fold named sub-fingerprints into a key, naming each part so that two classes
 /// swapping their inputs cannot produce the same key.
 fn fold(hasher: &mut Hasher, parts: &[SubFp]) {

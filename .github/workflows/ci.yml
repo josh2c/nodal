@@ -154,6 +154,20 @@ jobs:
       - name: a unit is clean and alone, and a killed create leaves nothing
         run: ci/acceptance-new.sh
 
+  acceptance-merge:
+    name: acceptance (merge)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: a dirty unit reaches the target, a conflict stops both ways, and a kill rolls back
+        run: ci/acceptance-merge.sh
+
   acceptance-reclaim:
     name: acceptance (reclaim)
     runs-on: ${{ matrix.os }}

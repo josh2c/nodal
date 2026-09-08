@@ -206,6 +206,7 @@ fn context_of(params: &Params) -> Context {
         root: params.environment.home.clone(),
         unit: params.unit.id,
         slug: params.unit.slug.clone(),
+        branch: params.unit.branch.clone(),
         parent: params.environment.base_id.map(|base| base.to_string()),
         environment: params.environment.id,
     }

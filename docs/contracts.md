@@ -93,6 +93,35 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 sync, done, merge, prune, reclaim, gc, doctor, base, status`. Every read command accepts `--json`; `status --watch`
 emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
+`merge <unit>` takes one unit from a dirty home to a merged target in one command. It runs five
+stages, and every stage has a flag that drops it: `commit` (`--no-commit`), `squash` (`--no-squash`),
+`rebase` (`--no-rebase`), the fast-forward of the target, and `remove` (`--no-remove`). The commit
+message comes from `-m`, then from the unit's objective, then from the unit's handle. Nodal opens no
+editor and asks no language model for it.
+
+The command prints the plan on standard error and asks once whether to run it. `--yes` answers that
+question, which is what a script uses. A terminal that is not watched refuses rather than waits.
+
+The target is the unit's parent branch, then the branch `refs/remotes/origin/HEAD` names, then `main`
+and `master`. It is always a local branch of the project's own checkout.
+
+The fast-forward moves that branch only when the commit it points at is an ancestor of the commit it
+moves to. A target that has moved is refused. Nodal never force-pushes, never rewrites the target's
+history, and pushes nothing: sending the branch to a remote stays a person's own command.
+
+A rebase that stops for a conflict leaves the unit in the middle of the rebase. The report names the
+paths and both ways out. A second `nodal merge <unit>` continues the rebase and finishes the
+remaining stages. `nodal merge <unit> --abort` stops it and puts the branch back at the commit the
+merge recorded.
+
+Before the squash rewrites the branch, Nodal writes the branch tip to `refs/nodal/<id>/premerge`.
+Every commit the squash folds stays reachable from that ref. The ref travels to the trash with the
+home, and `nodal gc` removing that home is what lets go of it.
+
+The `remove` stage is the ordinary reclaim, so the uniqueness check applies to everything the merge
+did not integrate. A reclaim that refuses leaves the unit where it is. The merge itself is already
+done, and the report says so.
+
 `doctor` reads and never writes. It reports nested worktrees, stale build caches, exited containers,
 unreferenced volumes, orphan databases and a project over the open-unit threshold, each with a size, in two
 sections: this project, and a separate section for another project's leftovers that carries names and sizes
@@ -195,9 +224,42 @@ Hooks do not receive `NODAL_HOME`. That variable moves Nodal's whole state direc
 set it and then ran `nodal` would write into the unit's home. `NODAL_ROOT` names the home, as it
 does in an activated shell.
 
-Each hook runs in a directory that exists. `pre_new` runs in the project root, before the home is
-made. `post_new` runs in the home. `pre_reclaim` runs in the home. `post_reclaim` runs in the
-project root, and `NODAL_ROOT` then names the home in the trash.
+There are six hooks. Each runs in a directory that exists.
+
+| hook | when | directory |
+|---|---|---|
+| `pre_new` | before the home is made | the project root |
+| `post_new` | after the unit's rows are committed | the home |
+| `pre_merge` | before a merge commits anything | the home |
+| `post_merge` | after the target branch is fast-forwarded | the project root |
+| `pre_reclaim` | before anything is torn down | the home |
+| `post_reclaim` | after the home is in the trash | the project root |
+
+`post_merge` runs before the merge removes the unit, so the home it names is still there. A merge
+that stops for a conflict runs `pre_merge` and no other hook.
+
+### Template variables
+Every hook command may name these five values. Nodal replaces each name with its value before it
+gives the command to the shell.
+
+| name | value |
+|---|---|
+| `{branch}` | the branch the unit owns |
+| `{repo_root}` | the project's own checkout, which is also `NODAL_SOURCE` |
+| `{unit_path}` | the unit's home, which is also `NODAL_ROOT` |
+| `{hash_port}` | a port derived from the branch by a digest, the same port every time |
+| `{sanitize}` | the branch reduced to lowercase letters, digits and single underscores |
+
+This is plain substitution. There are no conditionals, no loops and no filters. A name this table
+does not hold stays in the text as the project wrote it.
+
+`{hash_port}` is between 30000 and 32767. That range is outside the block the port allocator hands
+out, so a hashed port never collides with a granted one. Nothing records a hashed port and two
+branches may hash to the same one.
+
+A value that holds a character the shell reads as syntax is refused, and the hook does not run. The
+message names the variable and the character. Quote the variable in the command to pass a value that
+holds a space.
 
 Hook commands require approval. `nodal init` approves the set the project declares. It pins each
 command by the digest of its exact text. The record is per machine, in `<state>/hooks.toml`;

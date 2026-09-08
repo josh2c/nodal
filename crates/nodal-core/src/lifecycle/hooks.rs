@@ -9,13 +9,20 @@
 //! |----------------|-------------------------------------|-------------------|
 //! | `pre_new`      | before a unit's home is made        | the project root  |
 //! | `post_new`     | after its rows are committed        | the unit's home   |
+//! | `pre_merge`    | before a merge commits anything     | the unit's home   |
+//! | `post_merge`   | after the target is fast-forwarded  | the project root  |
 //! | `pre_reclaim`  | before anything is torn down        | the unit's home   |
 //! | `post_reclaim` | after the home is in the trash      | the project root  |
 //!
-//! Two of them run in the project root because the home does not exist at that moment:
-//! before a create there is nothing yet, and after a reclaim there is nothing left
-//! where the home was. `NODAL_ROOT` still names the home in both cases, so a hook that
-//! wants the path has it.
+//! Three of them run in the project root because the home is not the subject at that
+//! moment: before a create there is nothing yet, after a reclaim there is nothing left
+//! where the home was, and a merge ends by moving the project's own branch.
+//! `NODAL_ROOT` still names the home in every case, so a hook that wants the path has
+//! it.
+//!
+//! Every command may also name the values of [`template`](super::template): a hook is
+//! written once for every unit, so the branch, the two directories, a stable port and a
+//! sanitised name are substituted into the text before the shell sees it.
 //!
 //! # Why hooks are not steps
 //!
@@ -47,7 +54,8 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use crate::fingerprint;
-use crate::model::{CommandLine, Digest, EnvId, Hooks, Slug, UnitId};
+use crate::lifecycle::template::Variables;
+use crate::model::{BranchName, CommandLine, Digest, EnvId, Hooks, Slug, UnitId};
 use crate::{Error, Result};
 
 /// The file this machine records its approvals in, under the state directory.
@@ -69,6 +77,10 @@ pub enum Phase {
     PreNew,
     /// After a unit is created.
     PostNew,
+    /// Before a unit is merged.
+    PreMerge,
+    /// After a unit is merged, and before it is removed.
+    PostMerge,
     /// Before a unit is reclaimed.
     PreReclaim,
     /// After a unit is reclaimed.
@@ -76,8 +88,14 @@ pub enum Phase {
 }
 
 /// Every phase, in the order they are declared and approved.
-pub const PHASES: &[Phase] =
-    &[Phase::PreNew, Phase::PostNew, Phase::PreReclaim, Phase::PostReclaim];
+pub const PHASES: &[Phase] = &[
+    Phase::PreNew,
+    Phase::PostNew,
+    Phase::PreMerge,
+    Phase::PostMerge,
+    Phase::PreReclaim,
+    Phase::PostReclaim,
+];
 
 impl Phase {
     /// The key this phase has in `nodal.toml` and in the approvals file.
@@ -86,6 +104,8 @@ impl Phase {
         match self {
             Self::PreNew => "pre_new",
             Self::PostNew => "post_new",
+            Self::PreMerge => "pre_merge",
+            Self::PostMerge => "post_merge",
             Self::PreReclaim => "pre_reclaim",
             Self::PostReclaim => "post_reclaim",
         }
@@ -97,6 +117,8 @@ impl Phase {
         match self {
             Self::PreNew => hooks.pre_new.as_ref(),
             Self::PostNew => hooks.post_new.as_ref(),
+            Self::PreMerge => hooks.pre_merge.as_ref(),
+            Self::PostMerge => hooks.post_merge.as_ref(),
             Self::PreReclaim => hooks.pre_reclaim.as_ref(),
             Self::PostReclaim => hooks.post_reclaim.as_ref(),
         }
@@ -125,6 +147,8 @@ pub struct Context {
     pub unit: UnitId,
     /// Its handle.
     pub slug: Slug,
+    /// The branch the unit owns, which a command may name as `{branch}`.
+    pub branch: BranchName,
     /// The tree the home was cloned from, when there was one. An adopted checkout has
     /// no parent and the variable is then empty.
     pub parent: Option<String>,
@@ -155,6 +179,8 @@ pub struct Ran {
     pub phase: Phase,
     /// The command line, as the recipe writes it.
     pub command: String,
+    /// The command line the shell was given, with every variable filled in.
+    pub ran: String,
     /// The directory it ran in.
     pub directory: PathBuf,
 }
@@ -289,8 +315,9 @@ impl Runner {
     ///
     /// # Errors
     /// [`Error::HookNotApproved`] when the command is not the approved one,
-    /// [`Error::HookFailed`] when it exited non-zero, and [`Error::ToolSpawn`] when the
-    /// shell could not be started.
+    /// [`Error::HookVariable`] when a value a variable would fill in could be read as
+    /// shell syntax, [`Error::HookFailed`] when it exited non-zero, and
+    /// [`Error::ToolSpawn`] when the shell could not be started.
     pub fn run(&self, phase: Phase, directory: &Path, context: &Context) -> Result<Option<Ran>> {
         if !self.enabled {
             return Ok(None);
@@ -304,8 +331,14 @@ impl Runner {
                 command: command.to_owned(),
             });
         }
-        execute(phase, command, directory, context)?;
-        Ok(Some(Ran { phase, command: command.to_owned(), directory: directory.to_path_buf() }))
+        let filled = Variables::of(context)?.expand(phase, command)?;
+        execute(phase, &filled, directory, context)?;
+        Ok(Some(Ran {
+            phase,
+            command: command.to_owned(),
+            ran: filled,
+            directory: directory.to_path_buf(),
+        }))
     }
 }
 
@@ -366,7 +399,10 @@ mod tests {
     #[test]
     fn every_phase_has_its_own_key_and_reads_its_own_command() {
         let keys: Vec<&str> = PHASES.iter().map(|phase| phase.key()).collect();
-        assert_eq!(keys, ["pre_new", "post_new", "pre_reclaim", "post_reclaim"]);
+        assert_eq!(
+            keys,
+            ["pre_new", "post_new", "pre_merge", "post_merge", "pre_reclaim", "post_reclaim"]
+        );
         let declared = hooks("echo one");
         assert_eq!(Phase::PreReclaim.command(&declared).unwrap().as_str(), "echo one");
         assert!(Phase::PreNew.command(&declared).is_none());
@@ -402,6 +438,7 @@ mod tests {
             root: "/h".into(),
             unit: "01J8Z6H0000000000000000001".parse().unwrap(),
             slug: crate::model::Slug::parse("worker-import").unwrap(),
+            branch: crate::model::BranchName::parse("nodal/worker-import").unwrap(),
             parent: None,
             environment: "01J8Z6H0000000000000000002".parse().unwrap(),
         };

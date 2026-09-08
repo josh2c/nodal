@@ -524,6 +524,7 @@ impl Prepared {
             root,
             unit: self.params.unit.id,
             slug: self.params.unit.slug.clone(),
+            branch: self.params.unit.branch.clone(),
             parent: self.params.environment.base_id.map(|base| base.to_string()),
             environment: self.params.environment.id,
         };
