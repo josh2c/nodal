@@ -35,6 +35,27 @@
 //! ordered work the journal should record; its undo says, in as many words, that it
 //! restores nothing.
 //!
+//! # The tether is the certain target
+//!
+//! Everything else the teardown stops was inferred: a process is this unit's because it
+//! carries the unit's identifier, or because it stands in the unit's home. A tether was
+//! *recorded*. `nodal run --tether` put a command in a process group of its own and
+//! wrote the group into the registry, so the group is a fact the registry holds rather
+//! than a reading of the machine.
+//!
+//! So tethered groups are the teardown's first target, and they are signalled as
+//! groups: one signal reaches the development server, the compiler it started and the
+//! watcher that compiler started. The processes a scan attributed are signalled after
+//! them, and whatever the group already took with it is simply no longer there.
+//!
+//! The groups are read once, before the plan runs, and carried in [`Params`]. That is
+//! what puts them in the journal, so a reclaim rebuilt after a kill stops the same
+//! groups the first attempt was going to.
+//!
+//! A tether is also the one runtime signal a host with no process table can read. `kill`
+//! answers for a process group everywhere, so a tethered server is stopped, and its
+//! survival reported, on a machine where attribution can see nothing.
+//!
 //! # A signal that cannot be read is a note, never silence
 //!
 //! Stopping a unit's runtime, and the verification that reads it back, both ask the two
@@ -77,7 +98,7 @@ use crate::output::view::{Leftover, Reclaimed};
 use crate::runtime::actor;
 use crate::runtime::attribute::{Note, Source};
 use crate::runtime::processes;
-use crate::runtime::stop::{self, Stopped};
+use crate::runtime::stop::{self, Signals as _, Stopped, Target};
 use crate::services::docker;
 use crate::services::ports::{self, Released};
 use crate::store::{Store, environments, events, sessions, trash, units};
@@ -119,6 +140,13 @@ pub struct Params {
     /// Where the home is going and when it may be removed, for a home Nodal made.
     /// `None` for a checkout adopted in place, which is unregistered and left alone.
     pub entry: Option<Trashed>,
+    /// The process groups the unit's open tethers hold, read before anything moves.
+    /// These are the teardown's first and most certain targets.
+    ///
+    /// Defaulted on the way in, because a reclaim journalled by an older Nodal has no
+    /// such field and still has to be rebuilt and finished rather than refused.
+    #[serde(default)]
+    pub tethers: Vec<u32>,
 }
 
 /// Reclaim a unit: check, tear down, trash the home, and verify by identifier.
@@ -156,12 +184,13 @@ pub fn plan(
 ) -> Result<Plan> {
     let value = serde_json::to_value(params)
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
-    let plan = Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params, released))
-        .then(StopRuntime {
-            unit: params.unit.id,
-            environment: params.environment.clone(),
-            report: Arc::clone(teardown),
-        });
+    let commit = commit_of(params, teardown, released);
+    let plan = Plan::new(KIND, params.unit.slug.to_string(), value, commit).then(StopRuntime {
+        unit: params.unit.id,
+        environment: params.environment.clone(),
+        tethers: params.tethers.clone(),
+        report: Arc::clone(teardown),
+    });
     let Some(entry) = &params.entry else { return Ok(plan) };
     Ok(plan.then(TrashHome { home: entry.home.clone(), path: entry.path.clone() }))
 }
@@ -173,14 +202,23 @@ pub fn plan(
 /// unit stops existing. A step that released them would leave a window in which the
 /// registry says a reclaimed unit still holds a port, and a rolled-back reclaim would
 /// have to take back a port another unit may already have been granted.
-fn commit_of(params: &Params, released: &Arc<OnceLock<Released>>) -> Commit {
+fn commit_of(
+    params: &Params,
+    teardown: &Arc<OnceLock<Teardown>>,
+    released: &Arc<OnceLock<Released>>,
+) -> Commit {
     let (unit, environment) = (params.unit.clone(), params.environment.clone());
     let entry = params.entry.clone();
     let released = Arc::clone(released);
+    let teardown = Arc::clone(teardown);
     Box::new(move |tx: &Transaction<'_>| -> Result<()> {
         let now = Timestamp::now();
         let given = ports::release(tx, environment.id)?;
+        let standing = still_standing(&teardown);
         for session in sessions::list_open(tx, environment.id)? {
+            if session.pgid.is_some_and(|pgid| standing.contains(&pgid)) {
+                continue;
+            }
             sessions::end(tx, session.id, now)?;
         }
         environments::update_state(tx, environment.id, EnvState::Absent, now)?;
@@ -192,6 +230,25 @@ fn commit_of(params: &Params, released: &Arc<OnceLock<Released>>) -> Commit {
         let _ = released.set(given);
         Ok(())
     })
+}
+
+/// The process groups the teardown signalled and could not stop.
+///
+/// A tether's row is closed with the rest of the unit's sessions, except this one case.
+/// An open row is the claim "this group is still the unit's to stop", and it is what
+/// `nodal gc` acts on later. Closing the row of a group that is still running would
+/// throw away the only record of it, so a group that survived every signal keeps its
+/// row and appears in the report as a leftover as well.
+fn still_standing(teardown: &Arc<OnceLock<Teardown>>) -> Vec<u32> {
+    let Some(torn) = teardown.get() else { return Vec::new() };
+    torn.stopped
+        .left
+        .iter()
+        .filter_map(|target| match target {
+            Target::Group(pgid) => Some(*pgid),
+            Target::Process(_) => None,
+        })
+        .collect()
 }
 
 /// Write the line a later `nodal explain` reads: what was reclaimed and where it went.
@@ -280,6 +337,8 @@ struct StopRuntime {
     unit: UnitId,
     /// Its materialisation, which is the scope the signals are read against.
     environment: Environment,
+    /// The process groups its tethers hold, from the journal rather than the machine.
+    tethers: Vec<u32>,
     /// Where the answer is left for the report. A step hands nothing to the step after
     /// it, and this hands nothing to one.
     report: Arc<OnceLock<Teardown>>,
@@ -293,7 +352,7 @@ impl Step for StopRuntime {
     /// Repeatable: a second run finds nothing attributed and stops nothing.
     fn apply(&self) -> Result<()> {
         let mut seen = attributed(self.unit, &self.environment.home);
-        let stopped = stop::processes(&stop::Live, &seen.pids, stop::GRACE);
+        let stopped = stop::processes(&stop::Live, &self.targets(&seen), stop::GRACE);
         let containers = match docker::remove(&docker::Cli, &seen.containers) {
             Ok(removed) => {
                 seen.notes.extend(removed.why.map(|why| Note::new(Source::Docker, why)));
@@ -313,6 +372,19 @@ impl Step for StopRuntime {
     /// than an undo that quietly does nothing.
     fn undo(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+impl StopRuntime {
+    /// What this step signals, in the order it signals them: the recorded groups first,
+    /// then the processes a scan attributed.
+    ///
+    /// The order is the point. A group takes its whole tree with it, so a process the
+    /// scan named is usually gone before its turn comes, and the stop reports what it
+    /// actually did rather than counting the same server twice.
+    fn targets(&self, seen: &Seen) -> Vec<Target> {
+        let groups = self.tethers.iter().map(|pgid| Target::Group(*pgid));
+        groups.chain(seen.pids.iter().map(|pid| Target::Process(*pid))).collect()
     }
 }
 
@@ -485,7 +557,21 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
         approvals: Approvals::open(hooks::path_in(&state_dir))?,
         enabled: request.hooks,
     };
-    Ok(Prepared { params: Params { project, unit, environment, entry }, findings, runner })
+    let tethers = tethers(store.conn(), environment.id)?;
+    let params = Params { project, unit, environment, entry, tethers };
+    Ok(Prepared { params, findings, runner })
+}
+
+/// The process groups an environment's open tethers hold.
+///
+/// Read here, before the plan, so that the groups reach the journal: a reclaim killed
+/// part-way and rebuilt from that journal stops the same groups the first attempt was
+/// going to, and does not have to find them again in a registry it has since written.
+fn tethers(conn: &Connection, environment: EnvId) -> Result<Vec<u32>> {
+    Ok(sessions::list_open_tethers(conn, environment)?
+        .into_iter()
+        .filter_map(|session| session.pgid)
+        .collect())
 }
 
 /// Where a unit's home is, and whether it is one Nodal may move.
@@ -634,13 +720,23 @@ fn rows(conn: &Connection, environment: EnvId) -> Result<Vec<Leftover>> {
     Ok(leftovers)
 }
 
-/// Add the processes and containers still attributed to the unit, and answer with the
-/// signals that could not be read.
+/// Add the tethers, processes and containers still attributed to the unit, and answer
+/// with the signals that could not be read.
+///
+/// A tether is asked about first and by identifier: the registry recorded the group, so
+/// "is it still there" is one signal rather than a reading of the process table. That is
+/// why a surviving tether is reported on every host, including one whose process table
+/// went unread.
 ///
 /// The two processes the stop spares ([`stop::spared`]) are left out. A person who ran
 /// `nodal reclaim` from inside the home is standing in a directory that has just moved,
 /// which they can see; they are not a leftover.
 fn running(params: &Params, leftovers: &mut Vec<Leftover>) -> Vec<Note> {
+    for pgid in &params.tethers {
+        if stop::Live.alive(Target::Group(*pgid)) {
+            leftovers.push(Leftover::new("tether", pgid.to_string()));
+        }
+    }
     let seen = attributed(params.unit.id, &params.environment.home);
     let spared = stop::spared();
     for pid in seen.pids.iter().filter(|pid| !spared.contains(pid)) {

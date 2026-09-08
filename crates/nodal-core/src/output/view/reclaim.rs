@@ -28,8 +28,8 @@ use crate::services::ports::Released;
 /// One thing that is still attached to a unit after it was reclaimed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Leftover {
-    /// What kind of thing it is: `port`, `lease`, `session`, `process`, `container`,
-    /// `listener`, `directory` or `row`.
+    /// What kind of thing it is: `port`, `lease`, `session`, `tether`, `process`,
+    /// `container`, `listener`, `directory` or `row`.
     pub kind: String,
     /// Which one, in the words the report prints.
     pub detail: String,
@@ -113,10 +113,14 @@ impl Reclaimed {
         lines.join("\n")
     }
 
-    /// The processes, containers and ports that were given up.
+    /// The tethers, processes, containers and ports that were given up.
+    ///
+    /// A tether is counted apart from a process because it is not one: it is a whole
+    /// process group, and "1 tether" means a server and everything it started.
     fn stop_cell(&self) -> String {
         let parts = [
-            plural(self.stopped.count(), "process", "processes"),
+            plural(self.stopped.groups(), "tether", "tethers"),
+            plural(self.stopped.processes(), "process", "processes"),
             plural(self.containers.len(), "container removed", "containers removed"),
             plural(self.released.allocated.len() + self.released.fixed.len(), "port", "ports"),
         ];
@@ -230,7 +234,8 @@ impl Swept {
     /// The runtime that was stopped because its home is gone.
     fn runtime_cell(&self) -> String {
         [
-            plural(self.stopped.count(), "process", "processes"),
+            plural(self.stopped.groups(), "tether", "tethers"),
+            plural(self.stopped.processes(), "process", "processes"),
             plural(self.containers.len(), "container", "containers"),
             plural(self.leases.len(), "lapsed lease", "lapsed leases"),
         ]
@@ -304,9 +309,21 @@ mod tests {
     }
 
     #[test]
+    fn a_reclaim_that_stopped_a_tether_counts_it_apart_from_a_process() {
+        let mut report = reclaimed();
+        report.stopped.asked = vec![
+            crate::runtime::stop::Target::Group(900),
+            crate::runtime::stop::Target::Process(7),
+        ];
+        let lines = report.doc().lines().join("\n");
+        assert!(lines.contains("1 tether"), "{lines}");
+        assert!(lines.contains("1 process"), "{lines}");
+    }
+
+    #[test]
     fn a_reclaim_run_from_inside_the_home_says_what_it_would_not_stop() {
         let mut report = reclaimed();
-        report.stopped.spared = vec![42];
+        report.stopped.spared = vec![crate::runtime::stop::Target::Process(42)];
         let lines = report.doc().lines().join("\n");
         assert!(lines.contains("the process that asked was left running"), "{lines}");
         assert!(lines.contains("nothing left by id"), "and it is not a leftover: {lines}");

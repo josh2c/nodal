@@ -7,13 +7,25 @@
 //!
 //! Three things happen, in this order, and the order is the point.
 //!
-//! **Idle runtime is stopped first.** A process still standing in a home that was
-//! reclaimed last week, a container still labelled for a unit that no longer exists —
-//! these are what "idle" means here, and they are stopped before the directory under
-//! them is removed rather than after, so that nothing is deleting a tree a running
-//! process is reading. Runtime belonging to a unit that is *still live* is never
-//! touched: a person's development server is not garbage, whatever the clock says
-//! about it, and never removing what was not asked for is worth more than the disk.
+//! **Idle runtime is stopped first.** A tether whose unit was reclaimed, a process still
+//! standing in a home that was reclaimed last week, a container still labelled for a
+//! unit that no longer exists — these are what "idle" means here, and they are stopped
+//! before the directory under them is removed rather than after, so that nothing is
+//! deleting a tree a running process is reading. Runtime belonging to a unit that is
+//! *still live* is never touched: a person's development server is not garbage, whatever
+//! the clock says about it, and never removing what was not asked for is worth more than
+//! the disk.
+//!
+//! The tethers come first, for the reason they come first in a reclaim
+//! ([`super::reclaim`]): the registry recorded each group when `nodal run --tether`
+//! started it, so a group is a record rather than an inference, and one signal reaches
+//! every process in it. A group is read from the *environments* that have been
+//! reclaimed, not from the units, because an environment in [`EnvState::Absent`] is one
+//! whose home has been taken away and nothing of it should still be running.
+//!
+//! A tether's row is closed once its group is empty. That is what keeps the sweep from
+//! signalling a group identifier the system has since given to something else: a row is
+//! acted on only while it is open, and it stays open only while the group is there.
 //!
 //! **Then the expired homes go**, one at a time: the directory first, then the row.
 //! That order is the same one `nodal base gc` uses and for the same reason. A process
@@ -37,13 +49,13 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-use crate::model::{EnvState, Timestamp, Trashed, UnitId};
+use crate::model::{EnvState, SessionId, Timestamp, Trashed, UnitId};
 use crate::output::view::{Leftover, Swept};
 use crate::runtime::attribute::{Note, Source};
 use crate::runtime::processes::{Processes, Running};
-use crate::runtime::stop::{self, Stopped};
+use crate::runtime::stop::{self, Signals as _, Stopped, Target};
 use crate::services::docker;
-use crate::store::{Store, environments, leases, trash, units};
+use crate::store::{Store, environments, leases, sessions, trash, units};
 use crate::{Error, Result};
 
 /// The label a unit's containers carry.
@@ -116,13 +128,17 @@ fn sweep(store: &Store, expired: &[Trashed]) -> Result<(Vec<Trashed>, u64, Vec<L
 /// before the reclaim rather than work somebody is doing. Every other environment is
 /// left alone, however long it has been since anybody touched it.
 fn stop_absent(conn: &Connection) -> Result<Idle> {
+    let tethers = absent_tethers(conn)?;
     let gone = absent_units(conn)?;
-    if gone.is_empty() {
+    if gone.is_empty() && tethers.is_empty() {
         return Ok(Idle::default());
     }
     let mut idle = Idle::default();
     let (pids, containers) = seen(&gone, &mut idle.notes);
-    idle.stopped = stop::processes(&stop::Live, &pids, stop::GRACE);
+    let mut targets: Vec<Target> = tethers.iter().map(|(_, pgid)| Target::Group(*pgid)).collect();
+    targets.extend(pids.into_iter().map(Target::Process));
+    idle.stopped = stop::processes(&stop::Live, &targets, stop::GRACE);
+    close_empty(conn, &tethers)?;
     match docker::remove(&docker::Cli, &containers) {
         Ok(removed) => {
             idle.notes.extend(removed.why.map(|why| Note::new(Source::Docker, why)));
@@ -131,6 +147,38 @@ fn stop_absent(conn: &Connection) -> Result<Idle> {
         Err(error) => idle.notes.push(Note::new(Source::Docker, error.to_string())),
     }
     Ok(idle)
+}
+
+/// The tethers of every environment that has been reclaimed, as row and group.
+///
+/// Only open rows, and only reclaimed environments. A live unit's tether is its
+/// person's development server, and this sweep never touches one.
+fn absent_tethers(conn: &Connection) -> Result<Vec<(SessionId, u32)>> {
+    let mut found = Vec::new();
+    for environment in environments::list_by_state(conn, EnvState::Absent)? {
+        for session in sessions::list_open_tethers(conn, environment.id)? {
+            if let Some(pgid) = session.pgid {
+                found.push((session.id, pgid));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Close the row of every tether whose group is now empty, and leave the rest open.
+///
+/// A group that would not stop keeps its row, so the next sweep tries again. A group
+/// that has gone gives its row up, so no later sweep signals an identifier the system
+/// has handed to something else.
+fn close_empty(conn: &Connection, tethers: &[(SessionId, u32)]) -> Result<()> {
+    let now = Timestamp::now();
+    for (session, pgid) in tethers {
+        if stop::Live.alive(Target::Group(*pgid)) {
+            continue;
+        }
+        sessions::end(conn, *session, now)?;
+    }
+    Ok(())
 }
 
 /// What this machine can see of the units that are gone, noting what it cannot look at.

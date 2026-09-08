@@ -162,6 +162,30 @@ A signal that cannot run gives a note under the table. It is never a failure. A 
 daemon still answers, and so does a host whose process table Nodal cannot read. An empty answer means
 nothing runs. A note means Nodal could not read that signal.
 
+## Tether
+`nodal run --tether <command>` starts the command in a process group of its own and records that
+group in the registry, as a session row carrying a `pgid`. The group then belongs to the unit. A
+session is the row for it because a session is already one attachment to one materialisation, opens
+when the attachment starts, closes when it ends, and is already what a reclaim gives up. A lease is
+not: a lease expires, and a tether that lapsed would be a running group with no record.
+
+The row is the record of the group, not the `nodal run` that wrote it. A tether whose parent was
+killed is still found and still stopped. A tether whose leader has been replaced by a process it
+started is still stopped, because the signal goes to the group.
+
+Nodal refuses `--tether` in a home the registry does not know. Every other run carries on there and
+loses only its event. A tethered group that nothing recorded could never be stopped.
+
+A tethered command reads no terminal input. A process in a group of its own is not the terminal's
+foreground group, so a read from the terminal would stop the command instead of answering it.
+
+`nodal reclaim` stops the unit's tethers first, before anything a scan attributed. A group is a
+record; a scan is an inference. `nodal gc` stops a tether whose materialisation has been reclaimed,
+and never one of a unit that is live. Both close the row once the group is empty.
+
+A group is addressed with `kill`, which every host answers. A tether is therefore stopped, and its
+survival reported, on a host whose process table Nodal cannot read.
+
 ## Hooks
 Recipe hooks receive `NODAL_SOURCE` (the project checkout), `NODAL_ROOT` (the unit's home),
 `NODAL_ID`, `NODAL_UNIT`, `NODAL_ENV`, and `NODAL_PARENT_ID`. `NODAL_PARENT_ID` names the base the
@@ -187,8 +211,13 @@ untracked files that no ignore rule covers, and commits that no remote and no ot
 machine has. A hit refuses the operation and names the paths. `--force` does not skip the check.
 It first commits the whole home to `refs/nodal/<unit>/wip`, then goes on.
 
-A reclaim stops what the unit runs. It gives back the unit's ports and leases in the transaction
-that records the reclaim. It moves the home to `<state>/<project>/trash/<id>`, under the name the
+A reclaim stops what the unit runs. It sends three signals in order, with a grace period between
+each pair: `SIGINT`, then `SIGTERM`, then `SIGKILL`. A process that stops on one signal never gets
+the next. It never signals its own process, the process that started it, or the process group
+either of them is in.
+
+A reclaim stops the unit's tethered process groups before it stops anything else. It gives back the
+unit's ports and leases in the transaction that records the reclaim. It moves the home to `<state>/<project>/trash/<id>`, under the name the
 home had. It then reads back everything the unit had, by identifier, and reports what is still
 there. It does not claim that the machine is clean.
 
@@ -203,7 +232,8 @@ nothing, not that nothing is left, and the note says which signal went unread.
 `nodal gc` removes a trashed home when `reclaim.trash_retention` days have passed. Nodal stamps
 that window on the row when it moves the home. A recipe edited later cannot shorten a retention
 that somebody relies on. `gc` also gives back lapsed leases. It stops runtime that belongs to a
-unit whose materialisations have all been reclaimed. It never stops the runtime of a live unit.
+unit whose materialisations have all been reclaimed, and the tethers of every materialisation that
+has been reclaimed. It never stops the runtime of a live unit.
 
 ## Event schema
 `id, unit, environment, ts, actor {kind, name}, kind, epistemic {observed, stated}, body, refs, raw_ref`.

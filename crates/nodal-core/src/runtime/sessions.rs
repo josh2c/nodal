@@ -10,6 +10,11 @@
 //! Deriving is pure ([`derive`]) and reconciling is the part that writes
 //! ([`reconcile`]). A prompt hook is an optional accelerant and nothing more: it is
 //! what puts `NODAL_ID` into a shell with no direnv, so the same scan sees it.
+//!
+//! One kind of session is declared rather than derived, and this module leaves it
+//! alone. A tether — a session carrying a process group, written by `nodal run
+//! --tether` — is opened and closed by the group's liveness, not by a scan of who
+//! carries which variable ([`crate::runtime::run`]).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -172,12 +177,21 @@ fn resolve<'a>(
 }
 
 /// Whether this machine is the one that may close `row`.
+///
+/// A tether is never closed here. Its row records a process group, and the group
+/// outlives the process this row's `pid` names: a development server replaces its own
+/// leader, and `nodal run --tether` may have been killed long ago. Whether that group
+/// has gone is a question for the one thing that can ask it, which is a signal
+/// ([`crate::runtime::stop`]), not for a scan of who is carrying which variable.
 fn ends_here(
     conn: &Connection,
     row: &Session,
     host: &HostName,
     live: &[(EnvId, &Attached)],
 ) -> Result<bool> {
+    if row.pgid.is_some() {
+        return Ok(false);
+    }
     if live.iter().any(|(environment, process)| {
         *environment == row.environment_id && Some(process.pid) == row.pid
     }) {
@@ -196,6 +210,7 @@ fn row_for(environment_id: EnvId, process: &Attached, now: Timestamp) -> Session
         environment_id,
         actor: process.actor.clone(),
         pid: Some(process.pid),
+        pgid: None,
         started_at: now,
         ended_at: None,
     }
