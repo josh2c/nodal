@@ -6,10 +6,12 @@
 //! detection, for adopting an existing checkout in place.
 
 pub mod cmd;
+pub mod host;
 pub mod integration;
 pub mod merge;
 pub mod oid;
 pub mod preflight;
+pub mod push;
 pub mod refs;
 pub mod remote;
 pub mod scrub;
@@ -309,6 +311,22 @@ impl Git {
     /// when the URL is not UTF-8.
     pub fn remote_url(&self, name: &str) -> Result<Option<String>> {
         remote::url(&self.root, name)
+    }
+
+    /// Every remote this repository names, in the order `git remote` lists them.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git remote` failed.
+    pub fn remotes(&self) -> Result<Vec<String>> {
+        remote::names(&self.root)
+    }
+
+    /// Send refs to a remote. The one call in Nodal that touches a network.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the push was refused or the remote could not be reached.
+    pub fn push(&self, remote: &str, refspecs: &[String]) -> Result<()> {
+        push::push(&self.root, remote, refspecs)
     }
 
     /// Fetch every branch and tag a remote has.

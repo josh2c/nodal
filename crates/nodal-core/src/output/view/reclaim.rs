@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lifecycle::hooks::Ran;
 use crate::lifecycle::uniqueness::Finding;
-use crate::model::{Timestamp, Trashed};
+use crate::model::{Slug, Timestamp, Trashed};
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, JOIN, NONE, Table};
 use crate::runtime::attribute::Note;
@@ -175,6 +175,34 @@ impl Reclaimed {
     }
 }
 
+/// A merged unit whose home `gc` gave back, once its retention had run out.
+///
+/// Reclaiming is what it does, not removing: the home goes to the trash by the ordinary
+/// path, keeps a retention of its own, and a later sweep is what finally takes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retired {
+    /// The unit's handle.
+    pub slug: Slug,
+    /// Where the home went, or nothing for a checkout that was adopted in place and is
+    /// therefore left exactly where it is.
+    pub trashed: Option<PathBuf>,
+}
+
+/// A live unit nothing has touched for a while.
+///
+/// Reported and never acted on. Runtime that belongs to a unit somebody is still using
+/// is that person's, however long the clock says it has been; what `gc` stops is
+/// runtime whose unit has already been reclaimed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Idle {
+    /// The unit's handle.
+    pub slug: Slug,
+    /// Its home, which is still exactly where it was.
+    pub home: PathBuf,
+    /// The last instant anything is recorded as having happened in it.
+    pub since: Timestamp,
+}
+
 /// What one `nodal gc` removed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Swept {
@@ -192,6 +220,14 @@ pub struct Swept {
     pub containers: Vec<String>,
     /// Leases that had lapsed and were given back.
     pub leases: Vec<String>,
+    /// The merged units whose homes were reclaimed because their retention had run out.
+    pub retired: Vec<Retired>,
+    /// The live units nothing has touched for longer than the threshold that was asked
+    /// for. Reported only; nothing of theirs was stopped. Empty when no threshold was
+    /// given, which is not the same as "none", and the report says which it is.
+    pub idle: Vec<Idle>,
+    /// Whether an idle threshold was asked for at all.
+    pub idle_asked: bool,
     /// The signals that could not be read, and why.
     pub notes: Vec<Note>,
     /// What could not be removed, and why. Never a failure, for the reason
@@ -203,13 +239,21 @@ impl Render for Swept {
     const KIND: &'static str = "garbage collection";
 
     fn doc(&self) -> Doc {
-        let mut blocks = vec![Block::fields(vec![
+        let mut fields = vec![
             Field::new("freed", self.freed_cell()),
             Field::new("kept", plural(self.kept.len(), "home in trash", "homes in trash")),
+            Field::new("merged", self.retired_cell()),
             Field::new("runtime", self.runtime_cell()),
-        ])];
+        ];
+        if self.idle_asked {
+            fields.push(Field::new("idle", self.idle_cell()));
+        }
+        let mut blocks = vec![Block::fields(fields)];
         if !self.removed.is_empty() {
             blocks.push(Block::table(self.removed_table()));
+        }
+        if !self.idle.is_empty() {
+            blocks.push(Block::table(self.idle_table()));
         }
         if !self.leftovers.is_empty() {
             blocks.push(Block::table(self.leftovers_table()));
@@ -240,6 +284,36 @@ impl Swept {
             plural(self.leases.len(), "lapsed lease", "lapsed leases"),
         ]
         .join(JOIN)
+    }
+
+    /// The merged units whose homes were given back this sweep.
+    fn retired_cell(&self) -> String {
+        let count = plural(self.retired.len(), "unit reclaimed", "units reclaimed");
+        if self.retired.is_empty() {
+            return count;
+        }
+        let named = self.retired.iter().map(|unit| unit.slug.to_string()).collect::<Vec<String>>();
+        format!("{count}: {}", human::join(&named))
+    }
+
+    /// How many live units have gone quiet, and the line that says nothing was done
+    /// about them.
+    fn idle_cell(&self) -> String {
+        let count = plural(self.idle.len(), "live unit", "live units");
+        format!("{count} past the threshold; reported only, nothing was stopped")
+    }
+
+    /// One row per idle unit: which, for how long, and where it still is.
+    fn idle_table(&self) -> Table {
+        let mut table = Table::new(&["idle", "quiet for", "home"]);
+        for unit in &self.idle {
+            table.push(vec![
+                unit.slug.to_string(),
+                human::since(self.now, unit.since),
+                unit.home.display().to_string(),
+            ]);
+        }
+        table
     }
 
     /// One row per home removed.

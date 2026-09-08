@@ -168,6 +168,20 @@ jobs:
       - name: a dirty unit reaches the target, a conflict stops both ways, and a kill rolls back
         run: ci/acceptance-merge.sh
 
+  acceptance-done:
+    name: acceptance (done)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: both refs are pushed, a merged unit is recorded, and no pull request can be opened
+        run: ci/acceptance-done.sh
+
   acceptance-reclaim:
     name: acceptance (reclaim)
     runs-on: ${{ matrix.os }}

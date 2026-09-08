@@ -15,6 +15,7 @@ use nodal_core::workspace::home;
 use crate::commands::base::Base;
 use crate::commands::cd::Cd;
 use crate::commands::doctor::Doctor;
+use crate::commands::done::Done;
 use crate::commands::env::Env;
 use crate::commands::gc::Gc;
 use crate::commands::init::Init;
@@ -48,11 +49,14 @@ pub enum Command {
     Run(Run),
     /// Report what is running on this machine and which unit each thing belongs to.
     Ps(Ps),
+    /// Push a unit's work for review and print where the change is opened.
+    Done(Done),
     /// Merge a unit: commit, squash, rebase, fast-forward the target, and remove it.
     Merge(Merge),
     /// End a unit: stop what it runs, give back its ports, and move its home to trash.
     Reclaim(Reclaim),
-    /// Remove the trashed homes whose retention has run out.
+    /// Reclaim the merged homes whose retention has run out, and remove the trashed
+    /// ones whose own has.
     Gc(Gc),
     /// Report what tools left behind on this machine. It removes nothing.
     Doctor(Doctor),
@@ -103,9 +107,10 @@ impl Cli {
             Some(Command::Cd(cd)) => cd.run(&self.registry()?),
             Some(Command::Run(run)) => run.run(&self.registry()?),
             Some(Command::Ps(ps)) => ps.run(&self.registry()?),
+            Some(Command::Done(done)) => done.run(&mut self.registry()?),
             Some(Command::Merge(merge)) => merge.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Reclaim(reclaim)) => reclaim.run(&mut self.registry()?, !self.no_hooks),
-            Some(Command::Gc(gc)) => gc.run(&self.registry()?),
+            Some(Command::Gc(gc)) => gc.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Doctor(doctor)) => doctor.run(&self.registry()?),
             Some(Command::ShellInit(init)) => init.run(),
             Some(Command::Shell(shell)) => shell.run(),

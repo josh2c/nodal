@@ -26,7 +26,7 @@ use nodal_core::model::{
     Ports, ProjectId, ProjectName, Slug, Timestamp, UnitId, UnitStatus, WorkspaceFp,
 };
 use nodal_core::output::view::{
-    BaseList, BaseRow, EnvLine, EventLog, Freshness, InitReport, Ps, Remote, Running,
+    BaseList, BaseRow, Done, EnvLine, EventLog, Freshness, InitReport, Ps, Remote, Running,
     SharedResource, Status, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
 };
 use nodal_core::output::{Format, Render, render, watch};
@@ -405,6 +405,28 @@ fn init_report_renders_both_ways() {
     both("init_report", &init_report());
 }
 
+#[test]
+fn a_pushed_unit_renders_both_ways() {
+    let report = Done {
+        now: now(),
+        slug: Slug::parse("worker-import").expect("a slug"),
+        branch: BranchName::parse("nodal/worker-import").expect("a branch"),
+        remote: String::from("origin"),
+        host: Some(String::from("github.com")),
+        pushed: vec![
+            String::from("refs/heads/nodal/worker-import"),
+            String::from("refs/nodal/01ARZ3NDEKTSV4RRFFQ69G5FAV/wip"),
+        ],
+        snapshot: Some(String::from("refs/nodal/01ARZ3NDEKTSV4RRFFQ69G5FAV/wip")),
+        compare: Some(String::from(
+            "https://github.com/team/project/compare/nodal/worker-import?expand=1",
+        )),
+        status: UnitStatus::Review,
+        notes: Vec::new(),
+    };
+    both("done", &report);
+}
+
 // --------------------------------------------------------------- the stream
 
 /// A source that answers from a fixed list, which is what makes the stream's output a
@@ -480,6 +502,8 @@ fn every_snapshot_file_is_claimed_by_a_test() {
     let expected: Vec<&str> = vec![
         "base_list.json",
         "base_list.txt",
+        "done.json",
+        "done.txt",
         "event_log.json",
         "event_log.txt",
         "init_report.json",

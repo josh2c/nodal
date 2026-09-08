@@ -11,6 +11,7 @@
 pub mod base;
 pub mod created;
 pub mod doctor;
+pub mod done;
 pub mod env;
 pub mod event;
 pub mod init;
@@ -23,12 +24,13 @@ pub mod unit;
 pub use crate::output::view::base::{BaseBuild, BaseList, BaseRow, BaseSweep};
 pub use crate::output::view::created::Created;
 pub use crate::output::view::doctor::{Checkout, Doctor, Finding, Kind, Note};
+pub use crate::output::view::done::Done;
 pub use crate::output::view::env::{EnvReport, VarLine};
 pub use crate::output::view::event::EventLog;
 pub use crate::output::view::init::InitReport;
 pub use crate::output::view::merge::{Conflict, Merged, StageLine};
 pub use crate::output::view::ps::Ps;
-pub use crate::output::view::reclaim::{Leftover, Reclaimed, Swept};
+pub use crate::output::view::reclaim::{Idle, Leftover, Reclaimed, Retired, Swept};
 pub use crate::output::view::status::{SharedResource, Status};
 pub use crate::output::view::unit::{
     EnvLine, Freshness, Remote, Running, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,

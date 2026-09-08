@@ -1,0 +1,15 @@
+{
+  "now": "2026-09-06T14:22:00Z",
+  "slug": "worker-import",
+  "branch": "nodal/worker-import",
+  "remote": "origin",
+  "host": "github.com",
+  "pushed": [
+    "refs/heads/nodal/worker-import",
+    "refs/nodal/01ARZ3NDEKTSV4RRFFQ69G5FAV/wip"
+  ],
+  "snapshot": "refs/nodal/01ARZ3NDEKTSV4RRFFQ69G5FAV/wip",
+  "compare": "https://github.com/team/project/compare/nodal/worker-import?expand=1",
+  "status": "review",
+  "notes": []
+}
