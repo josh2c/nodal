@@ -92,11 +92,19 @@ pub fn write(home: &Path, git: &Git) -> Result<Pointed> {
 ///
 /// A vendor file that was already there is the person's own, whether or not Git tracks
 /// it, so its place in `git status` stays theirs to decide.
+///
+/// The block goes in the repository's **common** directory, not the worktree's own.
+/// Every worktree of a repository shares one `info/exclude`, and a linked worktree's
+/// `.git/worktrees/<name>/info/exclude` is not read at all; writing there would leave
+/// the memory and the pointers showing as untracked in `git status` in every linked
+/// worktree, which for a unit adopted in place is the one thing the adoption promised
+/// not to do.
 fn hide(git: &Git, created: &[&str], pointed: &mut Pointed) {
     let mut lines = vec![format!("/{}", super::FILE)];
     lines.extend(created.iter().map(|name| format!("/{name}")));
     let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
-    let result = git.git_dir().and_then(|dir| files::exclude(&dir, &borrowed));
+    let result =
+        git.layout().and_then(|layout| files::exclude(&layout.common_dir, &borrowed).map(drop));
     if let Err(error) = result {
         pointed.notes.push(format!("info/exclude: {error}"));
     }

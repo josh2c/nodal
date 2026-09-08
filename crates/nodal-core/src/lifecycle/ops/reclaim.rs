@@ -191,7 +191,12 @@ pub fn plan(
         tethers: params.tethers.clone(),
         report: Arc::clone(teardown),
     });
-    let Some(entry) = &params.entry else { return Ok(plan) };
+    let Some(entry) = &params.entry else {
+        if params.environment.managed {
+            return Ok(plan);
+        }
+        return Ok(plan.then(Unadopt { home: params.environment.home.clone() }));
+    };
     Ok(plan.then(TrashHome { home: entry.home.clone(), path: entry.path.clone() }))
 }
 
@@ -480,6 +485,50 @@ impl Step for TrashHome {
     /// own recovery needs the directory to still exist.
     fn undo(&self) -> Result<()> {
         move_tree(&self.path, &self.home)
+    }
+}
+
+/// Take an adopted checkout back out of Nodal: the files it wrote there, and the rules
+/// it added to the repository's own exclude file.
+///
+/// This is the other half of the promise adoption makes. A checkout adopted in place is
+/// a directory Nodal did not create and a person is still working in, so unregistering
+/// it has to leave it as it was found rather than leaving `.nodal/`, an `.envrc` that
+/// direnv goes on reading, and a marker naming a unit that no longer exists.
+///
+/// Only a root gets this step. A managed home is moved to the trash whole, and taking
+/// its own files out of it first would be work with no observer.
+struct Unadopt {
+    /// The checkout that was adopted.
+    home: PathBuf,
+}
+
+impl Step for Unadopt {
+    fn key(&self) -> String {
+        String::from("home.unadopt")
+    }
+
+    /// The marker goes first, because `.nodal/` is removed by the call after it and
+    /// only when nothing is left in it.
+    ///
+    /// Repeatable: no part of it is a failure when it is already gone, and a directory
+    /// a person has since deleted leaves nothing to do.
+    fn apply(&self) -> Result<()> {
+        if !self.home.is_dir() {
+            return Ok(());
+        }
+        marker::remove(&self.home)?;
+        crate::env::files::remove(&self.home)?;
+        crate::env::files::unhide(&crate::env::files::exclude_dir(&self.home)?).map(drop)
+    }
+
+    /// Nothing. Everything this removed is a file Nodal wrote and `nodal adopt
+    /// --in-place` writes again, and none of it can be put back from here: the
+    /// activation is assembled from sources this step does not have. A reclaim that
+    /// rolls back after this leaves a registered unit whose checkout is not activated,
+    /// which one command repairs and no work is lost to.
+    fn undo(&self) -> Result<()> {
+        Ok(())
     }
 }
 

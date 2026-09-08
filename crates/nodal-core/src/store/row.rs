@@ -136,6 +136,20 @@ pub(crate) fn name<T: DeserializeOwned>(
         .map_err(|source| bad(table, column, source))
 }
 
+/// Read a nullable enum from the name `serde` gives it.
+pub(crate) fn name_opt<T: DeserializeOwned>(
+    row: &Row<'_>,
+    table: &'static str,
+    column: &'static str,
+) -> Result<Option<T>> {
+    let text: Option<String> = plain(row, table, column)?;
+    text.map(|text| {
+        serde_json::from_value(serde_json::Value::String(text))
+            .map_err(|source| bad(table, column, source))
+    })
+    .transpose()
+}
+
 /// Read a path. Paths are stored as text, so one that is not UTF-8 never got in.
 pub(crate) fn path(row: &Row<'_>, table: &'static str, column: &'static str) -> Result<PathBuf> {
     let text: String = plain(row, table, column)?;

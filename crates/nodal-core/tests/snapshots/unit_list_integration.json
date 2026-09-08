@@ -8,6 +8,7 @@
       "status": "open",
       "branch": "nodal/merged-plain",
       "objective": null,
+      "objective_epistemic": null,
       "freshness": {
         "state": "unknown"
       },
@@ -38,6 +39,7 @@
       "status": "open",
       "branch": "nodal/squash-landed",
       "objective": null,
+      "objective_epistemic": null,
       "freshness": {
         "state": "unknown"
       },
@@ -68,6 +70,7 @@
       "status": "open",
       "branch": "nodal/clashes",
       "objective": null,
+      "objective_epistemic": null,
       "freshness": {
         "state": "unknown"
       },
@@ -97,6 +100,7 @@
       "status": "open",
       "branch": "nodal/detached-head",
       "objective": null,
+      "objective_epistemic": null,
       "freshness": {
         "state": "unknown"
       },

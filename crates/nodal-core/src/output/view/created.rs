@@ -7,9 +7,14 @@ use crate::env::files;
 use crate::model::{Environment, Manifest, Missing, Timestamp, Unit};
 use crate::output::Render;
 use crate::output::human::{Block, Doc, Field, NONE};
-use crate::output::view::unit::{EnvLine, UnitRow};
+use crate::output::view::unit::{self, EnvLine, UnitRow};
 
-/// A unit that has just been created, with the home it was given.
+/// A unit that has just been created or adopted, with the home it was given.
+///
+/// The objective is on the report because of adoption: a unit made from a checkout an
+/// agent left behind has an objective nobody typed, recovered from that session's
+/// opening prompt, and the moment to show a person what was recovered is the moment it
+/// was.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Created {
     /// The instant the answer was taken.
@@ -59,6 +64,9 @@ impl Render for Created {
             Field::new("home", home_cell(&self.unit)),
             Field::new("ports", ports_cell(&self.unit)),
         ];
+        if self.unit.objective.is_some() {
+            fields.push(Field::new("for", unit::objective_cell(&self.unit)));
+        }
         if !self.missing.is_empty() {
             fields.push(Field::new("no value", missing_cell(&self.missing)));
         }

@@ -1,0 +1,63 @@
+{
+  "now": "2026-09-06T14:22:00Z",
+  "unit": {
+    "id": "01J9X3M8ZK4P2R7V9N6TQW3B5H",
+    "slug": "payroll-export",
+    "status": "open",
+    "branch": "nodal/payroll-export",
+    "objective": "payroll export CSV",
+    "objective_epistemic": "observed",
+    "freshness": {
+      "state": "stale",
+      "parts": [
+        "dependencies",
+        "schema"
+      ]
+    },
+    "work": {
+      "dirty": 0,
+      "staged": 0,
+      "untracked": 0,
+      "detached": false,
+      "base": "refs/remotes/origin/main",
+      "main": {
+        "ahead": 1,
+        "behind": 4
+      },
+      "integration": {
+        "state": "open"
+      },
+      "remote": null
+    },
+    "environment": {
+      "id": "01J9X3M8ZK4P2R7V9N6TQW3B5J",
+      "home": "/home/j/code/app/.claude/worktrees/payroll",
+      "state": "running",
+      "managed": false,
+      "disk_bytes": 301000000,
+      "ports": {
+        "app": 41231,
+        "postgrest": 54401
+      },
+      "running": [
+        {
+          "command": "next dev",
+          "port": 41231
+        }
+      ]
+    },
+    "created_at": "2026-09-06T09:40:00Z",
+    "sessions": [
+      {
+        "tool": "codex",
+        "count": 1
+      },
+      {
+        "tool": "josh",
+        "count": 1
+      }
+    ],
+    "last_active": "2026-09-06T14:21:40Z"
+  },
+  "history": []
+}

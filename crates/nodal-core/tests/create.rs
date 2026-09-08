@@ -103,6 +103,7 @@ impl Fixture {
             project_id: project.id,
             slug: Slug::parse("worker-import").unwrap(),
             objective: None,
+            objective_epistemic: None,
             branch: BranchName::parse("nodal/worker-import").unwrap(),
             parent_branch: None,
             status: UnitStatus::Open,

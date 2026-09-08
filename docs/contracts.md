@@ -10,8 +10,12 @@ A unit's home contains `.nodal/id` (marker, verified against the registry), `.no
 `.nodal/manifest.toml`, `WORKUNIT.md` (facts about the unit and its siblings), `.envrc` (`dotenv .nodal/env`),
 and a normal `.git` directory. Nothing else is required for a terminal, IDE or agent to integrate.
 
-Nodal adds `.nodal/`, `.envrc` and `WORKUNIT.md` to `.git/info/exclude`, so `git status` in a unit
-stays clean. A vendor file Nodal itself created is added there too.
+Nodal adds `.nodal/`, `.envrc` and `WORKUNIT.md` to the repository's common `info/exclude`, so
+`git status` in a unit stays clean. A vendor file Nodal itself created is added there too. Every
+worktree of a repository shares that one exclude file — a linked worktree's own
+`.git/worktrees/<name>/info/exclude` is not read — so a unit adopted in a nested worktree writes the
+block into the repository the project shares. The names are Nodal's own, and `nodal reclaim` takes
+both them and the files back out again.
 
 `.nodal/manifest.toml` states the identity of the home, every environment name it carries, the
 origin of each name, and every declared name that no source answered. It holds no value. Its shape
@@ -145,6 +149,47 @@ last one.
 It then prints the page a person opens the change on, for the host the remote names, and **opens no
 pull request**. There is no host API in Nodal and no client of one; a remote whose host Nodal has no
 compare page for is told so rather than guessed at. The unit moves to `review`.
+
+`adopt <branch-or-path>` makes a unit of work that is already here, in one of two forms.
+
+`--in-place` makes a checkout or a linked worktree a unit **where it stands**. The only writes are
+`.nodal/` and `.envrc`, and both are excluded from Git before either is written, so `git status` in
+that directory is byte for byte what it was. Nothing is cloned, no branch is created, and no file of
+the person's is touched. The environment row carries `managed = false`, which makes the directory a
+root: a reclaim unregisters it and never moves it. A directory can be adopted no other way, so
+`--in-place` is stated rather than inferred.
+
+Without `--in-place` the target is a branch nothing has checked out, and it gets a home of its own
+from a base, made exactly as `nodal new` makes one except that the branch already exists and is
+fetched from the project's own checkout rather than created. A branch a worktree *does* hold is
+refused and the message names that worktree: a second home for it would leave whatever is uncommitted
+there behind.
+
+Adoption refuses the project's own checkout, a directory that already carries a unit's marker, a
+directory inside another unit's home, and a checkout whose HEAD is a commit rather than a branch.
+
+The two forms run different hooks, because they did different things. Adoption in place runs **no
+recipe hook at all**: nothing was created, and running a project's commands inside a person's live
+checkout on the strength of registering it is not something registering it asked for. The
+materialised form runs `post_new`, exactly as `nodal new` does: it made a home, and the recipe's
+contract is that a home Nodal made has had that hook run in it. Neither form runs `pre_new`, which is
+about the moment before a home is made from a base nothing has decided yet.
+
+The handle comes from `--name`, then from the last segment of the branch, because the branch is the
+name every other tool already shows for that work.
+
+Where nothing states what the unit is for, adoption recovers it from the records of the session that
+ran in that checkout — the same reading `nodal doctor` prints beside a nested worktree — and records
+it as **recovered, not stated** (`unit.objective_epistemic`). Every rendering says which of the two it
+is. A stated objective is never replaced by a recovered one.
+
+A recovered objective is marked recovered wherever an objective prints: `nodal ls`, `nodal show`, the
+adoption's own report, and `WORKUNIT.md`.
+
+`explain <unit>` answers with why the home is as it is, read back out of what was recorded at the
+time: which base it was cloned from and why that one, what the clone left out and who decided each
+row, what was removed from the copy after it was made, and which block the ports came from. For a
+checkout adopted in place the first three say that nothing was copied, rather than being blank.
 
 `merge <unit>` takes one unit from a dirty home to a merged target in one command. It runs five
 stages, and every stage has a flag that drops it: `commit` (`--no-commit`), `squash` (`--no-squash`),
@@ -317,7 +362,7 @@ There are six hooks. Each runs in a directory that exists.
 | hook | when | directory |
 |---|---|---|
 | `pre_new` | before the home is made | the project root |
-| `post_new` | after the unit's rows are committed | the home |
+| `post_new` | after the unit's rows are committed, by `new` and by an adoption that made a home | the home |
 | `pre_merge` | before a merge commits anything | the home |
 | `post_merge` | after the target branch is fast-forwarded | the project root |
 | `pre_reclaim` | before anything is torn down | the home |
@@ -325,6 +370,9 @@ There are six hooks. Each runs in a directory that exists.
 
 `post_merge` runs before the merge removes the unit, so the home it names is still there. A merge
 that stops for a conflict runs `pre_merge` and no other hook.
+
+`nodal adopt --in-place` runs none of the six: it created nothing. `nodal adopt` without it made a
+home, and runs `post_new` there and nothing else.
 
 Every path a hook is given is resolved: `NODAL_SOURCE`, `NODAL_ROOT`, `{repo_root}`, `{unit_path}`,
 and the directory the hook is started in. A hook can therefore compare one of them with its own
@@ -377,7 +425,9 @@ home had. It then reads back everything the unit had, by identifier, and reports
 there. It does not claim that the machine is clean.
 
 Nodal never trashes two things. A checkout adopted in place is unregistered, and the directory
-stays where it is. A base is not a home; `nodal base gc` collects it.
+stays where it is: its rows are closed, its ports come back, and Nodal's own files — the marker, the
+activation files, the memory and the lines in `info/exclude` — are taken back out, so the directory is
+left as adoption found it. A base is not a home; `nodal base gc` collects it.
 
 A reclaim reads the two signals `nodal ps` reads: the process table and the container daemon. A
 signal Nodal cannot read becomes a note, never silence. A host with no readable process table

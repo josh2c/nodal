@@ -75,6 +75,7 @@ fn unit() -> Unit {
         project_id: id('1'),
         slug: Slug::parse("fix-worker-import").unwrap(),
         objective: Some(Objective::parse("fix the worker import").unwrap()),
+        objective_epistemic: Some(Epistemic::Stated),
         branch: BranchName::parse("nodal/fix-worker-import").unwrap(),
         parent_branch: Some(BranchName::parse("main").unwrap()),
         status: UnitStatus::Open,
@@ -271,10 +272,11 @@ fn a_unit_records_what_changed_about_it() {
     let moved = BranchName::parse("nodal/fix-worker-import-2").unwrap();
 
     assert!(units::update_branch(conn, id('2'), &moved, later).unwrap());
-    assert!(units::update_objective(conn, id('2'), None, later).unwrap());
+    assert!(units::update_objective(conn, id('2'), None, None, later).unwrap());
     let stored = units::get(conn, id('2')).unwrap().unwrap();
     assert_eq!(stored.branch, moved);
     assert_eq!(stored.objective, None);
+    assert_eq!(stored.objective_epistemic, None);
     assert_eq!(stored.updated_at, later);
     assert!(!units::update_status(conn, id('9'), UnitStatus::Merged, later).unwrap());
 }

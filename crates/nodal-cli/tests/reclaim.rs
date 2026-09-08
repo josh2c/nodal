@@ -32,16 +32,9 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use nodal_core::lifecycle::journal;
-use nodal_core::model::{
-    BranchName, EnvId, EnvState, Environment, Ports, Slug, Timestamp, Unit, UnitId, UnitStatus,
-};
+use nodal_core::model::{EnvState, UnitStatus};
 use nodal_core::store::{Store, environments, projects, trash, units};
 use tempfile::TempDir;
-
-/// The identifiers the adopted checkout's rows are written with. Fixed rather than
-/// generated, so the fixture needs nothing the product does not already depend on.
-const ADOPTED_UNIT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FA1";
-const ADOPTED_ENV: &str = "01ARZ3NDEKTSV4RRFFQ69G5FA2";
 
 /// How long a test waits for a killed run to reach the step it is being killed in.
 const REACH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -153,55 +146,24 @@ impl Workspace {
 }
 
 impl Workspace {
-    /// Register a checkout of this project as a unit adopted in place.
+    /// Make a checkout of this project a unit adopted in place, with `nodal adopt`.
     ///
-    /// `nodal adopt` is a later task, so the rows are written here the way it will
-    /// write them: a unit, and an environment whose home is the person's own directory
-    /// and whose `managed` is false. The directory is a clone of the project, because
-    /// that is what an adopted checkout is — a tree whose commits the project already
-    /// has.
+    /// The directory is a clone of the project, because that is what an adopted
+    /// checkout is: a tree whose commits the project already has. The command is the
+    /// real one rather than rows written by hand, so what this suite reclaims is what
+    /// an adoption actually leaves on a disk — the marker, the activation files, and
+    /// the exclusions that keep them out of `git status`.
+    ///
+    /// The command is given the name the caller has and the answer is the name the
+    /// filesystem uses (DL-037). Those are two different strings whenever the temporary
+    /// directory is reached through a link — always on macOS, and on Linux under this
+    /// suite's second run — and it is the resolved one the registry holds and every
+    /// report prints, so it is the one a caller can compare anything against.
     fn adopt_in_place(&self, slug: &str) -> PathBuf {
         let root = self.state.parent().unwrap().join(slug);
         git(&self.source, &["clone", "-q", "--", ".", root.to_str().unwrap()]);
-        let store = self.store();
-        let project =
-            projects::list(store.conn()).unwrap().pop().expect("the project is known by now");
-        let now = Timestamp::now();
-        let unit = Unit {
-            id: UnitId::parse(ADOPTED_UNIT).unwrap(),
-            project_id: project.id,
-            slug: Slug::parse(slug).unwrap(),
-            objective: None,
-            branch: BranchName::parse(format!("nodal/{slug}")).unwrap(),
-            parent_branch: None,
-            status: UnitStatus::Open,
-            created_at: now,
-            updated_at: now,
-        };
-        let environment = Environment {
-            id: EnvId::parse(ADOPTED_ENV).unwrap(),
-            unit_id: unit.id,
-            attempt: 1,
-            home: root.clone(),
-            managed: false,
-            base_id: None,
-            ws_fp_materialized: None,
-            schema_fp_materialized: None,
-            host: nodal_core::lifecycle::owner::current_host(),
-            db_name: None,
-            ports: Ports::default(),
-            fixed_port: None,
-            state: EnvState::Stopped,
-            created_at: now,
-            last_active: now,
-        };
-        units::insert(store.conn(), &unit).unwrap();
-        environments::insert(store.conn(), &environment).unwrap();
-        nodal_core::lifecycle::marker::write(&root, unit.id).unwrap();
-        // Adoption hides what Nodal writes, so that `git status` in a person's own
-        // checkout says exactly what it said before.
-        nodal_core::env::files::hide(&root.join(".git")).unwrap();
-        root
+        stdout(&self.nodal(&["adopt", root.to_str().unwrap(), "--in-place", "--name", slug]));
+        resolved(&root)
     }
 }
 

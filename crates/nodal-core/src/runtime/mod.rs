@@ -26,6 +26,7 @@
 pub mod actor;
 pub mod attribute;
 pub mod entry;
+pub mod explain;
 pub mod init;
 pub mod ls;
 pub mod processes;

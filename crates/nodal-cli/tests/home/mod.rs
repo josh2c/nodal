@@ -124,6 +124,7 @@ fn rows(root: &Path, home: &Path) -> (Unit, Environment, Project) {
         project_id: ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap(),
         slug: Slug::parse(SLUG).unwrap(),
         objective: None,
+        objective_epistemic: None,
         branch: BranchName::parse("nodal/fix-worker-import").unwrap(),
         parent_branch: None,
         status: UnitStatus::Open,

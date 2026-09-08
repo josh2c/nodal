@@ -12,11 +12,13 @@ use nodal_core::logging::Verbosity;
 use nodal_core::store::Store;
 use nodal_core::workspace::home;
 
+use crate::commands::adopt::Adopt;
 use crate::commands::base::Base;
 use crate::commands::cd::Cd;
 use crate::commands::doctor::Doctor;
 use crate::commands::done::Done;
 use crate::commands::env::Env;
+use crate::commands::explain::Explain;
 use crate::commands::gc::Gc;
 use crate::commands::init::Init;
 use crate::commands::ls::Ls;
@@ -38,10 +40,15 @@ pub enum Command {
     Env(Env),
     /// Make a unit: a branch, a home cloned from the project, and the rows for both.
     New(New),
+    /// Make a unit of work that is already here: a checkout, or a branch with no home.
+    Adopt(Adopt),
     /// List every unit of the project: its work, its integration, and who is in it.
     Ls(Ls),
     /// Report one unit in full, and write its memory again.
     Show(Show),
+    /// Report why a unit's home is as it is: its base, what it did not receive, what
+    /// was removed from it, and where its ports came from.
+    Explain(Explain),
     /// Print the home of a unit, and enter it when the shell function is installed.
     Cd(Cd),
     /// Print the shell integration for bash, zsh or fish.
@@ -106,8 +113,10 @@ impl Cli {
             Some(Command::Init(init)) => init.run(),
             Some(Command::Env(env)) => env.run(),
             Some(Command::New(new)) => new.run(&mut self.registry()?, !self.no_hooks),
+            Some(Command::Adopt(adopt)) => adopt.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Ls(ls)) => ls.run(&self.registry()?),
             Some(Command::Show(show)) => show.run(&self.registry()?),
+            Some(Command::Explain(explain)) => explain.run(&self.registry()?),
             Some(Command::Cd(cd)) => cd.run(&self.registry()?),
             Some(Command::Run(run)) => run.run(&self.registry()?),
             Some(Command::Ps(ps)) => ps.run(&self.registry()?),

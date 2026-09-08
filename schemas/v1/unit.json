@@ -6,6 +6,21 @@
       "pattern": "^(?![-/])(?!.*(?:\\.\\.|//|@\\{))(?!.*[/.]$)(?!.*\\.lock$)[^\\s~^:?*\\[\\\\\\x00-\\x1F\\x7F-\\x9F]+$",
       "type": "string"
     },
+    "Epistemic": {
+      "description": "How the event is known. V1 has two tiers and no more: Nodal watched it happen, or\nsomebody said so.",
+      "oneOf": [
+        {
+          "const": "observed",
+          "description": "Captured by Nodal from a shim, a hook or the Git state.",
+          "type": "string"
+        },
+        {
+          "const": "stated",
+          "description": "Declared by a person or an agent.",
+          "type": "string"
+        }
+      ]
+    },
     "Objective": {
       "description": "What the unit is for, in one line, as the person or agent stated it.",
       "maxLength": 255,
@@ -86,7 +101,18 @@
           "type": "null"
         }
       ],
-      "description": "The stated intent, when there is one. Adoption may recover it later."
+      "description": "The intent, when there is one. Adoption may recover it later."
+    },
+    "objective_epistemic": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Epistemic"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "How the objective is known, when there is one: `stated` when a person or an\nagent said what the unit is for, `observed` when adoption recovered it from the\nrecords of the session that made the checkout. A recovered line is a reading of\nsomebody's opening prompt, not a statement of intent, and a person deciding what\nto do with a unit three weeks later needs to be told which of the two they are\nreading."
     },
     "parent_branch": {
       "anyOf": [

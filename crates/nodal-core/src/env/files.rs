@@ -33,6 +33,13 @@ pub const ENVRC: &str = ".envrc";
 /// The manifest, relative to a home.
 pub const MANIFEST: &str = ".nodal/manifest.toml";
 
+/// The unit's memory, relative to a home: what `nodal show` writes again each time it
+/// is asked, and what an agent reads to learn what the unit is for and what its
+/// siblings changed. It sits at the top of the home rather than inside `.nodal/`
+/// because it is written for a person and for an agent to open, and both of them look
+/// there first.
+pub const WORKUNIT: &str = "WORKUNIT.md";
+
 /// The whole of `.envrc`. One line, because direnv is the reader and `.nodal/env` is
 /// the content; anything else here would be a second place to keep the truth.
 pub const ENVRC_CONTENTS: &str = "dotenv .nodal/env\n";
@@ -42,6 +49,10 @@ pub const ENVRC_CONTENTS: &str = "dotenv .nodal/env\n";
 pub const ENV_MODE: u32 = secrets::OWNER_ONLY;
 
 /// The paths a home's activation writes, and which Git is told to ignore.
+///
+/// [`WORKUNIT`] is hidden with them and is not one of them: the activation writes it
+/// no more than the activation compiles it, and a home whose memory has never been
+/// asked for simply has none.
 pub const PATHS: &[&str] = &[ENV, ENVRC, MANIFEST];
 
 /// What a home's Git repository is told to leave alone, written to `.git/info/exclude`.
@@ -49,7 +60,12 @@ pub const PATHS: &[&str] = &[ENV, ENVRC, MANIFEST];
 /// The unit's own files are not the project's, so they must not appear in
 /// `git status`: a unit whose activation files show as untracked is a unit the
 /// uniqueness check calls dirty, and no one could ever reclaim it.
-const EXCLUDE_LINES: &[&str] = &["/.nodal/", "/.envrc"];
+///
+/// The same rule is what makes adoption in place possible at all. A checkout adopted
+/// where it stands is a directory Nodal did not create and a person is working in, and
+/// these three lines are why `git status` in it says exactly what it said the moment
+/// before it became a unit.
+const EXCLUDE_LINES: &[&str] = &["/.nodal/", "/.envrc", "/WORKUNIT.md"];
 
 /// The marker `.git/info/exclude` carries, so a reader can see which lines are Nodal's.
 pub const EXCLUDE_MARKER: &str = "# nodal";
@@ -68,15 +84,20 @@ pub fn write(home: &Path, activation: &Activation, manifest: &Manifest) -> Resul
     Ok(())
 }
 
-/// Remove the activation files from `home`, leaving the home itself.
+/// Take everything Nodal writes into a home back out of it, leaving the home itself.
 ///
-/// Idempotent, and it removes only what [`write`] created: a file that is not there is
-/// not an error, and `.nodal/` is removed only when nothing else has been put in it.
+/// That is the three activation files and the compiled memory ([`WORKUNIT`]) — every
+/// path [`hide`] tells Git to ignore, and nothing else. The list is the same one for a
+/// reason: a file Nodal hid from `git status` is a file a person would not see left
+/// behind, so the two must not drift apart.
+///
+/// Idempotent: a file that is not there is not an error, and `.nodal/` is removed only
+/// when nothing else has been put in it.
 ///
 /// # Errors
 /// [`Error::Io`] if a file that is there cannot be removed.
 pub fn remove(home: &Path) -> Result<()> {
-    for relative in PATHS {
+    for relative in PATHS.iter().chain(std::iter::once(&WORKUNIT)) {
         let path = home.join(relative);
         match std::fs::remove_file(&path) {
             Ok(()) => {}
@@ -92,6 +113,16 @@ pub fn remove(home: &Path) -> Result<()> {
 }
 
 /// Add the activation paths to `git_dir/info/exclude`, once.
+///
+/// Returns whether the lines were added, so that a caller can say what it changed.
+/// A second call over a file that already carries them adds nothing.
+///
+/// `git_dir` is the directory Git reads `info/exclude` from, which is the repository's
+/// **common** directory. Every worktree of a repository shares one exclude file: a
+/// linked worktree's own `.git/worktrees/<name>/info/exclude` is not read at all. So
+/// hiding the files of a unit adopted in a nested worktree writes one block into the
+/// repository the whole project shares, and the three names it holds are Nodal's own
+/// ([`EXCLUDE_LINES`]) rather than anything a project puts in a tree.
 ///
 /// # Errors
 /// [`Error::Io`] if the file cannot be read or written.
@@ -143,6 +174,44 @@ pub fn exclude<'a>(git_dir: &Path, lines: &[&'a str]) -> Result<Vec<&'a str>> {
     }
     std::fs::write(&path, text).map_err(Error::io(&path))?;
     Ok(adding)
+}
+
+/// Take the lines [`hide`] wrote out of `git_dir/info/exclude` again.
+///
+/// Returns whether there was a block to remove. Every other line of the file is kept as
+/// it was written, in the order it was written: this drops the marker line and the
+/// lines it introduced, and touches nothing else. A line somebody wrote themselves that
+/// is character for character one of Nodal's goes with them, which leaves the file
+/// saying what Nodal's own block was already making it say.
+///
+/// This is the undo of an adoption. A checkout Nodal did not create is a directory it
+/// must leave as it found it, so an adoption that fails half-way through takes its
+/// exclusions back out rather than leaving a person's own repository carrying rules
+/// for a unit that does not exist.
+///
+/// # Errors
+/// [`Error::Io`] if the file is there and cannot be read or written.
+pub fn unhide(git_dir: &Path) -> Result<bool> {
+    let path = git_dir.join("info").join("exclude");
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(Error::io(&path)(error)),
+    };
+    let kept: Vec<&str> = existing
+        .lines()
+        .filter(|line| line.trim_end() != EXCLUDE_MARKER)
+        .filter(|line| !EXCLUDE_LINES.contains(&line.trim_end()))
+        .collect();
+    if kept.len() == existing.lines().count() {
+        return Ok(false);
+    }
+    let mut text = kept.join("\n");
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    std::fs::write(&path, text).map_err(Error::io(&path))?;
+    Ok(true)
 }
 
 /// The dotenv rendering: what `.nodal/env` holds and what direnv reads.
@@ -336,11 +405,45 @@ impl Step for WriteFiles {
     }
 }
 
+/// Telling a home's repository to leave Nodal's own files alone, as one step.
+///
+/// The Git directory is asked for inside `apply` rather than carried in the step,
+/// because a plan holds only what the journal can write down and a Git directory is
+/// something the repository answers. It is the common directory, for the reason
+/// [`hide`] gives: it is the only `info/exclude` Git reads.
+pub struct Hide {
+    /// The home whose repository is told.
+    pub home: PathBuf,
+}
+
+impl Step for Hide {
+    fn key(&self) -> String {
+        String::from("git.hide")
+    }
+
+    fn apply(&self) -> Result<()> {
+        hide(&exclude_dir(&self.home)?).map(drop)
+    }
+
+    fn undo(&self) -> Result<()> {
+        unhide(&exclude_dir(&self.home)?).map(drop)
+    }
+}
+
+/// The directory whose `info/exclude` Git reads for the checkout at `home`.
+///
+/// # Errors
+/// [`Error::NotARepository`] when the home is not a checkout, and whatever Git
+/// reported.
+pub fn exclude_dir(home: &Path) -> Result<PathBuf> {
+    Ok(crate::git::Git::open(home)?.layout()?.common_dir)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{dotenv, escape_dotenv, export};
+    use super::{dotenv, escape_dotenv, export, hide, unhide};
     use crate::env::{Activation, EnvVar, secrets};
     use crate::model::{EnvName, Missing, Origin, Want};
 
@@ -378,5 +481,30 @@ mod tests {
     #[test]
     fn a_newline_in_a_value_stays_on_one_line_of_the_dotenv_file() {
         assert_eq!(escape_dotenv("one\ntwo"), "one\\ntwo");
+    }
+
+    /// What an adoption owes a checkout it did not create: the file as it found it.
+    #[test]
+    fn hiding_and_unhiding_leave_what_a_person_wrote_untouched() {
+        let git_dir = tempfile::tempdir().unwrap();
+        let path = git_dir.path().join("info").join("exclude");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let theirs = "# their own rules\n/scratch\n";
+        std::fs::write(&path, theirs).unwrap();
+
+        assert!(hide(git_dir.path()).unwrap(), "the lines were added");
+        assert!(!hide(git_dir.path()).unwrap(), "adding them twice adds nothing");
+        let hidden = std::fs::read_to_string(&path).unwrap();
+        assert!(hidden.contains("/.nodal/"), "{hidden}");
+
+        assert!(unhide(git_dir.path()).unwrap(), "the lines were removed");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs);
+        assert!(!unhide(git_dir.path()).unwrap(), "removing them twice removes nothing");
+    }
+
+    #[test]
+    fn unhiding_a_repository_that_was_never_hidden_changes_nothing() {
+        let git_dir = tempfile::tempdir().unwrap();
+        assert!(!unhide(git_dir.path()).unwrap());
     }
 }

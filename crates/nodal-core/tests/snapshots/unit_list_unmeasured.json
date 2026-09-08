@@ -8,6 +8,7 @@
       "status": "review",
       "branch": "feature/auth-refresh",
       "objective": null,
+      "objective_epistemic": null,
       "freshness": {
         "state": "unknown"
       },

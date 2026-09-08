@@ -268,6 +268,7 @@ fn fixture_unit(id: UnitId, project_id: nodal_core::model::ProjectId) -> Unit {
         project_id,
         slug: Slug::parse("fix-worker-import").unwrap(),
         objective: None,
+        objective_epistemic: None,
         branch: "nodal/fix-worker-import".parse().unwrap(),
         parent_branch: None,
         status: UnitStatus::Open,

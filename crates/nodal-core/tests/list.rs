@@ -135,6 +135,7 @@ fn record(store: &Store, project: &Project, row: &Row<'_>, now: Timestamp) -> Un
         project_id: project.id,
         slug: Slug::parse(branch).unwrap(),
         objective: None,
+        objective_epistemic: None,
         branch: BranchName::parse(branch).unwrap(),
         parent_branch: None,
         status: UnitStatus::Open,

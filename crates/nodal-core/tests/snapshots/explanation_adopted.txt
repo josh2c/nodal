@@ -1,0 +1,14 @@
+  unit    payroll-export
+  home    /home/j/code/app/.claude/worktrees/payroll
+  origin  adopted where it stands
+  why     the checkout was already on this machine, so Nodal registered it rather than copying it; a reclaim unregisters it and never moves it
+
+  what the home did not receive
+    nothing was copied, so nothing was left out: the checkout was already here
+
+  what was removed from it after it was made
+    no cache was removed: nothing in the home recorded a path other than its own
+
+  where the ports came from
+    NAME  PORT   FROM
+    app   41231  the block 41230-41329 this project was granted
