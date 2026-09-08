@@ -34,6 +34,7 @@ pub mod marker;
 pub mod ops;
 pub mod owner;
 pub mod step;
+pub mod template;
 pub mod uniqueness;
 
 use crate::lifecycle::journal::{Operation, State, StepRecord, StepState};

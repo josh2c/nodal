@@ -560,6 +560,72 @@ pub enum Error {
         command: String,
     },
 
+    /// A value a hook's variable would have been filled in with holds a character the
+    /// shell would read as syntax rather than as text.
+    #[error(
+        "the {phase} hook names {{{variable}}}, whose value {value:?} holds {character:?}; \
+         a value that would be read as shell syntax is not substituted",
+        phase = phase.key()
+    )]
+    HookVariable {
+        /// Which hook it is.
+        phase: Phase,
+        /// The variable that would have been filled in.
+        variable: &'static str,
+        /// The value it stands for.
+        value: String,
+        /// The character that stopped it.
+        character: char,
+    },
+
+    /// A merge was asked for and no branch could be found to merge into.
+    #[error(
+        "no branch of {project} answers as the one {slug} merges into; tried {tried}",
+        project = project.display(),
+        tried = tried.join(", ")
+    )]
+    MergeNoTarget {
+        /// The project checkout that was read.
+        project: PathBuf,
+        /// The unit that was to be merged.
+        slug: Slug,
+        /// The branch names that were tried, in order.
+        tried: Vec<String>,
+    },
+
+    /// The branch a merge was to fast-forward has moved, so moving it now would rewrite
+    /// history somebody else may already have.
+    #[error(
+        "{branch} has moved to {found} since the rebase; run `nodal merge` again to rebase \
+         onto it, or stop"
+    )]
+    MergeTargetMoved {
+        /// The branch that was to be fast-forwarded.
+        branch: String,
+        /// What it points at now.
+        found: String,
+    },
+
+    /// A merge was asked for in a home whose `HEAD` is not the unit's branch, so there
+    /// is no branch for the merge to move.
+    #[error(
+        "{home} is not on {branch}; check the branch out there and run the merge again",
+        home = home.display()
+    )]
+    MergeNotOnBranch {
+        /// The home that was read.
+        home: PathBuf,
+        /// The branch the unit owns.
+        branch: BranchName,
+    },
+
+    /// A merge was asked to resume or abort a rebase, and the unit is not in one.
+    #[error("{slug} is not in the middle of a merge")]
+    MergeNotStopped {
+        /// The unit that was asked about.
+        slug: Slug,
+    },
+
     /// A recipe hook ran and exited non-zero.
     #[error(
         "the {phase} hook failed: {command:?} {outcome}: {stderr}",

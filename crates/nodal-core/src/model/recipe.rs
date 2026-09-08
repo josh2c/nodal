@@ -217,8 +217,9 @@ pub struct BaseSpec {
     pub invalidate: Vec<PathBuf>,
 }
 
-/// Commands the project runs around lifecycle operations. They receive the `NODAL_*`
-/// context variables and run in the unit's home.
+/// Commands the project runs around lifecycle operations. Each receives the `NODAL_*`
+/// context variables, runs in the directory `docs/contracts.md` gives for its phase, and
+/// may name the template variables that document lists.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Hooks {
@@ -226,6 +227,10 @@ pub struct Hooks {
     pub pre_new: Option<CommandLine>,
     /// After a unit is created.
     pub post_new: Option<CommandLine>,
+    /// Before a unit is merged.
+    pub pre_merge: Option<CommandLine>,
+    /// After a unit is merged, and before it is removed.
+    pub post_merge: Option<CommandLine>,
     /// Before a unit is reclaimed.
     pub pre_reclaim: Option<CommandLine>,
     /// After a unit is reclaimed.

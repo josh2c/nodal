@@ -9,13 +9,20 @@
 //! |----------------|-------------------------------------|-------------------|
 //! | `pre_new`      | before a unit's home is made        | the project root  |
 //! | `post_new`     | after its rows are committed        | the unit's home   |
+//! | `pre_merge`    | before a merge commits anything     | the unit's home   |
+//! | `post_merge`   | after the target is fast-forwarded  | the project root  |
 //! | `pre_reclaim`  | before anything is torn down        | the unit's home   |
 //! | `post_reclaim` | after the home is in the trash      | the project root  |
 //!
-//! Two of them run in the project root because the home does not exist at that moment:
-//! before a create there is nothing yet, and after a reclaim there is nothing left
-//! where the home was. `NODAL_ROOT` still names the home in both cases, so a hook that
-//! wants the path has it.
+//! Three of them run in the project root because the home is not the subject at that
+//! moment: before a create there is nothing yet, after a reclaim there is nothing left
+//! where the home was, and a merge ends by moving the project's own branch.
+//! `NODAL_ROOT` still names the home in every case, so a hook that wants the path has
+//! it.
+//!
+//! Every command may also name the values of [`template`](super::template): a hook is
+//! written once for every unit, so the branch, the two directories, a stable port and a
+//! sanitised name are substituted into the text before the shell sees it.
 //!
 //! # Why hooks are not steps
 //!
@@ -39,6 +46,22 @@
 //! The record is per machine, in `<state directory>/hooks.toml`, beside the secrets
 //! file and for the same reason: approving somebody else's command is a decision the
 //! person at this machine made, and it does not travel with the project.
+//!
+//! # Every path a hook is given is resolved
+//!
+//! A hook is told about two directories, four times over: `NODAL_SOURCE` and
+//! `NODAL_ROOT` in its environment, `{repo_root}` and `{unit_path}` in its text, the
+//! directory it is started in, and the directory the report says it ran in. All six come
+//! from the same two values, so all six are resolved once, here, on the way in
+//! ([`guard::resolve`], `decisions/DL-037`).
+//!
+//! Resolving is not a nicety. A hook that compares a variable with its own `$PWD` is
+//! comparing two answers from two sources: Nodal's, which is a registry row holding the
+//! path a person typed, and the shell's, which comes from `getcwd` and has every link
+//! taken out of it. On macOS those are different text for one directory, because `/var`
+//! there is a link to `/private/var` and every temporary directory is under it. A hook
+//! that tests `[ "$NODAL_ROOT" = "$PWD" ]` would be false on one host and true on the
+//! other, which is not a difference a project should have to know about.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -47,7 +70,9 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use crate::fingerprint;
-use crate::model::{CommandLine, Digest, EnvId, Hooks, Slug, UnitId};
+use crate::lifecycle::guard;
+use crate::lifecycle::template::Variables;
+use crate::model::{BranchName, CommandLine, Digest, EnvId, Hooks, Slug, UnitId};
 use crate::{Error, Result};
 
 /// The file this machine records its approvals in, under the state directory.
@@ -69,6 +94,10 @@ pub enum Phase {
     PreNew,
     /// After a unit is created.
     PostNew,
+    /// Before a unit is merged.
+    PreMerge,
+    /// After a unit is merged, and before it is removed.
+    PostMerge,
     /// Before a unit is reclaimed.
     PreReclaim,
     /// After a unit is reclaimed.
@@ -76,8 +105,14 @@ pub enum Phase {
 }
 
 /// Every phase, in the order they are declared and approved.
-pub const PHASES: &[Phase] =
-    &[Phase::PreNew, Phase::PostNew, Phase::PreReclaim, Phase::PostReclaim];
+pub const PHASES: &[Phase] = &[
+    Phase::PreNew,
+    Phase::PostNew,
+    Phase::PreMerge,
+    Phase::PostMerge,
+    Phase::PreReclaim,
+    Phase::PostReclaim,
+];
 
 impl Phase {
     /// The key this phase has in `nodal.toml` and in the approvals file.
@@ -86,6 +121,8 @@ impl Phase {
         match self {
             Self::PreNew => "pre_new",
             Self::PostNew => "post_new",
+            Self::PreMerge => "pre_merge",
+            Self::PostMerge => "post_merge",
             Self::PreReclaim => "pre_reclaim",
             Self::PostReclaim => "post_reclaim",
         }
@@ -97,6 +134,8 @@ impl Phase {
         match self {
             Self::PreNew => hooks.pre_new.as_ref(),
             Self::PostNew => hooks.post_new.as_ref(),
+            Self::PreMerge => hooks.pre_merge.as_ref(),
+            Self::PostMerge => hooks.post_merge.as_ref(),
             Self::PreReclaim => hooks.pre_reclaim.as_ref(),
             Self::PostReclaim => hooks.post_reclaim.as_ref(),
         }
@@ -125,6 +164,8 @@ pub struct Context {
     pub unit: UnitId,
     /// Its handle.
     pub slug: Slug,
+    /// The branch the unit owns, which a command may name as `{branch}`.
+    pub branch: BranchName,
     /// The tree the home was cloned from, when there was one. An adopted checkout has
     /// no parent and the variable is then empty.
     pub parent: Option<String>,
@@ -134,6 +175,24 @@ pub struct Context {
 }
 
 impl Context {
+    /// The same context with both of its directories resolved.
+    ///
+    /// The two paths are the only fields that name a place on a disk, and they are what
+    /// every other form of the value is built from. Resolving them here is therefore the
+    /// whole of the rule: the environment, the template values and the working directory
+    /// all read from these.
+    ///
+    /// A home that is not there yet — `pre_new` runs before one is made — resolves as
+    /// far as it exists, which is what [`guard::resolve`] answers.
+    #[must_use]
+    pub fn resolved(&self) -> Self {
+        Self {
+            source: guard::resolve(&self.source),
+            root: guard::resolve(&self.root),
+            ..self.clone()
+        }
+    }
+
     /// The variables, by name, in the order the contract lists them.
     #[must_use]
     pub fn vars(&self) -> Vec<(&'static str, String)> {
@@ -155,6 +214,8 @@ pub struct Ran {
     pub phase: Phase,
     /// The command line, as the recipe writes it.
     pub command: String,
+    /// The command line the shell was given, with every variable filled in.
+    pub ran: String,
     /// The directory it ran in.
     pub directory: PathBuf,
 }
@@ -287,10 +348,14 @@ impl Runner {
     /// `Ok(None)` means there was nothing to run: no command declared, or hooks are off
     /// for this invocation.
     ///
+    /// Every path the hook is told about is resolved first, so that what Nodal says a
+    /// directory is called and what the shell says it is called are one name.
+    ///
     /// # Errors
     /// [`Error::HookNotApproved`] when the command is not the approved one,
-    /// [`Error::HookFailed`] when it exited non-zero, and [`Error::ToolSpawn`] when the
-    /// shell could not be started.
+    /// [`Error::HookVariable`] when a value a variable would fill in could be read as
+    /// shell syntax, [`Error::HookFailed`] when it exited non-zero, and
+    /// [`Error::ToolSpawn`] when the shell could not be started.
     pub fn run(&self, phase: Phase, directory: &Path, context: &Context) -> Result<Option<Ran>> {
         if !self.enabled {
             return Ok(None);
@@ -304,8 +369,11 @@ impl Runner {
                 command: command.to_owned(),
             });
         }
-        execute(phase, command, directory, context)?;
-        Ok(Some(Ran { phase, command: command.to_owned(), directory: directory.to_path_buf() }))
+        let context = context.resolved();
+        let directory = guard::resolve(directory);
+        let filled = Variables::of(&context)?.expand(phase, command)?;
+        execute(phase, &filled, &directory, &context)?;
+        Ok(Some(Ran { phase, command: command.to_owned(), ran: filled, directory }))
     }
 }
 
@@ -341,13 +409,13 @@ fn digest(command: &str) -> Result<String> {
 /// is given the directory a person typed, which is usually `.`; a reclaim is given the
 /// project row's root, which is what `git rev-parse --show-toplevel` said. Both name one
 /// directory, and an approval keyed by the text as typed would be an approval the other
-/// side never finds. A path that cannot be resolved — a project since deleted — keeps
-/// the form it came in, which is a key that still matches itself.
+/// side never finds.
+///
+/// Through [`guard::resolve`], which is the one place a path is normalised, rather than
+/// a rule of this file's own. A project since deleted resolves as far as it exists,
+/// which is still a key that matches itself.
 fn key_of(project: &Path) -> String {
-    std::fs::canonicalize(project)
-        .unwrap_or_else(|_| project.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
+    guard::resolve(project).to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
@@ -356,8 +424,23 @@ mod tests {
 
     use std::path::Path;
 
+    use tempfile::TempDir;
+
     use super::{Approvals, PHASES, Phase};
     use crate::model::{CommandLine, Hooks};
+
+    /// A context with both directories somewhere that does not matter.
+    fn sample() -> super::Context {
+        super::Context {
+            source: "/p".into(),
+            root: "/h".into(),
+            unit: "01J8Z6H0000000000000000001".parse().unwrap(),
+            slug: crate::model::Slug::parse("worker-import").unwrap(),
+            branch: crate::model::BranchName::parse("nodal/worker-import").unwrap(),
+            parent: None,
+            environment: "01J8Z6H0000000000000000002".parse().unwrap(),
+        }
+    }
 
     fn hooks(pre: &str) -> Hooks {
         Hooks { pre_reclaim: Some(CommandLine::parse(pre).unwrap()), ..Hooks::default() }
@@ -366,7 +449,10 @@ mod tests {
     #[test]
     fn every_phase_has_its_own_key_and_reads_its_own_command() {
         let keys: Vec<&str> = PHASES.iter().map(|phase| phase.key()).collect();
-        assert_eq!(keys, ["pre_new", "post_new", "pre_reclaim", "post_reclaim"]);
+        assert_eq!(
+            keys,
+            ["pre_new", "post_new", "pre_merge", "post_merge", "pre_reclaim", "post_reclaim"]
+        );
         let declared = hooks("echo one");
         assert_eq!(Phase::PreReclaim.command(&declared).unwrap().as_str(), "echo one");
         assert!(Phase::PreNew.command(&declared).is_none());
@@ -396,15 +482,44 @@ mod tests {
     }
 
     #[test]
-    fn the_context_never_sets_the_variable_that_moves_the_state_directory() {
-        let context = super::Context {
-            source: "/p".into(),
-            root: "/h".into(),
-            unit: "01J8Z6H0000000000000000001".parse().unwrap(),
-            slug: crate::model::Slug::parse("worker-import").unwrap(),
-            parent: None,
-            environment: "01J8Z6H0000000000000000002".parse().unwrap(),
+    fn a_resolved_context_names_one_directory_the_way_the_filesystem_does() {
+        let root = TempDir::new().unwrap();
+        let real = root.path().join("real");
+        let link = root.path().join("by-another-name");
+        std::fs::create_dir_all(real.join("home")).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let context = super::Context { source: link.clone(), root: link.join("home"), ..sample() };
+        let resolved = context.resolved();
+        assert_eq!(resolved.source, std::fs::canonicalize(&real).unwrap());
+        assert_eq!(resolved.root, std::fs::canonicalize(real.join("home")).unwrap());
+        // And the values a hook is given all come from those two.
+        let vars = resolved.vars();
+        let named = |name: &str| {
+            vars.iter().find(|(key, _)| *key == name).map(|(_, value)| value.clone()).unwrap()
         };
+        assert_eq!(named("NODAL_ROOT"), resolved.root.to_string_lossy());
+        assert_eq!(named("NODAL_SOURCE"), resolved.source.to_string_lossy());
+    }
+
+    #[test]
+    fn a_home_that_is_not_there_yet_resolves_as_far_as_it_exists() {
+        let root = TempDir::new().unwrap();
+        let real = root.path().join("real");
+        let link = root.path().join("by-another-name");
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        // `pre_new` is told about a home nothing has made yet.
+        let context =
+            super::Context { source: link.clone(), root: link.join("unmade"), ..sample() };
+        let resolved = context.resolved();
+        assert_eq!(resolved.root, std::fs::canonicalize(&real).unwrap().join("unmade"));
+    }
+
+    #[test]
+    fn the_context_never_sets_the_variable_that_moves_the_state_directory() {
+        let context = sample();
         let names: Vec<&str> = context.vars().iter().map(|(name, _)| *name).collect();
         assert!(!names.contains(&crate::workspace::home::DIRECTORY_VAR), "{names:?}");
         assert!(names.contains(&"NODAL_ROOT") && names.contains(&"NODAL_SOURCE"));

@@ -11,6 +11,7 @@ pub mod env;
 pub mod gc;
 pub mod init;
 pub mod ls;
+pub mod merge;
 pub mod new;
 pub mod ps;
 pub mod reclaim;

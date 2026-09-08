@@ -44,6 +44,19 @@ pub const RANGE_LAST: u16 = 29_999;
 /// past what a project has, and it leaves a hundred blocks in the range.
 pub const BLOCK_SPAN: u16 = 100;
 
+/// The lowest port a name hashes to.
+///
+/// Deliberately outside the block range above. A hashed port is a convenience a hook
+/// asks for by name (`{hash_port}`); it is not granted, nothing records it, and nothing
+/// stops two names colliding on one. Keeping it out of the allocator's range is what
+/// stops it colliding with a port that *was* granted, which is the collision nobody
+/// would think to look for.
+pub const HASH_FIRST: u16 = 30_000;
+
+/// The highest port a name hashes to. Below 32768, where Linux starts handing out
+/// ephemeral ports, for the reason [`RANGE_FIRST`] gives.
+pub const HASH_LAST: u16 = 32_767;
+
 /// The kind a port's resource key carries in the lease table.
 const RESOURCE_KIND: &str = "port:";
 
@@ -52,6 +65,25 @@ const RESOURCE_KIND: &str = "port:";
 /// already resolved; a port that changes hands on every attempt is reported, not
 /// retried forever.
 const CLAIM_ATTEMPTS: usize = 3;
+
+/// The port a name hashes to, which is the same port on every machine and every run.
+///
+/// One name, one port: a hook that starts a service on `{hash_port}` starts it on the
+/// same port for one unit today and tomorrow, which is what makes a bookmark or a
+/// proxy rule worth writing. Two names may hash to one port and nothing here prevents
+/// that, because nothing here grants anything ([`HASH_FIRST`]).
+///
+/// # Errors
+/// [`Error::InvalidValue`] when the digest could not be produced.
+pub fn hashed(name: &str) -> Result<u16> {
+    let digest = crate::fingerprint::compute_port(name)?;
+    let span = u32::from(HASH_LAST - HASH_FIRST) + 1;
+    let read = u32::from_str_radix(&digest.as_str()[..8], 16)
+        .map_err(|_| Error::InvalidValue { kind: "port digest", value: digest.to_string() })?;
+    let offset = u16::try_from(read % span)
+        .map_err(|_| Error::InvalidValue { kind: "port offset", value: read.to_string() })?;
+    Ok(HASH_FIRST + offset)
+}
 
 /// One port a recipe pins, under the name the recipe gives it.
 #[derive(Debug, Clone, Copy)]

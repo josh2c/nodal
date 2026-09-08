@@ -80,6 +80,7 @@ git/
   cmd.rs               run(args) -> Output, one place for process spawning
   refs.rs              read/write refs, WIP snapshot ref
   status.rs            porcelain parsing -> StatusSummary
+  merge.rs             commit, squash, rebase, fast-forward; the fast-forward rule
   scrub.rs             post-clone scrub (remove worktrees dir, set HEAD, gc.auto, hooks)
   snapshot.rs          the work-in-progress commit, built in a temporary index
   preflight.rs         refuse in-progress state
@@ -169,9 +170,10 @@ lifecycle/             the only module that composes others; each op = plan() pu
   guard.rs             the placement rule: a home never overlaps a source, a project or another home
   marker.rs            .nodal/id: write, read, verify against the registry
   ops/
-    new.rs · adopt.rs · sync.rs · reclaim.rs · gc.rs · done.rs · transfer.rs · doctor.rs
+    new.rs · adopt.rs · sync.rs · merge.rs · reclaim.rs · gc.rs · done.rs · transfer.rs · doctor.rs
   uniqueness.rs        the single uniqueness_check
-  hooks.rs             recipe hooks: the four phases, the context, and approval by digest
+  hooks.rs             recipe hooks: the six phases, the context, and approval by digest
+  template.rs          the five values a hook command may name, and the substitution
   states.rs            transition tables as data (unit, environment, session)
   idle.rs              idle detection (pure over timestamps + process list)
 
@@ -182,7 +184,7 @@ output/
   watch.rs             Source trait + polling loop; writes only changed answers
   view/                the read types themselves, one file per command family
     unit.rs · status.rs · event.rs · base.rs · init.rs · env.rs · created.rs
-    reclaim.rs · doctor.rs
+    reclaim.rs · doctor.rs · merge.rs
 ```
 
 ## crates/nodal-cli/src
@@ -193,7 +195,7 @@ cli.rs                 the clap derive tree (one enum)
 commands/              one file per command, each ≤ 40 lines: parse args → call core → render
   init.rs · new.rs · cd.rs · adopt.rs · ls.rs · show.rs · explain.rs · shell.rs · shell_init.rs
   run.rs · ps.rs · start.rs
-  note.rs · ask.rs · handoff.rs · sync.rs · done.rs · reclaim.rs · gc.rs · doctor.rs
+  note.rs · ask.rs · handoff.rs · sync.rs · done.rs · merge.rs · reclaim.rs · gc.rs · doctor.rs
   base.rs · db.rs · status.rs · push.rs · pull.rs · open.rs · uninstall.rs
 ```
 

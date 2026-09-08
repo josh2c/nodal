@@ -6,6 +6,7 @@
 //! interrupted by a kill can be found again from the journal.
 
 pub mod gc;
+pub mod merge;
 pub mod new;
 pub mod reclaim;
 
@@ -19,5 +20,5 @@ use crate::lifecycle::Rebuild;
 /// a line here.
 #[must_use]
 pub fn rebuilders() -> Vec<&'static dyn Rebuild> {
-    vec![&new::New, &reclaim::Reclaim, &crate::substrate::build::BaseBuild]
+    vec![&new::New, &merge::Merge, &reclaim::Reclaim, &crate::substrate::build::BaseBuild]
 }

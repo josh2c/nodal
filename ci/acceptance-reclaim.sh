@@ -15,6 +15,12 @@
 # asked, and runs the next `nodal`, which has to take the run back and leave the unit
 # there to be reclaimed properly.
 #
+# The suite is then run a second time with the temporary directory reached through a
+# symbolic link, as `ci/acceptance-merge.sh` and `ci/acceptance-doctor.sh` do. The four
+# hooks are told about the home twice — as `NODAL_ROOT` and as the directory they are
+# started in — and both have to be the name the filesystem itself uses (DL-037). macOS
+# gives that condition for free; Linux has to make it.
+#
 # Stopping needs a process table, which macOS does not publish. The tests that depend on
 # one assert the degraded behaviour there rather than standing aside quietly: the reclaim
 # finishes, the ports still come back, the plant is still running because nothing could
@@ -30,4 +36,11 @@ cargo test --locked -p nodal-core --lib lifecycle::uniqueness
 cargo test --locked -p nodal-core --lib lifecycle::hooks
 cargo test --locked -p nodal-core --lib runtime::stop
 cargo test --locked -p nodal-core --lib lifecycle::ops::gc
-echo "acceptance (reclaim): dirty is refused, a clean unit leaves only a trash entry, hooks are approved by text, and gc removes it"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/real"
+ln -s "$work/real" "$work/by-another-name"
+TMPDIR="$work/by-another-name" cargo test --locked -p nodal-cli --test reclaim
+
+echo "acceptance (reclaim): dirty is refused, a clean unit leaves only a trash entry, hooks are approved by text and told one name per directory, and gc removes it"
