@@ -88,6 +88,45 @@ pub fn list_recent(conn: &Connection, unit: UnitId, limit: u32) -> Result<Vec<Ev
     row::many(conn, &sql, params![unit.to_string(), limit], decode)
 }
 
+/// The newest events of a unit of the kinds asked for, newest first.
+///
+/// A compiled memory wants the last few commands, the last test result and the last
+/// few stated notes. Reading a window of the whole log and filtering it would answer
+/// the first and lose the third: a unit with two hundred commands since its last note
+/// would compile as a unit that was never handed over. So the kinds go into the
+/// statement, and each question is asked of the whole log.
+///
+/// An empty `kinds` matches nothing, which is what a caller that asked for nothing
+/// means.
+///
+/// # Errors
+/// As [`get`].
+pub fn list_recent_of_kinds(
+    conn: &Connection,
+    unit: UnitId,
+    kinds: &[EventKind],
+    limit: u32,
+) -> Result<Vec<Event>> {
+    if kinds.is_empty() {
+        return Ok(Vec::new());
+    }
+    let names = kinds
+        .iter()
+        .map(|kind| row::name_of(kind, "event kind"))
+        .collect::<Result<Vec<String>>>()?;
+    let places = vec!["?"; names.len()].join(", ");
+    let sql = format!(
+        "SELECT {COLUMNS} FROM event WHERE unit_id = ? AND kind IN ({places}) \
+         ORDER BY id DESC LIMIT ?"
+    );
+    let subject = unit.to_string();
+    let mut values: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(names.len() + 2);
+    values.push(&subject);
+    values.extend(names.iter().map(|name| name as &dyn rusqlite::ToSql));
+    values.push(&limit);
+    row::many(conn, &sql, rusqlite::params_from_iter(values), decode)
+}
+
 /// How many events a unit has.
 ///
 /// # Errors

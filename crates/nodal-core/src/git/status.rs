@@ -41,8 +41,9 @@ pub enum Change {
 }
 
 impl Change {
-    /// Map one status character of the `XY` field.
-    fn parse(code: char) -> Self {
+    /// Map one status character of the `XY` field, or of a `--name-status` record.
+    #[must_use]
+    pub fn parse(code: char) -> Self {
         match code {
             '.' => Self::Unmodified,
             'A' => Self::Added,

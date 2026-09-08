@@ -6,6 +6,7 @@
 
 pub mod base;
 pub mod cd;
+pub mod context;
 pub mod doctor;
 pub mod done;
 pub mod env;
@@ -19,3 +20,4 @@ pub mod reclaim;
 pub mod run;
 pub mod shell;
 pub mod shell_init;
+pub mod show;

@@ -82,6 +82,7 @@ git/
   push.rs              the one call that leaves this machine: refspecs to a remote
   host.rs              the web host a remote names, and its compare page (a table)
   status.rs            porcelain parsing -> StatusSummary
+  history.rs           log and name-status parsing: the commits and files of a range
   merge.rs             commit, squash, rebase, fast-forward; the fast-forward rule
   scrub.rs             post-clone scrub (remove worktrees dir, set HEAD, gc.auto, hooks)
   snapshot.rs          the work-in-progress commit, built in a temporary index
@@ -142,6 +143,7 @@ runtime/
   init.rs              shell-init: render one of shims/nodal.{bash,zsh,fish}
   entry.rs             which home a target names; the NODAL_CD_FILE channel
   shell.rs             become the user's shell with the home's env (exec, no child)
+  show.rs              one unit in full: the list's row for it, with its log
   run.rs               run a command, record observed event, redact values; --tether's process group
   actor.rs             who is running this: NODAL_ACTOR, then a table of agent signals
   processes.rs         Processes trait; /proc scan for the variables a process carries
@@ -151,11 +153,14 @@ runtime/
   ps.rs                merge signals into Attributed rows with confidence
   stop.rs              Signals trait; a process or a whole group; SIGINT, SIGTERM, then SIGKILL
 
-context/
-  mod.rs
+context/               WORKUNIT.md: recomputed from the project, never from the last copy
+  mod.rs               refresh(): one survey, one file per unit, and the notes
+  survey.rs            one pass over the registry and the homes: the facts of every unit
+  ledger.rs            what every other open unit did, and what the base gained
+  render.rs            the Markdown, the caps, and the flattening of an event body
+  pointer.rs           the one line in CLAUDE.md and AGENTS.md
+  atomic.rs            beside-and-rename
   capture.rs           Capture writer (store + jsonl), used by shims/hooks via CLI
-  compile/             pack compiler; each section its own pure fn over inputs
-    mod.rs · state.rs · commands.rs · tests.rs · stated.rs · render.rs
   rules.rs             default agent rules text
 
 adapters/

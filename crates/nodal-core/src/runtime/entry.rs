@@ -145,6 +145,16 @@ pub fn project_at(conn: &Connection, path: &Path) -> Result<Option<Project>> {
     project_of_ancestor(conn, path)
 }
 
+/// The project a unit belongs to.
+///
+/// # Errors
+/// [`Error::StoreMissingRow`] when the registry holds the unit and not its project,
+/// which is a registry that has lost a row rather than a question with no answer.
+pub fn project_of_unit(conn: &Connection, unit: &Unit) -> Result<Project> {
+    projects::get(conn, unit.project_id)?
+        .ok_or_else(|| Error::StoreMissingRow { table: "project", id: unit.project_id.to_string() })
+}
+
 /// The project rooted at `path` or at any directory above it.
 fn project_of_ancestor(conn: &Connection, path: &Path) -> Result<Option<Project>> {
     for directory in path.ancestors() {

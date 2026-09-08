@@ -219,14 +219,18 @@ fn is_untracked(state: &State) -> bool {
 /// the work merges into is the same in all of them. The first home that answers decides
 /// the name; the rest use it and pay one Git call rather than a search.
 #[derive(Debug, Default)]
-struct Bases {
+pub struct Bases {
     /// The full ref name that answered last, when one has.
     chosen: Option<String>,
 }
 
 impl Bases {
     /// Where a unit's branch stands against the branch it merges into.
-    fn standing(&mut self, git: &Git, unit: &Unit) -> Result<Standing> {
+    ///
+    /// # Errors
+    /// [`Error::GitUnknownBranch`] when no candidate is a revision the home has, and
+    /// whatever Git reported for the last one tried.
+    pub fn standing(&mut self, git: &Git, unit: &Unit) -> Result<Standing> {
         let mut last = None;
         for candidate in self.candidates(unit) {
             match git.standing(&candidate) {

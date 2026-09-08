@@ -3,6 +3,7 @@
 //! Every behaviour lives here; the `nodal` binary only parses arguments and prints
 //! (`docs/code-structure.md`). This file re-exports module facades and holds no logic.
 
+pub mod context;
 pub mod doctor;
 pub mod env;
 pub mod error;

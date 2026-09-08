@@ -34,6 +34,7 @@ pub mod run;
 pub mod sessions;
 pub mod shell;
 pub mod shells;
+pub mod show;
 pub mod stop;
 
 pub use crate::runtime::shells::Shell;

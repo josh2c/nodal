@@ -27,6 +27,7 @@ use crate::commands::reclaim::Reclaim;
 use crate::commands::run::Run;
 use crate::commands::shell::Shell;
 use crate::commands::shell_init::ShellInit;
+use crate::commands::show::Show;
 
 /// The subcommands implemented so far. The rest arrive with their own tasks.
 #[derive(Debug, Subcommand)]
@@ -39,6 +40,8 @@ pub enum Command {
     New(New),
     /// List every unit of the project: its work, its integration, and who is in it.
     Ls(Ls),
+    /// Report one unit in full, and write its memory again.
+    Show(Show),
     /// Print the home of a unit, and enter it when the shell function is installed.
     Cd(Cd),
     /// Print the shell integration for bash, zsh or fish.
@@ -104,6 +107,7 @@ impl Cli {
             Some(Command::Env(env)) => env.run(),
             Some(Command::New(new)) => new.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Ls(ls)) => ls.run(&self.registry()?),
+            Some(Command::Show(show)) => show.run(&self.registry()?),
             Some(Command::Cd(cd)) => cd.run(&self.registry()?),
             Some(Command::Run(run)) => run.run(&self.registry()?),
             Some(Command::Ps(ps)) => ps.run(&self.registry()?),
@@ -130,7 +134,9 @@ impl Cli {
     /// Whatever the registry or Git reported.
     fn bare(&self) -> nodal_core::Result<ExitCode> {
         let listing = Ls::default();
-        if let Some(answer) = listing.answer(&self.registry()?)? {
+        let store = self.registry()?;
+        if let Some(answer) = listing.answer(&store)? {
+            listing.refresh(&store);
             return listing.print(&answer);
         }
         tracing::debug!("no subcommand given and no project here");

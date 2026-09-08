@@ -299,7 +299,8 @@ fn detail_fields(unit: &UnitRow, now: Timestamp) -> Vec<Field> {
 }
 
 /// The name a unit's status carries in output. A table, so the words are in one place.
-fn status_label(status: UnitStatus) -> &'static str {
+#[must_use]
+pub fn status_label(status: UnitStatus) -> &'static str {
     match status {
         UnitStatus::Open => "open",
         UnitStatus::Review => "review",
