@@ -55,7 +55,8 @@ pub enum Command {
     Merge(Merge),
     /// End a unit: stop what it runs, give back its ports, and move its home to trash.
     Reclaim(Reclaim),
-    /// Remove the trashed homes whose retention has run out.
+    /// Reclaim the merged homes whose retention has run out, and remove the trashed
+    /// ones whose own has.
     Gc(Gc),
     /// Report what tools left behind on this machine. It removes nothing.
     Doctor(Doctor),
@@ -109,7 +110,7 @@ impl Cli {
             Some(Command::Done(done)) => done.run(&mut self.registry()?),
             Some(Command::Merge(merge)) => merge.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Reclaim(reclaim)) => reclaim.run(&mut self.registry()?, !self.no_hooks),
-            Some(Command::Gc(gc)) => gc.run(&self.registry()?),
+            Some(Command::Gc(gc)) => gc.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Doctor(doctor)) => doctor.run(&self.registry()?),
             Some(Command::ShellInit(init)) => init.run(),
             Some(Command::Shell(shell)) => shell.run(),

@@ -27,6 +27,18 @@
 //! signalling a group identifier the system has since given to something else: a row is
 //! acted on only while it is open, and it stays open only while the group is there.
 //!
+//! **A merged unit's home is given back before any of that.** A unit the list found
+//! merged keeps its home, because the day after a merge is exactly when somebody wants
+//! to look at what they did. It keeps it for the retention the project asked for
+//! (`reclaim.trash_retention`), measured from the moment the merge was recorded, and
+//! then this sweep reclaims it — by the ordinary path, so the uniqueness check applies
+//! in full. A merged unit somebody has since put new work in is refused and named in
+//! the report rather than removed, which is the whole reason the reclaim is reused
+//! instead of the directory being taken directly.
+//!
+//! Reclaiming is not removing. The home goes to the trash with a retention of its own,
+//! and a later sweep is what finally takes it.
+//!
 //! **Then the expired homes go**, one at a time: the directory first, then the row.
 //! That order is the same one `nodal base gc` uses and for the same reason. A process
 //! killed between them leaves a row pointing at nothing, which the next sweep clears; the
@@ -40,6 +52,13 @@
 //! undo and a step is required to have one. What it has instead is an order in which
 //! being interrupted is safe at every point.
 //!
+//! **Idle live units are reported, on request, and never touched.** `nodal gc --idle`
+//! adds one section to the report: the units nobody has been in for longer than the
+//! threshold, read from the session rows ([`crate::lifecycle::idle`]). It stops nothing
+//! of theirs and asks nothing about them. A person's development server is not garbage
+//! whatever the clock says, so the answer to "this has been quiet for a month" is a
+//! line in a report and a person's own decision.
+//!
 //! The two signals it reads to find that idle runtime — the process table and the
 //! container daemon — are not available on every host. A reading that cannot be made is
 //! a [`Note`] in the answer and never a failure, which is the contract every attribution
@@ -49,46 +68,185 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-use crate::model::{EnvState, SessionId, Timestamp, Trashed, UnitId};
-use crate::output::view::{Leftover, Swept};
+use crate::lifecycle::idle;
+use crate::lifecycle::uniqueness::Finding;
+use crate::model::{
+    EnvState, Project, SessionId, Timestamp, Trashed, Unit, UnitId, UnitStatus, trash as retention,
+};
+use crate::output::view::{Idle, Leftover, Retired, Swept};
 use crate::runtime::attribute::{Note, Source};
 use crate::runtime::processes::{Processes, Running};
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
 use crate::services::docker;
-use crate::store::{Store, environments, leases, sessions, trash, units};
+use crate::store::{Store, environments, leases, projects, sessions, trash, units};
+
+use super::reclaim;
 use crate::{Error, Result};
 
 /// The label a unit's containers carry.
 const UNIT_LABEL: &str = "nodal.unit";
 
-/// Remove every expired home, stop the runtime of units that are gone, and give back
-/// lapsed leases.
+/// What one sweep was asked to do beyond its ordinary work.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options {
+    /// Report the live units nothing has touched for this many days. `None` asks for no
+    /// such report, which is not the same as a report that found none.
+    pub idle: Option<u32>,
+    /// Whether the project's own reclaim hooks run for a merged unit whose home is
+    /// given back. `false` is `--no-hooks`.
+    pub hooks: bool,
+}
+
+/// Reclaim the merged units whose retention has run out, remove every expired home,
+/// stop the runtime of units that are gone, and give back lapsed leases.
 ///
 /// # Errors
 /// [`Error::Store`] when the registry could not be read or written. A directory that
-/// will not go is a [`Leftover`] in the answer rather than an error: one home nobody
-/// can remove must not stop the rest of the sweep.
-pub fn collect(store: &Store, now: Timestamp) -> Result<Swept> {
+/// will not go, and a merged unit the uniqueness check refuses, are [`Leftover`]s in
+/// the answer rather than errors: one home nobody can remove must not stop the rest of
+/// the sweep.
+pub fn collect(store: &mut Store, now: Timestamp, options: &Options) -> Result<Swept> {
+    let mut leftovers = Vec::new();
+    let retired = retire(store, now, options.hooks, &mut leftovers)?;
     let expired = trash::list_expired(store.conn(), now)?;
-    let idle = stop_absent(store.conn())?;
-    let (removed, freed, mut leftovers) = sweep(store, &expired)?;
+    let stopped = stop_absent(store.conn())?;
+    let (removed, freed, mut swept_leftovers) = sweep(store, &expired)?;
+    leftovers.append(&mut swept_leftovers);
     let released = release_lapsed(store.conn(), now, &mut leftovers)?;
     Ok(Swept {
         now,
         removed,
         kept: kept(store.conn(), now)?,
         freed_bytes: Some(freed),
-        stopped: idle.stopped,
-        containers: idle.containers,
+        stopped: stopped.stopped,
+        containers: stopped.containers,
         leases: released,
-        notes: idle.notes,
+        retired,
+        idle: match options.idle {
+            Some(days) => quiet(store.conn(), now, days)?,
+            None => Vec::new(),
+        },
+        idle_asked: options.idle.is_some(),
+        notes: stopped.notes,
         leftovers,
     })
 }
 
+// ---------------------------------------------------------------------------
+// The merged units whose retention has run out.
+// ---------------------------------------------------------------------------
+
+/// Give back the home of every merged unit that has kept one long enough.
+///
+/// Through [`super::reclaim`], not around it. That is the point of this whole path: the
+/// uniqueness check, the teardown, the hooks and the trash entry are the ones a person
+/// gets when they type `nodal reclaim`, so a merged unit somebody has since put work in
+/// is refused here exactly as it would be there.
+///
+/// A refusal is a line of the report. So is any other failure of one unit, because a
+/// sweep that stopped at the first unit it could not reclaim would leave the rest of the
+/// machine untouched for a reason that has nothing to do with them. A registry that
+/// cannot be read is not one of those and is raised.
+fn retire(
+    store: &mut Store,
+    now: Timestamp,
+    hooks: bool,
+    leftovers: &mut Vec<Leftover>,
+) -> Result<Vec<Retired>> {
+    let mut retired = Vec::new();
+    for (project, unit) in due(store.conn(), now)? {
+        let request = reclaim::Request {
+            target: Some(unit.slug.to_string()),
+            force: false,
+            hooks,
+            cwd: project.root.clone(),
+        };
+        match reclaim::reclaim(store, &request) {
+            Ok(report) => retired.push(Retired {
+                slug: unit.slug.clone(),
+                trashed: report.trashed.map(|entry| entry.path),
+            }),
+            Err(Error::Store { path, source }) => return Err(Error::Store { path, source }),
+            Err(refused) => leftovers.push(refusal(&unit, &refused)),
+        }
+    }
+    Ok(retired)
+}
+
+/// The merged units whose home has been kept for as long as the project asked.
+///
+/// The clock runs from the unit's own `updated_at`, which for a merged unit is the
+/// instant the merge was recorded ([`crate::lifecycle::states`]). A unit whose home has
+/// already gone is not one of these: there is nothing left to give back.
+fn due(conn: &Connection, now: Timestamp) -> Result<Vec<(Project, Unit)>> {
+    let mut found = Vec::new();
+    for project in projects::list(conn)? {
+        let days = super::reclaim::recipe_of(&project.root).trash_retention_days();
+        for unit in units::list_by_status(conn, project.id, UnitStatus::Merged)? {
+            let expires = retention::expiry(unit.updated_at, days);
+            if expires.unix_seconds() <= now.unix_seconds() && has_home(conn, &unit)? {
+                found.push((project.clone(), unit));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Whether the unit still has a materialisation a reclaim would act on.
+fn has_home(conn: &Connection, unit: &Unit) -> Result<bool> {
+    Ok(environments::latest_for_unit(conn, unit.id)?
+        .is_some_and(|environment| environment.state != EnvState::Absent))
+}
+
+/// The line a refused unit gets, naming what was found rather than a policy.
+fn refusal(unit: &Unit, why: &Error) -> Leftover {
+    let detail = match why {
+        Error::NotUnique { findings, .. } => {
+            format!("{}: {}", unit.slug, Finding::summarise(findings))
+        }
+        other => format!("{}: {other}", unit.slug),
+    };
+    Leftover::new("unit", detail)
+}
+
+// ---------------------------------------------------------------------------
+// The live units that have gone quiet.
+// ---------------------------------------------------------------------------
+
+/// The live units nothing has touched for `days`, longest quiet first.
+///
+/// Reported and nothing else. Every environment here is one a person can still open,
+/// and this function reads timestamps ([`idle`]) rather than the machine: no process is
+/// signalled, no container is asked about, and nothing is written.
+fn quiet(conn: &Connection, now: Timestamp, days: u32) -> Result<Vec<Idle>> {
+    let mut found = Vec::new();
+    for environment in environments::list_all(conn)? {
+        if environment.state == EnvState::Absent {
+            continue;
+        }
+        let Some(unit) = units::get(conn, environment.unit_id)? else { continue };
+        if !matches!(unit.status, UnitStatus::Open | UnitStatus::Review) {
+            continue;
+        }
+        let sessions = sessions::list_for_environment(conn, environment.id)?;
+        if idle::attached(&sessions) {
+            continue;
+        }
+        let since = idle::last_seen(&sessions, environment.last_active, now);
+        if idle::is_idle(since, now, days) {
+            found.push(Idle { slug: unit.slug, home: environment.home, since });
+        }
+    }
+    found.sort_by_key(|unit| (unit.since.unix_seconds(), unit.slug.to_string()));
+    Ok(found)
+}
+
 /// What the sweep did about runtime that outlived its unit.
+///
+/// Named for the units it is about — the ones whose homes are gone — rather than for
+/// the word "idle", which in this command means the live units that are only reported.
 #[derive(Debug, Default)]
-struct Idle {
+struct Outlived {
     /// What became of the processes.
     stopped: Stopped,
     /// The containers that went.
@@ -127,26 +285,26 @@ fn sweep(store: &Store, expired: &[Trashed]) -> Result<(Vec<Trashed>, u64, Vec<L
 /// reclaimed: nothing of it should be running, and anything that is, is left over from
 /// before the reclaim rather than work somebody is doing. Every other environment is
 /// left alone, however long it has been since anybody touched it.
-fn stop_absent(conn: &Connection) -> Result<Idle> {
+fn stop_absent(conn: &Connection) -> Result<Outlived> {
     let tethers = absent_tethers(conn)?;
     let gone = absent_units(conn)?;
     if gone.is_empty() && tethers.is_empty() {
-        return Ok(Idle::default());
+        return Ok(Outlived::default());
     }
-    let mut idle = Idle::default();
-    let (pids, containers) = seen(&gone, &mut idle.notes);
+    let mut outlived = Outlived::default();
+    let (pids, containers) = seen(&gone, &mut outlived.notes);
     let mut targets: Vec<Target> = tethers.iter().map(|(_, pgid)| Target::Group(*pgid)).collect();
     targets.extend(pids.into_iter().map(Target::Process));
-    idle.stopped = stop::processes(&stop::Live, &targets, stop::GRACE);
+    outlived.stopped = stop::processes(&stop::Live, &targets, stop::GRACE);
     close_empty(conn, &tethers)?;
     match docker::remove(&docker::Cli, &containers) {
         Ok(removed) => {
-            idle.notes.extend(removed.why.map(|why| Note::new(Source::Docker, why)));
-            idle.containers = removed.containers;
+            outlived.notes.extend(removed.why.map(|why| Note::new(Source::Docker, why)));
+            outlived.containers = removed.containers;
         }
-        Err(error) => idle.notes.push(Note::new(Source::Docker, error.to_string())),
+        Err(error) => outlived.notes.push(Note::new(Source::Docker, error.to_string())),
     }
-    Ok(idle)
+    Ok(outlived)
 }
 
 /// The tethers of every environment that has been reclaimed, as row and group.

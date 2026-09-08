@@ -547,7 +547,7 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
     let environment = latest(store.conn(), &unit)?;
     let project = project_of(store.conn(), &unit)?;
     let placed = placement(&environment)?;
-    let recipe = load_recipe(&project.root);
+    let recipe = recipe_of(&project.root);
     let findings = examine(&placed, &project.root, &unit, request.force)?;
     let snapshot = snapshot(&placed, &unit, &findings)?;
     let state_dir = home::directory()?;
@@ -680,7 +680,10 @@ fn project_of(conn: &Connection, unit: &Unit) -> Result<Project> {
 /// of them must not fail because the recipe cannot be read. What is lost is the
 /// project's chosen retention and its hooks, and the defaults are the safe values for
 /// both: fourteen days, and no command.
-fn load_recipe(root: &Path) -> Recipe {
+///
+/// `super::gc` reads it for the same retention, so that the window a merged unit keeps
+/// its home for and the window its trashed home keeps are one setting and not two.
+pub(super) fn recipe_of(root: &Path) -> Recipe {
     crate::recipe::load(root).map(|effective| effective.recipe).unwrap_or_default()
 }
 
