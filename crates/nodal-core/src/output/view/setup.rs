@@ -28,6 +28,8 @@ pub enum Kind {
     Shim,
     /// The state directory itself.
     State,
+    /// The hooks in one project's `.claude/settings.json`.
+    ClaudeHooks,
 }
 
 impl Kind {
@@ -38,6 +40,7 @@ impl Kind {
             Self::RcBlock => "rc block",
             Self::Shim => "shim",
             Self::State => "state",
+            Self::ClaudeHooks => "claude hooks",
         }
     }
 }
@@ -114,7 +117,7 @@ impl Uninstall {
         if self.items.is_empty() {
             return String::from("nothing; nodal has installed nothing on this machine");
         }
-        let counts = [Kind::RcBlock, Kind::Shim, Kind::State].map(|kind| {
+        let counts = [Kind::RcBlock, Kind::Shim, Kind::ClaudeHooks, Kind::State].map(|kind| {
             let count = self.items.iter().filter(|item| item.kind == kind).count();
             (kind, count)
         });

@@ -11,6 +11,15 @@ use nodal_core::workspace::home;
 /// What a person types to agree.
 const AGREED: [&str; 2] = ["y", "yes"];
 
+/// The project the command is being run in, when it is being run in one.
+///
+/// A project nobody has made a unit for is in no registry, and its `nodal init` may
+/// still have written hooks into it. The directory a person is standing in is how those
+/// are found ([`plan::project_at`]).
+fn here() -> Option<std::path::PathBuf> {
+    plan::project_at(&std::env::current_dir().ok()?)
+}
+
 /// The two flags about Nodal's state directory.
 ///
 /// Their own group because they are the only pair that can lose work: the block in a
@@ -93,6 +102,7 @@ impl Uninstall {
             home: home::user()?,
             state_too: self.removal.state,
             force: self.removal.force,
+            project: here(),
         })
     }
 

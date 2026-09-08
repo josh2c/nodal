@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use clap::Args;
 use nodal_core::lifecycle::ops::new::{self, Request};
-use nodal_core::model::{BranchName, Objective, Slug};
+use nodal_core::model::{BranchName, Epistemic, Objective, Slug};
 use nodal_core::output::{self, Format};
 use nodal_core::runtime::entry;
 use nodal_core::store::Store;
@@ -72,6 +72,7 @@ impl New {
         Ok(Request {
             source: self.path.clone().unwrap_or_else(|| PathBuf::from(".")),
             objective: self.objective.as_deref().map(Objective::parse).transpose()?,
+            objective_epistemic: Epistemic::Stated,
             name: self.name.as_deref().map(Slug::parse).transpose()?,
             parent_branch: self.from.as_deref().map(BranchName::parse).transpose()?,
             hooks,

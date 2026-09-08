@@ -171,11 +171,12 @@ setup/                 what nodal puts on a machine outside its state, and how i
   plan.rs              install; survey what an uninstall removes, then remove exactly that
   channel.rs           which channel installed this binary, and the command that upgrades it
 
-adapters/
-  mod.rs               AgentAdapter trait
-  claude_code.rs       hooks json, session start/stop
-  codex.rs             AGENTS.md pointer
-  generic.rs
+adapters/               what nodal writes into somebody's repository for another tool
+  mod.rs               the two rules every adapter keeps: clobber nothing, and be reversible
+  settings.rs          .claude/settings.json: splice one region in, take exactly it out
+  claude_code.rs       the four hooks, the provider contract, and the payload
+  codex.rs             AGENTS.md pointer (not yet written)
+  generic.rs           (not yet written)
 
 lifecycle/             the only module that composes others; each op = plan() pure + apply() IO
   mod.rs               run(plan) and resolve(): the runner, and what the next command does
@@ -209,6 +210,7 @@ main.rs                clap parse → dispatch; nothing else
 cli.rs                 the clap derive tree (one enum)
 commands/              one file per command, each ≤ 40 lines: parse args → call core → render
   init.rs · new.rs · cd.rs · adopt.rs · ls.rs · show.rs · explain.rs · shell.rs · shell_init.rs
+  claude_code.rs       one subcommand per Claude Code hook: payload in, the contract out
   run.rs · ps.rs · start.rs
   note.rs · ask.rs · handoff.rs · sync.rs · done.rs · merge.rs · reclaim.rs · gc.rs · doctor.rs
   base.rs · db.rs · status.rs · push.rs · pull.rs · open.rs · uninstall.rs · upgrade.rs

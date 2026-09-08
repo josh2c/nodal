@@ -108,6 +108,11 @@ pub struct Request {
     pub source: PathBuf,
     /// What the unit is for, as it was stated.
     pub objective: Option<Objective>,
+    /// How that objective is known. [`Epistemic::Stated`] is what a person typing one
+    /// means; [`Epistemic::Observed`] is what an adapter recovering one from an agent's
+    /// own records means, and a person reading the unit later is told which they have
+    /// ([`crate::model::Unit::objective_epistemic`]).
+    pub objective_epistemic: Epistemic,
     /// The handle to use, when a person chose one instead of letting it be derived.
     pub name: Option<Slug>,
     /// The branch the work starts from, when it is known.
@@ -124,6 +129,7 @@ impl Default for Request {
         Self {
             source: PathBuf::new(),
             objective: None,
+            objective_epistemic: Epistemic::Stated,
             name: None,
             parent_branch: None,
             hooks: true,
@@ -729,7 +735,7 @@ fn new_unit(project: ProjectId, slug: &Slug, branch: &BranchName, request: &Requ
         project_id: project,
         slug: slug.clone(),
         objective: request.objective.clone(),
-        objective_epistemic: request.objective.as_ref().map(|_| Epistemic::Stated),
+        objective_epistemic: request.objective.as_ref().map(|_| request.objective_epistemic),
         branch: branch.clone(),
         parent_branch: request.parent_branch.clone(),
         status: UnitStatus::Open,
