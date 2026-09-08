@@ -7,6 +7,7 @@
 pub mod adopt;
 pub mod base;
 pub mod cd;
+pub mod claude_code;
 pub mod context;
 pub mod doctor;
 pub mod done;

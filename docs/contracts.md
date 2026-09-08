@@ -135,8 +135,8 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 `schemas/v1/recipe.json`.
 
 ## CLI
-`init, new, cd, adopt, ls, show, explain, env, shell, shell-init, run, ps, start, note, ask, handoff,
-sync, done, merge, prune, reclaim, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
+`init, new, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, run, ps, start, note, ask,
+handoff, sync, done, merge, prune, reclaim, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
 `--json`; `status --watch` emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
 `nodal shell-init <shell> --install` writes the script into `<state directory>/shims/` and adds one marked block
@@ -436,6 +436,46 @@ command by the digest of its exact text. The record is per machine, in `<state>/
 `NODAL_HOOKS_FILE` moves that file. A command that has changed refuses to run, and the message
 shows the command. A command nobody approved refuses in the same way. `--no-hooks` runs no hook
 and needs no approval.
+
+## Claude Code
+Claude Code fires named events at commands a project declares in `.claude/settings.json`. `nodal init`
+offers to write four of them and installs them when the answer is yes; `--claude-hooks` installs them
+without asking and `--no-claude-hooks` does not ask. `nodal uninstall` removes them again. Each command is
+the word `nodal` and a subcommand, and names no path of one machine, so the file is the same on every
+machine that has Nodal on its `PATH`. **Commit that file or do not: it is the project's, and Nodal reads it
+the same either way.** A clone of it on a machine with no Nodal does nothing.
+
+| event | kind | what Nodal does |
+|---|---|---|
+| `WorktreeCreate` | provider | `nodal claude-code worktree-create` makes the unit and prints its home |
+| `SessionStart` | observer | prints the unit's memory, which Claude injects as context |
+| `Stop` | observer | records the session's last message as a stated handoff |
+| `WorktreeRemove` | observer | records a detach if it ever fires, and removes nothing |
+
+`WorktreeCreate` is a **provider**, not an observer: Claude reads one absolute path from its standard
+output and uses that directory, and empty or invalid output ends the session. Nodal's answer therefore
+overrides Claude's own worktree creation even in a Git repository, and Claude makes no `.claude/worktrees/`
+entry. The unit's objective is the slug Claude derived from the opening prompt, recorded as `observed`
+rather than `stated`: it is a reading of somebody's intent, not a statement of one.
+
+The hook that cannot answer prints `./nodal-worktree-create-refused` — a relative path with a dot segment,
+which Claude rejects — and says why on standard error. That is deliberate: printing nothing ends the
+session just as certainly and says nothing about why. The two reasons are a project with no `nodal.toml`
+and a machine with no `nodal`, and the second is handled by the command text itself.
+
+`SessionStart` fires more than once for one session, with a different session identifier each time, and the
+create payload carries a third. **Nothing correlates by session identifier.** The `cwd` a payload carries
+is what names the unit, and a unit home says whose it is in `.nodal/id`.
+
+`WorktreeRemove` fired in **none** of four measured session lifecycles, and nothing depends on it. Cleanup
+is Nodal's own lifecycle: the unit persists when the session ends, `nodal ls` shows it, and `done`, `merge`,
+`reclaim` and `gc` retire it. A unit outliving the session that made it is the product working, not a leak.
+
+The settings file is edited, never rewritten. What Nodal adds is one contiguous region of text it can write
+again, so removing it leaves the file byte for byte the file it was, with every other key and every hook
+somebody else installed still in it. A file that was reformatted since the install loses the hooks by a
+re-rendering of the document instead, which is the only path that is not byte-identical. A file holding
+nothing but Nodal's hooks is removed, and `.claude/` goes with it when that empties the directory.
 
 ## Reclaim, trash and gc
 Every destructive path calls one uniqueness check. It reports three things: uncommitted changes,

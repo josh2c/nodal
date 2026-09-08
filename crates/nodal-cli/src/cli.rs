@@ -15,6 +15,7 @@ use nodal_core::workspace::home;
 use crate::commands::adopt::Adopt;
 use crate::commands::base::Base;
 use crate::commands::cd::Cd;
+use crate::commands::claude_code::ClaudeCode;
 use crate::commands::doctor::Doctor;
 use crate::commands::done::Done;
 use crate::commands::env::Env;
@@ -55,6 +56,9 @@ pub enum Command {
     Cd(Cd),
     /// Print the shell integration for bash, zsh or fish.
     ShellInit(ShellInit),
+    /// Answer one of Claude Code's hooks. What `.claude/settings.json` runs.
+    #[command(subcommand_required = true, arg_required_else_help = true)]
+    ClaudeCode(ClaudeCode),
     /// Become a shell that carries a unit's environment.
     Shell(Shell),
     /// Run a command in a unit's environment and record it in the unit's log.
@@ -134,6 +138,10 @@ impl Cli {
             Some(Command::Gc(gc)) => gc.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Doctor(doctor)) => doctor.run(self.registry()),
             Some(Command::ShellInit(init)) => init.run(),
+            Some(Command::ClaudeCode(hook)) if hook.needs_registry() => {
+                hook.run(Some(&mut self.registry()?))
+            }
+            Some(Command::ClaudeCode(hook)) => hook.run(None),
             Some(Command::Shell(shell)) => shell.run(),
             Some(Command::Uninstall(uninstall)) => uninstall.run(),
             Some(Command::Upgrade(upgrade)) => upgrade.run(),

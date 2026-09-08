@@ -5,10 +5,14 @@
 //! that list. What a person agrees to is therefore the same value that is then acted
 //! on, and a `--json` reading of the plan is the same document a person read.
 //!
-//! Three kinds of item, and the third is the only one that can lose work:
+//! Four kinds of item, and the last is the only one that can lose work:
 //!
 //! - the block in a start-up file, per shell that has one ([`super::rc`]);
 //! - the shell script in the state directory, per shell that has one ([`super::shims`]);
+//! - the hooks in one project's `.claude/settings.json`, per project the registry knows
+//!   ([`crate::adapters::claude_code`]). Those live in somebody's repository rather than
+//!   on their machine, so they are removed the way they were added: what Nodal wrote and
+//!   nothing else;
 //! - the state directory itself, which is asked for by `--state` and never removed
 //!   without it.
 //!
@@ -19,13 +23,14 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::adapters::{claude_code, settings};
 use crate::lifecycle::uniqueness::{self, Uniqueness};
 use crate::model::Timestamp;
 use crate::output::view::setup::{Installed, Item, Kind, Uninstall};
 use crate::runtime::shells::Shell;
 use crate::setup::{rc, shims};
 use crate::store::{Store, environments, projects, units};
-use crate::{Error, Result};
+use crate::{Error, Result, recipe};
 
 /// What an uninstall was asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +43,27 @@ pub struct Request {
     pub state_too: bool,
     /// Whether a home that holds work only it has may be removed anyway.
     pub force: bool,
+    /// The project the command was run in, when it was run in one.
+    ///
+    /// The registry knows every project a unit was made for, and that is where the
+    /// settings files come from. It does not know a project somebody ran `nodal init`
+    /// in and nothing else, because `init` writes a file into a project Nodal may never
+    /// have heard of and does not open the registry to do it. So the directory a person
+    /// is standing in is asked as well, and an uninstall run in that project takes back
+    /// what the init there put in.
+    pub project: Option<PathBuf>,
+}
+
+/// The project directory `start` is in, found by the recipe at its root.
+///
+/// `None` when nothing above `start` holds a `nodal.toml`, which is the answer for a
+/// directory that is not in a project at all.
+#[must_use]
+pub fn project_at(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|directory| directory.join(recipe::FILE_NAME).is_file())
+        .map(Path::to_path_buf)
 }
 
 /// Install the integration for one shell: write the script, add the block.
@@ -101,6 +127,7 @@ pub fn survey(request: &Request) -> Result<Uninstall> {
             file.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
         items.push(Item { kind: Kind::Shim, path: file, detail });
     }
+    claude_items(request, &mut items, &mut notes);
     let findings =
         if request.state_too { state_item(request, &mut items, &mut notes) } else { Vec::new() };
     Ok(Uninstall {
@@ -133,6 +160,7 @@ pub fn apply(plan: &Uninstall) -> Result<Uninstall> {
         match item.kind {
             Kind::RcBlock => strip_block(&item.path)?,
             Kind::Shim => remove_file(&item.path)?,
+            Kind::ClaudeHooks => drop(claude_code::uninstall(&item.path)?),
             Kind::State => remove_tree(&item.path)?,
         }
     }
@@ -199,6 +227,58 @@ fn remove_tree(path: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(Error::io(path)(error)),
     }
+}
+
+/// Add one item per project whose settings file holds hooks Nodal wrote.
+///
+/// A registry that is not there is not an error, and neither is one that cannot be
+/// read: it is a note, because "no project has hooks" and "I could not look" are
+/// different answers and a person deciding what to remove needs the right one.
+fn claude_items(request: &Request, items: &mut Vec<Item>, notes: &mut Vec<String>) {
+    match settings_files(request) {
+        Ok(found) => items.extend(found),
+        Err(error) => notes
+            .push(format!("the registry could not be read, so no project was checked: {error}")),
+    }
+}
+
+/// Every settings file that holds Nodal's hooks, over every project Nodal can name.
+fn settings_files(request: &Request) -> Result<Vec<Item>> {
+    let mut found = Vec::new();
+    for root in project_roots(&request.state, request.project.as_deref())? {
+        let path = settings::path(&root);
+        let text = claude_code::read(&path)?;
+        if settings::holds_hooks(&text) {
+            found.push(Item { kind: Kind::ClaudeHooks, path, detail: kept(&text) });
+        }
+    }
+    Ok(found)
+}
+
+/// Every project root to look in: the registry's, and the one the person is in.
+fn project_roots(state: &Path, here: Option<&Path>) -> Result<Vec<PathBuf>> {
+    let registry = state.join("registry.db");
+    let mut roots: Vec<PathBuf> = if registry.is_file() {
+        let store = Store::open(&registry)?;
+        projects::list(store.conn())?.into_iter().map(|project| project.root).collect()
+    } else {
+        Vec::new()
+    };
+    if let Some(root) = here
+        && !roots.contains(&root.to_path_buf())
+    {
+        roots.push(root.to_path_buf());
+    }
+    Ok(roots)
+}
+
+/// What is left in a settings file once Nodal's hooks have gone.
+fn kept(text: &str) -> String {
+    let others = settings::other_events(text);
+    if others.is_empty() {
+        return String::from("the hooks nodal wrote, and nothing else in the file");
+    }
+    format!("the hooks nodal wrote; {} stays", others.join(crate::output::human::JOIN))
 }
 
 /// Add the state directory to the plan, and read every home it holds first.
@@ -318,6 +398,7 @@ mod tests {
                 home: self.home.path().to_path_buf(),
                 state_too,
                 force: false,
+                project: None,
             }
         }
 
