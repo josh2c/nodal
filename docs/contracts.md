@@ -238,6 +238,11 @@ There are six hooks. Each runs in a directory that exists.
 `post_merge` runs before the merge removes the unit, so the home it names is still there. A merge
 that stops for a conflict runs `pre_merge` and no other hook.
 
+Every path a hook is given is resolved: `NODAL_SOURCE`, `NODAL_ROOT`, `{repo_root}`, `{unit_path}`,
+and the directory the hook is started in. A hook can therefore compare one of them with its own
+`$PWD`, which the shell takes from `getcwd`. On a host where a temporary directory is reached
+through a link, the two would otherwise be different text for one directory.
+
 ### Template variables
 Every hook command may name these five values. Nodal replaces each name with its value before it
 gives the command to the shell.
