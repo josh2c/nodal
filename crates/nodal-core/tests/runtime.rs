@@ -151,6 +151,7 @@ fn a_session_on_another_host_is_not_this_machines_to_close() {
             environment_id: environment,
             actor: Actor { kind: ActorKind::Human, name: ActorName::parse("josh").unwrap() },
             pid: Some(99),
+            pgid: None,
             started_at: Timestamp::now(),
             ended_at: None,
         },

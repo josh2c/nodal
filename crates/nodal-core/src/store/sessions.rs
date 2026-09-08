@@ -10,7 +10,7 @@ use crate::store::row;
 const TABLE: &str = "session";
 
 /// Every column [`decode`] reads.
-const COLUMNS: &str = "id, environment_id, actor_kind, actor_name, pid, started_at, ended_at";
+const COLUMNS: &str = "id, environment_id, actor_kind, actor_name, pid, pgid, started_at, ended_at";
 
 /// Record an actor attaching to an environment.
 ///
@@ -20,14 +20,15 @@ const COLUMNS: &str = "id, environment_id, actor_kind, actor_name, pid, started_
 pub fn insert(conn: &Connection, session: &Session) -> Result<()> {
     row::write(
         conn,
-        "INSERT INTO session (id, environment_id, actor_kind, actor_name, pid, started_at, \
-         ended_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO session (id, environment_id, actor_kind, actor_name, pid, pgid, \
+         started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             session.id.to_string(),
             session.environment_id.to_string(),
             row::name_of(&session.actor.kind, "actor kind")?,
             session.actor.name.as_str(),
             session.pid,
+            session.pgid,
             session.started_at.unix_seconds(),
             session.ended_at.map(Timestamp::unix_seconds),
         ],
@@ -75,6 +76,23 @@ pub fn list_open_all(conn: &Connection) -> Result<Vec<Session>> {
     row::many(conn, &sql, params![], decode)
 }
 
+/// The tethers of an environment that nothing has yet seen end: the process groups a
+/// `nodal run --tether` started and a reclaim has still to stop.
+///
+/// A row is what makes a tether findable. The `nodal run` that started the group may
+/// have been killed, and the group leader may have been replaced by a process it
+/// started, so neither is the record; this row is.
+///
+/// # Errors
+/// As [`get`].
+pub fn list_open_tethers(conn: &Connection, environment_id: EnvId) -> Result<Vec<Session>> {
+    let sql = format!(
+        "SELECT {COLUMNS} FROM session \
+         WHERE environment_id = ? AND ended_at IS NULL AND pgid IS NOT NULL ORDER BY id"
+    );
+    row::many(conn, &sql, params![environment_id.to_string()], decode)
+}
+
 /// Record an actor detaching; `false` when the session is unknown or already ended.
 ///
 /// Only an open session is closed, so a second detach — a shell hook that fires twice —
@@ -101,6 +119,7 @@ fn decode(row: &Row<'_>) -> Result<Session> {
             name: row::scalar::<ActorName>(row, TABLE, "actor_name")?,
         },
         pid: row::number_opt::<u32>(row, TABLE, "pid")?,
+        pgid: row::number_opt::<u32>(row, TABLE, "pgid")?,
         started_at: row::stamp(row, TABLE, "started_at")?,
         ended_at: row::stamp_opt(row, TABLE, "ended_at")?,
     })

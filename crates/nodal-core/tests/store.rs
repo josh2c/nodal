@@ -135,6 +135,7 @@ fn session() -> Session {
         environment_id: id('5'),
         actor: Actor { kind: ActorKind::Agent, name: ActorName::parse("claude-code").unwrap() },
         pid: Some(4242),
+        pgid: None,
         started_at: at("2026-09-06T10:05:00Z"),
         ended_at: None,
     }

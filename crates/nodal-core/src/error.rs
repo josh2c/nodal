@@ -292,6 +292,19 @@ pub enum Error {
         path: PathBuf,
     },
 
+    /// A tether was asked for in a home the registry does not know. The registry row is
+    /// the only record of a tethered process group, so a group started without one
+    /// could never be found again and never be stopped.
+    #[error(
+        "{home} is not a unit this registry knows, so --tether has nowhere to record the \
+         process group; run the command without --tether",
+        home = home.display()
+    )]
+    TetherNotRecorded {
+        /// The home the command was to run in.
+        home: PathBuf,
+    },
+
     /// A row another row's foreign key points at was not there. No sequence of
     /// operations produces that, so the registry has been written to by something else.
     #[error("{table} row {id} is referenced but is not there")]

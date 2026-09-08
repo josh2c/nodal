@@ -126,6 +126,7 @@ fn session() -> Session {
         environment_id: env_id(),
         actor: actor(),
         pid: Some(4_242),
+        pgid: None,
         started_at: at("2026-09-06T10:00:05Z"),
         ended_at: None,
     }

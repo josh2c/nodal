@@ -49,7 +49,7 @@ model/                 plain data, serde + schemars; zero IO
 store/                 SQLite (WAL); repository functions; no business rules
   mod.rs               Store::open, connection pragmas
   migrations.rs        the numbered migration table and the runner
-  migrations/          0001_init.sql, 0002_… (plain SQL files, include_str!)
+  migrations/          0001_init.sql, 0002_… 0005_tether.sql (plain SQL files, include_str!)
   row.rs               model values in and out of columns, one place
   projects.rs          insert/get/find/list/update (one fn each)
   units.rs             insert/get/list/update_status (one fn each)
@@ -139,14 +139,14 @@ runtime/
   init.rs              shell-init: render one of shims/nodal.{bash,zsh,fish}
   entry.rs             which home a target names; the NODAL_CD_FILE channel
   shell.rs             become the user's shell with the home's env (exec, no child)
-  run.rs               run a command, record observed event, redact values
+  run.rs               run a command, record observed event, redact values; --tether's process group
   actor.rs             who is running this: NODAL_ACTOR, then a table of agent signals
   processes.rs         Processes trait; /proc scan for the variables a process carries
   sessions.rs          derive sessions from processes; reconcile registry rows
   attribute/           Attributor trait; one file per signal
     process_env.rs · cwd.rs · docker.rs · listeners.rs
   ps.rs                merge signals into Attributed rows with confidence
-  stop.rs              Signals trait; SIGTERM, a grace period, then SIGKILL
+  stop.rs              Signals trait; a process or a whole group; SIGINT, SIGTERM, then SIGKILL
 
 context/
   mod.rs

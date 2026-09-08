@@ -59,7 +59,7 @@
   },
   "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/session.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "One shell, agent or editor attached to a home directory. Sessions are what makes\n\"who is in this unit right now\" answerable without guessing from processes.",
+  "description": "One shell, agent or editor attached to a home directory. Sessions are what makes\n\"who is in this unit right now\" answerable without guessing from processes.\n\nA session with a `pgid` is a tether: `nodal run --tether` started a command in a\nprocess group of its own and wrote the group here. The row, not the `nodal run` that\nmade it, is the record of that group, so a tether whose parent has gone is still\nfound and still stopped when the unit is reclaimed.",
   "properties": {
     "actor": {
       "$ref": "#/$defs/Actor",
@@ -83,6 +83,15 @@
     "id": {
       "$ref": "#/$defs/SessionId",
       "description": "Identity of the session."
+    },
+    "pgid": {
+      "description": "Process group id on the session's host, for a session that is a tether. It is\nabsent for every session that a process scan derived.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "pid": {
       "description": "Process id on the session's host, for attribution and idle detection.",
