@@ -42,7 +42,10 @@
 set -eu
 
 cargo test --locked -p nodal-core --test doctor
+cargo test --locked -p nodal-core --test doctor_branches
 cargo test --locked -p nodal-core --lib doctor::
+cargo test --locked -p nodal-core --lib git::branches
+cargo test --locked -p nodal-core --lib git::worktree
 cargo test --locked -p nodal-core --lib output::view::doctor
 cargo test --locked -p nodal-core --lib services::docker
 cargo test --locked -p nodal-cli --test doctor
@@ -54,6 +57,7 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/real"
 ln -s "$work/real" "$work/by-another-name"
 TMPDIR="$work/by-another-name" cargo test --locked -p nodal-core --test doctor
+TMPDIR="$work/by-another-name" cargo test --locked -p nodal-core --test doctor_branches
 TMPDIR="$work/by-another-name" cargo test --locked -p nodal-cli --test doctor
 TMPDIR="$work/by-another-name" cargo test --locked -p nodal-safety --test doctor_writes_nothing
 

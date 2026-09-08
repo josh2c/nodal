@@ -249,6 +249,35 @@ is the same row with the same facts — branch, pushed or unpushed, dirty, behin
 intent — and it is in this project's section because this project's repository named it. A row is named
 relative to the checkout when it is inside one and by its whole path when it is not.
 
+A worktree Git itself calls prunable is reported as `prunable`, in that word. Git decides this from its own
+record and doctor states the verdict with the reason Git gave. The verdict is not a question about the
+directory. A reaper of temporary directories removes the files of a worktree and leaves the directories
+behind. The path then exists while the worktree is prunable. Doctor asks Git, never the filesystem.
+
+A Docker container or volume is attributed by its label first, then by the host paths it mounts, and last by
+its name. A stopped container mounts nothing, and a volume nothing refers to has no mount and no label. Both
+still carry a project's name in their own name, which is what a compose file writes. Doctor knows two sets
+of project names: the registry's projects, and the directory names of the checkouts it surveys. A name that
+holds the whole name of another such project puts the row in that project's section. A name that matches
+nothing stays in this project's section. "I cannot say whose this is" is not the same claim as "this is
+another project's".
+
+A third section reports the local branches of the checkout that no worktree has checked out. Every other
+source is anchored to a directory and a branch is not. A report of directories can therefore be all-clear
+over work that exists on no remote. Each branch is in one of three buckets: merged into the default branch;
+unmerged, with every commit on a remote; or unpushed, meaning commits that exist on no remote-tracking ref
+(the `remote_containment` predicate). The unpushed bucket prints one row per branch. A row carries the branch, the count of
+commits no remote has, the age of the last commit, and whether its upstream is gone. The other two print one
+line each with a count. `--all` opens them. `--json` carries every row either way: the flag decides how much
+is shown, never what was found. The audit is two `for-each-ref` calls and one `rev-list` per ref, and it
+reads only. What to do about a branch is a person's decision.
+
+Every size doctor prints is logical bytes: the sum of the sizes of the files and links under a directory, as
+the source counts them. It is not the space a removal would give back. A filesystem that shares blocks
+between files holds less than the figure; one that pads every file to a block holds more, so on a filesystem
+of that kind a reclaim gives back more than doctor reported. Doctor prints the figure it read and does not
+model a filesystem to guess the other one.
+
 A registry a later Nodal wrote stops every other command (`StoreTooNew`). It does not stop `doctor`. Doctor
 is what a person runs when something is wrong, so it reports what needs no registry — the worktrees and the
 caches of the checkout — and states the mismatch as a note: both schema versions, the fact that nothing in

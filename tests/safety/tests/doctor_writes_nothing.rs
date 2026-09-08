@@ -31,9 +31,14 @@ const NESTED: &str = ".claude/worktrees/side";
 /// had: registered by the repository, and not underneath it.
 const BESIDE: &str = "project-beside";
 
+/// A local branch of the checkout that no worktree has checked out. The branch audit
+/// reads every ref, so the machine has to hold one for the audit to be exercised here.
+const LEFT_BEHIND: &str = "left-behind";
+
 /// The checkout, a worktree inside it and a worktree beside it, and the paths of the two
 /// trees a snapshot has to watch.
 fn plant(machine: &Machine) -> (PathBuf, PathBuf) {
+    git(&machine.source, &["branch", LEFT_BEHIND]);
     git(&machine.source, &["worktree", "add", "--quiet", "--detach", NESTED]);
     let beside = machine.source.parent().expect("the machine root").join(BESIDE);
     git(&machine.source, &["worktree", "add", "--quiet", "--detach", beside.to_str().unwrap()]);
@@ -97,6 +102,34 @@ fn doctor_leaves_the_checkout_and_the_state_directory_byte_for_byte_as_it_found_
         "doctor wrote in the state directory",
     );
     assert_eq!(before, rows(&machine), "doctor changed a row of the registry");
+}
+
+/// The branch audit reads every ref of the checkout, and refs are the part of a
+/// repository a person would most mind a report touching.
+///
+/// `--all` is used because it is the rendering that prints every bucket, so the whole
+/// audit is on the page and nothing is skipped for being quiet. The audit itself runs
+/// either way.
+#[test]
+fn the_branch_audit_leaves_every_ref_of_the_checkout_alone() {
+    let machine = Machine::new();
+    machine.unit("worker-import");
+    let (checkout, beside) = plant(&machine);
+
+    let source = Snapshot::of(&checkout);
+    let outside = Snapshot::of(&beside);
+    let state = Snapshot::of_except(&machine.state, is_registry);
+
+    let report = stdout(&machine.nodal(&["doctor", "--all"]));
+    assert!(report.contains("branches"), "the branch section is not in the report:\n{report}");
+    assert!(report.contains(LEFT_BEHIND), "a branch with no worktree was not reported:\n{report}");
+
+    source.assert_unchanged(&Snapshot::of(&checkout), "the branch audit wrote in the checkout");
+    outside.assert_unchanged(&Snapshot::of(&beside), "the branch audit wrote in a worktree");
+    state.assert_unchanged(
+        &Snapshot::of_except(&machine.state, is_registry),
+        "the branch audit wrote in the state directory",
+    );
 }
 
 #[test]

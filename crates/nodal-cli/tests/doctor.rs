@@ -182,3 +182,61 @@ fn the_checkout_is_unchanged_by_the_report() {
         "doctor changed the working tree"
     );
 }
+
+/// The branch section through the binary, in both renderings and with the flag.
+///
+/// The checkout here holds one branch a worktree has (`side`) and one nothing has
+/// (`left-behind`), and it names no remote. A branch with commits and no remote to hold
+/// them is unpushed, which is what `remote_containment` means and what the report says.
+fn with_a_branch(root: &Path) -> PathBuf {
+    let checkout = checkout(root);
+    git(&checkout, &["branch", "left-behind"]);
+    checkout
+}
+
+#[test]
+fn a_branch_with_no_worktree_is_reported_and_a_branch_with_one_is_not() {
+    let fixture = Fixture::new();
+    let checkout = with_a_branch(fixture.root());
+
+    let text = doctor(&fixture, &checkout, &[]);
+
+    assert!(text.contains("local branches with no worktree"), "{text}");
+    assert!(text.contains("left-behind"), "{text}");
+    let (_, branches) = text.split_once("local branches with no worktree").expect("the section");
+    assert!(!branches.contains("side"), "a branch with a worktree is not a branch row: {text}");
+}
+
+#[test]
+fn the_json_answer_carries_every_branch_and_the_bucket_it_is_in() {
+    let fixture = Fixture::new();
+    let checkout = with_a_branch(fixture.root());
+
+    let text = doctor(&fixture, &checkout, &["--json"]);
+
+    let parsed: serde_json::Value = serde_json::from_str(&text).expect("one JSON document");
+    let rows = parsed["branches"]["rows"].as_array().expect("the branch rows");
+    let row = rows.iter().find(|row| row["name"] == "left-behind").expect("the branch");
+    assert_eq!(row["standing"], "unpushed", "{text}");
+    assert!(row["unpushed"].as_u64().is_some_and(|count| count > 0), "{text}");
+    assert!(row["committed"].is_string(), "{text}");
+}
+
+/// `--all` changes how much is printed and nothing about what was found.
+#[test]
+fn all_prints_the_safe_buckets_and_reports_the_same_branches() {
+    let fixture = Fixture::new();
+    let checkout = with_a_branch(fixture.root());
+
+    let plain: serde_json::Value =
+        serde_json::from_str(&doctor(&fixture, &checkout, &["--json"])).expect("one document");
+    let opened: serde_json::Value =
+        serde_json::from_str(&doctor(&fixture, &checkout, &["--json", "--all"]))
+            .expect("one document");
+
+    assert_eq!(
+        plain["branches"]["rows"], opened["branches"]["rows"],
+        "--all is a rendering choice, not a second answer"
+    );
+    assert!(doctor(&fixture, &checkout, &["--all"]).contains("left-behind"));
+}

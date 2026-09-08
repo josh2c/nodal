@@ -5,6 +5,7 @@
 //! repository, never a worktree, so this facade has no worktree operations — only
 //! detection, for adopting an existing checkout in place.
 
+pub mod branches;
 pub mod cmd;
 pub mod history;
 pub mod host;
@@ -262,6 +263,44 @@ impl Git {
                 oid: reference.oid,
             })
             .collect())
+    }
+
+    /// Every local branch, with what one `git for-each-ref` states about each: when
+    /// its tip was committed, what upstream it names, and whether that upstream is
+    /// gone.
+    ///
+    /// One process for the whole repository. This is what the branch audit reads, where
+    /// [`Git::branches`] would cost a second pass to date every ref.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git for-each-ref` failed, [`Error::GitParse`] on a record
+    /// that could not be read.
+    pub fn local_branches(&self) -> Result<Vec<branches::Local>> {
+        branches::locals(&self.root)
+    }
+
+    /// The names of every local branch `base` already holds.
+    ///
+    /// One process for the whole repository. A `base` this repository does not have
+    /// holds nothing.
+    ///
+    /// # Errors
+    /// [`Error::GitEncoding`] when a name is not UTF-8.
+    pub fn merged_into(&self, base: &str) -> Result<std::collections::BTreeSet<String>> {
+        branches::merged_into(&self.root, base)
+    }
+
+    /// How many commits of `rev` exist on no remote-tracking ref.
+    ///
+    /// One `rev-list` and nothing else, which is what makes an audit of three hundred
+    /// refs one process per ref. [`Git::remote_containment`] answers the same question
+    /// with the commits themselves, for callers that need them.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the revision is unknown, [`Error::GitParse`] when the count
+    /// could not be read.
+    pub fn unpushed_count(&self, rev: &str) -> Result<usize> {
+        branches::unpushed_count(&self.root, rev)
     }
 
     /// Whether a local branch exists.

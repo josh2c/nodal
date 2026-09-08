@@ -22,6 +22,19 @@
 //! person cleaning up one project must not be handed another project's unfinished work
 //! to act on, so the second section states no branch, no dirty count and no intent.
 //!
+//! Which project a thing belongs to is usually a question a path answers. A Docker
+//! resource often has no path to answer with, and it carries a project's name in its
+//! own name instead. So a name that positively matches another project doctor knows is
+//! evidence, and that row goes in the second section ([`attribution`]).
+//!
+//! ## A third section: the branches
+//!
+//! Everything above is anchored to a directory. [`branches`] is not, and that is why it
+//! is there. A measured machine held 317 local branches, 306 of them with no worktree,
+//! and 22 of those held commits that exist on no remote. Nothing anchored to a
+//! directory could report one of them, so an all-clear about the worktrees was true and
+//! said nothing about the only work on that machine that was not backed up anywhere.
+//!
 //! Which project a thing belongs to is answered by what named it, and not by where it
 //! sits. A worktree this project's repository names is this project's whether its
 //! directory is under the checkout, beside it, or on the other side of the machine, and
@@ -69,6 +82,8 @@
 //! reported — and the mismatch becomes a note that names both schema versions and the
 //! one command that upgrades this copy of Nodal (DL-034). Nothing is fetched to say it.
 
+pub mod attribution;
+pub mod branches;
 pub mod caches;
 pub mod containers;
 pub mod databases;
@@ -85,7 +100,7 @@ use crate::Result;
 use crate::git::Git;
 use crate::lifecycle::guard;
 use crate::model::{Project, Timestamp};
-use crate::output::view::doctor::{Checkout, Doctor, Finding, Note};
+use crate::output::view::doctor::{Branches, Checkout, Doctor, Finding, Note};
 use crate::services::docker::Docker;
 use crate::store::projects;
 use crate::workspace::home;
@@ -216,6 +231,18 @@ impl Scope {
             Section::Here
         }
     }
+
+    /// Whether a path is inside the checkout the command was run in.
+    ///
+    /// [`Scope::section`] cannot answer this. It says `Here` both for a path this
+    /// project owns and for a path nothing claims, which is what makes it safe. This
+    /// says only the first, and it is what stops a name from moving a container that is
+    /// standing in this project's own tree ([`containers`]).
+    #[must_use]
+    pub fn owns(&self, path: &Path) -> bool {
+        let path = guard::resolve(path);
+        self.root.as_ref().is_some_and(|root| path.starts_with(root))
+    }
 }
 
 /// The three places doctor reads, named by the caller rather than by this module.
@@ -276,10 +303,14 @@ pub fn survey(
         }
     }
     notes.extend(registry.note());
+    let branches = match &scope.root {
+        Some(root) => branches::find(root, now)?,
+        None => Branches::default(),
+    };
 
     largest_first(&mut here);
     largest_first(&mut elsewhere);
-    Ok(Doctor { now, checkout: checkout_of(&scope), here, elsewhere, notes })
+    Ok(Doctor { now, checkout: checkout_of(&scope), here, elsewhere, branches, notes })
 }
 
 /// What the registry-reading sources answered: the rows, and what could not be read.

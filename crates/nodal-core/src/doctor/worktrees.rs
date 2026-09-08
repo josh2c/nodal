@@ -20,6 +20,17 @@
 //! A lock means a tool says it is working in that directory, and a size would mean
 //! walking it. The row says `locked` and the reason the tool gave.
 //!
+//! The record states one more verdict, and this module repeats it in git's own word:
+//! **a worktree git calls prunable is reported as `prunable`.** Git decides that, from
+//! its own record, and doctor states it and adds nothing. A softer phrase would be
+//! doctor disagreeing with git about git's data.
+//!
+//! The verdict is not a question about the directory. A reaper of temporary directories
+//! removes the files of a worktree and leaves the directories behind, so the path still
+//! exists while the worktree is prunable. A check for whether the path is there answers
+//! a different question and answers this one wrongly, which is why this module asks
+//! git.
+//!
 //! For every other worktree the report carries four facts and one recovered one:
 //!
 //! | fact | read from |
@@ -46,6 +57,11 @@ use crate::git::Git;
 use crate::lifecycle::guard;
 use crate::output::view::doctor::{Finding, Kind};
 use crate::{Result, git};
+
+/// Git's word for a worktree whose record points at a location that is not there.
+///
+/// It is git's word and not doctor's, so it is stated once and used as it is.
+pub const PRUNABLE: &str = "prunable";
 
 /// Every worktree the repository at `root` names, other than that checkout itself.
 ///
@@ -96,6 +112,9 @@ fn one(
     }
     let measured = size::measure(&registered.path);
     let finding = finding.sized(measured.bytes, measured.complete);
+    if let Some(reason) = &registered.prunable {
+        return prunable(finding, reason);
+    }
     if section == Section::Elsewhere {
         return finding;
     }
@@ -113,6 +132,21 @@ fn locked(finding: Finding, reason: &str) -> Finding {
         return finding.says("not inspected");
     }
     finding.says(reason.trim().to_owned()).says("not inspected")
+}
+
+/// A worktree git calls prunable: git's word, and the reason git gave for it.
+///
+/// The size stays on the row. A hollow shell holds directories, and a directory tree a
+/// reaper left behind is still disk this machine is carrying.
+///
+/// Nothing further is read. The record git holds points at a location that is not
+/// there, so there is no checkout here to ask about a branch or a status.
+fn prunable(finding: Finding, reason: &str) -> Finding {
+    let finding = finding.says(PRUNABLE);
+    if reason.trim().is_empty() {
+        return finding;
+    }
+    finding.says(reason.trim().to_owned())
 }
 
 /// What Git says about a worktree: whether its work exists anywhere else, whether it

@@ -6,18 +6,27 @@
 //!
 //! A container is attributed the way `nodal ps` attributes a running one: by the label
 //! Nodal puts on the containers it starts, and where there is no label, by the host path
-//! the container mounts. A container that says nothing about itself and mounts nothing
-//! this machine's registry knows is reported in the section for this project, because
-//! "I cannot say whose this is" is not the same claim as "this is another project's".
+//! the container mounts.
 //!
-//! A volume that nothing refers to has no path and no label, so it is never attributed
-//! to another project either.
+//! Where neither says anything, the name does. A stopped container mounts nothing and a
+//! volume nothing refers to has no mount and no label, and both of them still carry a
+//! project's name in their own name: `<project>_db` and `supabase_db_<project>` are what
+//! a compose file writes. A measured machine held sixteen such rows, 740 MB, every one
+//! of them named for a project the command was not run in, and every one of them was
+//! filed under the project the command was run in. So a name that positively matches
+//! another project doctor knows puts the row in that project's section
+//! ([`super::attribution`]).
+//!
+//! A name that matches nothing still belongs here. "I cannot say whose this is" is not
+//! the same claim as "this is another project's", and only the first section may hold
+//! the first.
 //!
 //! Docker absent, or a daemon this account may not reach, is one note and no rows
 //! (`services::docker`). The rest of the report is unaffected.
 
 use rusqlite::Connection;
 
+use crate::doctor::attribution::Names;
 use crate::doctor::{Scope, Section, note};
 use crate::output::view::doctor::{Finding, Kind, Note};
 use crate::services::docker::{self, Docker, ENV_LABEL, Exited, Sweep};
@@ -41,14 +50,16 @@ pub fn find(conn: &Connection, docker: &dyn Docker, scope: &Scope) -> Result<Fou
         Sweep::Ran(leftovers) => leftovers,
         Sweep::Unavailable { why } => return Ok((Vec::new(), Some(note(SOURCE, why)))),
     };
+    let names = Names::of(scope);
     let mut rows = Vec::new();
     for container in &leftovers.exited {
-        rows.push((section_of(conn, scope, container)?, row_of(container)));
+        rows.push((section_of(conn, scope, &names, container)?, row_of(container)));
     }
     for volume in leftovers.dangling {
+        let section = names.section(&volume.name).unwrap_or(Section::Here);
         let finding = Finding::new(Kind::DanglingVolume, volume.name);
         rows.push((
-            Section::Here,
+            section,
             match volume.bytes {
                 Some(bytes) => finding.sized(bytes, true),
                 None => finding,
@@ -71,19 +82,32 @@ fn row_of(container: &Exited) -> Finding {
 
 /// Which section a container belongs to: another project's, or this one's.
 ///
-/// The label wins, because a container Nodal started carries the materialisation it
-/// serves and that row names a home. A container Nodal did not start is placed by the
-/// host paths it mounts.
-fn section_of(conn: &Connection, scope: &Scope, container: &Exited) -> Result<Section> {
+/// Four questions, best evidence first, and the first one that answers wins.
+///
+/// The label answers first, because a container Nodal started carries the
+/// materialisation it serves and that row names a home. A mount inside another
+/// project answers next, because a container that mounts a directory is standing in
+/// that directory. A mount inside this project answers third, and it is asked before
+/// the name so that a name can never move a container that is standing in this
+/// project's own tree. The name answers last, because it is evidence and not a
+/// location ([`super::attribution`]).
+fn section_of(
+    conn: &Connection,
+    scope: &Scope,
+    names: &Names,
+    container: &Exited,
+) -> Result<Section> {
     if let Some(home) = home_of(conn, container)? {
         return Ok(scope.section(&home));
     }
-    Ok(container
-        .mounts
-        .iter()
-        .map(|mount| scope.section(mount))
-        .find(|section| *section == Section::Elsewhere)
-        .unwrap_or(Section::Here))
+    let mounts = &container.mounts;
+    if mounts.iter().any(|mount| scope.section(mount) == Section::Elsewhere) {
+        return Ok(Section::Elsewhere);
+    }
+    if mounts.iter().any(|mount| scope.owns(mount)) {
+        return Ok(Section::Here);
+    }
+    Ok(names.section(&container.name).unwrap_or(Section::Here))
 }
 
 /// The home a labelled container serves, when the registry still has the row.

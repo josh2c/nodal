@@ -79,6 +79,7 @@ git/
   mod.rs               Git facade struct wrapping `git` CLI invocations
   cmd.rs               run(args) -> Output, one place for process spawning
   refs.rs              read/write refs, WIP snapshot ref
+  branches.rs          local branches, the merged set, and the unpushed count of one ref
   push.rs              the one call that leaves this machine: refspecs to a remote
   host.rs              the web host a remote names, and its compare page (a table)
   status.rs            porcelain parsing -> StatusSummary
@@ -122,9 +123,11 @@ services/
   docker.rs            thin wrapper: run/rm/inspect/label queries
 
 doctor/                what this machine has left behind; reads only, never removes (DL-015)
-  mod.rs               survey(): the two sections, and which one a path belongs to
-  size.rs              apparent bytes and newest modification of a directory (no writes)
-  worktrees.rs         nested checkouts from `git worktree list`; a locked one is read no further
+  mod.rs               survey(): the sections, and which one a path belongs to
+  size.rs              logical bytes and newest modification of a directory (no writes)
+  attribution.rs       whose a Docker resource is when its name is the only evidence
+  branches.rs          local branches with no worktree, in three buckets by where their commits are
+  worktrees.rs         checkouts from `git worktree list`; locked and prunable are read no further
   caches.rs            build caches nothing has written to for a fortnight (table of names)
   containers.rs        exited containers and unreferenced volumes, attributed like ps does
   databases.rs         directories named as a Nodal database with no registry row
