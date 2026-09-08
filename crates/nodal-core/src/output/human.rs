@@ -288,6 +288,19 @@ pub fn since(now: Timestamp, then: Timestamp) -> String {
     if elapsed == NOW { elapsed } else { format!("{elapsed} ago") }
 }
 
+/// How long there is until `then`, from `now`. A retention that has already run out
+/// reads as [`NOW`], the same as one under a minute away, because both mean the next
+/// sweep takes it.
+///
+/// This is the counterpart of [`since`] and not a variant of it: a moment ahead is said
+/// with "in" and a moment behind with "ago", and a line that says the wrong one of the
+/// two states the opposite of what is true.
+#[must_use]
+pub fn until(now: Timestamp, then: Timestamp) -> String {
+    let left = span(then, now);
+    if left == NOW { String::from(NOW) } else { format!("in {left}") }
+}
+
 /// What an elapsed time under a minute is called, in both forms.
 const NOW: &str = "now";
 
@@ -325,7 +338,7 @@ pub fn join(items: &[String]) -> String {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::{Block, Doc, Field, Table, bytes, since, span};
+    use super::{Block, Doc, Field, Table, bytes, since, span, until};
     use crate::model::Timestamp;
 
     fn at(text: &str) -> Timestamp {
@@ -391,5 +404,16 @@ mod tests {
         let now = at("2026-09-06T12:00:00Z");
         assert_eq!(span(now, at("2026-09-06T11:59:30Z")), "now");
         assert_eq!(span(now, at("2026-09-04T12:00:00Z")), "2 d");
+    }
+
+    /// A moment ahead is said with "in". Saying "ago" here states the opposite of what
+    /// is true, which is what a retention line did before this function existed.
+    #[test]
+    fn a_moment_still_to_come_is_said_forwards() {
+        let now = at("2026-09-06T12:00:00Z");
+        assert_eq!(until(now, at("2026-09-19T12:00:00Z")), "in 13 d");
+        assert_eq!(until(now, at("2026-09-06T12:12:00Z")), "in 12 min");
+        assert_eq!(until(now, at("2026-09-06T12:00:30Z")), "now");
+        assert_eq!(until(now, at("2026-09-04T12:00:00Z")), "now", "a retention already run out");
     }
 }

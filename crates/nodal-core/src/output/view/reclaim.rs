@@ -146,7 +146,7 @@ impl Reclaimed {
         format!(
             "home moved to {}; gc removes it {}",
             entry.path.display(),
-            human::since(entry.expires_at, self.now)
+            human::until(self.now, entry.expires_at)
         )
     }
 

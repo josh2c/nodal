@@ -21,6 +21,13 @@
 //! The word a row is written with is the whole policy: `kept`, `dropped`, and
 //! `dropped_everywhere` where no copy of the directory is usable at any path. Moving a
 //! row is a one-word change, next to the reason it holds.
+//!
+//! Every row on the list carries where it came from ([`Origin`]), because the two
+//! sources answer differently when the project tracks the path. A row of this table is
+//! a guess about a name, and a commit is a fact about the content, so a default row
+//! yields: the copy keeps the directory and says so. A row the project wrote is an
+//! instruction, so it is refused aloud instead. [`super::tracked`] is where that
+//! happens.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -99,6 +106,33 @@ pub fn invalidated() -> Vec<&'static Row> {
     ROWS.iter().filter(|row| row.invalidate).collect()
 }
 
+/// Where a row on an exclusion list came from.
+///
+/// This decides what a tracked path does to the row. A default row is Nodal's guess
+/// from a directory's name; a recipe row is what the project asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// A row of [`ROWS`] that is not [`kept`].
+    Default,
+    /// A row the project wrote in `base.exclude`, or a caller stated itself.
+    Recipe,
+}
+
+/// One row of an exclusion list: the path, and where the row came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Excluded {
+    /// The path, normalised, relative to the root of the tree.
+    pub path: PathBuf,
+    /// Which source put it on the list.
+    pub origin: Origin,
+}
+
+/// The reason [`ROWS`] gives for dropping `path`, when the table holds it.
+#[must_use]
+pub fn reason_for(path: &Path) -> Option<&'static str> {
+    ROWS.iter().find(|row| !row.keep && Path::new(row.path) == path).map(|row| row.reason)
+}
+
 /// The paths a clone leaves out.
 ///
 /// A path matches the entry itself and everything under it. Paths are relative to the
@@ -106,40 +140,55 @@ pub fn invalidated() -> Vec<&'static Row> {
 /// when the list is built, because it cannot name anything inside it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Excludes {
-    /// The paths, normalised, in the order they were given.
-    paths: Vec<PathBuf>,
+    /// The rows, normalised, in the order they were given.
+    rows: Vec<Excluded>,
 }
 
 impl Excludes {
     /// The list Nodal applies to every clone: the rows above that are not kept.
     #[must_use]
     pub fn default_list() -> Self {
-        Self::from_paths(ROWS.iter().filter(|row| !row.keep).map(|row| Path::new(row.path)))
+        let mut list = Self::default();
+        list.extend(
+            ROWS.iter().filter(|row| !row.keep).map(|row| Path::new(row.path)),
+            Origin::Default,
+        );
+        list
     }
 
     /// The default list with a recipe's `base.exclude` added.
     #[must_use]
     pub fn with_recipe(recipe: &[PathBuf]) -> Self {
         let mut list = Self::default_list();
-        list.extend(recipe.iter().map(PathBuf::as_path));
+        list.extend(recipe.iter().map(PathBuf::as_path), Origin::Recipe);
         list
     }
 
     /// A list of exactly these paths, for a caller that states its own policy.
+    ///
+    /// Such a caller owns the list it gives, so every row of it is [`Origin::Recipe`].
     #[must_use]
     pub fn from_paths<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Self {
         let mut list = Self::default();
-        list.extend(paths);
+        list.extend(paths, Origin::Recipe);
         list
     }
 
-    /// Add paths. A path that cannot name anything inside the tree is dropped.
-    fn extend<'a>(&mut self, paths: impl IntoIterator<Item = &'a Path>) {
+    /// Add paths from one source. A path that cannot name anything inside the tree is
+    /// dropped.
+    ///
+    /// A path the list already holds is not added twice. It takes the new origin when
+    /// that origin is [`Origin::Recipe`]: a project that writes a row Nodal also ships
+    /// has asked for it, and asking is what the loud answer is for.
+    fn extend<'a>(&mut self, paths: impl IntoIterator<Item = &'a Path>, origin: Origin) {
         for path in paths {
-            if let Some(path) = normalise(path)
-                && !self.paths.contains(&path)
-            {
-                self.paths.push(path);
+            let Some(path) = normalise(path) else { continue };
+            if let Some(held) = self.rows.iter_mut().find(|row| row.path == path) {
+                if origin == Origin::Recipe {
+                    held.origin = Origin::Recipe;
+                }
+            } else {
+                self.rows.push(Excluded { path, origin });
             }
         }
     }
@@ -148,19 +197,27 @@ impl Excludes {
     /// relative to its root.
     #[must_use]
     pub fn excludes(&self, relative: &Path) -> bool {
-        self.paths.iter().any(|excluded| relative.starts_with(excluded))
+        self.rows.iter().any(|row| relative.starts_with(&row.path))
     }
 
-    /// The paths, in the order they were given.
+    /// The rows, in the order they were given.
     #[must_use]
-    pub fn paths(&self) -> &[PathBuf] {
-        &self.paths
+    pub fn rows(&self) -> &[Excluded] {
+        &self.rows
+    }
+
+    /// Take `path` off the list, so a copy keeps it after all.
+    ///
+    /// [`super::tracked`] is the only caller: a default row the project tracks yields
+    /// to the commit.
+    pub fn keep(&mut self, path: &Path) {
+        self.rows.retain(|row| row.path != path);
     }
 
     /// Whether the list is empty, so nothing is left out.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.paths.is_empty()
+        self.rows.is_empty()
     }
 }
 
@@ -179,10 +236,11 @@ pub(super) fn normalise(path: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests fail by panicking")]
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{Excludes, ROWS};
+    use super::{Excludes, Origin, ROWS};
 
     #[test]
     fn the_default_list_is_the_rows_that_are_not_kept() {
@@ -234,10 +292,40 @@ mod tests {
         assert!(list.excludes(Path::new("var/run/app.sock")));
         assert!(list.excludes(Path::new(".next/cache/webpack")));
         assert_eq!(
-            list.paths().iter().filter(|path| *path == Path::new("test-results")).count(),
+            list.rows().iter().filter(|row| row.path == Path::new("test-results")).count(),
             1,
             "a path the default list already holds is not added twice"
         );
+    }
+
+    #[test]
+    fn a_row_carries_the_source_that_put_it_on_the_list() {
+        let list = Excludes::with_recipe(&[PathBuf::from("var/run")]);
+        let origin = |path: &str| {
+            list.rows().iter().find(|row| row.path == Path::new(path)).map(|row| row.origin)
+        };
+        assert_eq!(origin("coverage"), Some(Origin::Default));
+        assert_eq!(origin("var/run"), Some(Origin::Recipe));
+    }
+
+    #[test]
+    fn a_recipe_row_the_table_also_holds_becomes_the_project_own() {
+        let list = Excludes::with_recipe(&[PathBuf::from("coverage")]);
+        let row = list
+            .rows()
+            .iter()
+            .find(|row| row.path == Path::new("coverage"))
+            .expect("the row is on the list");
+        assert_eq!(row.origin, Origin::Recipe, "the project asked for a row the table also holds");
+    }
+
+    #[test]
+    fn a_row_taken_off_the_list_stops_excluding_what_it_named() {
+        let mut list = Excludes::default_list();
+        assert!(list.excludes(Path::new("coverage/index.html")));
+        list.keep(Path::new("coverage"));
+        assert!(!list.excludes(Path::new("coverage/index.html")));
+        assert!(list.excludes(Path::new("test-results/report.xml")), "the rest of the list holds");
     }
 
     #[test]
@@ -248,6 +336,9 @@ mod tests {
             Path::new(""),
             Path::new("./inside"),
         ]);
-        assert_eq!(list.paths(), [PathBuf::from("inside")]);
+        assert_eq!(
+            list.rows().iter().map(|row| row.path.clone()).collect::<Vec<PathBuf>>(),
+            [PathBuf::from("inside")]
+        );
     }
 }

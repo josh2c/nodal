@@ -185,9 +185,11 @@ pub fn create(
     let runner = hooks_of(&params, request.hooks)?;
     let context = context_of(&params);
     runner.run(Phase::PreNew, &params.project.root, &context)?;
-    run(store, &plan(&params)?)?;
+    let kept = Arc::new(OnceLock::new());
+    run(store, &plan(&params, &kept)?)?;
     runner.run(Phase::PostNew, &params.environment.home, &context)?;
-    Created::of(&params.unit, &read_back(store, environment)?, Timestamp::now())
+    let created = Created::of(&params.unit, &read_back(store, environment)?, Timestamp::now())?;
+    Ok(created.keeping(kept.get().cloned().unwrap_or_default()))
 }
 
 /// The project's hooks and this machine's approvals for them.
@@ -267,9 +269,12 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
 
 /// The plan: seven steps in the home, then one registry write.
 ///
+/// `kept` is where the copy leaves the default exclusion rows that yielded to a path the
+/// project tracks, because the report is written after the plan has run.
+///
 /// # Errors
 /// [`Error::Render`] when the parameters cannot be written to the journal.
-pub fn plan(params: &Params) -> Result<Plan> {
+pub fn plan(params: &Params, kept: &Arc<OnceLock<Vec<tracked::Kept>>>) -> Result<Plan> {
     let home = params.environment.home.clone();
     let value = serde_json::to_value(params)
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
@@ -280,6 +285,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
             home: home.clone(),
             excludes: Excludes::with_recipe(&params.recipe.base.exclude),
             backend: select_backend(&params.state_dir),
+            kept: Arc::clone(kept),
         })
         .then(Relocate {
             home: home.clone(),
@@ -380,7 +386,9 @@ impl Rebuild for New {
         let params: Params = serde_json::from_value(record.params.clone()).map_err(|_| {
             Error::InvalidValue { kind: "create parameters", value: record.id.to_string() }
         })?;
-        plan(&params)
+        // A resumed run finishes the home and writes no report, so the notes it would
+        // have carried have nowhere to go.
+        plan(&params, &Arc::new(OnceLock::new()))
     }
 }
 
@@ -399,6 +407,9 @@ pub(super) struct Materialize {
     pub(super) excludes: Excludes,
     /// The one backend chosen for this operation, before it started.
     pub(super) backend: Box<dyn Materializer>,
+    /// Where the step leaves the default rows that yielded to a tracked path, for the
+    /// report the operation ends with. Empty on all but the rare tree that tracks one.
+    pub(super) kept: Arc<OnceLock<Vec<tracked::Kept>>>,
 }
 
 impl Step for Materialize {
@@ -410,16 +421,18 @@ impl Step for Materialize {
     /// through one leaves exactly that. So the destination is removed first: what is
     /// under it is this operation's own half-made home and nothing else.
     ///
-    /// The exclusion list is checked before that removal, because a list that would
-    /// drop a tracked path stops the operation and must not first take away the home a
-    /// resumed run would find.
+    /// The exclusion list is settled before that removal, because a list that would
+    /// drop a tracked path the project wrote stops the operation and must not first take
+    /// away the home a resumed run would find. A default row the commit tracks yields
+    /// instead, and the note is left for the report.
     fn apply(&self) -> Result<()> {
-        tracked::refuse(&self.base, &self.excludes)?;
+        let mut excludes = self.excludes.clone();
+        let _ = self.kept.set(tracked::enforce(&self.base, &mut excludes)?);
         remove_tree(&self.home)?;
         if let Some(parent) = self.home.parent() {
             std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
         }
-        self.backend.clone_tree(&self.base, &self.home, &self.excludes).map(drop)
+        self.backend.clone_tree(&self.base, &self.home, &excludes).map(drop)
     }
 
     fn undo(&self) -> Result<()> {

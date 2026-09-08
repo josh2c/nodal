@@ -8,6 +8,7 @@ use crate::model::{Environment, Manifest, Missing, Timestamp, Unit};
 use crate::output::Render;
 use crate::output::human::{Block, Doc, Field, NONE};
 use crate::output::view::unit::{self, EnvLine, UnitRow};
+use crate::workspace::tracked::Kept;
 
 /// A unit that has just been created or adopted, with the home it was given.
 ///
@@ -25,6 +26,11 @@ pub struct Created {
     /// copy whose mail credential is absent still runs everything that does not send
     /// mail.
     pub missing: Vec<Missing>,
+    /// Every default exclusion row the copy kept because the project tracks the path it
+    /// names. Empty on all but the rare project that commits into such a directory, and
+    /// one line each when it does, because the home is then larger than the table says.
+    #[serde(default)]
+    pub kept: Vec<Kept>,
 }
 
 impl Created {
@@ -51,7 +57,14 @@ impl Created {
     ) -> Self {
         let mut row = UnitRow::from_unit(unit);
         row.environment = Some(EnvLine::from_environment(environment));
-        Self { now, unit: row, missing: manifest.missing.clone() }
+        Self { now, unit: row, missing: manifest.missing.clone(), kept: Vec::new() }
+    }
+
+    /// The same report, with the default exclusion rows the copy kept named on it.
+    #[must_use]
+    pub fn keeping(mut self, kept: Vec<Kept>) -> Self {
+        self.kept = kept;
+        self
     }
 }
 
@@ -69,6 +82,9 @@ impl Render for Created {
         }
         if !self.missing.is_empty() {
             fields.push(Field::new("no value", missing_cell(&self.missing)));
+        }
+        if !self.kept.is_empty() {
+            fields.push(Field::new("kept", kept_cell(&self.kept)));
         }
         Doc::from_iter([Block::fields(fields)])
     }
@@ -99,4 +115,9 @@ fn ports_cell(unit: &UnitRow) -> String {
 /// One declared name per line, so a person can see what to fill in.
 fn missing_cell(missing: &[Missing]) -> String {
     missing.iter().map(|line| line.name.to_string()).collect::<Vec<String>>().join("\n")
+}
+
+/// One line per default exclusion row that yielded, saying which and why.
+fn kept_cell(kept: &[Kept]) -> String {
+    kept.iter().map(Kept::to_string).collect::<Vec<String>>().join("\n")
 }

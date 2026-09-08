@@ -90,6 +90,38 @@ fn the_fixture_infers_the_shape_of_the_repository() {
     assert_eq!(toolchain.get("engines.node").map(String::as_str), Some("22.11.0"));
 }
 
+/// A Cargo project states its minimum toolchain in `Cargo.toml`, and nowhere else.
+///
+/// `rust-version` is the same kind of claim `engines` makes: what the tool checks, not
+/// what a version manager selects. Reading it is what stops `nodal init` on a Rust
+/// project from reporting a toolchain gap the project has already answered.
+#[test]
+fn a_cargo_manifest_answers_the_toolchain_gap_with_its_rust_version() {
+    for table in ["package", "workspace.package"] {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let root = directory.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            format!("[{table}]\nname = \"crate-of-one\"\nrust-version = \"1.88\"\n"),
+        )
+        .expect("a manifest");
+
+        let opened = recipe::load(root).expect("a readable project");
+        let pinned: BTreeMap<String, String> =
+            opened.recipe.toolchain.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        assert_eq!(
+            pinned.get("cargo.rust").map(String::as_str),
+            Some("1.88"),
+            "the manifest's rust-version was not read from [{table}]"
+        );
+        assert!(
+            !opened.gaps.iter().any(|gap| gap.key == GapKey::Toolchain),
+            "the toolchain gap is still open on a project that pins one: {:?}",
+            opened.gaps
+        );
+    }
+}
+
 #[test]
 fn the_fixture_infers_every_command_its_scripts_state() {
     let (_directory, effective) = fixture_recipe();
