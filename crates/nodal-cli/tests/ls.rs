@@ -15,6 +15,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod state;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -77,13 +79,8 @@ impl Fixture {
 
     /// The command a run uses, so a measurement and a check spawn the same thing.
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(PathBuf::from(env!("CARGO_BIN_EXE_nodal")));
-        command
-            .args(args)
-            .current_dir(&self.project)
-            .env("NODAL_STORE", &self.store)
-            .env("NODAL_HOME", self.directory.path())
-            .env_remove("NODAL_CD_FILE");
+        let mut command = state::nodal(self.directory.path());
+        command.args(args).current_dir(&self.project).env("NODAL_STORE", &self.store);
         command
     }
 
@@ -223,10 +220,9 @@ fn a_bare_nodal_is_the_list_and_the_help_where_there_is_no_project() {
     let fixture = Fixture::new();
     assert_eq!(fixture.text(&[]), fixture.text(&["ls"]));
 
-    let output = Command::new(PathBuf::from(env!("CARGO_BIN_EXE_nodal")))
+    let output = state::nodal(fixture.directory.path())
         .current_dir(fixture.outside())
         .env("NODAL_STORE", &fixture.store)
-        .env("NODAL_HOME", fixture.directory.path())
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&output.stdout);

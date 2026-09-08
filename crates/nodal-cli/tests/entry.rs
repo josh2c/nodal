@@ -18,6 +18,7 @@
 #![allow(clippy::unwrap_used)]
 
 mod home;
+mod state;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -60,7 +61,11 @@ impl Terminal {
                 rc.to_string_lossy().into_owned(),
                 String::from("-i"),
             ],
-            vars: Vec::new(),
+            // An interactive bash writes its history when it ends, and the file it
+            // writes belongs to whoever is running the tests unless it is told
+            // otherwise. Nothing here is about a shell's history; this keeps the test's
+            // own typing out of a person's.
+            vars: vec![(String::from("HISTFILE"), root.join("bash_history"))],
         }
     }
 

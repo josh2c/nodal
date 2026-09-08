@@ -7,6 +7,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod state;
+
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -40,7 +42,7 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// Run `nodal base`, with this test's own Nodal home and registry.
 fn nodal(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_nodal"))
+    state::nodal(root)
         .arg("base")
         .args(args)
         .arg(root.join("work"))

@@ -7,8 +7,12 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod state;
+
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
+
+use state::Machine;
 
 /// The smallest project that infers something and still leaves a gap: a package manager
 /// and a script, no toolchain pin, no migrations and no services.
@@ -18,17 +22,18 @@ fn write_project(root: &Path) {
         .unwrap();
 }
 
-fn nodal(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_nodal")).arg("init").args(args).arg(root).output().unwrap()
+fn nodal(machine: &Machine, root: &Path, args: &[&str]) -> Output {
+    machine.nodal().arg("init").args(args).arg(root).output().unwrap()
 }
 
 #[test]
 fn init_writes_the_recipe_and_names_every_gap() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
+    let machine = Machine::new();
     write_project(root);
 
-    let output = nodal(root, &[]);
+    let output = nodal(&machine, root, &[]);
     assert!(output.status.success(), "init exited with {:?}", output.status);
     let stdout = String::from_utf8(output.stdout).unwrap();
     for key in ["toolchain", "db.migrations_dir", "services"] {
@@ -44,27 +49,29 @@ fn init_writes_the_recipe_and_names_every_gap() {
 fn init_refuses_to_overwrite_a_recipe_until_it_is_told_to() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
+    let machine = Machine::new();
     write_project(root);
-    assert!(nodal(root, &[]).status.success());
+    assert!(nodal(&machine, root, &[]).status.success());
 
-    let refused = nodal(root, &[]);
+    let refused = nodal(&machine, root, &[]);
     assert!(!refused.status.success(), "a second init should have failed");
     assert!(String::from_utf8(refused.stderr).unwrap().contains("--force"));
-    assert!(nodal(root, &["--force"]).status.success());
+    assert!(nodal(&machine, root, &["--force"]).status.success());
 }
 
 #[test]
 fn print_writes_nothing_and_json_carries_the_gaps() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
+    let machine = Machine::new();
     write_project(root);
 
-    let printed = nodal(root, &["--print"]);
+    let printed = nodal(&machine, root, &["--print"]);
     assert!(printed.status.success());
     assert!(String::from_utf8(printed.stdout).unwrap().contains("[commands]"));
     assert!(!root.join("nodal.toml").exists(), "--print must not write");
 
-    let json = nodal(root, &["--json"]);
+    let json = nodal(&machine, root, &["--json"]);
     assert!(json.status.success());
     let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(value["existed"], false);

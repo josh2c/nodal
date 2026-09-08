@@ -6,22 +6,21 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::process::Command;
+mod state;
 
-fn stderr_with_log_value(value: &str) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_nodal"))
-        .arg("-vv")
-        .env("NODAL_LOG", value)
-        .output()
-        .unwrap();
+use state::Machine;
+
+fn stderr_with_log_value(machine: &Machine, value: &str) -> String {
+    let output = machine.nodal().arg("-vv").env("NODAL_LOG", value).output().unwrap();
     assert!(output.status.success(), "bare invocation exited with {:?}", output.status);
     String::from_utf8(output.stderr).unwrap()
 }
 
 #[test]
 fn blank_log_value_still_traces_at_the_level_the_flags_ask_for() {
+    let machine = Machine::new();
     for blank in ["", "   "] {
-        let stderr = stderr_with_log_value(blank);
+        let stderr = stderr_with_log_value(&machine, blank);
         assert!(
             stderr.contains("no subcommand given"),
             "NODAL_LOG={blank:?} silenced -vv output: {stderr:?}"
@@ -31,6 +30,7 @@ fn blank_log_value_still_traces_at_the_level_the_flags_ask_for() {
 
 #[test]
 fn a_set_log_value_still_wins() {
-    let stderr = stderr_with_log_value("error");
+    let machine = Machine::new();
+    let stderr = stderr_with_log_value(&machine, "error");
     assert!(stderr.is_empty(), "NODAL_LOG=error should have silenced the debug line: {stderr:?}");
 }

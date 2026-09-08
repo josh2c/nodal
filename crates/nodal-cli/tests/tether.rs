@@ -29,6 +29,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
+mod state;
+
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -86,8 +88,8 @@ impl Workspace {
 
     /// `nodal` with this workspace's state directory, not yet run.
     fn command(&self, args: &[&str], cwd: &Path) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_nodal"));
-        command.args(args).current_dir(cwd).env("NODAL_HOME", &self.state);
+        let mut command = state::nodal(&self.state);
+        command.args(args).current_dir(cwd);
         command.env("NODAL_SECRETS_FILE", self.state.join("secrets.env"));
         command.env("NODAL_HOOKS_FILE", self.state.join("hooks.toml"));
         command
