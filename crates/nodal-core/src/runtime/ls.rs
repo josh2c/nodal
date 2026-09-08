@@ -135,10 +135,11 @@ fn row(
     row
 }
 
-/// Record the unit as merged when both signals say it has been, and show it so.
+/// Record the unit as merged when every signal says it has been, and show it so.
 ///
-/// The second signal costs one `git rev-list`, so it is asked for only when the first
-/// has already said the base carries the work. A failure to read it, or to write the
+/// The remote signal costs one `git rev-list`, so it is asked for only of a unit that
+/// has commits of its own and has had them taken by the base
+/// ([`states::has_landed`]) — which a unit nobody has begun has not. A failure to read it, or to write the
 /// row, is a note under the table: a list that refuses to print because one unit's
 /// remote could not be read is worth less than a list that prints every row and says
 /// which unit it could not settle.
@@ -149,7 +150,7 @@ fn landed(
     now: Timestamp,
     notes: &mut Vec<String>,
 ) {
-    if !row.work.as_ref().is_some_and(|work| work.integration.is_integrated()) {
+    if !row.work.as_ref().is_some_and(|work| states::has_landed(work.integration, work.main)) {
         return;
     }
     let Some(home) = row.environment.as_ref().map(|environment| environment.home.clone()) else {
@@ -170,9 +171,12 @@ fn flip(
     row: &UnitRow,
     now: Timestamp,
 ) -> Result<bool> {
-    let integration = row.work.as_ref().map_or(Integration::Unknown, |work| work.integration);
+    let (integration, divergence) =
+        row.work.as_ref().map_or((Integration::Unknown, Divergence::default()), |work| {
+            (work.integration, work.main)
+        });
     let contained = Git::at(home).remote_containment(unit.branch.as_str())?;
-    if !states::is_merged(unit.status, integration, &contained) {
+    if !states::is_merged(unit.status, integration, divergence, &contained) {
         return Ok(false);
     }
     states::record_merged(conn, unit, now)

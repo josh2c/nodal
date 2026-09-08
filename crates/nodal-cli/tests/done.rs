@@ -356,6 +356,63 @@ fn a_squash_merged_unit_flips_to_merged_once_its_branch_is_on_the_remote() {
     );
 }
 
+/// A unit nobody has begun has landed nothing, whatever the two other signals read.
+///
+/// This is the shape that was wrong. A unit `nodal new` has just made sits on the base's
+/// own commit, so its tip is in the base's history — `integrated (ancestor)` — and the
+/// commits it is made of are the project's and are already on the remote, so every
+/// remote contains it. Both readings are true and neither is about this unit. Flipping
+/// it starts the retention `gc` measures, and one sweep later the home of a unit nobody
+/// had opened is gone, on a state that was never true.
+///
+/// So the assertion is made twice: the state is never written, and the sweep that would
+/// have acted on it takes nothing. The recipe keeps trash for no time at all, which is
+/// the setting under which the defect removed the home in a single sweep.
+#[test]
+fn a_brand_new_unit_is_not_merged_and_its_home_is_never_reclaimed() {
+    let workspace = Workspace::with_recipe("[reclaim]\ntrash_retention = 0\n");
+    let home = workspace.unit("brand-new");
+
+    let listed = stdout(&workspace.nodal(&["ls"]));
+
+    assert!(!listed.contains("merged"), "a unit nobody has begun is not merged: {listed}");
+    assert_eq!(workspace.status("brand-new"), UnitStatus::Open, "and nothing was recorded");
+
+    let swept = stdout(&workspace.nodal(&["gc"]));
+
+    assert!(swept.contains("0 units reclaimed"), "so the sweep has nothing to give back: {swept}");
+    assert!(home.join("app").is_dir(), "and the home is exactly where it was");
+    assert_eq!(workspace.status("brand-new"), UnitStatus::Open);
+}
+
+/// A unit whose commits were all squash-absorbed still counts as merged.
+///
+/// The case the predicate had to keep. A squash leaves the *changes* on the base and the
+/// *commits* only on the branch, so the branch is still ahead of the base and no commit
+/// of it is in the base's history — which is asserted here rather than assumed, because
+/// it is the exact property that separates this from the unit above.
+#[test]
+fn a_unit_whose_commits_were_squash_absorbed_still_flips_to_merged() {
+    let workspace = Workspace::new();
+    let home = workspace.unit("worker-import");
+    commit(&home, "fixed\n");
+    let tip = git(&home, &["rev-parse", "HEAD"]).trim().to_owned();
+    stdout(&workspace.nodal(&["done", "worker-import"]));
+    workspace.squash_merge("nodal/worker-import");
+    git(&home, &["fetch", "-q", "origin"]);
+
+    let carried = git(&workspace.source, &["branch", "--contains", &tip, "--format=%(refname)"]);
+    assert!(
+        !carried.contains("refs/heads/main"),
+        "no commit of the unit is on the base, which is what a squash leaves: {carried:?}"
+    );
+
+    let listed = stdout(&workspace.nodal(&["ls"]));
+
+    assert!(listed.contains("done (absorbed)"), "{listed}");
+    assert_eq!(workspace.status("worker-import"), UnitStatus::Merged);
+}
+
 /// Integration alone does not make a unit merged; the work has to be somewhere else too.
 ///
 /// The base here really does carry the change — somebody squashed it in — but the
@@ -464,4 +521,36 @@ fn a_unit_inside_the_threshold_is_not_reported_and_no_threshold_asks_nothing() {
         !unasked.contains("idle"),
         "a sweep nobody asked about idleness says nothing: {unasked}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The same reasoning, where it is already right.
+// ---------------------------------------------------------------------------
+
+/// Vacuous containment is the correct answer to the question `reclaim` asks.
+///
+/// The uniqueness check reads the same signal, and reads it for a different question:
+/// not "did this unit contribute anything" but "is there work here that exists nowhere
+/// else". A unit with no commits of its own has nothing to lose, so being contained by
+/// every remote for somebody else's commits is the right answer and not a vacuous one.
+///
+/// The check is not weakened by it either, which is the half worth proving: the same
+/// brand-new home with one untracked file in it is still refused, because uncommitted
+/// and untracked paths are read independently of any remote.
+#[test]
+fn a_unit_with_no_commits_is_safe_to_reclaim_and_one_with_new_files_is_still_refused() {
+    let workspace = Workspace::new();
+    let dirty = workspace.unit("has-a-file");
+    std::fs::write(dirty.join("scratch.txt"), "not committed anywhere\n").unwrap();
+
+    let refused = workspace.nodal(&["reclaim", "has-a-file"]);
+    assert!(!refused.status.success(), "an untracked file is still work that is only here");
+    let told = String::from_utf8_lossy(&refused.stderr);
+    assert!(told.contains("untracked files"), "{told}");
+    assert!(dirty.is_dir(), "and the home is where it was");
+
+    let empty = workspace.unit("nothing-in-it");
+    let report = stdout(&workspace.nodal(&["reclaim", "nothing-in-it", "--json"]));
+    assert!(report.contains("\"findings\": []"), "nothing is only here: {report}");
+    assert!(!empty.exists(), "so the home goes, without a refusal");
 }

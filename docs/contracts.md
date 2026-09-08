@@ -203,14 +203,30 @@ paths are changed, staged and untracked; whether HEAD names a commit rather than
 far the branch has moved from the branch it merges into; what the upstream on the remote has
 and what it does not; and one integration verdict.
 
-**The flip to merged** is a state no command could have written. A unit whose
-verdict is `integrated` **and** whose branch is contained in a remote has been merged somewhere else —
-by a reviewer, on a website — and the list is where Nodal first sees it. That unit moves to `merged`,
-and the move is recorded rather than rendered: the retention `nodal gc` measures runs from it. Both
-signals are required. Integration alone is a base somebody rebased under an unpushed branch;
-containment alone is the state before review, not after it. The second signal costs one `git rev-list`
-and is asked for only of a unit that already reads as integrated. The list still fetches nothing, so a
-home hears about a merge when the person's own `git` next does.
+**The flip to merged** is a state no command could have written. A unit that is **ahead of the base**,
+whose verdict is `integrated`, **and** whose branch is contained in a remote has been merged somewhere
+else — by a reviewer, on a website — and the list is where Nodal first sees it. That unit moves to
+`merged`, and the move is recorded rather than rendered: the retention `nodal gc` measures runs from it.
+
+All three signals are required. Integration alone is a base somebody rebased under an unpushed branch;
+containment alone is the state before review, not after it. And a branch ahead of nothing has
+contributed nothing that was not already the base's: a unit `nodal new` has just made is `integrated
+(ancestor)` because its tip is in the base's history, and is contained by every remote because the
+commits it is made of are the project's. Both readings are true and neither is about that unit, so
+without the first signal every unit is merged the moment it is created and its home is reclaimed a
+retention later on a state that was never true.
+
+`ahead > 0` keeps the case that must be kept. A squash merge and a rebase leave the unit's changes on
+the base and its commits only on its own branch, so it is ahead by construction, and `absorbed` is only
+ever reached for a branch that is ahead. What it drops is `ancestor`: a unit merged with an ordinary
+merge commit is not flipped, and stays in `review` for a person to reclaim. That is deliberate. Git
+alone cannot tell that unit from one that never committed — the branch tip is in the base's history
+either way — and Nodal records no fork point that survives a rebase. This flip starts a clock that ends
+in a home being taken away, so where the reading is ambiguous it does nothing.
+
+The containment signal costs one `git rev-list` and is asked for only of a unit that is ahead and reads
+as integrated. The list still fetches nothing, so a home hears about a merge when the person's own
+`git` next does.
 
 **The memory** is derived, not learned: it is this reading, written where the next agent reads it
 (see The unit's memory). The command writes one `WORKUNIT.md` per unit of the project, not only for

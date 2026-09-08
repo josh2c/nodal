@@ -79,7 +79,7 @@ pub struct Finding {
     /// so the size is a floor.
     #[serde(default)]
     pub partial: bool,
-    /// What is true of it, in the words a report uses: `unmerged 3`, `dirty 12`,
+    /// What is true of it, in the words a report uses: `unpushed 3`, `dirty 12`,
     /// `behind 4`, `locked`.
     #[serde(default)]
     pub state: Vec<String>,
@@ -258,7 +258,7 @@ mod tests {
             here: vec![
                 Finding::new(Kind::NestedWorktree, ".claude/worktrees/auth")
                     .sized(7_850_000_000, true)
-                    .says("unmerged 3")
+                    .says("unpushed 3")
                     .says("dirty 12"),
                 Finding::new(Kind::NestedWorktree, ".claude/worktrees/held").says("locked"),
             ],
