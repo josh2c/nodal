@@ -564,16 +564,21 @@ fn the_four_hooks_run_in_order_and_are_told_which_unit_they_are_about() {
     let phases: Vec<&str> = log.lines().map(|line| line.split(' ').next().unwrap()).collect();
     assert_eq!(phases, ["pre_new", "post_new", "pre_reclaim", "post_reclaim"], "{log}");
     assert!(log.contains("pre_new worker-import"), "{log}");
-    assert!(log.contains(&format!("post_new {}", home.display())), "{log}");
-    // `$PWD` is what the shell got from the kernel, so it is the resolved path. On a
-    // host whose temporary directory is reached through a symbolic link — macOS reaches
-    // `/var` through `/private/var` — that is not the text the registry holds, and the
-    // two are the same directory.
+    // Every path a hook is told about is resolved, whether it arrives as a variable or
+    // as the directory the hook is started in. `$PWD` is what the shell got from the
+    // kernel and has always been resolved; `NODAL_ROOT` now agrees with it. On a host
+    // whose temporary directory is reached through a symbolic link — macOS reaches
+    // `/var` through `/private/var` — that is not the text the registry holds, and a
+    // hook that compared the two would have found one directory under two names.
+    assert!(
+        log.contains(&format!("post_new {}", stood_in.display())),
+        "post_new is told the home by the name the filesystem uses: {log}"
+    );
     assert!(
         log.contains(&format!("pre_reclaim {}", stood_in.display())),
         "pre_reclaim runs in the home it is about: {log}"
     );
-    let trashed = workspace.trashed().pop().unwrap();
+    let trashed = resolved(&workspace.trashed().pop().unwrap());
     assert!(
         log.contains(&format!("post_reclaim {}", trashed.display())),
         "post_reclaim is told where the home went: {log}"
