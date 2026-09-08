@@ -20,6 +20,14 @@
 //! moved it away on purpose, so there is no directory to ask Git about and no note to
 //! make; the unit is listed with no home, the way it is before it is materialised. This
 //! is the rule [`crate::runtime::ps::scope`] already applies, for the same reason.
+//!
+//! **The one thing the list writes.** A unit whose work the base carries and whose
+//! branch is on a remote has been merged somewhere else, and the list is where Nodal
+//! first sees it ([`crate::lifecycle::states`]). That flip is recorded rather than
+//! rendered: the retention `nodal gc` measures runs from it, so it has to be an instant
+//! the registry holds and not a verdict recomputed on every read. Nothing else here
+//! writes — no transaction, no event, no session row — and the extra Git call the
+//! second signal costs is paid only by a unit whose work already reads as integrated.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -27,8 +35,9 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 use crate::git::status::{Change, Head, State, Summary};
-use crate::git::{Divergence, Git, Standing};
-use crate::model::{ActorName, EnvState, Environment, Project, Timestamp, Unit};
+use crate::git::{Divergence, Git, Integration, Standing};
+use crate::lifecycle::states;
+use crate::model::{ActorName, EnvState, Environment, Project, Timestamp, Unit, UnitStatus};
 use crate::output::view::{EnvLine, Remote, ToolSessions, UnitList, UnitRow, WorkTree};
 use crate::runtime::processes::Processes;
 use crate::runtime::sessions;
@@ -57,7 +66,9 @@ pub fn list(
     let mut rows = Vec::new();
     for unit in units::list(conn, project.id)? {
         let home = homes.get(&unit.id.to_string()).cloned();
-        rows.push(row(&unit, home.as_ref(), &attached, &mut bases, &mut notes));
+        let mut built = row(&unit, home.as_ref(), &attached, &mut bases, &mut notes);
+        landed(conn, &unit, &mut built, now, &mut notes);
+        rows.push(built);
     }
     order(&mut rows);
     Ok(UnitList { project: project.name.clone(), now, units: rows, notes })
@@ -112,6 +123,49 @@ fn row(
         Err(error) => notes.push(format!("{}: {error}", unit.slug)),
     }
     row
+}
+
+/// Record the unit as merged when both signals say it has been, and show it so.
+///
+/// The second signal costs one `git rev-list`, so it is asked for only when the first
+/// has already said the base carries the work. A failure to read it, or to write the
+/// row, is a note under the table: a list that refuses to print because one unit's
+/// remote could not be read is worth less than a list that prints every row and says
+/// which unit it could not settle.
+fn landed(
+    conn: &Connection,
+    unit: &Unit,
+    row: &mut UnitRow,
+    now: Timestamp,
+    notes: &mut Vec<String>,
+) {
+    if !row.work.as_ref().is_some_and(|work| work.integration.is_integrated()) {
+        return;
+    }
+    let Some(home) = row.environment.as_ref().map(|environment| environment.home.clone()) else {
+        return;
+    };
+    match flip(conn, unit, &home, row, now) {
+        Ok(true) => row.status = UnitStatus::Merged,
+        Ok(false) => {}
+        Err(error) => notes.push(format!("{}: {error}", unit.slug)),
+    }
+}
+
+/// Ask the remote signal and write the flip down, answering whether it happened.
+fn flip(
+    conn: &Connection,
+    unit: &Unit,
+    home: &Path,
+    row: &UnitRow,
+    now: Timestamp,
+) -> Result<bool> {
+    let integration = row.work.as_ref().map_or(Integration::Unknown, |work| work.integration);
+    let contained = Git::at(home).remote_containment(unit.branch.as_str())?;
+    if !states::is_merged(unit.status, integration, &contained) {
+        return Ok(false);
+    }
+    states::record_merged(conn, unit, now)
 }
 
 /// What Git says about one home.
