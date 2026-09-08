@@ -98,7 +98,9 @@ pub struct Snapshot {
     pub tests: Vec<Event>,
     /// The notes and handoffs somebody stated, newest first.
     pub stated: Vec<Event>,
-    /// What could not be read, and why.
+    /// What could not be read, and why. One cause per line, without the slug: the
+    /// snapshot names the unit, and a reader that groups by cause needs the cause on
+    /// its own ([`crate::output::notice`]).
     pub notes: Vec<String>,
 }
 
@@ -145,7 +147,11 @@ fn one(
         Some(environment) => match work(&Git::at(&environment.home), &unit, bases) {
             Ok(work) => Some(work),
             Err(error) => {
-                notes.push(format!("{}: {error}", unit.slug));
+                // The cause only. Which unit it is about is the slug this snapshot
+                // already carries, and a reader that collapses two units reporting one
+                // cause into one line needs the two apart
+                // (`crate::output::notice`).
+                notes.push(error.to_string());
                 None
             }
         },

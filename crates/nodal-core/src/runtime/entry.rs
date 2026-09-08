@@ -155,6 +155,29 @@ pub fn project_of_unit(conn: &Connection, unit: &Unit) -> Result<Project> {
         .ok_or_else(|| Error::StoreMissingRow { table: "project", id: unit.project_id.to_string() })
 }
 
+/// The root of the project a directory is in **as the disk declares it**: the nearest
+/// directory at or above `path` that holds a `nodal.toml`.
+///
+/// This is what a project is before Nodal has recorded anything about it.
+/// `nodal init` writes the recipe and nothing else — it opens no registry, because a
+/// recipe is a statement a person makes about their own repository and Nodal creating
+/// state on the strength of it would be Nodal deciding it now manages the project. The
+/// row arrives with the first unit ([`crate::lifecycle::ops::new::ensure_project`]).
+///
+/// So between `nodal init` and the first `nodal new` there is a real third state: a
+/// project that is declared and has no units. A command that can only ask the registry
+/// cannot tell that state from "this directory has nothing to do with Nodal", and the
+/// two need different answers. This is the question that tells them apart.
+///
+/// No symbolic links are resolved here and no registry is read. The answer is about a
+/// file that either is or is not above the person's working directory.
+#[must_use]
+pub fn declared_at(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|directory| directory.join(crate::recipe::FILE_NAME).is_file())
+        .map(Path::to_path_buf)
+}
+
 /// The project rooted at `path` or at any directory above it.
 fn project_of_ancestor(conn: &Connection, path: &Path) -> Result<Option<Project>> {
     for directory in path.ancestors() {

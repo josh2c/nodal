@@ -10,6 +10,24 @@ use crate::output::human::{Block, Doc, Field, NONE};
 use crate::output::view::unit::{self, EnvLine, UnitRow};
 use crate::workspace::tracked::Kept;
 
+/// How a unit came to be, which is the one thing its report cannot work out for itself.
+///
+/// A create and an adoption answer with the same value, because they produce the same
+/// thing: a unit with a home. What they did to get there is different, and a person who
+/// has just adopted a checkout needs to be told which of the two happened to their
+/// directory — that Nodal wrote into it where it stood, or that it made a home
+/// elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Arrival {
+    /// `nodal new`: a home cloned from a base.
+    Created,
+    /// `nodal adopt --in-place`: the checkout stayed where it was.
+    AdoptedInPlace,
+    /// `nodal adopt` of a branch: a home was made for work that already had a name.
+    Adopted,
+}
+
 /// A unit that has just been created or adopted, with the home it was given.
 ///
 /// The objective is on the report because of adoption: a unit made from a checkout an
@@ -20,6 +38,8 @@ use crate::workspace::tracked::Kept;
 pub struct Created {
     /// The instant the answer was taken.
     pub now: Timestamp,
+    /// How the unit came to be.
+    pub arrival: Arrival,
     /// The unit itself, and its one environment.
     pub unit: UnitRow,
     /// Every declared name nothing answered. Never a failure, always a line: a working
@@ -42,9 +62,14 @@ impl Created {
     /// # Errors
     /// [`Error::Io`] when the manifest cannot be read, and [`Error::Recipe`] when it is
     /// not a manifest.
-    pub fn of(unit: &Unit, environment: &Environment, now: Timestamp) -> Result<Self> {
+    pub fn of(
+        unit: &Unit,
+        environment: &Environment,
+        arrival: Arrival,
+        now: Timestamp,
+    ) -> Result<Self> {
         let manifest = files::read_manifest(&environment.home)?;
-        Ok(Self::from_manifest(unit, environment, &manifest, now))
+        Ok(Self::from_manifest(unit, environment, &manifest, arrival, now))
     }
 
     /// The same report, over a manifest the caller already has.
@@ -53,14 +78,20 @@ impl Created {
         unit: &Unit,
         environment: &Environment,
         manifest: &Manifest,
+        arrival: Arrival,
         now: Timestamp,
     ) -> Self {
         let mut row = UnitRow::from_unit(unit);
         row.environment = Some(EnvLine::from_environment(environment));
-        Self { now, unit: row, missing: manifest.missing.clone(), kept: Vec::new() }
+        Self { now, arrival, unit: row, missing: manifest.missing.clone(), kept: Vec::new() }
     }
 
     /// The same report, with the default exclusion rows the copy kept named on it.
+    ///
+    /// A builder rather than an argument, because the rows are read back out of a step's
+    /// output and the report is built before that value is in hand
+    /// ([`crate::lifecycle::step::Outputs`]). How the unit arrived is known where the
+    /// report is made, so it stays an argument.
     #[must_use]
     pub fn keeping(mut self, kept: Vec<Kept>) -> Self {
         self.kept = kept;
@@ -80,13 +111,52 @@ impl Render for Created {
         if self.unit.objective.is_some() {
             fields.push(Field::new("for", unit::objective_cell(&self.unit)));
         }
-        if !self.missing.is_empty() {
+        if !self.missing.is_empty() && self.arrival == Arrival::Created {
             fields.push(Field::new("no value", missing_cell(&self.missing)));
         }
         if !self.kept.is_empty() {
             fields.push(Field::new("kept", kept_cell(&self.kept)));
         }
-        Doc::from_iter([Block::fields(fields)])
+        let mut doc = Doc::from_iter([Block::fields(fields)]);
+        // An adoption ends with a sentence, not with a column. The field above is read
+        // as part of a form a person is filling in, which is right for a home that has
+        // just been built and wrong for a checkout that was already theirs: the report
+        // there has to say what happened to their directory, and the names that follow
+        // have to be introduced or they are a list of words with no heading
+        // (reported from the first day of field use).
+        if let Some(summary) = self.summary() {
+            doc.push(Block::blank());
+            doc.push(Block::line(summary));
+            for name in &self.missing {
+                doc.push(Block::line(name.name.to_string()).at(2));
+            }
+        }
+        doc
+    }
+}
+
+impl Created {
+    /// The line an adoption closes with, and nothing for a create.
+    ///
+    /// A create has no directory of the person's to report on and its own report already
+    /// names every field, so a sentence under it would say twice what the fields say
+    /// once.
+    fn summary(&self) -> Option<String> {
+        let what = match self.arrival {
+            Arrival::Created => return None,
+            Arrival::AdoptedInPlace => "in place",
+            Arrival::Adopted => "into a home of its own",
+        };
+        Some(format!("adopted {} {what}; {}", self.unit.slug, self.shortfall()))
+    }
+
+    /// How many declared names this machine has no value for, in words.
+    fn shortfall(&self) -> String {
+        match self.missing.len() {
+            0 => String::from("every declared env name has a value here"),
+            1 => String::from("1 declared env name missing locally"),
+            count => format!("{count} declared env names missing locally"),
+        }
     }
 }
 

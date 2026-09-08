@@ -42,7 +42,10 @@ pub const LINE: &str = "<!-- nodal --> Read `WORKUNIT.md` first: nodal writes th
 pub struct Pointed {
     /// The files the line is now in.
     pub written: Vec<String>,
-    /// The files that were left alone, and why.
+    /// Why a file was left alone, one cause per line. The cause names the file and
+    /// nothing about the home it was read in, so that one project tracking its own
+    /// `CLAUDE.md` prints one line for every unit rather than one line per unit
+    /// ([`crate::output::notice`]).
     pub notes: Vec<String>,
 }
 
@@ -68,9 +71,7 @@ pub fn write(home: &Path, git: &Git) -> Result<Pointed> {
     let mut created: Vec<&str> = Vec::new();
     for name in FILES {
         if tracked.iter().any(|path| path == Path::new(name)) {
-            pointed
-                .notes
-                .push(format!("{name}: the project tracks it, so nodal did not write in it"));
+            pointed.notes.push(format!("the project tracks {name}, so nodal did not write in it"));
             continue;
         }
         let path = home.join(name);

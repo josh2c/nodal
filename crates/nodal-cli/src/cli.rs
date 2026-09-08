@@ -22,7 +22,7 @@ use crate::commands::env::Env;
 use crate::commands::explain::Explain;
 use crate::commands::gc::Gc;
 use crate::commands::init::Init;
-use crate::commands::ls::Ls;
+use crate::commands::ls::{Ls, Reading};
 use crate::commands::merge::Merge;
 use crate::commands::new::New;
 use crate::commands::ps::Ps;
@@ -153,8 +153,10 @@ impl Cli {
     /// A bare `nodal` is `nodal ls`, and the help where there is no list to print.
     ///
     /// The list is what a person wants from the word on its own once they have units. A
-    /// directory in no project has none, and that person has not started yet, so they
-    /// get the surface instead of an error.
+    /// project that has been set up and has no units yet still gets the list, empty,
+    /// because that person has started and the answer to "what is here" is "nothing
+    /// yet" rather than a page of help. A directory that is no project at all gets the
+    /// surface instead of an error: that person has not started.
     ///
     /// # Errors
     ///
@@ -162,14 +164,19 @@ impl Cli {
     fn bare(&self) -> nodal_core::Result<ExitCode> {
         let command = Ls::default();
         let store = self.registry()?;
-        if let Some(mut listing) = command.read(&store)? {
-            listing.settle(&store);
-            listing.compile();
-            return command.print(&listing.list);
+        match command.read(&store)? {
+            Reading::Listed(mut listing) => {
+                listing.settle(&store);
+                listing.compile();
+                command.print(&listing.list)
+            }
+            Reading::Declared(project) => command.print(&Ls::nothing_yet(project)),
+            Reading::Unknown => {
+                tracing::debug!("no subcommand given and no project here");
+                Self::command().print_help().map_err(nodal_core::Error::io("<stdout>"))?;
+                Ok(ExitCode::SUCCESS)
+            }
         }
-        tracing::debug!("no subcommand given and no project here");
-        Self::command().print_help().map_err(nodal_core::Error::io("<stdout>"))?;
-        Ok(ExitCode::SUCCESS)
     }
 
     /// The registry this invocation works on, with every interrupted operation dealt

@@ -1,0 +1,6 @@
+  unit   worker-import  (nodal/worker-import)
+  home   /home/j/.nodal/project/e/01J9X2K4
+  ports  app :41230
+  for    worker import: handle missing supervisor_id
+
+  adopted worker-import into a home of its own; every declared env name has a value here

@@ -206,6 +206,19 @@ is. A stated objective is never replaced by a recovered one.
 A recovered objective is marked recovered wherever an objective prints: `nodal ls`, `nodal show`, the
 adoption's own report, and `WORKUNIT.md`.
 
+**The prompt is read, not copied.** A session that a dispatch opened starts with a preamble, and the
+task comes after it. Recovery drops the lines that are preamble — a heading in capitals, a note the
+agent tool wrote about itself, a rule with no sentence in it — and takes the first sentence after
+them that opens with an instruction verb. A prompt with no such sentence gives its first line, which
+is what recovery gave before this rule. Every answer is text out of the record. Nodal writes no
+objective of its own and marks each recovered one as recovered.
+
+**An adoption closes with a sentence.** The report ends with what happened to the directory and how
+many declared environment names have no value on this machine (`adopted payroll-export in place; 2
+declared env names missing locally`). The names follow that line, under it. `--json` carries the same
+facts, and gained one field for them: `arrival`, which says `created`, `adopted_in_place` or
+`adopted`.
+
 `explain <unit>` answers with why the home is as it is, read back out of what was recorded at the
 time: which base it was cloned from and why that one, what the clone left out and who decided each
 row, what was removed from the copy after it was made, and which block the ports came from. For a
@@ -300,9 +313,23 @@ unchanged rather than gone.
 `nodal ls`, and `nodal` with no subcommand, answer with one row per unit of the project the
 working directory is in.
 
+A directory is in one of three states, and each gets a different answer. A project the registry
+holds units of gets the table. A project that holds a `nodal.toml` and no units gets the empty list,
+with a note that says which command makes the first unit; `nodal init` writes the recipe and opens
+no registry, so this is the state of every project between `init` and the first `new`. A directory
+that has neither a recipe nor a row is in no project, and `nodal ls` refuses. A bare `nodal` prints
+the help for the third state only.
+
 The list's reading is pure. After reading, the command layer records at most two things it learned
 or derived: a unit's flip to merged, and each touched unit's recomputed `WORKUNIT.md`. It records no
 event, reconciles no session, and never contacts the network.
+
+**A note is printed once for each cause.** A list reads every home of the project, and most of what
+it cannot do it cannot do for all of them. A cause is therefore stated once, with the units it is
+about: two units or fewer are named, and more than two are counted (`3 units: the project tracks
+CLAUDE.md, so nodal did not write in it`). The number of note lines is a property of the causes and
+not of the number of units. The same rule holds for `nodal ps`, where one process table that cannot
+be read stops two signals and prints one line that names both.
 
 Each row carries what Git says about the unit's branch at the moment it was asked: how many
 paths are changed, staged and untracked; whether HEAD names a commit rather than a branch; how

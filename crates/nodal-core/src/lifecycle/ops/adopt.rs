@@ -74,7 +74,7 @@ use crate::model::{
     BranchName, EnvId, Environment, Epistemic, EventKind, Objective, PortBlock, PortName, Project,
     Recipe, Slug, Timestamp, Unit, UnitId, UnitStatus,
 };
-use crate::output::view::Created;
+use crate::output::view::{Arrival, Created};
 use crate::services::ports;
 use crate::store::{Store, environments, events, units};
 use crate::substrate::{self, Reporter};
@@ -188,8 +188,12 @@ pub fn adopt(
     let environment = params.environment.id;
     let done = run(store, &plan(&params)?)?;
     post_new(&params, request.hooks)?;
+    let arrival = match params.source {
+        Source::InPlace => Arrival::AdoptedInPlace,
+        Source::Materialized { .. } => Arrival::Adopted,
+    };
     let created =
-        Created::of(&params.unit, &new::read_back(store, environment)?, Timestamp::now())?;
+        Created::of(&params.unit, &new::read_back(store, environment)?, arrival, Timestamp::now())?;
     Ok(created.keeping(done.outputs.read(new::MATERIALIZE)?.unwrap_or_default()))
 }
 

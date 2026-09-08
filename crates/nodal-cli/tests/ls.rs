@@ -12,6 +12,8 @@
 //!    project to list.
 //! 3. `--json` is the same answer as one document a tool reads.
 //! 4. The ten-unit list is timed, and the number is printed on every run.
+//! 5. A project that `nodal init` has just written a recipe for is a project the list
+//!    answers about, with no units in it.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -306,4 +308,81 @@ fn the_ten_unit_list_is_timed_and_the_number_is_printed() {
 fn milliseconds(duration: Duration) -> String {
     let tenths = duration.as_micros() / 10;
     format!("{}.{:02} ms", tenths / 100, tenths % 100)
+}
+
+/// The reported defect: `nodal ls`, run in the second after `nodal init` wrote the
+/// recipe, said the directory was in no project Nodal knows and told the person to run
+/// `nodal new` — which is what they had just been told `nodal init` was for.
+///
+/// The decision made here is that the registry stays as it was and the answer changes.
+/// `nodal init` writes one file and opens nothing; the project row arrives with the
+/// first unit. So there are three states, not two, and the third — declared, with no
+/// units — gets the empty list rather than the error for a directory Nodal has never
+/// heard of.
+#[test]
+fn a_project_that_init_has_just_written_answers_with_an_empty_list() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = shapes::origin(directory.path().join("origin"));
+    let store = directory.path().join("registry.db");
+    let run = |args: &[&str]| {
+        state::nodal(directory.path())
+            .args(args)
+            .current_dir(&root)
+            .env("NODAL_STORE", &store)
+            .output()
+            .unwrap()
+    };
+
+    // Before the recipe there is nothing here, and the error says so.
+    let before = run(&["ls"]);
+    assert!(!before.status.success(), "a directory with no recipe and no rows is no project");
+    let refused = String::from_utf8_lossy(&before.stderr).into_owned();
+    assert!(refused.contains("is in no project Nodal knows"), "{refused}");
+
+    let written = run(&["init", "--no-claude-hooks"]);
+    assert!(written.status.success(), "{}", String::from_utf8_lossy(&written.stderr));
+
+    assert_lists_nothing_yet(&run(&["ls"]));
+    assert_json_is_the_ordinary_empty_list(&run(&["ls", "--json"]));
+    // A bare `nodal` is the same answer, not the help.
+    assert_lists_nothing_yet(&run(&[]));
+}
+
+/// The answer a person reads for a project that has been set up and has no units.
+fn assert_lists_nothing_yet(output: &Output) {
+    assert!(
+        output.status.success(),
+        "ls refused a project init had just written: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(text.contains("no units yet"), "{text}");
+    assert!(!text.contains("no project Nodal knows"), "{text}");
+    assert!(text.contains("nodal new"), "it says what makes the first unit: {text}");
+    assert!(!text.contains("Usage:"), "a project that has been set up is not shown the help");
+}
+
+/// The empty list is the ordinary list, so a tool reads the shape it always does.
+fn assert_json_is_the_ordinary_empty_list(output: &Output) {
+    let document: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("--json is one document");
+    assert_eq!(document["units"].as_array().unwrap().len(), 0);
+    assert_eq!(document["project"], "origin");
+    assert_eq!(document["notes"].as_array().unwrap().len(), 1);
+}
+
+/// The other half of the same rule: a directory with neither a recipe nor a row still
+/// gets the error, and the error is unchanged.
+#[test]
+fn a_directory_that_is_no_project_at_all_still_says_so() {
+    let fixture = Fixture::new();
+    let output = state::nodal(fixture.directory.path())
+        .args(["ls"])
+        .current_dir(fixture.outside())
+        .env("NODAL_STORE", &fixture.store)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("is in no project Nodal knows"), "{stderr}");
 }

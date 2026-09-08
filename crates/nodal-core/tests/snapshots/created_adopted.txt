@@ -1,0 +1,8 @@
+  unit   payroll-export  (nodal/payroll-export)
+  home   /home/j/code/app/.claude/worktrees/payroll
+  ports  app :41231 · postgrest :54401
+  for    payroll export CSV (recovered)
+
+  adopted payroll-export in place; 2 declared env names missing locally
+    DATABASE_URL
+    STRIPE_KEY

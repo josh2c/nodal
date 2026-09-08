@@ -46,6 +46,7 @@ use rusqlite::Connection;
 use crate::Result;
 use crate::git::Git;
 use crate::model::Project;
+use crate::output::notice::{self, Notice};
 use crate::recipe;
 use crate::runtime::entry;
 
@@ -59,7 +60,12 @@ pub struct Report {
     pub written: Vec<PathBuf>,
     /// What a signal could not answer. A note is not a failure: the memory is still
     /// written, and it states which fact is missing and why.
-    pub notes: Vec<String>,
+    ///
+    /// A notice keeps the cause apart from the unit it is about, because a compile
+    /// visits every unit of the project and most of what it cannot do it cannot do for
+    /// all of them. One cause is one line, whatever the number of units
+    /// ([`crate::output::notice`]).
+    pub notes: Vec<Notice>,
 }
 
 /// Write the memory of every unit of `project` that has a home on this machine.
@@ -87,22 +93,32 @@ pub fn compile(project: &Project, surveyed: &[survey::Snapshot]) -> Report {
     let command = test_command(&project.root);
     let mut report = Report::default();
     for subject in surveyed {
-        report.notes.extend(subject.notes.clone());
+        report.notes.extend(
+            subject.notes.iter().map(|cause| Notice::about(subject.unit.slug.to_string(), cause)),
+        );
         let Some(home) = subject.home.as_ref().map(|environment| &environment.home) else {
             continue;
         };
         if !home.is_dir() {
-            report.notes.push(format!("{}: its home is not on this disk", subject.unit.slug));
+            report
+                .notes
+                .push(Notice::about(subject.unit.slug.to_string(), "its home is not on this disk"));
             continue;
         }
         let ledger = ledger::of(subject, surveyed);
         let text = render::memory(subject, &ledger, command.as_deref());
         match write_home(home, &text) {
-            Ok(notes) => {
+            Ok(causes) => {
                 report.written.push(home.join(FILE));
-                report.notes.extend(notes);
+                report.notes.extend(
+                    causes
+                        .into_iter()
+                        .map(|cause| Notice::about(subject.unit.slug.to_string(), cause)),
+                );
             }
-            Err(error) => report.notes.push(format!("{}: {error}", subject.unit.slug)),
+            Err(error) => {
+                report.notes.push(Notice::about(subject.unit.slug.to_string(), error.to_string()));
+            }
         }
     }
     report
@@ -155,7 +171,7 @@ fn test_command(root: &Path) -> Option<String> {
 /// Where the caller is a command: the answer on standard output stays one document,
 /// which is what `--json` needs, and a fact that is missing still says so.
 pub fn report_notes(report: &Report) {
-    for note in &report.notes {
-        eprintln!("nodal: context: {note}");
+    for line in notice::collapse(&report.notes, "units") {
+        eprintln!("nodal: context: {line}");
     }
 }

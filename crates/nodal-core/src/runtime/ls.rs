@@ -45,6 +45,7 @@ use rusqlite::Connection;
 use crate::Result;
 use crate::context::survey::{self, Snapshot, Work};
 use crate::model::{ActorName, Project, Timestamp};
+use crate::output::notice::{self, Notice};
 use crate::output::view::{EnvLine, ToolSessions, UnitList, UnitRow, WorkTree};
 use crate::runtime::processes::Processes;
 use crate::runtime::sessions;
@@ -75,14 +76,20 @@ pub fn rows(
     project: &Project,
     now: Timestamp,
 ) -> UnitList {
-    let mut notes = Vec::new();
-    let attached = attached_by_home(processes, &mut notes);
+    let mut notices = Vec::new();
+    let attached = attached_by_home(processes, &mut notices);
     let mut units = Vec::new();
     for subject in surveyed {
-        notes.extend(subject.notes.iter().cloned());
+        notices.extend(
+            subject.notes.iter().map(|cause| Notice::about(subject.unit.slug.to_string(), cause)),
+        );
         units.push(row(subject, &attached));
     }
     order(&mut units);
+    // One line per cause, however many units reported it. A list of eight units whose
+    // project tracks its own `CLAUDE.md` is eight units with one thing wrong, not eight
+    // things (`crate::output::notice`).
+    let notes = notice::collapse(&notices, "units");
     UnitList { project: project.name.clone(), now, units, notes }
 }
 
@@ -157,12 +164,15 @@ impl Attached {
 /// A host whose process table Nodal cannot read gets a note and an empty answer, for the
 /// reason `docs/contracts.md` gives: a note is the difference between "nothing is
 /// attached" and "I could not see".
-fn attached_by_home(processes: &dyn Processes, notes: &mut Vec<String>) -> Attached {
+fn attached_by_home(processes: &dyn Processes, notices: &mut Vec<Notice>) -> Attached {
     let derived = processes.scan().and_then(|running| sessions::derive(&running));
     let running = match derived {
         Ok(running) => running,
         Err(error) => {
-            notes.push(format!("who: {error}"));
+            // About the run, not about a unit: the table is read once for the whole
+            // list, so the reason it could not be read is one line whatever the list
+            // holds.
+            notices.push(Notice::general(format!("who: {error}")));
             return Attached::default();
         }
     };
