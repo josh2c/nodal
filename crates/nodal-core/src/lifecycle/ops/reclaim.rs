@@ -79,7 +79,6 @@
 //! exactly as it is, because Nodal did not create it and it is not Nodal's to move.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
 
 use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
@@ -87,15 +86,14 @@ use serde::{Deserialize, Serialize};
 use crate::git::{Git, refs};
 use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Ran, Runner};
 use crate::lifecycle::journal::Operation;
-use crate::lifecycle::step::{Commit, Plan, Step};
+use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::uniqueness::{self, Finding};
-use crate::lifecycle::{Rebuild, guard, marker, run};
+use crate::lifecycle::{Done, Rebuild, guard, marker, run};
 use crate::model::{
-    EnvId, EnvState, Environment, Epistemic, Event, EventId, EventKind, Project, Recipe, RefName,
-    Timestamp, Trashed, Unit, UnitId, UnitStatus, expiry,
+    EnvId, EnvState, Environment, EventKind, Project, Recipe, Timestamp, Trashed, Unit, UnitId,
+    UnitStatus, expiry,
 };
 use crate::output::view::{Leftover, Reclaimed};
-use crate::runtime::actor;
 use crate::runtime::attribute::{Note, Source};
 use crate::runtime::processes;
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
@@ -107,6 +105,11 @@ use crate::{Error, Result};
 
 /// What this operation is called in the journal.
 pub const KIND: &str = "reclaim";
+
+/// The key of the step whose answer the registry write reads. Which process groups a
+/// teardown could not stop decides which session rows stay open, so the step that finds
+/// out and the write that acts on it name the same string.
+const TEARDOWN: &str = "runtime.stop";
 
 /// The message a forced reclaim's snapshot commit carries.
 const SNAPSHOT_MESSAGE: &str = "nodal: work in progress at reclaim";
@@ -162,11 +165,9 @@ pub fn reclaim(store: &mut Store, request: &Request) -> Result<Reclaimed> {
     let params = &prepared.params;
     let mut hooks_ran = Vec::new();
     hooks_ran.extend(prepared.hook(Phase::PreReclaim, params.environment.home.clone())?);
-    let teardown = Arc::new(OnceLock::new());
-    let released = Arc::new(OnceLock::new());
-    run(store, &plan(params, &teardown, &released)?)?;
+    let done = run(store, &plan(params)?)?;
     hooks_ran.extend(prepared.hook(Phase::PostReclaim, prepared.after())?);
-    Ok(report(&prepared, &teardown, &released, hooks_ran, verify(store, params)?))
+    report(&prepared, &done, hooks_ran, verify(store, params)?)
 }
 
 /// The plan: tear the runtime down, then move the home. One registry write at the end.
@@ -177,19 +178,14 @@ pub fn reclaim(store: &mut Store, request: &Request) -> Result<Reclaimed> {
 ///
 /// # Errors
 /// [`Error::Render`] when the parameters cannot be written to the journal.
-pub fn plan(
-    params: &Params,
-    teardown: &Arc<OnceLock<Teardown>>,
-    released: &Arc<OnceLock<Released>>,
-) -> Result<Plan> {
+pub fn plan(params: &Params) -> Result<Plan> {
     let value = serde_json::to_value(params)
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
-    let commit = commit_of(params, teardown, released);
+    let commit = commit_of(params);
     let plan = Plan::new(KIND, params.unit.slug.to_string(), value, commit).then(StopRuntime {
         unit: params.unit.id,
         environment: params.environment.clone(),
         tethers: params.tethers.clone(),
-        report: Arc::clone(teardown),
     });
     let Some(entry) = &params.entry else {
         if params.environment.managed {
@@ -207,19 +203,13 @@ pub fn plan(
 /// unit stops existing. A step that released them would leave a window in which the
 /// registry says a reclaimed unit still holds a port, and a rolled-back reclaim would
 /// have to take back a port another unit may already have been granted.
-fn commit_of(
-    params: &Params,
-    teardown: &Arc<OnceLock<Teardown>>,
-    released: &Arc<OnceLock<Released>>,
-) -> Commit {
+fn commit_of(params: &Params) -> Commit {
     let (unit, environment) = (params.unit.clone(), params.environment.clone());
     let entry = params.entry.clone();
-    let released = Arc::clone(released);
-    let teardown = Arc::clone(teardown);
-    Box::new(move |tx: &Transaction<'_>| -> Result<()> {
+    Box::new(move |tx: &Transaction<'_>, outputs: &Outputs| -> Result<Output> {
         let now = Timestamp::now();
         let given = ports::release(tx, environment.id)?;
-        let standing = still_standing(&teardown);
+        let standing = still_standing(outputs.read::<Teardown>(TEARDOWN)?.as_ref());
         for session in sessions::list_open(tx, environment.id)? {
             if session.pgid.is_some_and(|pgid| standing.contains(&pgid)) {
                 continue;
@@ -232,8 +222,12 @@ fn commit_of(
             trash::insert(tx, entry)?;
         }
         record(tx, &unit, &environment, entry.as_ref(), &given)?;
-        let _ = released.set(given);
-        Ok(())
+        // The ports are the one thing in this operation's report that only the write
+        // itself knows: they are given back inside this transaction, and what came back
+        // is what it returned. It is not journalled, because a resumed reclaim's report
+        // is `resolve`'s, not this one's.
+        serde_json::to_value(given)
+            .map_err(|source| Error::Render { kind: "released ports", source })
     })
 }
 
@@ -244,8 +238,10 @@ fn commit_of(
 /// `nodal gc` acts on later. Closing the row of a group that is still running would
 /// throw away the only record of it, so a group that survived every signal keeps its
 /// row and appears in the report as a leftover as well.
-fn still_standing(teardown: &Arc<OnceLock<Teardown>>) -> Vec<u32> {
-    let Some(torn) = teardown.get() else { return Vec::new() };
+/// A reclaim with no teardown in the journal is one whose plan never had that step, so
+/// there is nothing that survived it and every open row is the unit's to close.
+fn still_standing(teardown: Option<&Teardown>) -> Vec<u32> {
+    let Some(torn) = teardown else { return Vec::new() };
     torn.stopped
         .left
         .iter()
@@ -264,38 +260,16 @@ fn record(
     entry: Option<&Trashed>,
     released: &Released,
 ) -> Result<()> {
-    let mut refs = std::collections::BTreeMap::new();
-    let mut reference = |name: &str, value: String| {
-        if let Ok(name) = RefName::parse(name) {
-            refs.insert(name, value);
-        }
-    };
-    reference("ports", released.allocated.len().to_string());
+    let mut refs = vec![("ports", released.allocated.len().to_string())];
     let body = match entry {
         Some(entry) => format!("reclaimed; home moved to {}", entry.path.display()),
         None => format!("unregistered; {} left in place", environment.home.display()),
     };
     if let Some(entry) = entry {
-        reference("trash", entry.path.display().to_string());
-        if let Some(snapshot) = &entry.snapshot {
-            reference("snapshot", snapshot.clone());
-        }
+        refs.push(("trash", entry.path.display().to_string()));
+        refs.extend(entry.snapshot.clone().map(|snapshot| ("snapshot", snapshot)));
     }
-    events::append(
-        tx,
-        &Event {
-            id: EventId::from_ulid(ulid::Ulid::new()),
-            unit: unit.id,
-            environment: Some(environment.id),
-            ts: Timestamp::now(),
-            actor: actor::current()?,
-            kind: EventKind::Note,
-            epistemic: Epistemic::Observed,
-            body,
-            refs,
-            raw_ref: None,
-        },
-    )
+    events::note(tx, (unit.id, Some(environment.id)), EventKind::Note, body, &refs)
 }
 
 /// Finding an interrupted reclaim again, from what the journal kept.
@@ -310,7 +284,7 @@ impl Rebuild for Reclaim {
         let params: Params = serde_json::from_value(record.params.clone()).map_err(|_| {
             Error::InvalidValue { kind: "reclaim parameters", value: record.id.to_string() }
         })?;
-        plan(&params, &Arc::new(OnceLock::new()), &Arc::new(OnceLock::new()))
+        plan(&params)
     }
 }
 
@@ -319,7 +293,11 @@ impl Rebuild for Reclaim {
 // ---------------------------------------------------------------------------
 
 /// What the teardown of a unit's runtime did.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// Journalled, because the registry write needs it and does not always run in the
+/// process that produced it: which process groups the teardown could not stop is what
+/// decides which session rows the reclaim leaves open.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Teardown {
     /// What became of the processes attributed to the unit.
     pub stopped: Stopped,
@@ -344,18 +322,15 @@ struct StopRuntime {
     environment: Environment,
     /// The process groups its tethers hold, from the journal rather than the machine.
     tethers: Vec<u32>,
-    /// Where the answer is left for the report. A step hands nothing to the step after
-    /// it, and this hands nothing to one.
-    report: Arc<OnceLock<Teardown>>,
 }
 
 impl Step for StopRuntime {
     fn key(&self) -> String {
-        String::from("runtime.stop")
+        String::from(TEARDOWN)
     }
 
     /// Repeatable: a second run finds nothing attributed and stops nothing.
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         let mut seen = attributed(self.unit, &self.environment.home);
         let stopped = stop::processes(&stop::Live, &self.targets(&seen), stop::GRACE);
         let containers = match docker::remove(&docker::Cli, &seen.containers) {
@@ -368,8 +343,8 @@ impl Step for StopRuntime {
                 Vec::new()
             }
         };
-        let _ = self.report.set(Teardown { stopped, containers, notes: seen.notes });
-        Ok(())
+        let torn = Teardown { stopped, containers, notes: seen.notes };
+        serde_json::to_value(torn).map_err(|source| Error::Render { kind: "teardown", source })
     }
 
     /// Nothing. A process that has been stopped cannot be started again by anything
@@ -477,8 +452,9 @@ impl Step for TrashHome {
 
     /// Repeatable in each of the three states a killed run can leave: the home where it
     /// was, the home already in the trash, and neither of the two there at all.
-    fn apply(&self) -> Result<()> {
-        move_tree(&self.home, &self.path)
+    fn apply(&self) -> Result<Output> {
+        move_tree(&self.home, &self.path)?;
+        Ok(nothing())
     }
 
     /// Move it back. This is why the trash is a move and not a delete: the operation's
@@ -513,13 +489,14 @@ impl Step for Unadopt {
     ///
     /// Repeatable: no part of it is a failure when it is already gone, and a directory
     /// a person has since deleted leaves nothing to do.
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         if !self.home.is_dir() {
-            return Ok(());
+            return Ok(nothing());
         }
         marker::remove(&self.home)?;
         crate::env::files::remove(&self.home)?;
-        crate::env::files::unhide(&crate::env::files::exclude_dir(&self.home)?).map(drop)
+        crate::env::files::unhide(&crate::env::files::exclude_dir(&self.home)?)?;
+        Ok(nothing())
     }
 
     /// Nothing. Everything this removed is a file Nodal wrote and `nodal adopt
@@ -817,13 +794,14 @@ fn directories(params: &Params) -> Vec<Leftover> {
 /// The answer, assembled from what each part of the operation left behind.
 fn report(
     prepared: &Prepared,
-    teardown: &Arc<OnceLock<Teardown>>,
-    released: &Arc<OnceLock<Released>>,
+    done: &Done,
     hooks: Vec<Ran>,
     verified: (Vec<Leftover>, Vec<Note>),
-) -> Reclaimed {
+) -> Result<Reclaimed> {
     let params = &prepared.params;
-    let torn = teardown.get().cloned().unwrap_or_default();
+    let torn: Teardown = done.outputs.read(TEARDOWN)?.unwrap_or_default();
+    let released: Released = serde_json::from_value(done.committed.clone())
+        .map_err(|_| Error::InvalidValue { kind: "released ports", value: KIND.to_owned() })?;
     let (leftovers, mut notes) = verified;
     // A signal both halves failed to read says so once. The teardown's note and the
     // verification's are the same sentence about the same machine.
@@ -832,20 +810,20 @@ fn report(
             notes.push(note);
         }
     }
-    Reclaimed {
+    Ok(Reclaimed {
         now: Timestamp::now(),
         slug: params.unit.slug.to_string(),
         findings: prepared.findings.clone(),
         snapshot: params.entry.as_ref().and_then(|entry| entry.snapshot.clone()),
         stopped: torn.stopped,
         containers: torn.containers,
-        released: released.get().cloned().unwrap_or_default(),
+        released,
         trashed: params.entry.clone(),
         root: root_of(params),
         hooks,
         notes,
         leftovers,
-    }
+    })
 }
 
 /// The directory an adopted checkout was left at, when that is what this was.

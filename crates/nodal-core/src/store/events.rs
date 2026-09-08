@@ -22,6 +22,49 @@ const TABLE: &str = "event";
 const COLUMNS: &str = "id, unit_id, environment_id, ts, actor_kind, actor_name, kind, epistemic, \
      body, refs, raw_ref";
 
+/// Append one line to a unit's log, as Nodal saw it rather than as anybody said it.
+///
+/// The four lifecycle operations each wrote this literal out: an identifier drawn now,
+/// the instant now, this process as the actor, `observed` because a thing Nodal did is
+/// a thing Nodal watched, and a reference map whose names have to be parsed. There is
+/// one form of it because there is one kind of line — the record of what an operation
+/// did — and every operation writes it from inside its own registry write.
+///
+/// A reference whose name is not a name is dropped rather than refused. These are
+/// literals in the operations' own source and a log line is worth more than the one
+/// reference nobody can look up.
+///
+/// # Errors
+/// As [`append`], and [`crate::Error::Actor`] when this process cannot say who it is.
+pub fn note(
+    tx: &Connection,
+    subject: (UnitId, Option<EnvId>),
+    kind: EventKind,
+    body: String,
+    refs: &[(&str, String)],
+) -> Result<()> {
+    let (unit, environment) = subject;
+    let named = refs
+        .iter()
+        .filter_map(|(name, value)| Some((RefName::parse(*name).ok()?, value.clone())))
+        .collect();
+    append(
+        tx,
+        &Event {
+            id: EventId::from_ulid(ulid::Ulid::new()),
+            unit,
+            environment,
+            ts: crate::model::Timestamp::now(),
+            actor: crate::runtime::actor::current()?,
+            kind,
+            epistemic: Epistemic::Observed,
+            body,
+            refs: named,
+            raw_ref: None,
+        },
+    )
+}
+
 /// Append one event.
 ///
 /// # Errors

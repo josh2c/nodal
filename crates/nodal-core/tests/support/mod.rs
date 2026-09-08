@@ -1,4 +1,5 @@
-//! The world the behaviour locks are run against, and the expected-failure gate.
+//! The world the behaviour locks are run against, and what is compared between two
+//! runs of one operation.
 //!
 //! One [`World`] is one machine: a checkout, a base built from it, a state directory
 //! and the registry inside it. Every identifier the operations use is fixed here rather
@@ -10,6 +11,10 @@
 //! operation wrote, rendered with everything that cannot be equal between two runs
 //! taken out: the clock readings, the identifiers the runtime mints, and the temporary
 //! directory each world sits in.
+//!
+//! Two of the locks went through an expected-failure gate while they were known to
+//! diverge. The step-output column removed the divergence, so the gate and its
+//! `NODAL_ENFORCE_STEP_OUTPUTS` switch are gone and those locks are plain assertions.
 
 #![allow(
     clippy::unwrap_used,
@@ -20,13 +25,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, OnceLock};
 
 use nodal_core::git::Oid;
 use nodal_core::lifecycle::journal::{self, StepRecord, StepState};
 use nodal_core::lifecycle::ops::{adopt, merge, new, reclaim};
 use nodal_core::lifecycle::owner::{Liveness, Owner};
-use nodal_core::lifecycle::{self, Action, Plan, Recovery};
+use nodal_core::lifecycle::{self, Action, Output, Plan, Recovery};
 use nodal_core::model::{
     Actor, ActorKind, Base, BranchName, Digest, EnvState, Environment, OperationId, Platform,
     PortBlock, Ports, Project, ProjectName, Recipe, Session, Slug, Timestamp, Trashed, Unit,
@@ -34,12 +38,8 @@ use nodal_core::model::{
 };
 use nodal_core::runtime::stop::{Stopped, Target};
 use nodal_core::store::{Store, bases, environments, events, projects, sessions, trash, units};
-use nodal_core::workspace::tracked;
 use nodal_core::{Error, lifecycle::ops};
 use tempfile::TempDir;
-
-/// The environment variable that turns the two reproductions into enforced tests.
-const ENFORCE: &str = "NODAL_ENFORCE_STEP_OUTPUTS";
 
 /// The instant every fixture row is stamped with.
 const AT: &str = "2026-09-07T09:00:00Z";
@@ -51,75 +51,6 @@ const AT: &str = "2026-09-07T09:00:00Z";
 /// exclusion list is anchored at the root and would drop a cache there before the clone
 /// carried it. A cache under a package is exactly what the sweep exists for.
 const CACHE: &str = "packages/web/__pycache__";
-
-// ---------------------------------------------------------------------------
-// The expected-failure gate.
-// ---------------------------------------------------------------------------
-
-/// Assert a divergence that a named change will remove.
-///
-/// This is an expected failure rather than a skipped test. The comparison is made in
-/// full on every run, and the outcome is read two ways:
-///
-/// - `finished` and `resumed` still differ: the reproduction is printed and the test
-///   passes. A known bug does not turn the suite red and hide a real regression.
-/// - they are equal: the test **fails**, because the change has landed and the gate has
-///   to go, or the property will be unprotected from the next commit onwards.
-///
-/// Setting `NODAL_ENFORCE_STEP_OUTPUTS=1` swaps the two, which is what CI does the day
-/// the change lands.
-pub fn expected_failure(what: &str, fixed_by: &str, finished: &Snapshot, resumed: &Snapshot) {
-    let enforced = std::env::var(ENFORCE).is_ok_and(|value| value == "1");
-    let equal = finished == resumed;
-    match (enforced, equal) {
-        (true, true) | (false, false) => {}
-        (true, false) => {
-            panic!(
-                "{ENFORCE}=1 is set, and the two runs still differ.\n  \
-                 expected failure: {what}\n  fixed by: {fixed_by}\n{}",
-                difference(finished, resumed)
-            );
-        }
-        (false, true) => {
-            panic!(
-                "this expected failure now passes on its own, so its gate has to go.\n  \
-                 was: {what}\n  fixed by: {fixed_by}\n  \
-                 replace the `expected_failure` call with `assert_eq!(finished, resumed)`, \
-                 and drop {ENFORCE} from ci/acceptance-behaviour-lock.sh."
-            );
-        }
-    }
-    if !enforced {
-        eprintln!(
-            "expected failure, still reproducing: {what}\n  fixed by: {fixed_by}\n{}",
-            difference(finished, resumed)
-        );
-    }
-}
-
-/// The first field of two snapshots that is not equal, rendered for a report.
-fn difference(finished: &Snapshot, resumed: &Snapshot) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::new();
-    for (name, left, right) in [
-        ("units", &finished.units, &resumed.units),
-        ("environments", &finished.environments, &resumed.environments),
-        ("sessions", &finished.sessions, &resumed.sessions),
-        ("trash", &finished.trash, &resumed.trash),
-        ("events", &finished.events, &resumed.events),
-    ] {
-        if left != right {
-            let _ = writeln!(
-                out,
-                "  {name}:\n    run to completion: {left:?}\n    killed and resumed: {right:?}"
-            );
-        }
-    }
-    if out.is_empty() {
-        out.push_str("  (no difference)\n");
-    }
-    out
-}
 
 // ---------------------------------------------------------------------------
 // What is compared.
@@ -145,6 +76,15 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Whether any session row of the unit's environment is still open.
+    ///
+    /// An open row is the claim "this process group is still the unit's to stop", and
+    /// it is what `nodal gc` acts on later.
+    #[must_use]
+    pub fn has_open_session(&self) -> bool {
+        self.sessions.iter().any(|row| row.ends_with("open=true"))
+    }
+
     /// Read everything the operation on `unit` wrote.
     fn take(store: &Store, world: &World) -> Self {
         let conn = store.conn();
@@ -342,16 +282,6 @@ impl World {
     }
 }
 
-/// An empty sink for the exclusion rows a create's clone left standing.
-///
-/// A plan takes one so that the caller can read what the copy decided. Nothing here
-/// reads it: the locks compare the rows and events an operation wrote, and this value
-/// reaches the person who ran the command rather than the registry. It is the shape the
-/// step-output column removes.
-pub fn sink() -> Arc<OnceLock<Vec<tracked::Kept>>> {
-    Arc::new(OnceLock::new())
-}
-
 // ---------------------------------------------------------------------------
 // Journalling a run.
 // ---------------------------------------------------------------------------
@@ -367,13 +297,18 @@ pub fn journal_of(world: &World, plan: &Plan) -> journal::Operation {
     journal::get(store.conn(), id).unwrap().expect("the run is journalled")
 }
 
-/// Write down that a step of a run was applied.
-pub fn mark_applied(world: &World, id: OperationId, position: usize, key: &str) {
+/// Write down that a step of a run was applied, and what it produced.
+///
+/// The output is the whole of what the process that finishes an interrupted run is told
+/// about what the steps of it learned, so a fixture that leaves it out is a fixture that
+/// reproduces the bug rather than the world.
+pub fn mark_applied(world: &World, id: OperationId, step: (usize, &str), output: Output) {
     let store = world.store();
     let record = StepRecord {
-        position: u32::try_from(position).unwrap(),
-        key: key.to_owned(),
+        position: u32::try_from(step.0).unwrap(),
+        key: step.1.to_owned(),
         state: StepState::Applied,
+        output: Some(output).filter(|value| !value.is_null()),
         updated_at: Timestamp::now(),
     };
     journal::mark_step(store.conn(), id, &record).unwrap();
@@ -601,12 +536,30 @@ impl World {
     /// property under test is the journal's: a plan rebuilt from what the journal kept
     /// has to be able to finish the run that was interrupted.
     fn taken_over(&self, plan: &mut Plan, applied: usize) -> Snapshot {
+        self.taken_over_with(plan, applied, &|_| {})
+    }
+
+    /// The same, with something done to the world in the gap between the last step the
+    /// killed run reached and the invocation that takes it over.
+    fn taken_over_with(
+        &self,
+        plan: &mut Plan,
+        applied: usize,
+        between: &dyn Fn(&Self),
+    ) -> Snapshot {
         plan.recovery = Recovery::Resume;
         let record = journal_of(self, plan);
         for (position, step) in plan.steps.iter().enumerate().take(applied) {
-            step.apply().expect("the killed run got this far");
-            mark_applied(self, record.id, position, &step.key());
+            let output = step.apply().expect("the killed run got this far");
+            mark_applied(self, record.id, (position, &step.key()), output);
         }
+        between(self);
+        self.resolved()
+    }
+
+    /// Do what the next `nodal` does, and insist that it finished the run rather than
+    /// taking it back.
+    fn resolved(&self) -> Snapshot {
         let mut store = self.store();
         let reported = lifecycle::resolve(&mut store, &ops::rebuilders()).unwrap();
         match reported.as_slice() {
@@ -627,13 +580,13 @@ impl World {
     /// A create that runs from end to end.
     pub fn run_new_to_completion(&self) -> Snapshot {
         self.prepare_create();
-        self.to_completion(&new::plan(&self.create_params(), &sink()).unwrap())
+        self.to_completion(&new::plan(&self.create_params()).unwrap())
     }
 
     /// A create whose process died after `applied` steps.
     pub fn resume_new_after(&self, applied: usize) -> Snapshot {
         self.prepare_create();
-        let mut plan = new::plan(&self.create_params(), &sink()).unwrap();
+        let mut plan = new::plan(&self.create_params()).unwrap();
         self.taken_over(&mut plan, applied)
     }
 
@@ -650,13 +603,13 @@ impl World {
     /// An adopt of a checkout that stays where it is, run from end to end.
     pub fn run_adopt_to_completion(&self) -> Snapshot {
         self.prepare_adopt();
-        self.to_completion(&adopt::plan(&self.adopt_in_place_params(), &sink()).unwrap())
+        self.to_completion(&adopt::plan(&self.adopt_in_place_params()).unwrap())
     }
 
     /// The same adopt, whose process died after `applied` steps.
     pub fn resume_adopt_after(&self, applied: usize) -> Snapshot {
         self.prepare_adopt();
-        let mut plan = adopt::plan(&self.adopt_in_place_params(), &sink()).unwrap();
+        let mut plan = adopt::plan(&self.adopt_in_place_params()).unwrap();
         self.taken_over(&mut plan, applied)
     }
 
@@ -670,17 +623,32 @@ impl World {
     /// A merge that runs from end to end.
     pub fn run_merge_to_completion(&self) -> Snapshot {
         self.prepare_merge();
-        let sink = Arc::new(OnceLock::new());
-        self.to_completion(
-            &merge::plan(&self.merge_params(merge::Stages::all(), false), &sink).unwrap(),
-        )
+        self.to_completion(&merge::plan(&self.merge_params(merge::Stages::all(), false)).unwrap())
+    }
+
+    /// A merge every step of which applied, whose process then died in the gap before
+    /// the registry write, and whose home is gone by the time a later `nodal` finishes
+    /// it.
+    ///
+    /// The write used to ask the home whether the rebase had stopped, from inside the
+    /// registry's one `IMMEDIATE` transaction. That is a `git rev-parse` holding the
+    /// lock every `nodal` on the machine queues behind, and a home that is not there
+    /// answered "not stopped", which recorded the unit merged. The step that moves the
+    /// target reads it now, while nothing is waiting on the registry, and the write
+    /// reads what that step found.
+    pub fn resume_merge_with_the_home_removed(&self) -> Snapshot {
+        self.prepare_merge();
+        let mut plan = merge::plan(&self.merge_params(merge::Stages::all(), false)).unwrap();
+        let applied = plan.steps.len();
+        self.taken_over_with(&mut plan, applied, &|world: &Self| {
+            std::fs::remove_dir_all(world.checkout()).unwrap();
+        })
     }
 
     /// A merge whose process died after `applied` steps.
     pub fn resume_merge_after(&self, applied: usize) -> Snapshot {
         self.prepare_merge();
-        let sink = Arc::new(OnceLock::new());
-        let mut plan = merge::plan(&self.merge_params(merge::Stages::all(), false), &sink).unwrap();
+        let mut plan = merge::plan(&self.merge_params(merge::Stages::all(), false)).unwrap();
         self.taken_over(&mut plan, applied)
     }
 
@@ -697,20 +665,23 @@ impl World {
 
     // -- reclaim -----------------------------------------------------------
 
-    /// A reclaim that runs from end to end, of a unit one of whose process groups
-    /// survived the teardown.
-    pub fn run_reclaim_to_completion(&self) -> Snapshot {
+    /// A reclaim whose process died after its teardown, with what that teardown found
+    /// in the journal where it leaves it.
+    ///
+    /// The teardown is stated rather than measured, for the reason `surviving_teardown`
+    /// gives: no test can make a process group survive `SIGKILL`, and a group that
+    /// survived one is the whole condition under test. Stating it in the journal is
+    /// stating it in the one place the run that finishes this one can read it, which is
+    /// what the step-output column is.
+    pub fn resume_reclaim_with(&self, teardown: reclaim::Teardown) -> Snapshot {
         self.prepare_reclaim();
-        let (teardown, released) = surviving_teardown();
-        self.to_completion(&reclaim::plan(&self.reclaim_params(), &teardown, &released).unwrap())
-    }
-
-    /// The same reclaim, whose process died after `applied` steps.
-    pub fn resume_reclaim_after(&self, applied: usize) -> Snapshot {
-        self.prepare_reclaim();
-        let (teardown, released) = surviving_teardown();
-        let mut plan = reclaim::plan(&self.reclaim_params(), &teardown, &released).unwrap();
-        self.taken_over(&mut plan, applied)
+        let mut plan = reclaim::plan(&self.reclaim_params()).unwrap();
+        plan.recovery = Recovery::Resume;
+        let record = journal_of(self, &plan);
+        let key = plan.steps[0].key();
+        let output = serde_json::to_value(teardown).unwrap();
+        mark_applied(self, record.id, (0, &key), output);
+        self.resolved()
     }
 
     /// The unit, its home on disk, and the open session row of the tethered group.
@@ -736,17 +707,14 @@ impl World {
     }
 }
 
-/// The sinks of a reclaim whose teardown signalled one process group and could not
-/// stop it.
+/// What a reclaim's teardown reports in the one condition the reclaim module doc names:
+/// a group that is still running, whose session row is the only record `nodal gc` has
+/// of it and must therefore stay open.
 ///
-/// The teardown is fixed rather than measured, because no test can make a process group
-/// survive `SIGKILL`. The value is what a real teardown reports in the one condition the
-/// reclaim module doc names: a group that is still running, whose session row is the
-/// only record `nodal gc` has of it and must therefore stay open.
-fn surviving_teardown()
--> (Arc<OnceLock<reclaim::Teardown>>, Arc<OnceLock<nodal_core::services::ports::Released>>) {
-    let teardown = Arc::new(OnceLock::new());
-    let _ = teardown.set(reclaim::Teardown {
+/// Fixed rather than measured, because no test can make a process group survive
+/// `SIGKILL`.
+pub fn surviving_teardown() -> reclaim::Teardown {
+    reclaim::Teardown {
         stopped: Stopped {
             asked: Vec::new(),
             killed: Vec::new(),
@@ -755,6 +723,5 @@ fn surviving_teardown()
         },
         containers: Vec::new(),
         notes: Vec::new(),
-    });
-    (teardown, Arc::new(OnceLock::new()))
+    }
 }

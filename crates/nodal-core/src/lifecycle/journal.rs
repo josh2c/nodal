@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use crate::Result;
 use crate::lifecycle::owner::Owner;
-use crate::lifecycle::step::{Plan, Recovery};
+use crate::lifecycle::step::{Output, Outputs, Plan, Recovery};
 use crate::model::{HostName, OperationId, Timestamp};
 use crate::store::row;
 
@@ -27,7 +27,7 @@ const STEP_TABLE: &str = "operation_step";
 const COLUMNS: &str = "id, kind, subject, params, recovery, state, host, pid, started_at, ended_at";
 
 /// Every column [`decode_step`] reads.
-const STEP_COLUMNS: &str = "position, key, state, updated_at";
+const STEP_COLUMNS: &str = "position, key, state, output, updated_at";
 
 /// How far an operation got.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,7 +99,7 @@ impl Operation {
 }
 
 /// One step of a run, as the journal has it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StepRecord {
     /// Its place in the plan, counting from zero.
     pub position: u32,
@@ -107,6 +107,12 @@ pub struct StepRecord {
     pub key: String,
     /// How far it got.
     pub state: StepState,
+    /// What it produced for the registry write, when it produced anything.
+    ///
+    /// This is the whole of what the process that started a run can tell the process
+    /// that finishes it about what the run learned on the way. `None` for a step that
+    /// has nothing to say and for one that has not been applied yet.
+    pub output: Option<Output>,
     /// When that was last written.
     pub updated_at: Timestamp,
 }
@@ -149,17 +155,21 @@ pub fn start(
 /// # Errors
 /// [`crate::Error::Store`] on a failed statement.
 pub fn mark_step(conn: &Connection, id: OperationId, step: &StepRecord) -> Result<()> {
+    let output = step.output.as_ref().map(|o| row::json_of(o, "step output")).transpose()?;
     row::write(
         conn,
-        "INSERT INTO operation_step (operation_id, position, key, state, updated_at) \
-         VALUES (?, ?, ?, ?, ?) \
+        "INSERT INTO operation_step (operation_id, position, key, state, output, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?) \
          ON CONFLICT (operation_id, position) DO UPDATE SET \
-         key = excluded.key, state = excluded.state, updated_at = excluded.updated_at",
+         key = excluded.key, state = excluded.state, \
+         output = COALESCE(excluded.output, operation_step.output), \
+         updated_at = excluded.updated_at",
         params![
             id.to_string(),
             step.position,
             step.key.as_str(),
             row::name_of(&step.state, "step state")?,
+            output,
             step.updated_at.unix_seconds(),
         ],
     )?;
@@ -237,12 +247,32 @@ fn decode(row: &Row<'_>) -> Result<Operation> {
     })
 }
 
+/// What the applied steps of a run produced, ready for the run's commit.
+///
+/// The read that makes a rebuilt plan's commit see what the first run's steps saw. Only
+/// applied steps count: a step recorded `applying` was interrupted inside itself, so
+/// whatever it had learned was never written down, and a resumed run applies it again
+/// and gets the answer afresh.
+///
+/// # Errors
+/// As [`get`].
+pub fn outputs(conn: &Connection, id: OperationId) -> Result<Outputs> {
+    let mut outputs = Outputs::new();
+    for step in steps(conn, id)?.into_iter().filter(|step| step.state == StepState::Applied) {
+        if let Some(output) = step.output {
+            outputs.record(step.key, output);
+        }
+    }
+    Ok(outputs)
+}
+
 /// Turn a row into a step.
 fn decode_step(row: &Row<'_>) -> Result<StepRecord> {
     Ok(StepRecord {
         position: row::number(row, STEP_TABLE, "position")?,
         key: row::plain(row, STEP_TABLE, "key")?,
         state: row::name::<StepState>(row, STEP_TABLE, "state")?,
+        output: row::json_opt(row, STEP_TABLE, "output")?,
         updated_at: row::stamp(row, STEP_TABLE, "updated_at")?,
     })
 }

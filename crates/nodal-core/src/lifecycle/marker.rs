@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use crate::env::files::DIR;
 use crate::lifecycle::Step;
+use crate::lifecycle::step::{Output, nothing};
 use crate::model::UnitId;
 use crate::{Error, Result};
 
@@ -97,8 +98,9 @@ impl Step for WriteMarker {
         String::from("home.marker")
     }
 
-    fn apply(&self) -> Result<()> {
-        write(&self.home, self.unit)
+    fn apply(&self) -> Result<Output> {
+        write(&self.home, self.unit)?;
+        Ok(nothing())
     }
 
     fn undo(&self) -> Result<()> {

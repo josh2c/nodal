@@ -31,11 +31,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "objective epistemic",
         sql: include_str!("migrations/0006_objective_epistemic.sql"),
     },
+    Migration {
+        version: 7,
+        name: "step output",
+        sql: include_str!("migrations/0007_step_output.sql"),
+    },
 ];
 
 /// The schema version a database is brought to by [`run`]. Kept as a literal rather
 /// than derived from the table's length, so that a version appears in a diff.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// Bring `store` up to [`SCHEMA_VERSION`].
 ///

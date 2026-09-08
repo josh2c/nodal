@@ -58,7 +58,7 @@
 //! states both sentences.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
@@ -68,19 +68,18 @@ use crate::git::Git;
 use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Runner};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::ops::new;
-use crate::lifecycle::step::{Commit, Plan, Step};
+use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::{Rebuild, guard, marker, owner, run};
 use crate::model::{
-    BranchName, EnvId, Environment, Epistemic, Event, EventId, EventKind, Objective, PortBlock,
-    PortName, Project, Recipe, RefName, Slug, Timestamp, Unit, UnitId, UnitStatus,
+    BranchName, EnvId, Environment, Epistemic, EventKind, Objective, PortBlock, PortName, Project,
+    Recipe, Slug, Timestamp, Unit, UnitId, UnitStatus,
 };
 use crate::output::view::Created;
-use crate::runtime::actor;
 use crate::services::ports;
 use crate::store::{Store, environments, events, units};
 use crate::substrate::{self, Reporter};
 use crate::workspace::relocate::{self, InvalidateCache};
-use crate::workspace::{Excludes, home, select_backend, tracked};
+use crate::workspace::{Excludes, home, select_backend};
 use crate::{Error, Result};
 
 /// What this operation is called in the journal.
@@ -187,12 +186,11 @@ pub fn adopt(
 ) -> Result<Created> {
     let params = prepare(store, request, progress)?;
     let environment = params.environment.id;
-    let kept = Arc::new(OnceLock::new());
-    run(store, &plan(&params, &kept)?)?;
+    let done = run(store, &plan(&params)?)?;
     post_new(&params, request.hooks)?;
     let created =
         Created::of(&params.unit, &new::read_back(store, environment)?, Timestamp::now())?;
-    Ok(created.keeping(kept.get().cloned().unwrap_or_default()))
+    Ok(created.keeping(done.outputs.read(new::MATERIALIZE)?.unwrap_or_default()))
 }
 
 /// Run `post_new` in the home, for the form of adoption that made one (DL-042).
@@ -311,12 +309,11 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
 ///
 /// # Errors
 /// [`Error::Render`] when the parameters cannot be written to the journal.
-pub fn plan(params: &Params, kept: &Arc<OnceLock<Vec<tracked::Kept>>>) -> Result<Plan> {
+pub fn plan(params: &Params) -> Result<Plan> {
     let home = params.environment.home.clone();
     let value = serde_json::to_value(params)
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
-    let relocation = Arc::new(OnceLock::new());
-    let plan = Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params, &relocation));
+    let plan = Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params));
     let plan = match &params.source {
         Source::InPlace => plan,
         Source::Materialized { base_path, from } => plan
@@ -325,13 +322,11 @@ pub fn plan(params: &Params, kept: &Arc<OnceLock<Vec<tracked::Kept>>>) -> Result
                 home: home.clone(),
                 excludes: Excludes::with_recipe(&params.recipe.base.exclude),
                 backend: select_backend(&params.state_dir),
-                kept: Arc::clone(kept),
             })
             .then(new::Relocate {
                 home: home.clone(),
                 base: base_path.clone(),
                 relocator: InvalidateCache::with_recipe(&params.recipe.base.invalidate),
-                report: Arc::clone(&relocation),
             })
             .then(new::Scrub { home: home.clone() })
             .then(FetchBranch {
@@ -363,12 +358,11 @@ pub fn plan(params: &Params, kept: &Arc<OnceLock<Vec<tracked::Kept>>>) -> Result
 /// where this unit came from. A unit a person adopted three weeks after the fact is
 /// exactly the unit whose history nobody remembers, so the operation puts what it knows
 /// into the record rather than only into the report it prints once.
-fn commit_of(params: &Params, relocation: &Arc<OnceLock<relocate::Report>>) -> Commit {
+fn commit_of(params: &Params) -> Commit {
     let (unit, environment) = (params.unit.clone(), params.environment.clone());
     let (block, names) = (params.block, params.ports.clone());
     let (source, recovered) = (params.source.clone(), params.recovered);
-    let relocation = Arc::clone(relocation);
-    Box::new(move |tx: &Transaction<'_>| -> Result<()> {
+    Box::new(move |tx: &Transaction<'_>, outputs: &Outputs| -> Result<Output> {
         units::insert(tx, &unit)?;
         environments::insert(tx, &environment)?;
         let granted = ports::allocate(tx, block, environment.id, &names)?;
@@ -377,7 +371,9 @@ fn commit_of(params: &Params, relocation: &Arc<OnceLock<relocate::Report>>) -> C
         if recovered {
             note(tx, (&unit, environment.id), RECOVERED)?;
         }
-        new::record_relocation(tx, unit.id, environment.id, relocation.get())
+        let relocation: Option<relocate::Report> = outputs.read(new::RELOCATE)?;
+        new::record_relocation(tx, unit.id, environment.id, relocation.as_ref())?;
+        Ok(nothing())
     })
 }
 
@@ -406,22 +402,12 @@ fn origin_of(source: &Source, environment: &Environment) -> String {
 /// One line of the unit's log, as Nodal saw it rather than as anybody said it.
 fn note(tx: &Transaction<'_>, subject: (&Unit, EnvId), body: &str) -> Result<()> {
     let (unit, environment) = subject;
-    events::append(
+    events::note(
         tx,
-        &Event {
-            id: EventId::from_ulid(ulid::Ulid::new()),
-            unit: unit.id,
-            environment: Some(environment),
-            ts: Timestamp::now(),
-            actor: actor::current()?,
-            kind: EventKind::Note,
-            epistemic: Epistemic::Observed,
-            body: body.to_owned(),
-            refs: std::collections::BTreeMap::from_iter(
-                RefName::parse("operation").ok().map(|name| (name, String::from(KIND))),
-            ),
-            raw_ref: None,
-        },
+        (unit.id, Some(environment)),
+        EventKind::Note,
+        body.to_owned(),
+        &[("operation", String::from(KIND))],
     )
 }
 
@@ -439,7 +425,7 @@ impl Rebuild for Adopt {
         })?;
         // A resumed run finishes the home and writes no report, so the notes it would
         // have carried have nowhere to go.
-        plan(&params, &Arc::new(OnceLock::new()))
+        plan(&params)
     }
 }
 
@@ -468,11 +454,10 @@ impl Step for FetchBranch {
     }
 
     /// Repeatable: fetching a ref that is already at that commit moves nothing.
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         let name = self.branch.as_str();
-        Git::open(&self.home)?
-            .fetch_branch(&self.from, name, &format!("refs/heads/{name}"))
-            .map(drop)
+        Git::open(&self.home)?.fetch_branch(&self.from, name, &format!("refs/heads/{name}"))?;
+        Ok(nothing())
     }
 
     /// Nothing. What this wrote is inside a directory the first step's undo removes.

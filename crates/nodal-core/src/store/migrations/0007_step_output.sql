@@ -1,0 +1,21 @@
+-- 0007 step output: what a step produced, kept for the commit that has not run yet.
+--
+-- An operation's registry write often needs something only a step could learn: what a
+-- relocation removed, which process groups survived a teardown, whether a rebase left
+-- the home mid-conflict. The step and the write are in the same process on a first
+-- run, so the value could be carried between them in memory, and it was.
+--
+-- It cannot be on the other path. A run whose process is killed is rebuilt from this
+-- journal by a later `nodal`, and that process never ran the steps: whatever they
+-- learned is gone, and a commit handed nothing in place of it writes a different
+-- registry than the first run would have. That is the one thing the journal exists to
+-- prevent (`decisions/DL-022`), so what a step produced is written down beside the
+-- record that it applied, in the same statement, and read back when the plan is
+-- rebuilt.
+--
+-- Nullable, and null for every row written before this migration: a step that has
+-- nothing to say is the common case and is stored the same way as one that never ran.
+-- JSON rather than a column per operation, because the framework carries the value and
+-- only the operation knows its shape.
+
+ALTER TABLE operation_step ADD COLUMN output TEXT;

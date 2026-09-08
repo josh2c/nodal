@@ -13,6 +13,13 @@
 //! `committed` share one transaction, which is what makes an operation either wholly
 //! done or wholly not.
 //!
+//! A step that learns something the registry write needs — what a relocation removed,
+//! which process groups a teardown could not stop — returns it, and [`run`] writes it
+//! into the step's own journal row before it moves on. The commit is handed the whole
+//! set ([`Outputs`]). That is what makes a rebuilt run the same run: the process that
+//! finishes an interrupted one never saw its steps happen, and reads what they produced
+//! out of the journal rather than out of a channel that died with the first process.
+//!
 //! Two things can go wrong, and they are handled differently.
 //!
 //! A step that *fails* is handled on the spot: [`run`] undoes the steps it applied, in
@@ -45,7 +52,25 @@ use crate::model::{OperationId, Timestamp};
 use crate::store::Store;
 use crate::{Error, Result};
 
-pub use crate::lifecycle::step::{Commit, Plan, Recovery, Step};
+pub use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Recovery, Step, nothing};
+
+/// What a finished run of a plan left behind, for the caller that started it.
+///
+/// [`run`] returns this rather than an identifier alone because a step's answer is not
+/// only the commit's business: an operation reports to a person as well as to the
+/// registry, and what it reports is what its steps found. Reading that here rather
+/// than out of a channel the operation carried through the plan is what lets a plan be
+/// a plain value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Done {
+    /// Which run this was, as the journal names it.
+    pub id: OperationId,
+    /// What every step of it produced.
+    pub outputs: Outputs,
+    /// What the registry write itself produced, which is [`nothing`] for the
+    /// operations whose report needs nothing of it.
+    pub committed: Output,
+}
 
 /// How an interrupted operation's plan is found again.
 ///
@@ -156,16 +181,18 @@ impl core::fmt::Display for Resolution {
 /// [`Error::OperationStep`] when a step failed and the earlier steps were undone,
 /// [`Error::OperationUndo`] when that undo also failed, and [`Error::Store`] when the
 /// journal or the final write could not be made.
-pub fn run(store: &mut Store, plan: &Plan) -> Result<OperationId> {
+pub fn run(store: &mut Store, plan: &Plan) -> Result<Done> {
     let id = OperationId::from_ulid(ulid::Ulid::new());
     let owner = Owner::current();
     journal::start(store.conn(), id, plan, &owner, Timestamp::now())?;
+    let mut outputs = Outputs::new();
     for (position, step) in plan.steps.iter().enumerate() {
         let position = position_of(position)?;
-        mark(store, id, position, &step.key(), StepState::Applying)?;
+        mark(store, id, (position, &step.key()), StepState::Applying, None)?;
         match step.apply() {
-            Ok(()) => {
-                mark(store, id, position, &step.key(), StepState::Applied)?;
+            Ok(output) => {
+                mark(store, id, (position, &step.key()), StepState::Applied, Some(&output))?;
+                outputs.record(step.key(), output);
             }
             Err(source) => {
                 undo_applied(store, id, plan)?;
@@ -178,8 +205,8 @@ pub fn run(store: &mut Store, plan: &Plan) -> Result<OperationId> {
             }
         }
     }
-    match commit(store, id, plan) {
-        Ok(()) => Ok(id),
+    match commit(store, id, plan, &outputs) {
+        Ok(committed) => Ok(Done { id, outputs, committed }),
         Err(source) => {
             undo_applied(store, id, plan)?;
             Err(source)
@@ -188,12 +215,13 @@ pub fn run(store: &mut Store, plan: &Plan) -> Result<OperationId> {
 }
 
 /// The registry rows and the record that the operation finished, written together.
-fn commit(store: &mut Store, id: OperationId, plan: &Plan) -> Result<()> {
+fn commit(store: &mut Store, id: OperationId, plan: &Plan, outputs: &Outputs) -> Result<Output> {
     let path = store.path().to_path_buf();
     let tx = store.transaction()?;
-    (plan.commit)(&tx)?;
+    let committed = (plan.commit)(&tx, outputs)?;
     close(&tx, id, plan.kind, State::Committed)?;
-    tx.commit().map_err(|source| Error::Store { path, source: Box::new(source) })
+    tx.commit().map_err(|source| Error::Store { path, source: Box::new(source) })?;
+    Ok(committed)
 }
 
 /// Report every unfinished operation and resolve the ones that are ours to resolve.
@@ -261,25 +289,33 @@ fn roll_back(store: &mut Store, id: OperationId, plan: &Plan) -> Result<Action> 
 /// simply applied again rather than reasoned about.
 fn resume(store: &mut Store, id: OperationId, plan: &Plan) -> Result<Action> {
     let done = applied_keys(store, id)?;
+    // What the first run's steps learned, which this process never saw happen. Without
+    // it the commit below would write the registry a first run would not have written,
+    // which is the one difference between the two runs the journal exists to remove.
+    let mut outputs = journal::outputs(store.conn(), id)?;
     let mut applied = Vec::new();
     for (position, step) in plan.steps.iter().enumerate() {
         let position = position_of(position)?;
         if done.contains(&(position, step.key())) {
             continue;
         }
-        mark(store, id, position, &step.key(), StepState::Applying)?;
-        if let Err(source) = step.apply() {
-            return Err(Error::OperationStep {
-                operation: id,
-                kind: plan.kind,
-                key: step.key(),
-                source: Box::new(source),
-            });
-        }
-        mark(store, id, position, &step.key(), StepState::Applied)?;
+        mark(store, id, (position, &step.key()), StepState::Applying, None)?;
+        let output = match step.apply() {
+            Ok(output) => output,
+            Err(source) => {
+                return Err(Error::OperationStep {
+                    operation: id,
+                    kind: plan.kind,
+                    key: step.key(),
+                    source: Box::new(source),
+                });
+            }
+        };
+        mark(store, id, (position, &step.key()), StepState::Applied, Some(&output))?;
+        outputs.record(step.key(), output);
         applied.push(step.key());
     }
-    commit(store, id, plan)?;
+    commit(store, id, plan, &outputs)?;
     Ok(Action::Resumed { applied })
 }
 
@@ -322,7 +358,7 @@ fn undo_steps(store: &mut Store, id: OperationId, plan: &Plan) -> Result<Undone>
         if let Err(source) = step.undo() {
             return Ok(Undone::Stopped { key: step.key(), why: source.to_string() });
         }
-        mark(store, id, position, &step.key(), StepState::Undone)?;
+        mark(store, id, (position, &step.key()), StepState::Undone, None)?;
         undone.push(step.key());
     }
     Ok(Undone::All(undone))
@@ -368,9 +404,25 @@ fn close(
     Err(Error::OperationVanished { operation: id, kind })
 }
 
-/// Write down where a step has got to, stamped now.
-fn mark(store: &Store, id: OperationId, position: u32, key: &str, state: StepState) -> Result<()> {
-    let record = StepRecord { position, key: key.to_owned(), state, updated_at: Timestamp::now() };
+/// Write down where a step has got to and what it produced, stamped now.
+///
+/// The output is written in the same statement as the state, so there is no moment in
+/// which the journal says a step is applied without saying what it produced.
+fn mark(
+    store: &Store,
+    id: OperationId,
+    step: (u32, &str),
+    state: StepState,
+    output: Option<&Output>,
+) -> Result<()> {
+    let (position, key) = step;
+    let record = StepRecord {
+        position,
+        key: key.to_owned(),
+        state,
+        output: output.filter(|output| !output.is_null()).cloned(),
+        updated_at: Timestamp::now(),
+    };
     journal::mark_step(store.conn(), id, &record)
 }
 

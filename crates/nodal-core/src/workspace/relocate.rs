@@ -38,7 +38,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::exclude;
 use crate::error::{Error, Result};
@@ -60,7 +60,7 @@ pub struct Named {
 }
 
 /// One cache a relocation removed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Removal {
     /// Where it was, relative to the home.
     pub path: PathBuf,
@@ -69,10 +69,13 @@ pub struct Removal {
 }
 
 /// What a relocation did to one home.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// Read back as well as written: a create is journalled step by step, and this is what
+/// the step that swept the home hands to the registry write that ends the operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
     /// Which relocator acted, as [`CacheRelocator::name`] gives it.
-    pub relocator: &'static str,
+    pub relocator: String,
     /// The path the content was made at.
     pub from: PathBuf,
     /// The path it is at now.
@@ -200,7 +203,7 @@ impl CacheRelocator for InvalidateCache {
     /// removes nothing.
     fn relocate(&self, home: &Path, from_path: &Path, to_path: &Path) -> Result<Report> {
         let mut report = Report {
-            relocator: self.name(),
+            relocator: self.name().to_owned(),
             from: from_path.to_path_buf(),
             to: to_path.to_path_buf(),
             removed: Vec::new(),

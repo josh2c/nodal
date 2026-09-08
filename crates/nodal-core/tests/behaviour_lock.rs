@@ -43,36 +43,40 @@
 //! that lands, both tests pass on their own, and `Recovery::Resume` becomes a choice an
 //! operation is allowed to make.
 //!
-//! ## How the two are gated
+//! ## What the two were, and what they are now
 //!
-//! They are expected failures, not skipped tests. Each runs in full on every run, and
-//! [`expected_failure`] decides what its outcome means:
+//! Both were expected failures until the step-output column landed, gated so that a
+//! known bug did not turn the suite red and so that a fix could not land unnoticed.
+//! They are plain assertions now, which is what that gate said to do the day it went
+//! green. `NODAL_ENFORCE_STEP_OUTPUTS` is gone with it.
 //!
-//! - the divergence is still there: the reproduction is printed and the test passes, so
-//!   a red suite does not hide a real regression behind a known bug;
-//! - the divergence has gone: the test **fails**, and says to delete the gate. A fix
-//!   that lands without anyone noticing is a fix nothing protects afterwards.
+//! The create half kept its shape: a first run and a resumed run write the same rows
+//! and the same events, and the reason they do is that the relocation report the first
+//! run's step made is in the journal for the second run's commit to read.
 //!
-//! Setting `NODAL_ENFORCE_STEP_OUTPUTS=1` inverts that: the divergence fails and
-//! equality passes. That is the one edit CI needs the day the step-output change lands,
-//! and `ci/acceptance-behaviour-lock.sh` runs both ways round.
+//! The reclaim half could not. A comparison between two runs stated the property while
+//! the value lived in memory, because a first run had it and a resumed run did not.
+//! Both now read it from the same column, so the two runs agree whatever the commit
+//! does with the value, and the comparison asserts nothing. What is asserted instead is
+//! the substance: a teardown that reports a surviving group leaves that group's session
+//! row open, and one that reports none closes it.
 //!
 //! ## What is *not* claimed here, and what the two locks are for
 //!
-//! Neither divergence damages data today. All four operations recover by
-//! [`Recovery::RollBack`], so no invocation of `nodal` reaches the resume path for
+//! Neither divergence ever damaged data. All four operations recover by
+//! [`Recovery::RollBack`], so no invocation of `nodal` reached the resume path for
 //! them: a killed create or reclaim is undone, not finished, and its commit never runs
-//! a second time. The one operation that does resume is the base build, which carries
-//! no sink at all, so it has no step output for a rebuild to lose. Both divergences are
-//! therefore latent. They are reproduced here by journalling the run as
+//! a second time. The one operation that does resume is the base build, which carried
+//! no sink at all, so it had no step output for a rebuild to lose. Both divergences
+//! were latent, and they are reproduced here by journalling the run as
 //! [`Recovery::Resume`], which is the single line that separates the two paths.
 //!
-//! That is what these two locks are for. Journalled step outputs are the **precondition
-//! for ever granting [`Recovery::Resume`] to a lifecycle operation**, not a repair of
-//! live damage. Any operation given that recovery mode before the outputs reach the
-//! journal starts losing the values its commit reads, silently, on exactly the runs a
-//! person cannot watch. The two tests below are the gate on that order of work: while
-//! they still reproduce, no lifecycle operation may be moved to `Resume`.
+//! That is what these two locks were for. Journalled step outputs are the
+//! **precondition for granting [`Recovery::Resume`] to a lifecycle operation**, not a
+//! repair of live damage. An operation given that recovery mode before the outputs
+//! reached the journal would have lost the values its commit reads, silently, on
+//! exactly the runs a person cannot watch. That order of work is now the right way
+//! round, and these two say so on every run.
 //!
 //! The per-machine secrets file activation reads is `secrets.env` in the state
 //! directory, and every fixture here has a temporary one, so no test in this file reads
@@ -85,10 +89,7 @@ mod support;
 use nodal_core::lifecycle::ops::{adopt, merge, new, reclaim};
 use nodal_core::lifecycle::{Plan, Recovery, ops};
 
-use support::{World, expected_failure, journal_of};
-
-/// What the step-output change is called where a comment has to name it.
-const STEP_OUTPUTS: &str = "the journalled step-output column";
+use support::{World, journal_of};
 
 // ---------------------------------------------------------------------------
 // The plans.
@@ -98,7 +99,7 @@ const STEP_OUTPUTS: &str = "the journalled step-output column";
 fn plan_new_has_seven_steps_and_rolls_back() {
     let world = World::new();
     let params = world.create_params();
-    let plan = new::plan(&params, &support::sink()).unwrap();
+    let plan = new::plan(&params).unwrap();
     assert_eq!(plan.kind, new::KIND);
     assert_eq!(plan.recovery, Recovery::RollBack);
     assert_eq!(
@@ -122,14 +123,14 @@ fn plan_adopt_has_three_steps_in_place_and_eight_when_it_materializes() {
 
     let mut params = world.adopt_params();
     params.source = adopt::Source::InPlace;
-    let in_place = adopt::plan(&params, &support::sink()).unwrap();
+    let in_place = adopt::plan(&params).unwrap();
     assert_eq!(in_place.kind, adopt::KIND);
     assert_eq!(in_place.recovery, Recovery::RollBack);
     assert_eq!(in_place.keys(), ["git.hide", "home.marker", "env.activate"]);
     assert_rebuilds_the_same(&world, &in_place, adopt::KIND);
 
     let params = world.adopt_params();
-    let materialized = adopt::plan(&params, &support::sink()).unwrap();
+    let materialized = adopt::plan(&params).unwrap();
     assert_eq!(
         materialized.keys(),
         [
@@ -150,10 +151,9 @@ fn plan_adopt_has_three_steps_in_place_and_eight_when_it_materializes() {
 #[test]
 fn plan_merge_has_a_step_per_stage_and_only_the_rebase_when_it_resumes() {
     let world = World::new();
-    let sink = std::sync::Arc::new(std::sync::OnceLock::new());
 
     let params = world.merge_params(merge::Stages::all(), false);
-    let whole = merge::plan(&params, &sink).unwrap();
+    let whole = merge::plan(&params).unwrap();
     assert_eq!(whole.kind, merge::KIND);
     assert_eq!(whole.recovery, Recovery::RollBack);
     assert_eq!(
@@ -171,27 +171,27 @@ fn plan_merge_has_a_step_per_stage_and_only_the_rebase_when_it_resumes() {
 
     let params = world.merge_params(merge::Stages::all().without(merge::Stage::Squash), false);
     assert_eq!(
-        merge::plan(&params, &sink).unwrap().keys(),
+        merge::plan(&params).unwrap().keys(),
         ["target.fetch", "work.commit", "branch.rebase", "target.forward"],
         "dropping the squash drops the record of what preceded it too"
     );
 
     let params = world.merge_params(merge::Stages::all().without(merge::Stage::Commit), false);
     assert_eq!(
-        merge::plan(&params, &sink).unwrap().keys(),
+        merge::plan(&params).unwrap().keys(),
         ["target.fetch", "premerge.record", "branch.squash", "branch.rebase", "target.forward"]
     );
 
     let params = world.merge_params(merge::Stages::all(), true);
     assert_eq!(
-        merge::plan(&params, &sink).unwrap().keys(),
+        merge::plan(&params).unwrap().keys(),
         ["target.fetch", "branch.rebase", "target.forward"],
         "a run that continues a stopped rebase rewrites nothing a second time"
     );
 
     let params = world.merge_params(merge::Stages::default(), false);
     assert_eq!(
-        merge::plan(&params, &sink).unwrap().keys(),
+        merge::plan(&params).unwrap().keys(),
         ["target.fetch", "target.forward"],
         "with no stage to run the plan still fetches the target and forwards it"
     );
@@ -200,11 +200,9 @@ fn plan_merge_has_a_step_per_stage_and_only_the_rebase_when_it_resumes() {
 #[test]
 fn plan_reclaim_stops_the_runtime_and_then_does_one_of_three_things() {
     let world = World::new();
-    let teardown = std::sync::Arc::new(std::sync::OnceLock::new());
-    let released = std::sync::Arc::new(std::sync::OnceLock::new());
 
     let params = world.reclaim_params();
-    let trashing = reclaim::plan(&params, &teardown, &released).unwrap();
+    let trashing = reclaim::plan(&params).unwrap();
     assert_eq!(trashing.kind, reclaim::KIND);
     assert_eq!(trashing.recovery, Recovery::RollBack);
     assert_eq!(trashing.keys(), ["runtime.stop", "home.trash"]);
@@ -213,7 +211,7 @@ fn plan_reclaim_stops_the_runtime_and_then_does_one_of_three_things() {
     let mut params = world.reclaim_params();
     params.entry = None;
     assert_eq!(
-        reclaim::plan(&params, &teardown, &released).unwrap().keys(),
+        reclaim::plan(&params).unwrap().keys(),
         ["runtime.stop"],
         "a managed home that has already gone leaves only the runtime to stop"
     );
@@ -222,7 +220,7 @@ fn plan_reclaim_stops_the_runtime_and_then_does_one_of_three_things() {
     params.entry = None;
     params.environment.managed = false;
     assert_eq!(
-        reclaim::plan(&params, &teardown, &released).unwrap().keys(),
+        reclaim::plan(&params).unwrap().keys(),
         ["runtime.stop", "home.unadopt"],
         "a checkout adopted in place is given back rather than moved"
     );
@@ -272,27 +270,50 @@ fn resume_adopt_writes_the_rows_and_events_a_first_run_wrote() {
 #[test]
 fn resume_new_writes_the_relocation_event_a_first_run_wrote() {
     // Killed straight after `home.relocate`, which is the step whose report the commit
-    // reads. The next invocation skips it, so the report is never made a second time.
+    // reads. The next invocation skips it, so the report is never made a second time —
+    // and the commit reads it out of the journal instead, which is why the two agree.
     let finished = World::new().run_new_to_completion();
     let resumed = World::new().resume_new_after(2);
-    expected_failure(
-        "a resumed create writes no relocation event",
-        STEP_OUTPUTS,
-        &finished,
-        &resumed,
+    assert_eq!(finished, resumed, "a resumed create writes the relocation event");
+}
+
+/// The reclaim half of the same property, which a comparison between two runs can no
+/// longer state.
+///
+/// It could while the value lived in memory: a first run had it and a resumed run did
+/// not, and the two snapshots differed. Both now read it from the same journal column,
+/// so the two runs agree by construction and the comparison asserts nothing. What is
+/// left to assert is the substance — that the commit acts on what the teardown found —
+/// and that takes a pair of teardowns rather than a pair of runs.
+/// The registry write of a merge asks no repository.
+///
+/// It runs inside the registry's one `IMMEDIATE` transaction, which every `nodal` on
+/// the machine queues behind, so a `git rev-parse` in it holds that lock across a
+/// process spawn — and answers for a home that may not be there any more. The step that
+/// moved the target read the home while nothing was waiting on it, and the write
+/// records what that step found.
+#[test]
+fn the_registry_write_of_a_merge_reads_its_step_rather_than_the_home() {
+    let finished = World::new().run_merge_to_completion();
+    let without_a_home = World::new().resume_merge_with_the_home_removed();
+    assert_eq!(
+        finished.units, without_a_home.units,
+        "the merge that happened is recorded as one, with no home left to ask"
     );
 }
 
 #[test]
 fn resume_reclaim_keeps_the_session_row_of_a_group_it_could_not_stop() {
-    // Killed straight after `runtime.stop`, which is the step whose teardown the commit
-    // reads. The next invocation skips it, so the commit asks an empty lock.
-    let finished = World::new().run_reclaim_to_completion();
-    let resumed = World::new().resume_reclaim_after(1);
-    expected_failure(
-        "a resumed reclaim closes the session row of a group that is still running",
-        STEP_OUTPUTS,
-        &finished,
-        &resumed,
+    let survived = World::new().resume_reclaim_with(support::surviving_teardown());
+    assert!(
+        survived.has_open_session(),
+        "the row of a group that is still running is the only record `nodal gc` has of \
+         it, and stays open: {survived:?}"
+    );
+
+    let stopped = World::new().resume_reclaim_with(reclaim::Teardown::default());
+    assert!(
+        !stopped.has_open_session(),
+        "a group the teardown stopped keeps no claim on the unit: {stopped:?}"
     );
 }
