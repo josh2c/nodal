@@ -14,6 +14,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod home;
+mod state;
 
 use std::process::{Child, Command};
 

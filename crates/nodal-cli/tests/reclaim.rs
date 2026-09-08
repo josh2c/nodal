@@ -25,6 +25,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
+mod state;
+
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -107,8 +109,8 @@ impl Workspace {
 
     /// The same invocation, not yet run.
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_nodal"));
-        command.args(args).current_dir(&self.source).env("NODAL_HOME", &self.state);
+        let mut command = state::nodal(&self.state);
+        command.args(args).current_dir(&self.source);
         // Both files are shared by every unit on a machine, and a test must never read
         // or create the ones belonging to whoever is running it.
         command.env("NODAL_SECRETS_FILE", self.state.join("secrets.env"));

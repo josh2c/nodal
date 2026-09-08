@@ -14,10 +14,26 @@
 # A check this machine cannot make reports itself as skipped and says why: no /proc, no
 # Docker daemon, an account not in the docker group. The CI job runs on a runner that
 # has all three, which is what makes every check real there.
+#
+# The suite is then run a second time with the temporary directory reached through a
+# symbolic link, as `ci/acceptance-list.sh` does and for the same reason. Two of the four
+# signals answer with a path, and both answer with the resolved one: `/proc/<pid>/cwd` is
+# a link, and Docker resolves a mount before it prints one. A registry row holds the name
+# the home was created under. macOS gives that condition to every test for free, because
+# `/var` there is a link to `/private/var`; Linux has no such link, so the condition is
+# made rather than waited for, and both hosts check it.
 set -eu
 
 cargo test --locked -p nodal-core --test attribution
 cargo test --locked -p nodal-core --lib runtime::
 cargo test --locked -p nodal-core --lib services::docker
 cargo test --locked -p nodal-cli --test ps
-echo "acceptance (attribution): what is running is attributed to its unit, with a confidence"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/real"
+ln -s "$work/real" "$work/by-another-name"
+TMPDIR="$work/by-another-name" cargo test --locked -p nodal-cli --test ps
+TMPDIR="$work/by-another-name" cargo test --locked -p nodal-core --test attribution
+
+echo "acceptance (attribution): what is running is attributed to its unit, with a confidence, under a linked path too"

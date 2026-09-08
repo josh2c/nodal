@@ -11,9 +11,13 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod state;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::{Command, Output};
+
+use state::Machine;
 
 use nodal_core::env::secrets::{MachineSecrets, SecretSource, UnitGenerated};
 use nodal_core::env::{self, Produced, files};
@@ -112,18 +116,19 @@ fn set_owner_only(path: &Path) {
 #[cfg(not(unix))]
 fn set_owner_only(_path: &Path) {}
 
-fn nodal(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_nodal")).arg("env").args(args).output().unwrap()
+fn nodal(machine: &Machine, args: &[&str]) -> Output {
+    machine.nodal().arg("env").args(args).output().unwrap()
 }
 
 #[test]
 fn env_reports_the_names_and_never_a_value() {
     let directory = tempfile::tempdir().unwrap();
+    let machine = Machine::new();
     let home = write_home(directory.path());
     let inside = home.join("apps").join("web");
     std::fs::create_dir_all(&inside).unwrap();
 
-    let output = nodal(&[inside.to_str().unwrap()]);
+    let output = nodal(&machine, &[inside.to_str().unwrap()]);
     assert!(output.status.success(), "env exited with {:?}", output.status);
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("fix-worker-import"), "{stdout}");
@@ -132,7 +137,7 @@ fn env_reports_the_names_and_never_a_value() {
     }
     assert!(!stdout.contains(SECRET), "the report printed a value: {stdout}");
 
-    let json = nodal(&["--json", home.to_str().unwrap()]);
+    let json = nodal(&machine, &["--json", home.to_str().unwrap()]);
     assert!(json.status.success());
     let text = String::from_utf8(json.stdout).unwrap();
     assert!(!text.contains(SECRET), "--json printed a value: {text}");
@@ -145,7 +150,8 @@ fn env_reports_the_names_and_never_a_value() {
 #[test]
 fn a_directory_that_is_not_a_home_is_a_message_rather_than_a_panic() {
     let directory = tempfile::tempdir().unwrap();
-    let output = nodal(&[directory.path().to_str().unwrap()]);
+    let machine = Machine::new();
+    let output = nodal(&machine, &[directory.path().to_str().unwrap()]);
     assert!(!output.status.success());
     assert!(String::from_utf8(output.stderr).unwrap().contains("not a unit home"));
 }
@@ -153,15 +159,23 @@ fn a_directory_that_is_not_a_home_is_a_message_rather_than_a_panic() {
 #[test]
 fn a_shell_that_evaluates_the_export_carries_every_generated_variable() {
     let directory = tempfile::tempdir().unwrap();
+    let machine = Machine::new();
     let home = write_home(directory.path());
 
     let script = format!(
         "eval \"$({binary} env --export {home})\"; \
          printf '%s|%s|%s|%s' \"$PORT\" \"$APP_URL\" \"$NODAL_UNIT\" \"$SESSION_SECRET\"",
-        binary = env!("CARGO_BIN_EXE_nodal"),
+        binary = state::BINARY,
         home = home.display(),
     );
-    let output = Command::new("sh").arg("-c").arg(script).output().unwrap();
+    // The shell spawns the binary itself, so the shell is what has to carry the state
+    // directory. A command built by the harness carries it already.
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .env(nodal_core::workspace::home::DIRECTORY_VAR, machine.path())
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{:?}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),

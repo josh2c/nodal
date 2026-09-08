@@ -441,6 +441,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nodal-safety"
+version = "0.1.0"
+dependencies = [
+ "nodal-core",
+ "nodal-fixture",
+ "tempfile",
+]
+
+[[package]]
 name = "nodal-startup-bench"
 version = "0.1.0"
 

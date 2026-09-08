@@ -196,6 +196,20 @@ jobs:
       - name: a tethered group dies whole, and an orphaned tether is still found
         run: ci/acceptance-tether.sh
 
+  acceptance-safety:
+    name: acceptance (safety)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: two units of one project cannot reach each other, under a linked path too
+        run: ci/acceptance-safety.sh
+
   acceptance-ports:
     name: acceptance (ports)
     runs-on: ubuntu-latest
@@ -311,4 +325,5 @@ jobs:
       - name: nodal --version from the release artifact
         run: ci/acceptance-version.sh artifact/nodal
 
-# Returning with the task that creates what it checks: safety suite (tests/safety).
+# Returning with the task that creates what it checks: the second half of the safety
+# suite (database and per-unit services), which needs a container daemon of its own.

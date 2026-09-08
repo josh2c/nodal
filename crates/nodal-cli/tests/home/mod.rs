@@ -76,10 +76,13 @@ impl Fixture {
         self.directory.path().join("elsewhere")
     }
 
-    /// The binary under test.
+    /// The binary under test, for a test that puts its path in a shell script.
+    ///
+    /// A script spawned that way must be given this fixture's state directory as
+    /// `NODAL_HOME` itself; a command from [`Fixture::nodal`] already carries it.
     #[must_use]
     pub fn binary() -> PathBuf {
-        PathBuf::from(env!("CARGO_BIN_EXE_nodal"))
+        PathBuf::from(crate::state::BINARY)
     }
 
     /// The unit's identifier, as it appears in the environment.
@@ -91,12 +94,10 @@ impl Fixture {
     /// Run `nodal` against this fixture's registry.
     #[must_use]
     pub fn nodal(&self, args: &[&str], cwd: &Path) -> Output {
-        Command::new(Self::binary())
+        crate::state::nodal(self.directory.path())
             .args(args)
             .current_dir(cwd)
             .env("NODAL_STORE", &self.store)
-            .env("NODAL_HOME", self.directory.path())
-            .env_remove("NODAL_CD_FILE")
             .output()
             .unwrap()
     }
