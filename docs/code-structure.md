@@ -79,6 +79,8 @@ git/
   mod.rs               Git facade struct wrapping `git` CLI invocations
   cmd.rs               run(args) -> Output, one place for process spawning
   refs.rs              read/write refs, WIP snapshot ref
+  push.rs              the one call that leaves this machine: refspecs to a remote
+  host.rs              the web host a remote names, and its compare page (a table)
   status.rs            porcelain parsing -> StatusSummary
   merge.rs             commit, squash, rebase, fast-forward; the fast-forward rule
   scrub.rs             post-clone scrub (remove worktrees dir, set HEAD, gc.auto, hooks)
@@ -184,7 +186,7 @@ output/
   watch.rs             Source trait + polling loop; writes only changed answers
   view/                the read types themselves, one file per command family
     unit.rs · status.rs · event.rs · base.rs · init.rs · env.rs · created.rs
-    reclaim.rs · doctor.rs · merge.rs
+    reclaim.rs · doctor.rs · merge.rs · done.rs
 ```
 
 ## crates/nodal-cli/src

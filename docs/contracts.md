@@ -93,6 +93,18 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 sync, done, merge, prune, reclaim, gc, doctor, base, status`. Every read command accepts `--json`; `status --watch`
 emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
+`done <unit>` sends a unit's work for review. It pushes two refs — the unit's branch, and a
+work-in-progress snapshot of everything the home holds that no commit does — with **one** `git push`,
+which is the only thing Nodal does that reaches a network. The push is the user's own `git`, so the
+credentials and the hooks are theirs, and the report says so in the line it prints. The branch goes as
+it is; a push that would not fast-forward is refused by the remote and reported. Only Nodal's own
+`refs/nodal/` ref is replaced, because each snapshot is built from the working tree rather than on the
+last one.
+
+It then prints the page a person opens the change on, for the host the remote names, and **opens no
+pull request**. There is no host API in Nodal and no client of one; a remote whose host Nodal has no
+compare page for is told so rather than guessed at. The unit moves to `review`.
+
 `merge <unit>` takes one unit from a dirty home to a merged target in one command. It runs five
 stages, and every stage has a flag that drops it: `commit` (`--no-commit`), `squash` (`--no-squash`),
 `rebase` (`--no-rebase`), the fast-forward of the target, and `remove` (`--no-remove`). The commit
@@ -146,6 +158,15 @@ Each row carries what Git says about the unit's branch at the moment it was aske
 paths are changed, staged and untracked; whether HEAD names a commit rather than a branch; how
 far the branch has moved from the branch it merges into; what the upstream on the remote has
 and what it does not; and one integration verdict.
+
+The list writes exactly one thing, and it is a state a command could not have written. A unit whose
+verdict is `integrated` **and** whose branch is contained in a remote has been merged somewhere else —
+by a reviewer, on a website — and the list is where Nodal first sees it. That unit moves to `merged`,
+and the move is recorded rather than rendered: the retention `nodal gc` measures runs from it. Both
+signals are required. Integration alone is a base somebody rebased under an unpushed branch;
+containment alone is the state before review, not after it. The second signal costs one `git rev-list`
+and is asked for only of a unit that already reads as integrated. The list still fetches nothing, so a
+home hears about a merge when the person's own `git` next does.
 
 The verdict has four values. `integrated` means the base carries every change of the branch,
 and it names one of two reasons. `ancestor` means the branch tip is in the base's history.
@@ -301,6 +322,18 @@ that window on the row when it moves the home. A recipe edited later cannot shor
 that somebody relies on. `gc` also gives back lapsed leases. It stops runtime that belongs to a
 unit whose materialisations have all been reclaimed, and the tethers of every materialisation that
 has been reclaimed. It never stops the runtime of a live unit.
+
+A **merged** unit keeps its home for the same `reclaim.trash_retention` window, measured from the
+moment the merge was recorded, because the day after a merge is when somebody wants to look at what
+they did. `gc` then reclaims it by the ordinary path, so the uniqueness check applies in full: a merged
+unit somebody has since put new work in is refused and named in the report, not removed. Reclaiming is
+not removing — the home goes to the trash with a retention of its own, and a later sweep takes it.
+
+`nodal gc --idle [DAYS]` adds one section: the live units nothing has touched for that many days,
+read from the session rows, defaulting to a week. It **reports** them and stops nothing of theirs. A
+development server left running for a fortnight is somebody's work, and a command that ends one on a
+timer without being asked is the hazard `doctor` was ruled out of for the same reason. A unit somebody
+is still attached to is never reported, whatever the clock says.
 
 ## Event schema
 `id, unit, environment, ts, actor {kind, name}, kind, epistemic {observed, stated}, body, refs, raw_ref`.
