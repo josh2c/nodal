@@ -249,6 +249,12 @@ is the same row with the same facts — branch, pushed or unpushed, dirty, behin
 intent — and it is in this project's section because this project's repository named it. A row is named
 relative to the checkout when it is inside one and by its whole path when it is not.
 
+A registry a later Nodal wrote stops every other command (`StoreTooNew`). It does not stop `doctor`. Doctor
+is what a person runs when something is wrong, so it reports what needs no registry — the worktrees and the
+caches of the checkout — and states the mismatch as a note: both schema versions, the fact that nothing in
+the registry was read, and the one command that upgrades this copy of Nodal. Nothing is fetched to say it
+(DL-034).
+
 `--json` and the default output are two renderings of one value, so a field a person sees is a field a
 tool can read. A read type carries the instant it was taken as `now`, and every relative time it prints
 is measured from that, so a rendering is a function of its inputs.

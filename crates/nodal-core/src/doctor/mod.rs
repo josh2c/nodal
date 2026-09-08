@@ -58,6 +58,16 @@
 //! Docker absent, or a daemon this account may not reach, is a note and not a failure
 //! (`services::docker`, T1.10's pattern). A machine with no Docker still gets an answer
 //! about its worktrees, its caches and its databases.
+//!
+//! ## A registry a later Nodal wrote
+//!
+//! The same rule, one source further in. A registry written by a later Nodal is refused
+//! by the store (`Error::StoreTooNew`), and this is the one command where that must not
+//! end the answer: doctor is what a person runs when something is wrong. So the
+//! registry is a parameter with two shapes ([`Registry`]). A registry that is too new
+//! reads as no registry at all — the worktrees and the caches of the checkout are still
+//! reported — and the mismatch becomes a note that names both schema versions and the
+//! one command that upgrades this copy of Nodal (DL-034). Nothing is fetched to say it.
 
 pub mod caches;
 pub mod containers;
@@ -79,6 +89,73 @@ use crate::output::view::doctor::{Checkout, Doctor, Finding, Note};
 use crate::services::docker::Docker;
 use crate::store::projects;
 use crate::workspace::home;
+
+/// A registry a later Nodal wrote, and what a person does about it.
+///
+/// Every field is given by the caller, including the upgrade command, so that the note
+/// this makes is a function of its inputs like every other answer in this module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mismatch {
+    /// The registry file that was refused.
+    pub path: PathBuf,
+    /// The schema version the file carries.
+    pub found: u32,
+    /// The schema version this binary knows.
+    pub supported: u32,
+    /// The one command that upgrades this copy of Nodal
+    /// ([`crate::setup::channel`]).
+    pub upgrade: String,
+}
+
+impl Mismatch {
+    /// The note the report carries: what was read, and what to do about it.
+    #[must_use]
+    pub fn note(&self) -> Note {
+        Note {
+            source: String::from("store"),
+            why: format!(
+                "{} is at schema {}. this nodal knows schema {}. nothing in the registry was \
+                 read. upgrade this nodal with: {}",
+                self.path.display(),
+                self.found,
+                self.supported,
+                self.upgrade
+            ),
+        }
+    }
+}
+
+/// What doctor reads the registry with.
+///
+/// Two shapes, because a registry this binary cannot open is a fact about the machine
+/// and not a reason to print nothing.
+#[derive(Debug, Clone)]
+pub enum Registry<'a> {
+    /// The registry, at a schema this binary knows.
+    Open(&'a Connection),
+    /// The registry was written by a later Nodal, so none of it was read.
+    TooNew(Mismatch),
+}
+
+impl Registry<'_> {
+    /// The connection, when there is one to read.
+    #[must_use]
+    pub const fn connection(&self) -> Option<&Connection> {
+        match self {
+            Self::Open(conn) => Some(conn),
+            Self::TooNew(_) => None,
+        }
+    }
+
+    /// The note this registry adds to the report, when it adds one.
+    #[must_use]
+    pub fn note(&self) -> Option<Note> {
+        match self {
+            Self::Open(_) => None,
+            Self::TooNew(mismatch) => Some(mismatch.note()),
+        }
+    }
+}
 
 /// Where a finding belongs: to the project the command was run in, or to another one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,11 +251,12 @@ impl<'a> Machine<'a> {
 /// [`crate::Error::Store`] when the registry could not be read, and whatever a Git or
 /// Docker read reported that is not a condition of the machine.
 pub fn survey(
-    conn: &Connection,
+    registry: &Registry<'_>,
     docker: &dyn Docker,
     machine: &Machine<'_>,
     now: Timestamp,
 ) -> Result<Doctor> {
+    let conn = registry.connection();
     let scope = scope_of(conn, machine)?;
     let mut here = Vec::new();
     let mut elsewhere = Vec::new();
@@ -190,21 +268,33 @@ pub fn survey(
         push(&mut here, &mut elsewhere, section, found);
         push(&mut here, &mut elsewhere, section, caches::find(root, now));
     }
-    let (found, note) = containers::find(conn, docker, &scope)?;
-    notes.extend(note);
-    for (section, finding) in found {
-        push(&mut here, &mut elsewhere, section, vec![finding]);
+    if let Some(conn) = conn {
+        let (found, said) = registered(conn, docker, &scope)?;
+        notes.extend(said);
+        for (section, finding) in found {
+            push(&mut here, &mut elsewhere, section, vec![finding]);
+        }
     }
-    for (section, finding) in databases::find(conn, &scope)? {
-        push(&mut here, &mut elsewhere, section, vec![finding]);
-    }
-    for (section, finding) in units::find(conn, &scope)? {
-        push(&mut here, &mut elsewhere, section, vec![finding]);
-    }
+    notes.extend(registry.note());
 
     largest_first(&mut here);
     largest_first(&mut elsewhere);
     Ok(Doctor { now, checkout: checkout_of(&scope), here, elsewhere, notes })
+}
+
+/// What the registry-reading sources answered: the rows, and what could not be read.
+type Registered = (Vec<(Section, Finding)>, Vec<Note>);
+
+/// The three sources that read the registry: containers, databases and unit counts.
+///
+/// They are together because they share one condition. Each of them answers "whose is
+/// this?" out of the registry, so a machine whose registry could not be opened has no
+/// answer from any of them rather than a partial one.
+fn registered(conn: &Connection, docker: &dyn Docker, scope: &Scope) -> Result<Registered> {
+    let (mut found, note) = containers::find(conn, docker, scope)?;
+    found.extend(databases::find(conn, scope)?);
+    found.extend(units::find(conn, scope)?);
+    Ok((found, note.into_iter().collect()))
 }
 
 /// Add findings to the section they belong to.
@@ -245,11 +335,19 @@ fn largest_first(findings: &mut [Finding]) {
 }
 
 /// What doctor is going to read, gathered from the registry and the machine.
-fn scope_of(conn: &Connection, machine: &Machine<'_>) -> Result<Scope> {
+/// A registry that is not there names no project, so every path the walk finds belongs
+/// to the checkout the command was run in. That is the conservative direction and the
+/// one [`Scope::section`] already documents: "I cannot say whose this is" is the first
+/// section, never the second.
+fn scope_of(conn: Option<&Connection>, machine: &Machine<'_>) -> Result<Scope> {
     let state_dir = guard::resolve(machine.state_dir);
     let root =
         Git::open(machine.cwd).and_then(|git| git.toplevel()).ok().map(|top| guard::resolve(&top));
-    let projects: Vec<Known> = projects::list(conn)?
+    let listed = match conn {
+        Some(conn) => projects::list(conn)?,
+        None => Vec::new(),
+    };
+    let projects: Vec<Known> = listed
         .into_iter()
         .map(|project| Known { root: guard::resolve(&project.root), project })
         .collect();
@@ -293,4 +391,37 @@ fn checkout_of(scope: &Scope) -> Option<Checkout> {
 #[must_use]
 pub fn note(source: &str, why: String) -> Note {
     Note { source: source.to_owned(), why }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{Mismatch, Registry};
+
+    fn mismatch() -> Mismatch {
+        Mismatch {
+            path: PathBuf::from("/home/dev/.nodal/registry.db"),
+            found: 7,
+            supported: 6,
+            upgrade: String::from("brew upgrade nodal"),
+        }
+    }
+
+    #[test]
+    fn the_note_says_what_was_not_read_and_what_to_do_about_it() {
+        let note = mismatch().note();
+        assert_eq!(note.source, "store");
+        assert!(note.why.contains("/home/dev/.nodal/registry.db"), "{}", note.why);
+        assert!(note.why.contains("schema 7"), "{}", note.why);
+        assert!(note.why.contains("schema 6"), "{}", note.why);
+        assert!(note.why.contains("brew upgrade nodal"), "{}", note.why);
+    }
+
+    #[test]
+    fn a_registry_that_is_too_new_reads_as_no_registry_at_all() {
+        let refused = Registry::TooNew(mismatch());
+        assert!(refused.connection().is_none());
+        assert!(refused.note().is_some());
+    }
 }

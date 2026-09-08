@@ -3,12 +3,21 @@
 use std::process::ExitCode;
 
 use clap::Args;
-use nodal_core::doctor;
+use nodal_core::doctor::{self, Mismatch};
 use nodal_core::model::Timestamp;
 use nodal_core::output::{self, Format};
 use nodal_core::services::docker;
+use nodal_core::setup::channel;
 use nodal_core::store::Store;
 use nodal_core::workspace::home;
+
+/// The registry, or the version mismatch that stands in its place.
+enum Opened {
+    /// The registry, at a schema this binary knows.
+    Store(Store),
+    /// The registry was written by a later Nodal, so none of it was read.
+    TooNew(Mismatch),
+}
 
 /// Arguments of `nodal doctor`.
 #[derive(Debug, Args)]
@@ -31,18 +40,48 @@ impl Doctor {
     /// did on standard error, and it is the same preamble `nodal ls` and `nodal ps` run.
     /// Nothing doctor itself does writes anything.
     ///
+    /// `registry` is a `Result` on purpose. A registry a later Nodal wrote is refused by
+    /// the store, and this is the one command where that must not end the answer:
+    /// doctor is what a person runs when something is wrong. The refusal becomes a note
+    /// naming both schema versions and the one command that upgrades this copy
+    /// (DL-034), and the worktrees and caches of the checkout are reported as usual.
+    ///
     /// # Errors
     ///
-    /// Propagates a registry that cannot be read, and a state directory that nothing
-    /// says the place of. A Docker daemon that is not there is a note in the answer, not
-    /// a failure.
-    pub fn run(&self, store: &Store) -> nodal_core::Result<ExitCode> {
+    /// Propagates a registry that could not be read for any reason other than its
+    /// version, and a state directory that nothing says the place of. A Docker daemon
+    /// that is not there is a note in the answer, not a failure.
+    pub fn run(&self, registry: nodal_core::Result<Store>) -> nodal_core::Result<ExitCode> {
+        let opened = Self::open(registry)?;
+        let source = match &opened {
+            Opened::Store(store) => doctor::Registry::Open(store.conn()),
+            Opened::TooNew(mismatch) => doctor::Registry::TooNew(mismatch.clone()),
+        };
         let cwd = std::env::current_dir().map_err(nodal_core::Error::io("<cwd>"))?;
         let state_dir = home::directory()?;
         let sessions = doctor::intent::config_directory();
         let machine = doctor::Machine::here(&cwd, &state_dir, sessions.as_deref());
-        let answer = doctor::survey(store.conn(), &docker::Cli, &machine, Timestamp::now())?;
+        let answer = doctor::survey(&source, &docker::Cli, &machine, Timestamp::now())?;
         output::write(&answer, Format::from_json_flag(self.json), &mut std::io::stdout())?;
         Ok(ExitCode::SUCCESS)
+    }
+
+    /// The registry as doctor reads it, with a version refusal turned into a fact.
+    ///
+    /// The upgrade command is read here rather than inside the survey, so that the
+    /// survey stays a function of its inputs.
+    fn open(registry: nodal_core::Result<Store>) -> nodal_core::Result<Opened> {
+        match registry {
+            Ok(store) => Ok(Opened::Store(store)),
+            Err(nodal_core::Error::StoreTooNew { path, found, supported }) => {
+                Ok(Opened::TooNew(Mismatch {
+                    path,
+                    found,
+                    supported,
+                    upgrade: channel::read().command,
+                }))
+            }
+            Err(other) => Err(other),
+        }
     }
 }

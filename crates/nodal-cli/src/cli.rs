@@ -132,7 +132,7 @@ impl Cli {
             Some(Command::Merge(merge)) => merge.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Reclaim(reclaim)) => reclaim.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Gc(gc)) => gc.run(&mut self.registry()?, !self.no_hooks),
-            Some(Command::Doctor(doctor)) => doctor.run(&self.registry()?),
+            Some(Command::Doctor(doctor)) => doctor.run(self.registry()),
             Some(Command::ShellInit(init)) => init.run(),
             Some(Command::Shell(shell)) => shell.run(),
             Some(Command::Uninstall(uninstall)) => uninstall.run(),
