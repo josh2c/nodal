@@ -1,7 +1,7 @@
 //! `nodal doctor`: what this machine has left behind.
 //!
 //! Doctor is the first command a person runs, before any unit exists. A machine that has
-//! been worked on for a year holds nested checkouts another tool made, build caches
+//! been worked on for a year holds other checkouts another tool made, build caches
 //! nothing has read for a month, containers that stopped weeks ago, volumes nothing
 //! refers to, and directories named like databases that no registry row knows. Doctor
 //! finds each of them, says how big it is, and stops there.
@@ -22,6 +22,13 @@
 //! person cleaning up one project must not be handed another project's unfinished work
 //! to act on, so the second section states no branch, no dirty count and no intent.
 //!
+//! Which project a thing belongs to is answered by what named it, and not by where it
+//! sits. A worktree this project's repository names is this project's whether its
+//! directory is under the checkout, beside it, or on the other side of the machine, and
+//! it goes in the first section with the branch, the state and the intent of any other.
+//! Each source is therefore asked once per project root and every row of that answer
+//! carries that project's section ([`worktrees::find`] takes it as an argument).
+//!
 //! ## What is never touched
 //!
 //! A worktree another tool holds a lock on is reported as locked, and nothing else is
@@ -30,8 +37,10 @@
 //!
 //! ## One name per path
 //!
-//! Doctor compares paths from four sources: the directory the command was run in, the
-//! roots the registry holds, what `git worktree list` prints, and what Docker says a
+//! One comparison is left in the worktree survey, and it is the reason this still
+//! matters: a row is dropped when it is the checkout being surveyed. Doctor also
+//! compares paths from four sources: the directory the command was run in, the roots
+//! the registry holds, what `git worktree list` prints, and what Docker says a
 //! container mounts. Git and Docker resolve every link before they answer; a person's
 //! shell and a registry row do not. On a host whose temporary directory is a link —
 //! macOS names `/var/folders` and means `/private/var/folders` — the same directory

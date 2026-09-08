@@ -36,8 +36,9 @@ pub const CLOSING: &str = "nodal read this machine. it removed nothing and moved
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// A checkout inside another checkout, which another tool made.
-    NestedWorktree,
+    /// Another checkout of this repository, which another tool made. Under the
+    /// checkout, beside it, or anywhere else the tool put it.
+    Worktree,
     /// Generated build state that nothing has written to for a long time.
     StaleCache,
     /// A container that has stopped and is still there.
@@ -55,7 +56,7 @@ impl Kind {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::NestedWorktree => "nested worktree",
+            Self::Worktree => "worktree",
             Self::StaleCache => "stale cache",
             Self::ExitedContainer => "exited container",
             Self::DanglingVolume => "dangling volume",
@@ -256,11 +257,11 @@ mod tests {
                 project: Some(String::from("storefront")),
             }),
             here: vec![
-                Finding::new(Kind::NestedWorktree, ".claude/worktrees/auth")
+                Finding::new(Kind::Worktree, ".claude/worktrees/auth")
                     .sized(7_850_000_000, true)
                     .says("unpushed 3")
                     .says("dirty 12"),
-                Finding::new(Kind::NestedWorktree, ".claude/worktrees/held").says("locked"),
+                Finding::new(Kind::Worktree, ".claude/worktrees/held").says("locked"),
             ],
             elsewhere: vec![
                 Finding::new(Kind::StaleCache, "/home/j/other/.next").sized(3_330_000_000, true),

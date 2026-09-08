@@ -34,7 +34,7 @@
 //! A worktree an agent tool made carries no statement of intent, and that is the fact
 //! that makes a machine hard to clean up. Claude Code does keep one, in the opening
 //! prompt of the session that ran there, and [`crate::doctor::intent`] already reads
-//! it: `nodal doctor` prints it beside every nested worktree it finds. Adoption uses
+//! it: `nodal doctor` prints it beside every worktree it finds. Adoption uses
 //! that same seam rather than a second reader of the same files, and the answer becomes
 //! the unit's objective.
 //!

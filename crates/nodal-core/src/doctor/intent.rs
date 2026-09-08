@@ -1,4 +1,4 @@
-//! Why a nested worktree was made, recovered from the records Claude Code keeps.
+//! Why a worktree was made, recovered from the records Claude Code keeps.
 //!
 //! A worktree another tool made carries no statement of what it is for. Its branch name
 //! is a slug and its directory is a slug, and a person looking at a list of four of them

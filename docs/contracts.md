@@ -220,11 +220,17 @@ The `remove` stage is the ordinary reclaim, so the uniqueness check applies to e
 did not integrate. A reclaim that refuses leaves the unit where it is. The merge itself is already
 done, and the report says so.
 
-`doctor` reads and never writes. It reports nested worktrees, stale build caches, exited containers,
+`doctor` reads and never writes. It reports worktrees, stale build caches, exited containers,
 unreferenced volumes, orphan databases and a project over the open-unit threshold, each with a size, in two
 sections: this project, and a separate section for another project's leftovers that carries names and sizes
 only. A worktree another tool holds a lock on is reported as locked and read no further. Removal of
 unmanaged state is a later command (`decisions/DL-015`).
+
+The worktrees are every worktree the repository names, read from `git worktree list`. Where the directory
+sits is not part of the question: a worktree under the checkout, beside it, or anywhere else on the machine
+is the same row with the same facts — branch, pushed or unpushed, dirty, behind, locked, size and recovered
+intent — and it is in this project's section because this project's repository named it. A row is named
+relative to the checkout when it is inside one and by its whole path when it is not.
 
 `--json` and the default output are two renderings of one value, so a field a person sees is a field a
 tool can read. A read type carries the instant it was taken as `now`, and every relative time it prints
