@@ -6,6 +6,8 @@
 # directory under Nodal's state, and a Docker that answers with one exited container and
 # one unreferenced volume. Six claims against that one machine:
 #   - every kind of leftover is found and sized;
+#   - a worktree's Git state is the fact that was read and not a claim on top of it: a
+#     worktree with no commits of its own is `pushed`, never `merged`;
 #   - a locked worktree is reported as locked and read no further: no size, no Git state
 #     and no intent, because a lock says another tool is working there;
 #   - another project's leftovers are a section of their own, with names and sizes only;

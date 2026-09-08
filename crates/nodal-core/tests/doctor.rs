@@ -121,7 +121,7 @@ fn plant() -> Planted {
     write(&checkout.join("README.md"), "# app\n");
     commit(&checkout, "the project");
 
-    // A remote, so that "merged" and "unmerged" are answers about somewhere else and
+    // A remote, so that "pushed" and "unpushed" are answers about somewhere else and
     // not about a repository that has nowhere to be contained by.
     let remote = root.join("remote.git");
     git(root, &["init", "--quiet", "--bare", remote.to_str().unwrap()]);
@@ -133,6 +133,9 @@ fn plant() -> Planted {
     write(&checkout.join(".claude/worktrees/loose/note.md"), "unpushed work\n");
     commit(&checkout.join(".claude/worktrees/loose"), "work nobody else has");
     write(&checkout.join(".claude/worktrees/loose/dirty.md"), "uncommitted\n");
+    // A third with nothing of its own in it: every commit it has is the project's, and
+    // already on the remote. What doctor may say about it is that it is pushed.
+    git(&checkout, &["worktree", "add", "--quiet", "-b", "fresh", ".claude/worktrees/fresh"]);
     git(&checkout, &["worktree", "add", "--quiet", "-b", "held", ".claude/worktrees/held"]);
     write(&checkout.join(".claude/worktrees/held/big.bin"), &"x".repeat(4096));
     git(
@@ -234,7 +237,7 @@ fn every_kind_of_leftover_is_found_and_sized() {
 
     let loose = one(&report.here, Kind::NestedWorktree, "loose");
     assert!(loose.bytes.is_some_and(|bytes| bytes > 0), "{loose:?}");
-    assert!(loose.state.iter().any(|word| word == "unmerged 1"), "{:?}", loose.state);
+    assert!(loose.state.iter().any(|word| word == "unpushed 1"), "{:?}", loose.state);
     assert!(loose.state.iter().any(|word| word == "dirty 1"), "{:?}", loose.state);
     assert_eq!(loose.intent.as_deref(), Some("Make the importer retry a failed row"));
 
@@ -269,8 +272,33 @@ fn a_locked_worktree_is_reported_as_locked_and_read_no_further() {
     );
     assert_eq!(held.bytes, None, "a locked worktree is not walked, so it has no size");
     assert!(held.intent.is_none(), "a locked worktree is not read for an intent");
-    for word in ["merged", "unmerged 0", "dirty", "behind"] {
+    for word in ["pushed", "unpushed 0", "dirty", "behind"] {
         assert!(!held.state.iter().any(|said| said == word), "{word} was read from a locked tree");
+    }
+}
+
+/// Doctor reports the fact it read, and no claim the fact does not support.
+///
+/// A worktree with no commits of its own is contained by every remote, because the
+/// commits it is made of are the project's and were pushed with the project. That is
+/// worth saying and it is `pushed`. It is not `merged`: nothing of that worktree has
+/// been merged anywhere, and the word would be a judgement about work that does not
+/// exist. The same vacuous containment recorded units as merged at the moment they were
+/// created (`crate::lifecycle::states`); here it never decided anything, but it was
+/// still saying something untrue.
+#[test]
+fn a_worktree_with_no_commits_of_its_own_is_reported_as_pushed_and_never_as_merged() {
+    let machine = plant();
+    let report = machine.report();
+    let fresh = one(&report.here, Kind::NestedWorktree, "fresh");
+
+    assert!(fresh.state.iter().any(|word| word == "pushed"), "{:?}", fresh.state);
+    for word in ["merged", "unmerged"] {
+        assert!(
+            !fresh.state.iter().any(|said| said.starts_with(word)),
+            "{word:?} is a claim about work this worktree has not done: {:?}",
+            fresh.state
+        );
     }
 }
 

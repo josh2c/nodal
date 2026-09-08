@@ -13,7 +13,7 @@
 //!
 //! | fact | read from |
 //! |---|---|
-//! | merged, unmerged or no remote | `git rev-list <head> --not --remotes`: commits no remote has |
+//! | pushed, unpushed or no remote | `git rev-list <head> --not --remotes`: commits no remote has |
 //! | dirty | `git status`: paths a commit would capture |
 //! | behind | `git status`: commits the upstream has and this does not |
 //! | size | a walk of the directory ([`super::size`]) |
@@ -106,13 +106,13 @@ fn state(finding: Finding, path: &Path, branch: Option<&str>) -> Finding {
     };
     if let Ok(containment) = git.remote_containment("HEAD") {
         finding = if containment.remotes.is_empty() {
-            // Nothing to be contained by. "unmerged" would read as a judgement about
-            // the work, and the only fact here is that this repository has no remote.
+            // Nothing to be contained by, and the only fact here is that this
+            // repository has no remote.
             finding.says("no remote")
         } else if containment.unpushed.is_empty() {
-            finding.says("merged")
+            finding.says("pushed")
         } else {
-            finding.says(format!("unmerged {}", containment.unpushed.len()))
+            finding.says(format!("unpushed {}", containment.unpushed.len()))
         };
     }
     if let Ok(status) = git.status() {
