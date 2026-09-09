@@ -5,13 +5,13 @@
 //! created in the same second by two agents would both find the same socket free, and
 //! the second dev server to start would fail on a machine the person is not watching.
 //!
-//! The concurrency check has the shape `crates/nodal-core/tests/ports.rs` gave it in
-//! T1.7. Every caller opens the registry for itself, as a separate process would, and
-//! they are held at a barrier so the claims genuinely overlap. What is different here is
-//! that the units are real: they are made by `nodal new` on the fixture project, and the
-//! registry they race in is the one those commands wrote. Their ports are given back
-//! first, because a repeated grant answers with the ports already held and would prove
-//! nothing about a race.
+//! The concurrency check has the shape `crates/nodal-core/tests/ports.rs` gave it.
+//! Every caller opens the registry for itself, as a separate process would, and they
+//! are held at a barrier so the claims genuinely overlap. What is different here is
+//! that the units are real: they are made by `nodal new` on the fixture project, and
+//! the registry they race in is the one those commands wrote. Their ports are given
+//! back first, because a repeated grant answers with the ports already held and would
+//! prove nothing about a race.
 //!
 //! The last check reads which of the granted ports something is really listening on.
 //! That reads `/proc/net/tcp*`, which macOS does not publish, so it is skipped there and
@@ -28,8 +28,8 @@ use nodal_core::store::{Store, environments, port_allocations, port_blocks};
 use nodal_safety::InState as _;
 use nodal_safety::{Machine, platform};
 
-/// How many callers race for a port. The number T1.7 chose: well past the units a person
-/// opens at once, and still a small part of one block.
+/// How many callers race for a port. The number the allocator's own test chose: well
+/// past the units a person opens at once, and still a small part of one block.
 const RACERS: usize = 16;
 
 /// The names every unit of the fixture is granted a port under: its dev server, and the

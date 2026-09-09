@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.12: reclaim, trash and gc.
+# Acceptance test for reclaim, trash and gc.
 #
 # The suite reclaims units in a real repository and checks what a person can check for
 # themselves: a unit whose home holds uncommitted work, an untracked file or a commit no

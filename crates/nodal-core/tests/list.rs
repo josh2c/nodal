@@ -1,4 +1,4 @@
-//! Acceptance for the list (T1.11b): `nodal ls` over real repositories.
+//! Acceptance for the list: `nodal ls` over real repositories.
 //!
 //! The fixture builds one origin repository whose branches are the shapes real work is
 //! in — a branch that never left the base, a branch with work on it, a branch the base

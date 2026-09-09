@@ -1,4 +1,4 @@
-//! Acceptance test for T0.10: `nodal uninstall` and `nodal upgrade`.
+//! Acceptance test for `nodal uninstall` and `nodal upgrade`.
 //!
 //! The claim the task is about is a byte claim, so the test is a byte test. A start-up
 //! file is written, `nodal shell-init --install` is run against it, `nodal uninstall`

@@ -1,4 +1,4 @@
-//! Acceptance for the output layer (T0.7): snapshot tests for both renderers.
+//! Acceptance for the output layer: snapshot tests for both renderers.
 //!
 //! Every read type is built from fixed values — fixed identifiers, fixed instants, a
 //! fixed `now` — and rendered twice: once as text for a person, once as JSON for a tool.

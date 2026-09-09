@@ -1,6 +1,6 @@
 //! What a machine has left behind: what `nodal doctor` answers with.
 //!
-//! Doctor reports and it does not act. That decision reaches into this file, because
+//! Doctor reports and it does not act, and that rule reaches into this file, because
 //! the words are the promise. Nothing here is written in a tense that could be read
 //! as something Nodal did to the machine: a row says what is there and how big it is,
 //! and the document ends with a line that says Nodal removed nothing. A later command

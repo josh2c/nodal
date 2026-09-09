@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T2.8: the states a unit passes through after the work is done.
+# Acceptance test for the states a unit passes through after the work is done.
 #
 # The suite pushes to a real repository — a bare one in the same temporary directory —
 # and checks what a person can check for themselves. `nodal done` puts the branch and

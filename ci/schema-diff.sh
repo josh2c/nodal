@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T0.2: the committed JSON schemas are what the model generates.
+# Acceptance test: the committed JSON schemas are what the model generates.
 # Regenerates schemas/ and fails if anything in it changed or appeared.
 set -eu
 

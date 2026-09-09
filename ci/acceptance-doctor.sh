@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.0: nodal doctor.
+# Acceptance test for nodal doctor.
 #
 # The machine is planted rather than found: a checkout with three worktrees inside it,
 # one of them locked, two more worktrees of that same checkout that live outside it, a

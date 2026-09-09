@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T0.12: the release binary starts inside the startup budget.
+# Acceptance test: the release binary starts inside the startup budget.
 #
 # The project sets a 5 ms cold-start budget for the hot paths. This gate measures the fast
 # path that exists today, `nodal --version`, and fails when its median is over the
@@ -21,7 +21,7 @@
 # threshold was calibrated against, recalibrate the threshold and record the new numbers.
 #
 # Calibrated on a GitHub-hosted ubuntu-24.04 runner, 2026-09-07, 200 runs after 20
-# warm-up runs (see spikes/RESULTS.md, T0.12):
+# warm-up runs:
 #   reference `true`  median 0.497 ms, p95 0.588 ms, max 0.683 ms
 #   `nodal --version` median 0.802 ms, p95 0.889 ms, max 0.987 ms
 #

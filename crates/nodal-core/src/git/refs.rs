@@ -18,7 +18,7 @@ pub struct Ref {
     pub oid: Oid,
 }
 
-/// The ref a unit's work-in-progress snapshot is written to (T2.3 writes it).
+/// The ref a unit's work-in-progress snapshot is written to.
 #[must_use]
 pub fn wip(unit_id: &str) -> String {
     format!("{NAMESPACE}{unit_id}/wip")

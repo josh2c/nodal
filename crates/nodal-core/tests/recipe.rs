@@ -1,4 +1,4 @@
-//! Acceptance for the recipe engine (T0.4) over the fixture project (T0.8).
+//! Acceptance for the recipe engine over the fixture project.
 //!
 //! Two checks, and they ask different things.
 //!

@@ -415,7 +415,8 @@ pre_new = "printf 'pre_new %s\\n' \"$NODAL_UNIT\" >> \"$NODAL_SOURCE/hooks.log\"
 post_new = "printf 'post_new %s\\n' \"$NODAL_ROOT\" >> \"$NODAL_SOURCE/hooks.log\""
 "#;
 
-/// Both forms of adoption, in one test, because the ruling is a comparison.
+/// Both forms of adoption, in one test, because the rule that decides which hooks run
+/// is a comparison between them.
 ///
 /// The two forms of adoption did different things, so they run different hooks. Nothing
 /// was created in place: the directory was the person's before the command and is theirs

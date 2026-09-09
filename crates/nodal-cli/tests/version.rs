@@ -1,4 +1,4 @@
-//! Acceptance test for T0.1: the built binary reports its version.
+//! Acceptance test: the built binary reports its version.
 //!
 //! CI runs the same assertion against the downloaded release artifact through
 //! `ci/acceptance-version.sh`, so a binary that only works in the build tree fails.

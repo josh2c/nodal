@@ -1,4 +1,4 @@
-//! Acceptance for T1.0: `nodal doctor` reports what a machine has left behind.
+//! Acceptance test: `nodal doctor` reports what a machine has left behind.
 //!
 //! The machine is built here rather than found: a checkout with three worktrees inside
 //! it, one of them locked, two more worktrees of that same checkout that live outside

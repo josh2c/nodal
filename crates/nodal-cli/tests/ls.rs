@@ -1,4 +1,4 @@
-//! Acceptance for the list (T1.11b), driven through the binary.
+//! Acceptance for the list, driven through the binary.
 //!
 //! The fixture builds one origin repository, one clone per unit, and a registry that
 //! knows them, so every row is read from a real repository. Ten units are recorded

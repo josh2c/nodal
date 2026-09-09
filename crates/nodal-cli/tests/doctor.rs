@@ -1,4 +1,4 @@
-//! Acceptance for `nodal doctor` (T1.0), driven through the binary.
+//! Acceptance for `nodal doctor`, driven through the binary.
 //!
 //! Four claims the library tests cannot make, because they are about the command:
 //!

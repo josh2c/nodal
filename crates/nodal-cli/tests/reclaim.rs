@@ -1,4 +1,4 @@
-//! Acceptance test for T1.12: `nodal reclaim` and `nodal gc`, end to end, against a
+//! Acceptance test for `nodal reclaim` and `nodal gc`, end to end, against a
 //! real repository.
 //!
 //! Every assertion here is about something a person can check for themselves after the

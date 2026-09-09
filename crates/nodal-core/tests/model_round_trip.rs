@@ -1,5 +1,6 @@
-//! Acceptance test for T0.2, first half: every model type survives a JSON round trip,
-//! and the JSON it round-trips through is the shape the contracts document names.
+//! Acceptance test, first of the two schema halves: every model type survives a JSON
+//! round trip, and the JSON it round-trips through is the shape the contracts document
+//! names.
 //!
 //! A sample of each record type is built once here and reused, so a field added to a
 //! type without a value here fails to compile rather than going untested.

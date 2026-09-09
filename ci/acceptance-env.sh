@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.8: env activation.
+# Acceptance test for env activation.
 #
 # Four claims, over the fixture project (tests/fixture):
 #   - an activated home carries every generated variable, and a real shell gets them

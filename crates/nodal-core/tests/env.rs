@@ -1,4 +1,4 @@
-//! Acceptance for env activation (T1.8) over the fixture project (T0.8).
+//! Acceptance for env activation over the fixture project.
 //!
 //! Four claims, and the fixture is what makes them mean something: its recipe declares
 //! four generated names and five credentials, which is the shape a real project has.

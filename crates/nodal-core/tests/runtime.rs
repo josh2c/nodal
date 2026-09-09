@@ -1,4 +1,4 @@
-//! Acceptance for sessions, which are derived rather than declared (T1.9).
+//! Acceptance for sessions, which are derived rather than declared.
 //!
 //! Three claims:
 //!

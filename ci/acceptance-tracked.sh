@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.4b: base.exclude never drops a tracked path.
+# Acceptance test: base.exclude never drops a tracked path.
 #
 # The fixture project (tests/fixture) is made a repository that tracks `coverage`, a
 # directory the exclusion table names and the fixture's own .gitignore ignores. Four

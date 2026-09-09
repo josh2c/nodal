@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T0.11: the operation framework.
+# Acceptance test for the operation framework.
 #
 # The suite runs a real operation in a second process, kills it with SIGKILL while it
 # is parked between two steps, and then does what the next `nodal` would do: report the

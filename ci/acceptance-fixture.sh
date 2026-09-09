@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T0.8: the fixture project.
+# Acceptance test for the fixture project.
 #
 # Two claims, both checked here so CI never needs a real project to check them against.
 #
