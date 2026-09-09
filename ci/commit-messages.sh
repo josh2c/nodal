@@ -3,110 +3,94 @@
 #
 # A commit message in this project is prose. The person who wrote the commit is its
 # author, and the author field already says so. A trailer line adds a second, weaker
-# claim about who or what wrote the change, and every tool that appends one appends it
-# to the same place, so the same rule catches all of them.
+# claim about who or what wrote the change.
 #
-# A trailer line is a line of the form `Key:` and a value, where the key is letters,
-# digits and hyphens, and any number of blanks can stand between the colon and the
-# value. Git reads such lines only in the last paragraph of the body, and only when
-# every line of that paragraph is a trailer line or an indented continuation of one.
-# This check reads them the same way, so a prose paragraph that holds one `Word: text`
-# line passes. Two kinds of key fail anywhere in the message, in prose or not: a key
-# that ends in `-by` or `-session`, and `generated-with`. The comparison ignores case.
+# Git decides what a trailer is. A commit fails when
+# `git log -1 --format='%(trailers:only,unfold)' <sha>` prints anything, which is when
+# the last paragraph of the body is nothing but `Key: value` lines. A `Word: text` line
+# inside a prose paragraph is not a trailer to git and is not one here. A line that
+# stands alone as the last paragraph is one, whatever it holds: a bare link alone at the
+# end reads as the key `https`, so write the link into a sentence of the paragraph above
+# it. The failure output says this.
 #
-# A merge commit is exempt when its shape is the shape GitHub makes: two parents and a
-# body of one line or none. GitHub writes the pull request title into that line, and a
-# person wrote the title. A merge a person makes locally has a body of its own and is
-# read like any other commit.
+# One rule stands beside git's, for the lines a coding harness appends where git would
+# not read them. A body line fails when it starts with `co-authored-by`, when its key
+# ends in `session` (`Session` and `Claude-Session` both), or when it holds
+# `generated with` anywhere in the line, because a harness puts an emoji before it. Case
+# is ignored. The subject is never read, so a subject such as
+# `Sort-by: accept a column list` passes.
 #
-# Usage: ci/commit-messages.sh <base>
-# The base is the commit the change branches from. When HEAD is a merge with two
-# parents, which is the ref a pull request build checks out, the check reads
-# `HEAD^1..HEAD^2` instead and the base is not used. This keeps a pull request from
-# reading commits that landed on the base branch after the build started.
+# Usage: ci/commit-messages.sh <range>
+#
+# The range is given, never inferred from the shape of HEAD. The workflow passes
+# `base..head` on a pull request and `before..after` on a push, so the check reads the
+# commits the event added and nothing else. GitHub's synthetic merge commit is never
+# inside such a range, so there is no merge to exempt: every merge in range is one a
+# person made, its body is theirs, and it is read like any other commit.
+#
+# The left side of the range can be unreadable through no fault of a message. A first
+# push and a force-push both leave `github.event.before` all zeros or naming a commit
+# this clone does not hold. That is nothing to fail a person for, so the check says the
+# range cannot be read and exits 0 on a push. Anywhere else an unreadable range is a
+# broken call, and it exits 2.
 set -eu
 
-base=${1:-}
-if [ -z "$base" ]; then
-    echo "usage: ci/commit-messages.sh <base>" >&2
-    exit 2
-fi
-
-if git rev-parse --verify --quiet HEAD^2 > /dev/null; then
-    range='HEAD^1..HEAD^2'
-else
-    if ! git rev-parse --verify --quiet "$base^{commit}" > /dev/null; then
-        echo "commit-messages: $base does not name a commit in this repository" >&2
+range=${1:-}
+case "$range" in
+    *..*) ;;
+    *)
+        echo "usage: ci/commit-messages.sh <range>" >&2
         exit 2
-    fi
-    range="$base..HEAD"
-fi
+        ;;
+esac
+base=${range%%..*}
 
-# Read one commit: parents on the first line, then the message. Print the lines that
-# break the rule and exit 1, or print nothing and exit 0.
-read_commit() {
-    awk -v sha="$1" '
-        function blank(s)     { return s ~ /^[ \t]*$/ }
-        function trailer(s)   { return s ~ /^[A-Za-z0-9][A-Za-z0-9-]*:[ \t]*[^ \t]/ }
-        function indented(s)  { return s ~ /^[ \t]+[^ \t]/ }
-        function key(s,   k)  { k = s; sub(/:.*$/, "", k); return tolower(k) }
-        function banned(k)    { return k ~ /-by$/ || k ~ /-session$/ || k == "generated-with" }
-        NR == 1 { parents = NF; next }
-        { line[++n] = $0 }
-        END {
-            for (i = 1; i <= n; i++)
-                if (blank(line[i])) { body = i + 1; break }
-            for (i = n; i >= 1; i--)
-                if (!blank(line[i])) { last = i; break }
-
-            # A merge GitHub made: two parents and a body of one line or none.
-            if (parents > 1) {
-                written = 0
-                for (i = body; body && i <= n; i++)
-                    if (!blank(line[i])) written++
-                if (written <= 1) exit 0
-            }
-
-            # The last paragraph is a trailer block when every line of it is a trailer
-            # line or an indented continuation under one.
-            if (body && last >= body) {
-                first = last
-                while (first > body && !blank(line[first - 1])) first--
-                block = trailer(line[first])
-                for (i = first + 1; block && i <= last; i++)
-                    if (!trailer(line[i]) && !indented(line[i])) block = 0
-                if (block)
-                    for (i = first; i <= last; i++)
-                        if (trailer(line[i])) bad[line[i]] = 1
-            }
-
-            # These keys fail wherever they stand.
-            for (i = 1; i <= n; i++)
-                if (trailer(line[i]) && banned(key(line[i]))) bad[line[i]] = 1
-
-            found = 0
-            for (i = 1; i <= n; i++)
-                if (line[i] in bad && !seen[line[i]]++) {
-                    if (!found++) print "commit-messages: " sha " " line[1]
-                    print "    trailer line: " line[i]
-                }
-            exit found ? 1 : 0
-        }
-    '
+# Exit 0 where an unreadable base is ordinary, and 2 where it is a broken call.
+unreadable() {
+    echo "commit-messages: the range $range cannot be read: $1" >&2
+    [ "${GITHUB_EVENT_NAME:-}" = push ] && exit 0
+    exit 2
 }
 
-count=$(git rev-list --count "$range")
+case "$base" in
+    "") unreadable "it has no left side" ;;
+    *[!0]*) ;;
+    *) unreadable "its left side is all zeros" ;;
+esac
+git rev-parse --verify --quiet "$base^{commit}" > /dev/null ||
+    unreadable "$base names no commit in this repository"
+
+# The lines of one commit that break the rule: what git reads as a trailer, then the
+# body lines a harness writes where git would not read one. A line both rules name is
+# printed once.
+harness='^(co-authored-by|[A-Za-z0-9-]*session)[[:blank:]]*:|generated with'
+
+bad_lines() {
+    trailers=$(git log -1 --format='%(trailers:only,unfold)' "$1")
+    appended=$(git log -1 --format='%b' "$1" | grep -iE "$harness" || true)
+    printf '%s\n%s\n' "$trailers" "$appended" |
+        grep -v '^[[:blank:]]*$' | awk '!seen[$0]++'
+}
+
+count=0
 failures=0
 for sha in $(git rev-list "$range"); do
-    if ! git log -1 --format='%P%n%B' "$sha" | read_commit "$sha" >&2; then
-        failures=$((failures + 1))
-    fi
+    count=$((count + 1))
+    lines=$(bad_lines "$sha")
+    [ -n "$lines" ] || continue
+    failures=$((failures + 1))
+    {
+        echo "commit-messages: $sha $(git log -1 --format='%s' "$sha")"
+        printf '%s\n' "$lines" | sed 's/^/    trailer line: /'
+    } >&2
 done
 
 if [ "$failures" -ne 0 ]; then
     echo "commit-messages: $failures commit message(s) hold a trailer line." >&2
     echo "A commit message is prose. The commit author is the author. Remove the line" >&2
-    echo "and rewrite the history of the branch." >&2
+    echo "and rewrite the history of the branch. A last paragraph of one line that holds" >&2
+    echo "a colon is a trailer to git, a bare link included: write the link into the" >&2
+    echo "sentence above it instead." >&2
     exit 1
 fi
 

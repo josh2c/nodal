@@ -31,14 +31,9 @@ See `docs/code-structure.md`. The short version:
 
 A commit message is prose. Write what the change does and why. The commit author is the
 author, and the author field says so. Do not add trailer lines: no `Co-Authored-By`, no
-`Signed-off-by`, no tool or session links. `ci/commit-messages.sh` reads every commit a
-pull request adds, and every commit a push to `main` adds. It fails a message whose last
-paragraph is nothing but `Key: value` lines, the shape git reads trailers in, so a prose
-paragraph that holds one `Word: text` line passes. It also fails a key that ends in `-by`
-or `-session`, and the key `generated-with`, wherever the line stands, in prose or not.
-Any number of blanks can stand between the colon and the value. A merge commit is exempt
-when it has two parents and a body of one line or none, which is the shape GitHub makes
-and the line is the pull request title.
+`Signed-off-by`, no tool or session links. `ci/commit-messages.sh` fails a pull request,
+and a push to `main`, whose commits hold one. Its header comment states the exact rule,
+including what git itself counts as a trailer.
 
 ## What belongs in the repository
 

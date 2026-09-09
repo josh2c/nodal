@@ -1,19 +1,25 @@
 #!/usr/bin/env sh
 # Acceptance test for the commit-message check.
 #
-# The suite builds a fixture repository in a temporary directory, one commit for each
-# claim, and runs `ci/commit-messages.sh` over it. The claims:
-#   - a prose paragraph whose last line reads `Word: text` passes;
-#   - a wrapped prose line that starts with a word and a colon passes;
+# The suite builds a fixture repository in a temporary directory, writes one commit for
+# each claim inside the range the check is given, and runs `ci/commit-messages.sh` over
+# that range. The claims:
+#   - a prose paragraph passes;
+#   - a prose paragraph whose last line reads `Result: nothing changes` passes, because
+#     git reads a trailer only where the whole last paragraph is trailer lines;
+#   - a bare link as the last line of a prose paragraph passes, for the same reason;
+#   - a bare link standing alone as the last paragraph fails, because git reads it as
+#     the trailer key `https`, and the output tells the contributor what to do;
 #   - a last paragraph of nothing but trailer lines fails, and the output names the
 #     commit and the lines;
-#   - a banned key fails inside a prose paragraph, where no trailer block stands;
-#   - `Key:value` with no blank after the colon fails, because git reads it as a trailer;
-#   - a merge a person made locally, with a body of its own, is read like any other
-#     commit and fails on the trailer in it;
-#   - a merge of GitHub's shape, two parents and a body of one line, passes;
-#   - a subject line that reads like a trailer passes, because a subject is not a trailer;
-#   - a base that names no commit exits 2.
+#   - `Co-Authored-By` glued under a prose line fails, where git reads no trailer;
+#   - `Session:` glued under a prose line fails, for the key that ends in `-session`;
+#   - `Generated with` in prose fails, behind the emoji a harness puts before it;
+#   - a merge a person made locally, with a trailer in its body, fails: this is the case
+#     that pays for reading merges, so the check does not pass `--no-merges`;
+#   - a subject that reads like a trailer passes, because the subject is never read;
+#   - a range whose left side is all zeros exits 0 on a push and says so;
+#   - a range whose left side names no commit exits 2 on a pull request.
 set -eu
 
 script=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/commit-messages.sh
@@ -52,7 +58,7 @@ fail() {
 
 # Run the check over the fixture branch and hold both output and exit status.
 run() {
-    if output=$("$script" "$base" 2>&1); then status=0; else status=$?; fi
+    if output=$("$script" "$base..HEAD" 2>&1); then status=0; else status=$?; fi
 }
 
 passes() {
@@ -75,7 +81,7 @@ rejects() {
     git reset --quiet --hard "$base"
 }
 
-# Prose passes, whatever punctuation it holds.
+# Prose passes, whatever punctuation it holds, and whatever the subject reads like.
 write <<'MSG'
 Change what the file holds
 
@@ -85,15 +91,34 @@ MSG
 write <<'MSG'
 Give each attempt a directory nothing else is writing to
 
-An attempt that stops part way leaves the directory behind and the next attempt finds
-nothing: the next attempt will find it free.
+An attempt that stops part way leaves the directory behind, and the next attempt has
+to find it free.
+Result: nothing changes
 MSG
 write <<'MSG'
-Fix: the subject line is not a trailer
+Read the column list the caller gives
+
+The change came from the page that documents the flag, at
+https://example.invalid/flags/sort-by
+MSG
+write <<'MSG'
+Sort-by: accept a column list
 
 A subject can read like a trailer and still be a subject. The body is prose.
 MSG
 passes "a branch of prose commits"
+
+# A bare link alone in the last paragraph is a trailer to git, and the check says what
+# to do about it rather than leaving the contributor to guess.
+write <<'MSG'
+Change what the file holds after the link
+
+The paragraph says where the change came from.
+
+https://example.invalid/flags/sort-by
+MSG
+rejects "a bare link alone in the last paragraph" \
+    "//example.invalid/flags/sort-by" "write the link into the"
 
 # A last paragraph of nothing but trailer lines fails, and the output names both lines.
 write <<'MSG'
@@ -105,25 +130,36 @@ MSG
 bad=$(git rev-parse HEAD)
 rejects "a trailer block" "$bad" "Co-Authored-By: A Tool" "Claude-Session: https://example.invalid/session"
 
-# A banned key fails where it stands, with prose around it and no trailer block.
+# The lines a harness appends fail where they stand, under prose, where git reads no
+# trailer at all.
 write <<'MSG'
 Change what the file holds once more
 
 This paragraph is prose and the check would let it stand on its own.
-Signed-off-by: A Person <person@example.invalid>
+Co-Authored-By: A Tool <tool@example.invalid>
 And the paragraph carries on in prose after the line, so it is no trailer block.
 MSG
-rejects "a banned key under prose" "Signed-off-by: A Person"
+rejects "Co-Authored-By under prose" "Co-Authored-By: A Tool"
 
-# No blank after the colon is still a trailer, and so are many blanks.
 write <<'MSG'
 Change what the file holds yet again
 
-Co-Authored-By:A Tool <tool@example.invalid>
+This paragraph is prose and the check would let it stand on its own.
+Session: https://example.invalid/session
+And the paragraph carries on in prose after the line, so it is no trailer block.
 MSG
-rejects "a trailer with no blank after the colon" "Co-Authored-By:A Tool"
+rejects "a Session key under prose" "Session: https://example.invalid/session"
 
-# A merge a person made locally, with a body of its own, is read like any other commit.
+write <<'MSG'
+Change what the file holds one last time
+
+This paragraph is prose and the check would let it stand on its own.
+Generated with a tool that writes the line, and the paragraph carries on after it.
+MSG
+rejects "Generated with in prose" "Generated with a tool"
+
+# A merge a person made locally, with a trailer in its body, is read like any other
+# commit. Deleting the merge from the range makes this claim fail.
 git checkout --quiet -b local-side "$base"
 echo side > other
 git add other
@@ -146,28 +182,27 @@ MSG
 rejects "a local merge with a trailer body" "$merge" "Co-Authored-By: A Tool"
 git branch --quiet -D local-side
 
-# A merge of GitHub's shape passes: two parents and a body of one line.
-git checkout --quiet -b side "$base"
-echo four > file
-git commit --quiet -am "Fix: the subject line is not a trailer"
-git checkout --quiet main
-cat > "$work/message" <<'MSG'
-Merge pull request #1 from fixture/side
-
-Fix: the subject line is not a trailer
-MSG
-git merge --quiet --no-ff --no-verify -F "$work/message" side
-run
-[ "$status" -eq 0 ] || fail "a merge of GitHub's shape was rejected" "$output"
-git reset --quiet --hard "$base"
-git branch --quiet -D side
-
-# A base that names no commit exits 2, and says so.
-if output=$("$script" 0000000000000000000000000000000000000000 2>&1); then status=0; else status=$?; fi
-[ "$status" -eq 2 ] || fail "an unknown base did not exit 2" "$output"
+# A range whose left side is all zeros is what a first push and a force-push give. On a
+# push that is nothing to fail a person for, so the check says so and exits 0.
+zeros=0000000000000000000000000000000000000000
+if output=$(GITHUB_EVENT_NAME=push "$script" "$zeros..HEAD" 2>&1); then status=0; else status=$?; fi
+[ "$status" -eq 0 ] || fail "an all-zero base on a push did not exit 0" "$output"
 case "$output" in
-    *"does not name a commit"*) ;;
-    *) fail "an unknown base did not say what was wrong" "$output" ;;
+    *"cannot be read"*) ;;
+    *) fail "an all-zero base on a push did not say the range cannot be read" "$output" ;;
 esac
 
-echo "acceptance (commit messages): prose passes, trailer blocks and banned keys fail and are named, a merge of GitHub's shape is exempt, an unknown base exits 2"
+# On a pull request the same range is a broken call, and so is a base that names no
+# commit.
+if output=$(GITHUB_EVENT_NAME=pull_request "$script" "$zeros..HEAD" 2>&1); then status=0; else status=$?; fi
+[ "$status" -eq 2 ] || fail "an all-zero base on a pull request did not exit 2" "$output"
+
+unknown=1111111111111111111111111111111111111111
+if output=$(GITHUB_EVENT_NAME=pull_request "$script" "$unknown..HEAD" 2>&1); then status=0; else status=$?; fi
+[ "$status" -eq 2 ] || fail "a base that names no commit did not exit 2" "$output"
+case "$output" in
+    *"names no commit"*) ;;
+    *) fail "a base that names no commit did not say what was wrong" "$output" ;;
+esac
+
+echo "acceptance (commit messages): prose passes, what git calls a trailer and what a harness appends both fail and are named, a local merge is read, an unreadable range exits 0 on a push and 2 on a pull request"
