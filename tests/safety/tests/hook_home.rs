@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use nodal_safety::InState as _;
-use nodal_safety::{Machine, git, stderr, stdout};
+use nodal_safety::{Machine, git, stderr, stdout, tree};
 
 /// The only rule the project under test has. It covers what the stub package manager
 /// writes and nothing else, so a file Nodal leaves anywhere is a file `git status`
@@ -225,7 +225,7 @@ fn an_untracked_settings_file_a_home_already_had_is_hidden_and_kept() {
 fn a_marked_directory_the_registry_does_not_know_is_not_answered_with() {
     let machine = machine();
     let restored = machine.source.parent().unwrap().join("restored");
-    copy_tree(&machine.source, &restored);
+    tree::copy(&machine.source, &restored);
     std::fs::create_dir_all(restored.join(".nodal")).unwrap();
     std::fs::write(restored.join(".nodal").join("id"), "01J8Z6H000000000000000001\n").unwrap();
 
@@ -252,7 +252,7 @@ fn an_unreadable_marker_above_the_project_does_not_end_the_session() {
     let machine = machine();
     let elsewhere = machine.source.parent().unwrap().join("elsewhere");
     let copy = elsewhere.join("project");
-    copy_tree(&machine.source, &copy);
+    tree::copy(&machine.source, &copy);
     std::fs::create_dir_all(elsewhere.join(".nodal")).unwrap();
     std::fs::write(elsewhere.join(".nodal").join("id"), "not a unit identifier\n").unwrap();
 
@@ -271,18 +271,4 @@ fn unhide_settings(home: &Path) {
     let kept: Vec<&str> =
         held.lines().filter(|line| line.trim_end() != "/.claude/settings.json").collect();
     std::fs::write(&path, format!("{}\n", kept.join("\n"))).unwrap();
-}
-
-/// Copy a directory and everything under it.
-fn copy_tree(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).unwrap();
-    for entry in std::fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let target = to.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_tree(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), &target).unwrap();
-        }
-    }
 }

@@ -10,6 +10,10 @@
 //! So a snapshot holds the content itself. The trees here are the fixture project and a
 //! clone of it, which is under a hundred small files, and holding the bytes is what
 //! makes the comparison mean what it says.
+//!
+//! [`copy`] is the other direction over the same shape: a second copy of a tree, made
+//! from its content rather than from its metadata, for a test that needs two of
+//! something the fixture only writes once.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -154,6 +158,68 @@ fn difference(path: &Path, before: &Entry, after: &Entry) -> String {
     }
 }
 
+/// Copy everything under `from` into `to`, content for content.
+///
+/// A test that needs a second copy of the fixture project uses this rather than
+/// [`std::fs::copy`], because the fixture plants the shape a real base has: a file at
+/// mode `0444` carrying an extended attribute (`nodal_fixture::read_only`), and Git
+/// writes every loose object read-only besides. macOS copies a file's metadata with its
+/// content — mode, extended attributes and ACL — so the platform refuses a copy of that
+/// crossing, and Linux, which copies the bytes and the mode and nothing else, does not.
+/// A suite that used the standard copy therefore passed on one runner and failed on the
+/// other.
+///
+/// What is copied is what a test is asking for: the shape of the tree and the bytes in
+/// it. Directories are made writable, files are written fresh, and a symbolic link is
+/// made again as a link rather than followed. No mode and no attribute of the source
+/// crosses over, which is the whole reason this can be relied on.
+///
+/// # Panics
+///
+/// Naming the first path that could not be read or written, which is a machine a
+/// property cannot be asserted on rather than a difference.
+pub fn copy(from: impl AsRef<Path>, to: impl AsRef<Path>) {
+    copy_into(from.as_ref(), to.as_ref());
+}
+
+/// Copy one directory into another, and everything under it.
+fn copy_into(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap_or_else(|error| panic!("{}: {error}", to.display()));
+    let read =
+        std::fs::read_dir(from).unwrap_or_else(|error| panic!("{}: {error}", from.display()));
+    for entry in read {
+        let entry = entry.unwrap_or_else(|error| panic!("{}: {error}", from.display()));
+        let path = entry.path();
+        let target = to.join(entry.file_name());
+        let kind = entry.file_type().unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        if kind.is_symlink() {
+            let points_at = std::fs::read_link(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            link(&points_at, &target);
+        } else if kind.is_dir() {
+            copy_into(&path, &target);
+        } else {
+            let content =
+                std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            std::fs::write(&target, content)
+                .unwrap_or_else(|error| panic!("{}: {error}", target.display()));
+        }
+    }
+}
+
+/// Make a symbolic link at `at` pointing where the one it was copied from points.
+#[cfg(unix)]
+fn link(points_at: &Path, at: &Path) {
+    std::os::unix::fs::symlink(points_at, at)
+        .unwrap_or_else(|error| panic!("{}: {error}", at.display()));
+}
+
+/// A host where a test tree holds no links.
+#[cfg(not(unix))]
+fn link(points_at: &Path, at: &Path) {
+    let _ = (points_at, at);
+}
+
 /// Read one directory into `entries`, and everything under it.
 fn walk(
     root: &Path,
@@ -200,4 +266,53 @@ fn mode_of(path: &Path) -> u32 {
 #[cfg(not(unix))]
 const fn mode_of(_path: &Path) -> u32 {
     0
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "a fixture that cannot be built fails the test")]
+
+    use nodal_fixture::read_only;
+    use tempfile::TempDir;
+
+    use super::{Snapshot, copy};
+
+    /// The crossing a real base has, and the one the standard copy refuses on macOS: a
+    /// file at mode `0444` carrying an extended attribute. A copier a test relies on has
+    /// to take it on every runner, or the suite is asserting a property on one platform
+    /// and a copy failure on the other.
+    #[test]
+    fn a_tree_holding_a_read_only_file_with_an_attribute_is_copied_whole() {
+        let root = TempDir::new().unwrap();
+        let from = root.path().join("project");
+        let from = nodal_fixture::write(&from);
+        assert!(from.join(read_only::LOCKED).is_file(), "the fixture planted no locked file");
+
+        let to = root.path().join("copy");
+        copy(&from, &to);
+
+        let source = Snapshot::of(&from);
+        assert!(source.len() > 1, "the fixture wrote nothing to copy");
+        assert_eq!(
+            std::fs::read_to_string(to.join(read_only::LOCKED)).unwrap(),
+            read_only::LOCKED_CONTENTS,
+            "the file the platform refuses to copy did not arrive"
+        );
+    }
+
+    /// The copy is content and shape, never the source's mode. A tree copied out of a
+    /// base has to be one a test can go on writing in.
+    #[test]
+    fn what_is_copied_is_writable_however_locked_the_original_was() {
+        let root = TempDir::new().unwrap();
+        let from = root.path().join("project");
+        let from = nodal_fixture::write(&from);
+
+        let to = root.path().join("copy");
+        copy(&from, &to);
+
+        let copied = to.join(read_only::LOCKED);
+        std::fs::write(&copied, "written again\n")
+            .expect("the copy carried the mode that denies every write");
+    }
 }
