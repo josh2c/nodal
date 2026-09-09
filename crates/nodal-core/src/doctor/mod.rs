@@ -67,9 +67,10 @@
 //!
 //! ## A tool that is not there
 //!
-//! Docker absent, or a daemon this account may not reach, is a note and not a failure
-//! (`services::docker`, the pattern attribution uses). A machine with no Docker still
-//! gets an answer about its worktrees, its caches and its databases.
+//! Docker absent, or a daemon this account may not reach, is a note and not a failure.
+//! [`crate::services::docker`] answers with the reason instead of an error, and the
+//! caller turns that reason into one note. A machine with no Docker still gets an
+//! answer about its worktrees, its caches and its databases.
 //!
 //! ## A registry a later Nodal wrote
 //!
