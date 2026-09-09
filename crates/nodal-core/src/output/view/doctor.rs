@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::Timestamp;
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, Table};
+use crate::workspace::sharing::Sharing;
 
 /// The columns of the section for this project.
 const HERE: [&str; 5] = ["what", "kind", "size", "state", "intent"];
@@ -246,6 +247,10 @@ pub struct Doctor {
     pub now: Timestamp,
     /// The checkout the command was run in, `None` when it was run outside one.
     pub checkout: Option<Checkout>,
+    /// What the filesystem under the state root can do. A state root that cannot share
+    /// blocks between files makes every unit home a full copy, and a person who is on
+    /// one has no other way to learn it before the first home is made.
+    pub sharing: Sharing,
     /// What belongs to this project, largest first.
     pub here: Vec<Finding>,
     /// What belongs to another project, largest first. Names and sizes only.
@@ -262,6 +267,8 @@ impl Render for Doctor {
 
     fn doc(&self) -> Doc {
         let mut doc = Doc::new();
+        doc.push(Block::fields(vec![Field::new("state root", self.sharing.fact())]).at(0));
+        doc.push(Block::blank());
         doc.push(Block::fields(vec![Field::new("this project", self.subject())]).at(0));
         doc.push(section(&self.here, &HERE, "nothing of this project is left behind"));
         doc.push(Block::blank());
@@ -423,11 +430,14 @@ fn shorten(intent: Option<&str>) -> String {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests fail by panicking")]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{
         BranchRow, Branches, CLOSING, Checkout, Doctor, Finding, Kind, Note, Standing, shorten,
     };
     use crate::model::Timestamp;
     use crate::output::Render;
+    use crate::workspace::sharing::Sharing;
 
     fn at(text: &str) -> Timestamp {
         Timestamp::parse(text).expect("a fixed instant")
@@ -451,10 +461,20 @@ mod tests {
                 Finding::new(Kind::StaleCache, "/home/j/other/.next").sized(3_330_000_000, true),
             ],
             branches: branches(),
+            sharing: sharing(true),
             notes: vec![Note {
                 source: String::from("docker"),
                 why: String::from("docker is not installed"),
             }],
+        }
+    }
+
+    /// The answer a test forces about the state root, for each of the two cases.
+    fn sharing(shares: bool) -> Sharing {
+        Sharing {
+            root: PathBuf::from("/home/j/.nodal"),
+            filesystem: Some(String::from(if shares { "btrfs" } else { "ext4" })),
+            shares,
         }
     }
 
@@ -481,6 +501,44 @@ mod tests {
             committed: at("2026-09-01T12:00:00Z"),
             upstream_gone: gone,
         }
+    }
+
+    /// The header says which case this machine is in, and it says it either way. A
+    /// report that spoke up only about the bad case would leave a person who fixed it
+    /// with no way to see that they had.
+    #[test]
+    fn doctor_says_the_state_root_shares_blocks() {
+        let text = report().doc().to_string();
+        let line = header(&text);
+        assert!(line.contains("/home/j/.nodal"), "{line}");
+        assert!(line.contains("btrfs"), "{line}");
+        assert!(line.contains("nodal shares blocks here"), "{line}");
+        assert!(!line.contains("full copy"), "{line}");
+    }
+
+    #[test]
+    fn doctor_says_when_nodal_does_not_share_blocks_at_the_state_root() {
+        let mut copying = report();
+        copying.sharing = sharing(false);
+        let line = header(&copying.doc().to_string());
+        assert!(line.contains("ext4"), "{line}");
+        assert!(line.contains("nodal does not share blocks here"), "{line}");
+        assert!(line.contains("full copy"), "{line}");
+    }
+
+    /// Doctor states the fact and prints no fix. `nodal init` prints the fix, at the
+    /// moment a person chooses the state root and can still choose another.
+    #[test]
+    fn doctor_prints_no_fix() {
+        let mut copying = report();
+        copying.sharing = sharing(false);
+        let line = header(&copying.doc().to_string());
+        assert!(!line.contains("move the state root"), "{line}");
+    }
+
+    /// The one line of the header that is about the state root.
+    fn header(text: &str) -> String {
+        text.lines().find(|line| line.contains("state root")).expect("the state root line").into()
     }
 
     /// The branch section, and the loud bucket printed in full.

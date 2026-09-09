@@ -104,6 +104,7 @@ use crate::output::view::doctor::{Branches, Checkout, Doctor, Finding, Note};
 use crate::services::docker::Docker;
 use crate::store::projects;
 use crate::workspace::home;
+use crate::workspace::sharing::Sharing;
 
 /// A registry a later Nodal wrote, and what a person does about it.
 ///
@@ -258,14 +259,22 @@ pub struct Machine<'a> {
     pub state_dir: &'a Path,
     /// Where Claude Code keeps its session records, when this machine has them.
     pub sessions: Option<&'a Path>,
+    /// What the filesystem under the state root can do, probed by the caller
+    /// ([`Sharing::probe`]) so that the report stays a function of its inputs.
+    pub sharing: &'a Sharing,
 }
 
 impl<'a> Machine<'a> {
-    /// This machine: the two paths the caller knows, and the session records where the
-    /// tool that writes them puts them.
+    /// This machine: the two paths the caller knows, the session records where the
+    /// tool that writes them puts them, and what the state root can do.
     #[must_use]
-    pub fn here(cwd: &'a Path, state_dir: &'a Path, sessions: Option<&'a Path>) -> Self {
-        Self { cwd, state_dir, sessions }
+    pub fn here(
+        cwd: &'a Path,
+        state_dir: &'a Path,
+        sessions: Option<&'a Path>,
+        sharing: &'a Sharing,
+    ) -> Self {
+        Self { cwd, state_dir, sessions, sharing }
     }
 }
 
@@ -310,7 +319,15 @@ pub fn survey(
 
     largest_first(&mut here);
     largest_first(&mut elsewhere);
-    Ok(Doctor { now, checkout: checkout_of(&scope), here, elsewhere, branches, notes })
+    Ok(Doctor {
+        now,
+        checkout: checkout_of(&scope),
+        sharing: machine.sharing.clone(),
+        here,
+        elsewhere,
+        branches,
+        notes,
+    })
 }
 
 /// What the registry-reading sources answered: the rows, and what could not be read.

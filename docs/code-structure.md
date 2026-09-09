@@ -104,6 +104,7 @@ workspace/
   reflink.rs           Linux FICLONE walk
   btrfs.rs             subvolume snapshot
   copy.rs              fallback
+  sharing.rs           whether nodal shares blocks at the state root, as init and doctor report it
   relocate.rs          CacheRelocator trait + InvalidateCache (rewrite reserved, not built)
   home.rs              where Nodal keeps its state, and where a home goes inside it (pure paths)
 

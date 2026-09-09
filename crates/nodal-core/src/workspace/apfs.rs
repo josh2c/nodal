@@ -39,12 +39,30 @@ impl Materializer for ApfsClonefile {
     }
 
     fn supports(&self, path: &Path) -> bool {
-        platform::supports(path)
+        super::nearest(path).is_some_and(shares_blocks)
     }
 
     fn clone_tree(&self, source: &Path, destination: &Path, exclude: &Excludes) -> Result<Report> {
         materialize(source, destination, exclude, Ops { file: put })
     }
+}
+
+/// What the filesystem holding `directory` is called, and `None` where this platform
+/// cannot say. `directory` must exist; [`super::nearest`] is how a caller gets one.
+///
+/// The name is for a person to read. It decides nothing; [`shares_blocks`] does.
+#[must_use]
+pub fn filesystem(directory: &Path) -> Option<String> {
+    platform::filesystem(directory)
+}
+
+/// Whether `clonefile` works in `directory`, tried once rather than looked up.
+///
+/// `directory` must exist. Away from macOS there is no `clonefile` and the answer is
+/// no without a file being written.
+#[must_use]
+pub fn shares_blocks(directory: &Path) -> bool {
+    platform::AVAILABLE && super::probe_sharing(directory, platform::clone_probe)
 }
 
 /// Clone one file.
@@ -64,8 +82,8 @@ mod platform {
 
     use crate::error::{Error, Result};
 
-    /// What APFS calls itself in `statfs`.
-    const APFS: &str = "apfs";
+    /// This platform has `clonefile`, so a probe here is worth the file it writes.
+    pub(super) const AVAILABLE: bool = true;
 
     /// `CLONE_NOFOLLOW` from `<sys/clonefile.h>`: do not resolve a source that is a
     /// symbolic link. The `libc` crate does not publish this constant, so it is stated
@@ -73,22 +91,10 @@ mod platform {
     /// constant that happens to have the same value.
     const CLONE_NOFOLLOW: u32 = 0x0001;
 
-    /// Whether the filesystem holding `path` is APFS. The path need not exist yet: the
-    /// answer is about the nearest directory that does.
-    pub(super) fn supports(path: &Path) -> bool {
-        nearest(path).and_then(name).is_some_and(|found| found == APFS)
-    }
-
-    /// The nearest ancestor of `path`, itself included, that exists.
-    fn nearest(path: &Path) -> Option<&Path> {
-        let mut candidate = Some(path);
-        while let Some(path) = candidate {
-            if path.symlink_metadata().is_ok() {
-                return Some(path);
-            }
-            candidate = path.parent();
-        }
-        None
+    /// What the filesystem holding `directory` is called, as `statfs` names it. APFS
+    /// says `apfs`. The name is reported and never selected on; a clone is tried.
+    pub(super) fn filesystem(directory: &Path) -> Option<String> {
+        name(directory)
     }
 
     /// The name `statfs` gives the filesystem holding `path`.
@@ -125,6 +131,11 @@ mod platform {
         Err(Error::Io { path: destination.to_path_buf(), source: std::io::Error::last_os_error() })
     }
 
+    /// The one call a probe makes: `clonefile` and nothing else.
+    pub(super) fn clone_probe(source: &Path, destination: &Path) -> bool {
+        clone(source, destination).is_ok()
+    }
+
     /// A path as the C string `clonefile` takes.
     fn c_path(path: &Path) -> Result<std::ffi::CString> {
         std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| Error::Io {
@@ -141,12 +152,21 @@ mod platform {
 
     use crate::error::{Error, Result};
 
-    /// No filesystem here has `clonefile`, so this backend is never selected.
-    pub(super) fn supports(_path: &Path) -> bool {
+    /// No filesystem here has `clonefile`, so this backend is never selected and a
+    /// probe never writes a file to find that out.
+    pub(super) const AVAILABLE: bool = false;
+
+    /// This backend names no filesystem away from macOS.
+    pub(super) fn filesystem(_directory: &Path) -> Option<String> {
+        None
+    }
+
+    /// Never called, because [`AVAILABLE`] is false.
+    pub(super) fn clone_probe(_source: &Path, _destination: &Path) -> bool {
         false
     }
 
-    /// Refuse, because [`supports`] said so.
+    /// Refuse, because [`AVAILABLE`] said so.
     pub(super) fn clone(source: &Path, _destination: &Path) -> Result<()> {
         Err(Error::MaterializeUnsupported { backend: "clonefile", path: source.to_path_buf() })
     }

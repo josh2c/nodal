@@ -17,6 +17,7 @@ use nodal_core::output::view::InitReport;
 use nodal_core::output::{self, Format};
 use nodal_core::recipe;
 use nodal_core::workspace::home;
+use nodal_core::workspace::sharing::Sharing;
 
 /// Arguments of `nodal init`.
 #[derive(Debug, Args)]
@@ -77,9 +78,27 @@ impl Init {
         }
         recipe::apply_init(&plan, self.force)?;
         approve(&plan)?;
+        say_what_the_state_root_can_do()?;
         self.offer(root_of(&plan))?;
         write(&report, Format::Human)
     }
+}
+
+/// Say that this machine makes a full copy for every home, where it does.
+///
+/// A home is cheap only where the filesystem can give two files the same blocks. On a
+/// state root that cannot, every home costs its own disk, and the person who set that
+/// up learns it at the first `nodal new` and not before. This is the moment to say so:
+/// the state root is chosen and the project is being set up, so the fix is one mount
+/// away rather than a migration.
+///
+/// The line goes to standard error, for the same reason the approval line does. A state
+/// root that shares blocks prints nothing; there is nothing to do about good news.
+fn say_what_the_state_root_can_do() -> nodal_core::Result<()> {
+    if let Some(line) = Sharing::probe(&home::directory()?).advice() {
+        eprintln!("nodal: {line}");
+    }
+    Ok(())
 }
 
 /// Approve, on this machine, the hooks the written recipe declares.

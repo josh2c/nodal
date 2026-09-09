@@ -10,9 +10,15 @@
 //! project cannot assume, and reclaiming a home must never need privilege. Directory
 //! reflink has no such restriction and measured the same cost.
 //!
-//! Where a file cannot be cloned — a filesystem that says it cannot, or a source the
-//! kernel refuses — the bytes are copied instead and the report counts it. A home that
-//! is partly shared is still a home; a report that hid it would not be true.
+//! Whether a filesystem shares blocks is not a property of its name. XFS shares them
+//! only when `mkfs.xfs -m reflink=1` made it, which no mount option and no `statfs`
+//! field reports. So this backend answers [`shares_blocks`] by trying one clone in the
+//! directory it is asked about, and the table below only names filesystems for a
+//! person to read.
+//!
+//! Where one file still cannot be cloned once the walk has started, the bytes are
+//! copied instead and the report counts it. A home that is partly shared is still a
+//! home; a report that hid it would not be true.
 
 use std::fs::Metadata;
 use std::path::Path;
@@ -32,12 +38,32 @@ impl Materializer for ReflinkCopy {
     }
 
     fn supports(&self, path: &Path) -> bool {
-        platform::supports(path)
+        super::nearest(path).is_some_and(shares_blocks)
     }
 
     fn clone_tree(&self, source: &Path, destination: &Path, exclude: &Excludes) -> Result<Report> {
         materialize(source, destination, exclude, Ops { file: put })
     }
+}
+
+/// What the filesystem holding `directory` is called, and `None` where this platform
+/// cannot say. `directory` must exist; [`super::nearest`] is how a caller gets one.
+///
+/// The name is for a person to read. It decides nothing: a magic number says which
+/// filesystem this is, never whether that filesystem was formatted or mounted so that
+/// it shares blocks. [`shares_blocks`] is the only thing that answers that.
+#[must_use]
+pub fn filesystem(directory: &Path) -> Option<String> {
+    platform::filesystem(directory)
+}
+
+/// Whether `FICLONE` works in `directory`, tried once rather than looked up.
+///
+/// `directory` must exist. Away from Linux there is no `FICLONE` and the answer is no
+/// without a file being written.
+#[must_use]
+pub fn shares_blocks(directory: &Path) -> bool {
+    platform::AVAILABLE && super::probe_sharing(directory, platform::clone_probe)
 }
 
 /// Clone one file, or copy its bytes where the kernel will not clone it.
@@ -64,46 +90,50 @@ mod platform {
     /// architecture Nodal releases for.
     const FICLONE: libc::c_ulong = 0x4004_9409;
 
-    /// One filesystem that can share blocks between files, and how `statfs` names it.
+    /// This platform has `FICLONE`, so a probe here is worth the file it writes.
+    pub(super) const AVAILABLE: bool = true;
+
+    /// One filesystem and how `statfs` names it.
     struct Filesystem {
         /// The value `statfs` reports in `f_type`, held in a type wide enough for
         /// every target, where the field is signed on one and unsigned on another.
         magic: i128,
-        /// What it is, for a reader of this table.
+        /// What it is, for a reader of this table and for a person reading a report.
         name: &'static str,
     }
 
-    /// The filesystems that can share blocks. A filesystem that is not here gets the
-    /// copying backend; a filesystem that is here but refuses one file copies that
-    /// file, so a row that is too generous costs bytes, never correctness.
-    const SHARING: &[Filesystem] = &[
+    /// The filesystems this table can name. It is a table of names and nothing else.
+    /// Whether a filesystem shares blocks is not a property of its magic number: XFS
+    /// shares them only when `mkfs.xfs -m reflink=1` made it, `OpenZFS` since 2.2 does,
+    /// and overlayfs does when the upper layer does. A clone is tried instead.
+    ///
+    /// A filesystem that is not here reads as its magic number, because a person
+    /// reporting one is what puts the next row in the table. `ext2` and `ext3` report
+    /// the magic `ext4` reports, so a machine on either of them reads `ext4` here.
+    const KNOWN: &[Filesystem] = &[
         Filesystem { magic: 0x9123_683E, name: "btrfs" },
         Filesystem { magic: 0x5846_5342, name: "xfs" },
         Filesystem { magic: 0xca45_1a4e, name: "bcachefs" },
+        Filesystem { magic: 0x0000_EF53, name: "ext4" },
+        Filesystem { magic: 0x0102_1994, name: "tmpfs" },
+        Filesystem { magic: 0x794c_7630, name: "overlayfs" },
+        Filesystem { magic: 0x2FC1_2FC1, name: "zfs" },
+        Filesystem { magic: 0xF2F5_2010, name: "f2fs" },
+        Filesystem { magic: 0x7366_746E, name: "ntfs3" },
+        Filesystem { magic: 0x0102_1997, name: "9p" },
+        Filesystem { magic: 0x6573_5546, name: "fuse" },
     ];
 
-    /// Whether the filesystem holding `path` can share blocks between files. The path
-    /// need not exist yet: the answer is about the nearest directory that does.
-    pub(super) fn supports(path: &Path) -> bool {
-        let Some(existing) = nearest(path) else { return false };
-        let Some(magic) = magic(existing) else { return false };
-        let found = SHARING.iter().find(|filesystem| filesystem.magic == magic);
-        if let Some(filesystem) = found {
-            tracing::debug!(path = %existing.display(), filesystem = filesystem.name, "blocks can be shared here");
-        }
-        found.is_some()
-    }
-
-    /// The nearest ancestor of `path`, itself included, that exists.
-    fn nearest(path: &Path) -> Option<&Path> {
-        let mut candidate = Some(path);
-        while let Some(path) = candidate {
-            if path.symlink_metadata().is_ok() {
-                return Some(path);
-            }
-            candidate = path.parent();
-        }
-        None
+    /// What the filesystem holding `directory` is called, and `None` where `statfs`
+    /// could not answer.
+    pub(super) fn filesystem(directory: &Path) -> Option<String> {
+        let magic = magic(directory)?;
+        Some(
+            KNOWN
+                .iter()
+                .find(|filesystem| filesystem.magic == magic)
+                .map_or_else(|| format!("filesystem 0x{magic:x}"), |found| found.name.to_owned()),
+        )
     }
 
     /// What `statfs` reports for the filesystem holding `path`.
@@ -144,6 +174,19 @@ mod platform {
         let bytes = std::fs::copy(source, destination).map_err(Error::io(destination))?;
         Ok(Put { bytes, shared: false })
     }
+
+    /// The one call a probe makes: `FICLONE` and nothing else. It copies no bytes,
+    /// because a probe asks whether blocks can be shared and a copy is not an answer.
+    pub(super) fn clone_probe(source: &Path, destination: &Path) -> bool {
+        let Ok(from) = File::open(source) else { return false };
+        let Ok(to) = OpenOptions::new().write(true).create_new(true).mode(0o600).open(destination)
+        else {
+            return false;
+        };
+        // SAFETY: both descriptors are open for the length of the call, and `FICLONE`
+        // reads the second argument as a descriptor and writes nothing back.
+        unsafe { libc::ioctl(to.as_raw_fd(), FICLONE, from.as_raw_fd()) == 0 }
+    }
 }
 
 /// The same two answers on a platform without `FICLONE`.
@@ -155,12 +198,21 @@ mod platform {
     use super::super::tree::Put;
     use crate::error::{Error, Result};
 
-    /// No filesystem here has `FICLONE`, so this backend is never selected.
-    pub(super) fn supports(_path: &Path) -> bool {
+    /// No filesystem here has `FICLONE`, so this backend is never selected and a
+    /// probe never writes a file to find that out.
+    pub(super) const AVAILABLE: bool = false;
+
+    /// This backend names no filesystem away from Linux.
+    pub(super) fn filesystem(_directory: &Path) -> Option<String> {
+        None
+    }
+
+    /// Never called, because [`AVAILABLE`] is false.
+    pub(super) fn clone_probe(_source: &Path, _destination: &Path) -> bool {
         false
     }
 
-    /// Refuse, because [`supports`] said so.
+    /// Refuse, because [`AVAILABLE`] said so.
     pub(super) fn clone_file(
         source: &Path,
         _destination: &Path,

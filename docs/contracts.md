@@ -142,6 +142,18 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 handoff, sync, done, merge, prune, reclaim, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
 `--json`; `status --watch` emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
+`nodal init` writes `nodal.toml` and approves the hooks the recipe declares. It then asks whether Nodal
+shares file blocks under the state root. It asks the way the materializer asks: it writes one small file in
+the nearest directory that exists, tries one clone with the backend's own call, and removes both files. It
+does not read the name of the filesystem to decide. Where Nodal does not share blocks there, every unit home
+is a full copy, and `init` prints one line for that case on standard error: the state root, the filesystem
+where Nodal can name it, that each home is a full copy, and the fix. The fix names the filesystems this build
+shares blocks on. On Linux those are btrfs, XFS formatted with reflink (`mkfs.xfs -m reflink=1`), and
+bcachefs. On macOS it is a volume in an APFS container. `init` adds one more sentence about a btrfs virtual
+disk only on WSL, which it reads from `/proc/version` or `WSL_DISTRO_NAME`. A state root where Nodal shares
+blocks prints nothing. `init` writes `nodal.toml` and the hooks it already writes, and this line changes
+neither.
+
 `nodal shell-init <shell> --install` writes the script into `<state directory>/shims/` and adds one marked block
 to that shell's start-up file. The block sources the file. It evaluates nothing and starts no process, because it
 runs in every shell a person opens. `nodal shell-init <shell>` on its own still prints the same script, and
@@ -258,6 +270,15 @@ unreferenced volumes, orphan databases and a project over the open-unit threshol
 sections: this project, and a separate section for another project's leftovers that carries names and sizes
 only. A worktree another tool holds a lock on is reported as locked and read no further. Removal of
 unmanaged state is a later command (`decisions/DL-015`).
+
+The report opens with one line about the state root, in both cases. It says whether Nodal shares blocks
+between files there or copies every byte of every home, and it names the filesystem where it can. A
+filesystem this build cannot name is reported as unnamed, and `--json` carries the name as `null`. The
+answer comes from the same clone probe `nodal init` uses, so a report never says a filesystem shares blocks
+where the call that shares them fails. `--json` carries the whole answer as the `sharing` field: the state
+root, the filesystem, and whether Nodal shares blocks. Doctor states the fact and prints no fix; `nodal init`
+prints the fix at the moment a person chooses the state root. The probe writes one file and removes it, and
+it puts the directory's modification time back, so doctor still writes nothing to the machine it reads.
 
 The worktrees are every worktree the repository names, read from `git worktree list`. Where the directory
 sits is not part of the question: a worktree under the checkout, beside it, or anywhere else on the machine
