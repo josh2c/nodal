@@ -53,7 +53,7 @@
 //! `NODAL_ROOT` in its environment, `{repo_root}` and `{unit_path}` in its text, the
 //! directory it is started in, and the directory the report says it ran in. All six come
 //! from the same two values, so all six are resolved once, here, on the way in
-//! ([`guard::resolve`], `decisions/DL-037`).
+//! ([`guard::resolve`]).
 //!
 //! Resolving is not a nicety. A hook that compares a variable with its own `$PWD` is
 //! comparing two answers from two sources: Nodal's, which is a registry row holding the

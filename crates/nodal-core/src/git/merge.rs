@@ -4,7 +4,7 @@
 //! one wherever the porcelain would open an editor or read a configuration file that
 //! belongs to the person. Nothing here talks to a network: a fast-forward moves a local
 //! branch, and the objects it needs are fetched from a repository on this machine by
-//! path (`decisions/DL-034`).
+//! path.
 //!
 //! # The one rule the fast-forward keeps
 //!

@@ -18,8 +18,8 @@
 # The suite is then run a second time with the temporary directory reached through a
 # symbolic link, as `ci/acceptance-merge.sh` and `ci/acceptance-doctor.sh` do. The four
 # hooks are told about the home twice — as `NODAL_ROOT` and as the directory they are
-# started in — and both have to be the name the filesystem itself uses (DL-037). macOS
-# gives that condition for free; Linux has to make it.
+# started in — and both have to be the name the filesystem itself uses. macOS gives
+# that condition for free; Linux has to make it.
 #
 # Stopping needs a process table, which macOS does not publish. The tests that depend on
 # one assert the degraded behaviour there rather than standing aside quietly: the reclaim

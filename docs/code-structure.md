@@ -122,7 +122,7 @@ services/
     api_layer.rs       per-unit postgrest + gotrue + router containers
   docker.rs            thin wrapper: run/rm/inspect/label queries
 
-doctor/                what this machine has left behind; reads only, never removes (DL-015)
+doctor/                what this machine has left behind; reads only, never removes
   mod.rs               survey(): the sections, and which one a path belongs to
   size.rs              logical bytes and newest modification of a directory (no writes)
   attribution.rs       whose a Docker resource is when its name is the only evidence

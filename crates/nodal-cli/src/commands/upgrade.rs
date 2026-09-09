@@ -18,8 +18,8 @@ pub struct Upgrade {
 impl Upgrade {
     /// Print where this binary came from and the one command that upgrades it.
     ///
-    /// Nodal has no self-updater and makes no network call of its own (DL-034). This
-    /// command reads the path of the running executable and one local file. It fetches
+    /// Nodal has no self-updater and makes no network call of its own. This command
+    /// reads the path of the running executable and one local file. It fetches
     /// nothing, compares no version, and runs nothing.
     ///
     /// # Errors

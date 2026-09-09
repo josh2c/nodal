@@ -17,7 +17,7 @@
 #
 # The suite is then run again with the temporary directory reached through a symbolic
 # link, as the other acceptance scripts do: a home is recorded by the name the filesystem
-# uses (DL-037), and every path a resolved run compares against goes through that.
+# uses, and every path a resolved run compares against goes through that.
 set -eu
 
 cargo test --locked -p nodal-core --test lifecycle

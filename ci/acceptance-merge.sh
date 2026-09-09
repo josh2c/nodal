@@ -22,7 +22,7 @@
 # its own `$PWD`, which the shell takes from `getcwd` with every link already resolved.
 # macOS gives that condition to every test for free, because `/var` there is a link to
 # `/private/var` and every temporary directory is under it. Linux has no such link, so
-# the condition is made rather than waited for, and both hosts check it (DL-037).
+# the condition is made rather than waited for, and both hosts check it.
 set -eu
 
 cargo test --locked -p nodal-cli --test merge

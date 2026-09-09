@@ -86,7 +86,7 @@ trait Reclaiming {
     /// the exclusions that keep them out of `git status`.
     ///
     /// The command is given the name the caller has and the answer is the name the
-    /// filesystem uses (DL-037). Those are two different strings whenever the temporary
+    /// filesystem uses. Those are two different strings whenever the temporary
     /// directory is reached through a link — always on macOS, and on Linux under this
     /// suite's second run — and it is the resolved one the registry holds and every
     /// report prints, so it is the one a caller can compare anything against.

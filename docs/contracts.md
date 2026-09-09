@@ -155,8 +155,8 @@ waited on. A start-up file is byte-identical to the file it was before the insta
 
 `nodal upgrade`, and `nodal update`, report how this copy was installed — a cargo bin directory, a Homebrew
 cellar, a system package path, or a binary placed by hand — and print the one command that upgrades it there.
-Nodal has no self-updater and **makes no network call of its own** (DL-034): no update check, no telemetry, no
-version comparison. `tests/safety/tests/no_network.rs` asserts that no code path in either crate could make one.
+Nodal has no self-updater and **makes no network call of its own**: no update check, no telemetry, no version
+comparison. `tests/safety/tests/no_network.rs` asserts that no code path in either crate could make one.
 
 `done <unit>` sends a unit's work for review. It pushes two refs — the unit's branch, and a
 work-in-progress snapshot of everything the home holds that no commit does — with **one** `git push`,
@@ -257,7 +257,7 @@ done, and the report says so.
 unreferenced volumes, orphan databases and a project over the open-unit threshold, each with a size, in two
 sections: this project, and a separate section for another project's leftovers that carries names and sizes
 only. A worktree another tool holds a lock on is reported as locked and read no further. Removal of
-unmanaged state is a later command (`decisions/DL-015`).
+unmanaged state is a later command.
 
 The worktrees are every worktree the repository names, read from `git worktree list`. Where the directory
 sits is not part of the question: a worktree under the checkout, beside it, or anywhere else on the machine
@@ -297,8 +297,7 @@ model a filesystem to guess the other one.
 A registry a later Nodal wrote stops every other command (`StoreTooNew`). It does not stop `doctor`. Doctor
 is what a person runs when something is wrong, so it reports what needs no registry — the worktrees and the
 caches of the checkout — and states the mismatch as a note: both schema versions, the fact that nothing in
-the registry was read, and the one command that upgrades this copy of Nodal. Nothing is fetched to say it
-(DL-034).
+the registry was read, and the one command that upgrades this copy of Nodal. Nothing is fetched to say it.
 
 `--json` and the default output are two renderings of one value, so a field a person sees is a field a
 tool can read. A read type carries the instant it was taken as `now`, and every relative time it prints

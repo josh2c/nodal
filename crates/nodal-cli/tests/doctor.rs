@@ -9,7 +9,7 @@
 //! 4. A registry a later Nodal wrote does not end the answer. Every other command
 //!    refuses that file and stops; doctor is what a person runs when something is
 //!    wrong, so it reports what it can read and states the mismatch with the one
-//!    command that upgrades this copy (DL-034).
+//!    command that upgrades this copy.
 //!
 //! The machine here is one checkout with one nested worktree in it, which is enough to
 //! put a row in the first section. `crates/nodal-core/tests/doctor.rs` is what covers

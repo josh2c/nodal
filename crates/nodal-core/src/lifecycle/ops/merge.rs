@@ -22,7 +22,7 @@
 //! has moved is refused and the person runs the merge again, which rebases onto where
 //! it is now. There is no flag that overrides this, and nothing here pushes: the
 //! fast-forward moves a local branch in the project's own checkout, and sending it
-//! anywhere stays the person's own command (`decisions/DL-034`).
+//! anywhere stays the person's own command.
 //!
 //! **Nothing is squashed before it is recorded.** The branch tip is written to
 //! `refs/nodal/<id>/premerge` before the squash rewrites anything, and that ref is never

@@ -42,7 +42,7 @@
 //!
 //! One `for-each-ref` for the branches, one for the merged set, and one `rev-list` per
 //! branch ([`crate::git::branches`]). Nothing is fetched, nothing is pruned and no ref
-//! is written. What to do about a branch is a person's decision (`decisions/DL-015`).
+//! is written. What to do about a branch is a person's decision.
 
 use std::collections::BTreeSet;
 use std::path::Path;

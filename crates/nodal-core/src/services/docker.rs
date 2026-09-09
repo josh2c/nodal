@@ -345,7 +345,7 @@ pub enum Sweep {
 /// answer.
 ///
 /// This function removes nothing. It is the read `nodal doctor` is built on, and doctor
-/// reports rather than acts (`decisions/DL-015`).
+/// reports rather than acts.
 ///
 /// # Errors
 /// [`Error::Tool`] when the daemon answered and then wrote a document that is not the

@@ -15,10 +15,10 @@
 //! else has, the same uncommitted file, the same session record. What the test then
 //! asks is that the three rows say the same things.
 //!
-//! The last check is the one the command exists for. Doctor is read-only
-//! (`decisions/DL-015`), so this records the name, the size and the modification time of
-//! every path of the machine before the report and compares them after it. A report that
-//! changed one byte of the machine fails here.
+//! The last check is the one the command exists for. Doctor is read-only, so this
+//! records the name, the size and the modification time of every path of the machine
+//! before the report and compares them after it. A report that changed one byte of the
+//! machine fails here.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -601,7 +601,7 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, Option<SystemTime>)> {
 }
 
 // ---------------------------------------------------------------------------
-// A registry a later Nodal wrote (DL-034).
+// A registry a later Nodal wrote.
 // ---------------------------------------------------------------------------
 
 #[test]

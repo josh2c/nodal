@@ -1,9 +1,9 @@
 //! How this copy of Nodal was installed, and the one command that upgrades it.
 //!
-//! Nodal has no self-updater and makes no network call of its own (DL-034). Upgrading
-//! is the package manager's job. `nodal upgrade` and `nodal update` therefore answer
-//! the same question and nothing else: *what put this binary here, and what do I type
-//! to get a newer one?* Both verbs answer identically, because both are one call to
+//! Nodal has no self-updater and makes no network call of its own. Upgrading is the
+//! package manager's job. `nodal upgrade` and `nodal update` therefore answer the
+//! same question and nothing else: *what put this binary here, and what do I type to
+//! get a newer one?* Both verbs answer identically, because both are one call to
 //! [`read`] and one rendering of the answer.
 //!
 //! The answer is read, not guessed. The path of the running executable says which

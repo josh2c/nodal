@@ -10,7 +10,7 @@
 //! claim one.
 //!
 //! Doctor reports these. Dropping a database is a later command's decision, and it is
-//! not one this module can be asked to make (`decisions/DL-015`).
+//! not one this module can be asked to make.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
