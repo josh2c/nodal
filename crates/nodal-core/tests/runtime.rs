@@ -13,12 +13,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use nodal_core::model::{
-    Actor, ActorKind, ActorName, BranchName, Digest, EnvId, EnvState, Environment, HostName, Ports,
-    Project, ProjectId, ProjectName, Session, SessionId, Slug, Timestamp, Unit, UnitId, UnitStatus,
+    Actor, ActorKind, ActorName, EnvId, HostName, ProjectId, Session, SessionId, Timestamp, UnitId,
 };
 use nodal_core::runtime::processes::{Processes, Running};
 use nodal_core::runtime::sessions::{self, Attached};
-use nodal_core::store::{Store, environments, projects, sessions as rows, units};
+use nodal_core::store::{Store, environments, projects, sessions as session_rows, units};
+use nodal_safety::rows;
 
 /// The unit every row in this file belongs to.
 const UNIT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -48,42 +48,17 @@ fn host() -> HostName {
 /// A registry that holds one unit materialised at `home`, on `host`.
 fn registry(root: &Path, home: &Path, host: &HostName) -> Store {
     let now = Timestamp::now();
-    let unit = Unit {
-        id: UnitId::parse(UNIT).unwrap(),
-        project_id: ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap(),
-        slug: Slug::parse("fix-worker-import").unwrap(),
-        objective: None,
-        objective_epistemic: None,
-        branch: BranchName::parse("nodal/fix-worker-import").unwrap(),
-        parent_branch: None,
-        status: UnitStatus::Open,
-        created_at: now,
-        updated_at: now,
-    };
-    let environment = Environment {
-        id: EnvId::parse(ENVIRONMENT).unwrap(),
-        unit_id: unit.id,
-        attempt: 1,
-        home: home.to_path_buf(),
-        managed: true,
-        base_id: None,
-        ws_fp_materialized: None,
-        schema_fp_materialized: None,
-        host: host.clone(),
-        db_name: None,
-        ports: Ports::default(),
-        fixed_port: None,
-        state: EnvState::Stopped,
-        created_at: now,
-        last_active: now,
-    };
-    let project = Project {
-        id: unit.project_id,
-        root: root.join("checkout"),
-        name: ProjectName::parse("fixture").unwrap(),
-        recipe_hash: Digest::parse("0".repeat(64)).unwrap(),
-        created_at: now,
-    };
+    let project_id = ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap();
+    let unit = rows::unit(
+        UnitId::parse(UNIT).unwrap(),
+        project_id,
+        "fix-worker-import",
+        "nodal/fix-worker-import",
+        now,
+    );
+    let mut environment = rows::environment(EnvId::parse(ENVIRONMENT).unwrap(), unit.id, home, now);
+    environment.host = host.clone();
+    let project = rows::project(unit.project_id, root.join("checkout"), "fixture", now);
     let store = Store::open(root.join("registry.db")).unwrap();
     projects::insert(store.conn(), &project).unwrap();
     units::insert(store.conn(), &unit).unwrap();
@@ -123,7 +98,7 @@ fn a_session_opens_because_a_process_is_there_and_ends_because_it_is_gone() {
     )]);
     let opened = sessions::observe(store.conn(), &table, &host, Timestamp::now()).unwrap();
     assert_eq!(opened.opened, 1);
-    let open = rows::list_open(store.conn(), environment).unwrap();
+    let open = session_rows::list_open(store.conn(), environment).unwrap();
     assert_eq!(open.len(), 1);
     assert_eq!(open[0].pid, Some(4242));
 
@@ -135,7 +110,7 @@ fn a_session_opens_because_a_process_is_there_and_ends_because_it_is_gone() {
     let ended =
         sessions::observe(store.conn(), &Table(Vec::new()), &host, Timestamp::now()).unwrap();
     assert_eq!(ended.ended, 1);
-    assert!(rows::list_open(store.conn(), environment).unwrap().is_empty());
+    assert!(session_rows::list_open(store.conn(), environment).unwrap().is_empty());
 }
 
 #[test]
@@ -145,7 +120,7 @@ fn a_session_on_another_host_is_not_this_machines_to_close() {
     let elsewhere = HostName::parse("laptop").unwrap();
     let store = registry(directory.path(), &home, &elsewhere);
     let environment = EnvId::parse(ENVIRONMENT).unwrap();
-    rows::insert(
+    session_rows::insert(
         store.conn(),
         &Session {
             id: SessionId::parse("01ARZ3NDEKTSV4RRFFQ69G5FB0").unwrap(),
@@ -161,7 +136,7 @@ fn a_session_on_another_host_is_not_this_machines_to_close() {
 
     let change = sessions::reconcile(store.conn(), &host(), &[], Timestamp::now()).unwrap();
     assert_eq!(change.ended, 0);
-    assert_eq!(rows::list_open(store.conn(), environment).unwrap().len(), 1);
+    assert_eq!(session_rows::list_open(store.conn(), environment).unwrap().len(), 1);
 }
 
 #[test]
@@ -186,7 +161,7 @@ fn a_process_started_with_a_homes_environment_is_seen_on_this_machine() {
     let live = nodal_core::runtime::processes::Live;
     let opened = sessions::observe(store.conn(), &live, &host, Timestamp::now()).unwrap();
     assert_eq!(opened.opened, 1, "the process table did not show the process");
-    let open = rows::list_open(store.conn(), environment).unwrap();
+    let open = session_rows::list_open(store.conn(), environment).unwrap();
     assert_eq!(open[0].pid, Some(child.id()));
 
     child.kill().unwrap();

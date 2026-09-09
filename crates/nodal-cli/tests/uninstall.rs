@@ -27,6 +27,7 @@ mod state;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use nodal_safety::text::stdout;
 use tempfile::TempDir;
 
 /// A machine: a person's own directory, and Nodal's state directory beside it.
@@ -51,10 +52,10 @@ impl Machine {
 
     /// `nodal` with this machine's directories, run from the person's own directory.
     fn nodal(&self, args: &[&str]) -> Output {
-        let mut command = state::nodal(&self.state);
-        command.args(args).current_dir(&self.home);
-        command.env("HOME", &self.home).env("USERPROFILE", &self.home);
-        command.output().unwrap()
+        nodal_safety::runner::Runner::new(state::BINARY, &self.state, &self.home)
+            .with_env("HOME", &self.home)
+            .with_env("USERPROFILE", &self.home)
+            .nodal(args)
     }
 
     /// One shell's start-up file.
@@ -65,16 +66,6 @@ impl Machine {
             _ => self.home.join(".config/fish/config.fish"),
         }
     }
-}
-
-/// What a command printed on standard output, with a failure naming standard error.
-fn stdout(output: &Output) -> String {
-    assert!(
-        output.status.success(),
-        "the command failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 /// The bytes of a file, or `None` when the file is not there.
@@ -102,9 +93,9 @@ fn a_start_up_file_is_byte_identical_after_an_install_and_an_uninstall() {
             std::fs::write(&rc, text).unwrap();
         }
 
-        stdout(&machine.nodal(&["shell-init", "--install", "bash"]));
+        drop(stdout(&machine.nodal(&["shell-init", "--install", "bash"])));
         assert_ne!(bytes(&rc).as_deref(), before.map(str::as_bytes), "the install did nothing");
-        stdout(&machine.nodal(&["uninstall", "--yes"]));
+        drop(stdout(&machine.nodal(&["uninstall", "--yes"])));
 
         assert_eq!(
             bytes(&rc).as_deref().map(<[u8]>::to_vec),
@@ -123,11 +114,11 @@ fn every_shell_that_was_installed_into_comes_back_byte_identical() {
         let rc = machine.rc(shell);
         std::fs::create_dir_all(rc.parent().unwrap()).unwrap();
         std::fs::write(&rc, before).unwrap();
-        stdout(&machine.nodal(&["shell-init", "--install", shell]));
+        drop(stdout(&machine.nodal(&["shell-init", "--install", shell])));
         held.push(rc);
     }
 
-    stdout(&machine.nodal(&["uninstall", "--yes"]));
+    drop(stdout(&machine.nodal(&["uninstall", "--yes"])));
 
     for rc in held {
         assert_eq!(std::fs::read_to_string(&rc).unwrap(), before, "{}", rc.display());
@@ -139,11 +130,11 @@ fn lines_a_person_added_after_the_install_are_still_there_afterwards() {
     let machine = Machine::new();
     let rc = machine.rc("bash");
     std::fs::write(&rc, "first\n").unwrap();
-    stdout(&machine.nodal(&["shell-init", "--install", "bash"]));
+    drop(stdout(&machine.nodal(&["shell-init", "--install", "bash"])));
     let installed = std::fs::read_to_string(&rc).unwrap();
     std::fs::write(&rc, format!("{installed}last\n")).unwrap();
 
-    stdout(&machine.nodal(&["uninstall", "--yes"]));
+    drop(stdout(&machine.nodal(&["uninstall", "--yes"])));
 
     assert_eq!(std::fs::read_to_string(&rc).unwrap(), "first\nlast\n");
 }
@@ -154,13 +145,13 @@ fn installing_twice_writes_one_block_and_uninstalling_once_removes_it() {
     let rc = machine.rc("bash");
     std::fs::write(&rc, "PS1='$ '\n").unwrap();
 
-    stdout(&machine.nodal(&["shell-init", "--install", "bash"]));
+    drop(stdout(&machine.nodal(&["shell-init", "--install", "bash"])));
     let second = stdout(&machine.nodal(&["shell-init", "--install", "bash"]));
 
     assert!(second.contains("already there"), "{second}");
     let installed = std::fs::read_to_string(&rc).unwrap();
     assert_eq!(installed.matches("# >>> nodal >>>").count(), 1, "{installed}");
-    stdout(&machine.nodal(&["uninstall", "--yes"]));
+    drop(stdout(&machine.nodal(&["uninstall", "--yes"])));
     assert_eq!(std::fs::read_to_string(&rc).unwrap(), "PS1='$ '\n");
 }
 
@@ -171,7 +162,7 @@ fn installing_twice_writes_one_block_and_uninstalling_once_removes_it() {
 #[test]
 fn the_block_sources_a_file_nodal_wrote_and_runs_nothing_on_a_shell_start() {
     let machine = Machine::new();
-    stdout(&machine.nodal(&["shell-init", "--install", "bash"]));
+    drop(stdout(&machine.nodal(&["shell-init", "--install", "bash"])));
 
     let block = std::fs::read_to_string(machine.rc("bash")).unwrap();
     let shim = machine.state.join("shims/nodal.bash");
@@ -193,7 +184,7 @@ fn a_bash_that_reads_the_start_up_file_gets_the_function_and_no_error() {
     let Some(bash) = which("bash") else { return };
     let machine = Machine::new();
     std::fs::write(machine.rc("bash"), "PS1=''\n").unwrap();
-    stdout(&machine.nodal(&["shell-init", "--install", "bash"]));
+    drop(stdout(&machine.nodal(&["shell-init", "--install", "bash"])));
 
     let output = Command::new(bash)
         .args(["--noprofile", "--rcfile", &machine.rc("bash").display().to_string(), "-i"])
@@ -213,11 +204,11 @@ fn a_bash_that_reads_the_start_up_file_gets_the_function_and_no_error() {
 #[test]
 fn the_shims_go_with_the_block_and_the_directory_goes_with_the_last_of_them() {
     let machine = Machine::new();
-    stdout(&machine.nodal(&["shell-init", "--install", "bash"]));
-    stdout(&machine.nodal(&["shell-init", "--install", "zsh"]));
+    drop(stdout(&machine.nodal(&["shell-init", "--install", "bash"])));
+    drop(stdout(&machine.nodal(&["shell-init", "--install", "zsh"])));
     assert!(machine.state.join("shims/nodal.zsh").is_file());
 
-    stdout(&machine.nodal(&["uninstall", "--yes"]));
+    drop(stdout(&machine.nodal(&["uninstall", "--yes"])));
 
     assert!(!machine.state.join("shims").exists(), "the scripts directory is still there");
 }
@@ -230,7 +221,7 @@ fn the_shims_go_with_the_block_and_the_directory_goes_with_the_last_of_them() {
 fn every_item_is_named_with_its_path_before_anything_is_removed() {
     let machine = Machine::new();
     std::fs::write(machine.rc("bash"), "PS1='$ '\n").unwrap();
-    stdout(&machine.nodal(&["shell-init", "--install", "bash"]));
+    drop(stdout(&machine.nodal(&["shell-init", "--install", "bash"])));
 
     let listed = machine.nodal(&["uninstall", "--dry-run"]);
     let summary = String::from_utf8_lossy(&listed.stderr);
@@ -248,7 +239,7 @@ fn every_item_is_named_with_its_path_before_anything_is_removed() {
 #[test]
 fn a_terminal_nobody_is_watching_is_refused_rather_than_waited_on() {
     let machine = Machine::new();
-    stdout(&machine.nodal(&["shell-init", "--install", "bash"]));
+    drop(stdout(&machine.nodal(&["shell-init", "--install", "bash"])));
 
     let refused = machine.nodal(&["uninstall"]);
 
@@ -268,10 +259,10 @@ fn a_machine_with_nothing_installed_says_so_and_removes_nothing() {
 #[test]
 fn the_state_directory_stays_until_it_is_asked_for() {
     let machine = Machine::new();
-    stdout(&machine.nodal(&["shell-init", "--install", "bash"]));
+    drop(stdout(&machine.nodal(&["shell-init", "--install", "bash"])));
     std::fs::write(machine.state.join("registry.db"), b"").unwrap();
 
-    stdout(&machine.nodal(&["uninstall", "--yes"]));
+    drop(stdout(&machine.nodal(&["uninstall", "--yes"])));
 
     assert!(machine.state.join("registry.db").is_file(), "the registry went unasked");
 

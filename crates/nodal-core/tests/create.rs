@@ -18,200 +18,24 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+mod support;
 
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+
+use nodal_core::lifecycle;
 use nodal_core::lifecycle::journal::{self, State, StepRecord, StepState};
 use nodal_core::lifecycle::ops::new::{self, Params};
-use nodal_core::lifecycle::owner::{Liveness, Owner};
 use nodal_core::lifecycle::{Action, guard, marker, ops};
-use nodal_core::model::{
-    Base, BranchName, Digest, EnvState, Environment, OperationId, Platform, Ports, Project,
-    ProjectName, Recipe, Slug, Timestamp, Unit, UnitStatus, WorkspaceFp,
-};
+use nodal_core::model::{OperationId, Timestamp};
 use nodal_core::store::{Store, bases, environments, projects, units};
-use nodal_core::{Error, lifecycle};
 use serde_json::Value;
-use tempfile::TempDir;
-
-/// A project, the base built from it, a state directory, and the registry in it.
-struct Fixture {
-    /// Everything the test makes. Kept so that the temporary directory outlives the
-    /// test, and read by the drop that opens what the test locked.
-    root: TempDir,
-    /// The person's checkout. Read to decide the base; never cloned into a home.
-    source: PathBuf,
-    /// Nodal's state directory.
-    state: PathBuf,
-    /// The base a home is cloned from.
-    base: PathBuf,
-}
-
-impl Fixture {
-    fn new() -> Self {
-        let root = TempDir::new().unwrap();
-        let source = root.path().join("project");
-        std::fs::create_dir_all(&source).unwrap();
-        std::fs::write(source.join("README.md"), "a project\n").unwrap();
-        for args in [
-            vec!["init", "-q", "-b", "main"],
-            vec!["config", "user.email", "unit@example.invalid"],
-            vec!["config", "user.name", "Test"],
-            vec!["add", "-A"],
-            vec!["commit", "-qm", "first"],
-        ] {
-            assert!(
-                Command::new("git").args(&args).current_dir(&source).status().unwrap().success()
-            );
-        }
-        let state = root.path().join("state");
-        let base = state.join("project").join("b").join("00000004");
-        clone_to_base(&source, &base);
-        Self { root, source, state, base }
-    }
-
-    fn store(&self) -> Store {
-        Store::open(self.state.join("registry.db")).unwrap()
-    }
-}
-
-/// Open everything the test made before the temporary directory is removed.
-///
-/// A test here plants the read-only content a base really holds, and a directory that
-/// denies a write is a directory `TempDir` cannot remove: without this, every run of the
-/// suite would leave one behind in the temporary directory, which is the very fault
-/// these tests exist to catch. It runs before the `TempDir` field is dropped, and it
-/// runs when a test panics as well as when it passes.
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let mut pending = vec![self.root.path().to_path_buf()];
-        while let Some(directory) = pending.pop() {
-            nodal_fixture::read_only::open(&directory);
-            let Ok(entries) = std::fs::read_dir(&directory) else { continue };
-            for entry in entries.flatten() {
-                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                    pending.push(entry.path());
-                }
-            }
-        }
-    }
-}
-
-impl Fixture {
-    /// The base row the environment names, which its foreign key requires.
-    fn base_row(&self) -> Base {
-        let at = Timestamp::parse("2026-09-07T09:00:00Z").unwrap();
-        Base {
-            id: id('4'),
-            project_id: id('1'),
-            ws_fingerprint: WorkspaceFp(Digest::parse("00000000000000000000000000000004").unwrap()),
-            platform: Platform::parse("x86_64-unknown-linux-gnu").unwrap(),
-            commit: git(&self.source, &["rev-parse", "HEAD"]).parse().unwrap(),
-            path: self.base.clone(),
-            built_at: at,
-            last_used: at,
-        }
-    }
-
-    /// The parameters of a create, with every identifier fixed so that two builds of
-    /// the plan are the same plan.
-    fn params(&self) -> Params {
-        let at = Timestamp::parse("2026-09-07T09:00:00Z").unwrap();
-        let project = Project {
-            id: id('1'),
-            root: self.source.clone(),
-            name: ProjectName::parse("project").unwrap(),
-            recipe_hash: Digest::parse("abc123").unwrap(),
-            created_at: at,
-        };
-        let unit = Unit {
-            id: id('2'),
-            project_id: project.id,
-            slug: Slug::parse("worker-import").unwrap(),
-            objective: None,
-            objective_epistemic: None,
-            branch: BranchName::parse("nodal/worker-import").unwrap(),
-            parent_branch: None,
-            status: UnitStatus::Open,
-            created_at: at,
-            updated_at: at,
-        };
-        let environment = Environment {
-            id: id('3'),
-            unit_id: unit.id,
-            attempt: 1,
-            home: self.state.join("project").join("e").join("00000001"),
-            managed: true,
-            base_id: Some(id('4')),
-            ws_fp_materialized: None,
-            schema_fp_materialized: None,
-            host: nodal_core::lifecycle::owner::current_host(),
-            db_name: None,
-            ports: Ports::default(),
-            fixed_port: None,
-            state: EnvState::Stopped,
-            created_at: at,
-            last_active: at,
-        };
-        Params {
-            project,
-            recipe: Recipe::default(),
-            base_path: self.base.clone(),
-            state_dir: self.state.clone(),
-            unit,
-            environment,
-            block: nodal_core::model::PortBlock {
-                project_id: id('1'),
-                first: 20_000,
-                last: 20_099,
-            },
-            ports: vec!["app".parse().unwrap()],
-        }
-    }
-}
-
-fn id<T: std::str::FromStr<Err = Error>>(last: char) -> T {
-    format!("01J8Z6H000000000000000000{last}").parse().unwrap()
-}
-
-/// Make the base the plan clones, the way the substrate makes one: a clone of the
-/// checkout, detached at its commit, so the base holds what is committed and no more.
-fn clone_to_base(source: &Path, base: &Path) {
-    std::fs::create_dir_all(base.parent().unwrap()).unwrap();
-    let parent = base.parent().unwrap();
-    assert!(
-        Command::new("git")
-            .args(["clone", "--quiet", "--"])
-            .arg(source)
-            .arg(base)
-            .current_dir(parent)
-            .status()
-            .unwrap()
-            .success()
-    );
-    let head = git(source, &["rev-parse", "HEAD"]);
-    assert!(
-        Command::new("git")
-            .args(["checkout", "--force", "--detach", &head])
-            .current_dir(base)
-            .status()
-            .unwrap()
-            .success()
-    );
-}
-
-/// `git` in a directory, as trimmed text, with the call insisted upon.
-fn git(directory: &Path, args: &[&str]) -> String {
-    let output = Command::new("git").args(args).current_dir(directory).output().unwrap();
-    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
-}
+use support::World;
 
 #[test]
 fn the_plan_is_the_same_plan_however_it_is_built() {
-    let fixture = Fixture::new();
-    let params = fixture.params();
+    let fixture = World::plain();
+    let params = fixture.create_params();
     let built = new::plan(&params).unwrap();
     assert_eq!(
         built.keys(),
@@ -239,8 +63,8 @@ fn the_plan_is_the_same_plan_however_it_is_built() {
 
 #[test]
 fn applying_the_steps_twice_changes_nothing_and_undoing_them_leaves_nothing() {
-    let fixture = Fixture::new();
-    let params = fixture.params();
+    let fixture = World::plain();
+    let params = fixture.create_params();
     let home = params.environment.home.clone();
 
     let plan = new::plan(&params).unwrap();
@@ -260,8 +84,8 @@ fn applying_the_steps_twice_changes_nothing_and_undoing_them_leaves_nothing() {
 
 #[test]
 fn a_run_whose_process_is_gone_is_rebuilt_and_rolled_back_to_nothing() {
-    let fixture = Fixture::new();
-    let params = fixture.params();
+    let fixture = World::plain();
+    let params = fixture.create_params();
     let home = params.environment.home.clone();
     let record = journalled(&fixture, &params);
 
@@ -304,7 +128,7 @@ fn a_run_whose_process_is_gone_is_rebuilt_and_rolled_back_to_nothing() {
 
 #[test]
 fn a_base_that_holds_what_a_real_one_holds_is_cloned() {
-    let fixture = Fixture::new();
+    let fixture = World::plain();
     let marked = nodal_fixture::read_only::mark_git_objects(&fixture.base);
     if marked == 0 {
         eprintln!("this filesystem holds no extended attributes; nothing to prove here");
@@ -317,7 +141,7 @@ fn a_base_that_holds_what_a_real_one_holds_is_cloned() {
     nodal_fixture::read_only::lock(&locked);
     nodal_fixture::read_only::lock(locked.parent().unwrap());
 
-    let params = fixture.params();
+    let params = fixture.create_params();
     let home = params.environment.home.clone();
     let plan = new::plan(&params).unwrap();
     for step in &plan.steps {
@@ -339,7 +163,7 @@ fn a_base_that_holds_what_a_real_one_holds_is_cloned() {
 
 #[test]
 fn a_materialize_that_fails_part_way_leaves_no_home_and_no_row() {
-    let fixture = Fixture::new();
+    let fixture = World::plain();
     // SAFETY: `geteuid` takes no argument, reads no memory the caller owns and has no
     // failure case; it is unsafe only because it is a foreign function.
     let effective_user = unsafe { libc::geteuid() };
@@ -355,7 +179,7 @@ fn a_materialize_that_fails_part_way_leaves_no_home_and_no_row() {
     std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
     nodal_fixture::read_only::lock(shut.parent().unwrap());
 
-    let params = fixture.params();
+    let params = fixture.create_params();
     let home = params.environment.home.clone();
     let store = fixture.store();
     projects::insert(store.conn(), &params.project).unwrap();
@@ -380,8 +204,8 @@ fn a_materialize_that_fails_part_way_leaves_no_home_and_no_row() {
 
 #[test]
 fn a_home_is_refused_inside_a_project_or_another_units_home() {
-    let fixture = Fixture::new();
-    let params = fixture.params();
+    let fixture = World::plain();
+    let params = fixture.create_params();
     let store = fixture.store();
     projects::insert(store.conn(), &params.project).unwrap();
     bases::insert(store.conn(), &fixture.base_row()).unwrap();
@@ -400,13 +224,8 @@ fn a_home_is_refused_inside_a_project_or_another_units_home() {
 }
 
 /// Journal a run of this plan as started by a process that is no longer there.
-fn journalled(fixture: &Fixture, params: &Params) -> journal::Operation {
-    let store = fixture.store();
-    let id = OperationId::from_ulid(ulid::Ulid::new());
-    let gone = Owner { host: Owner::current().host, pid: dead_pid() };
-    let at = Timestamp::parse("2026-09-07T09:00:00Z").unwrap();
-    journal::start(store.conn(), id, &new::plan(params).unwrap(), &gone, at).unwrap();
-    journal::get(store.conn(), id).unwrap().expect("the run is journalled")
+fn journalled(world: &World, params: &Params) -> journal::Operation {
+    support::journal_of(world, &new::plan(params).unwrap())
 }
 
 /// Write down that a step of a run reached a state, with what it produced.
@@ -426,23 +245,4 @@ fn mark(
         updated_at: Timestamp::now(),
     };
     journal::mark_step(store.conn(), id, &record).unwrap();
-}
-
-/// A process identifier that is certainly not running on this host.
-fn dead_pid() -> u32 {
-    let here = Owner::current();
-    for _ in 0..16 {
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .arg("--list")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let pid = child.id();
-        child.wait().unwrap();
-        if (Owner { host: here.host.clone(), pid }).state(&here) == Liveness::Gone {
-            return pid;
-        }
-    }
-    panic!("no process identifier stayed free long enough to use");
 }

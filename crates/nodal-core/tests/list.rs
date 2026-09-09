@@ -22,14 +22,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use nodal_core::git::Git;
-use nodal_core::model::{
-    BranchName, Digest, EnvId, EnvState, Environment, HostName, Ports, Project, ProjectId,
-    ProjectName, Slug, Timestamp, Unit, UnitId, UnitStatus,
-};
+use nodal_core::model::{Digest, HostName, Project, ProjectId, ProjectName, Timestamp, UnitId};
 use nodal_core::runtime::processes::{Processes, Running};
 use nodal_core::runtime::{entry, ls};
-use nodal_core::store::{Store, environments, projects, units};
+use nodal_core::store::{Store, projects};
 use nodal_fixture::shapes::{self, Branch};
+use nodal_safety::rows;
 use tempfile::TempDir;
 
 /// The revision every home is measured against.
@@ -99,8 +97,7 @@ impl Fixture {
                 directory.path().join("homes").join(branch.name),
                 branch.name,
             );
-            let id =
-                record(&store, &project, &Row { branch: branch.name, index, home: &home }, now);
+            let id = record(&store, &project, branch.name, index, &home);
             units.insert(branch.name, (id, home));
         }
         Self { directory, store, project, units }
@@ -117,51 +114,13 @@ impl Fixture {
     }
 }
 
-/// One unit of the fixture: which shape it is, which one of them, and where it lives.
-struct Row<'a> {
-    /// The branch of the origin repository the home is on.
-    branch: &'static str,
-    /// Which unit this is, so identifiers stay fixed.
-    index: usize,
-    /// The clone the unit is materialised in.
-    home: &'a Path,
-}
-
 /// Record a unit and its home, and return the unit's identity.
-fn record(store: &Store, project: &Project, row: &Row<'_>, now: Timestamp) -> UnitId {
-    let (branch, index, home) = (row.branch, row.index, row.home);
-    let unit = Unit {
-        id: UnitId::parse(format!("01ARZ3NDEKTSV4RRFFQ69G5F{index:02}")).unwrap(),
-        project_id: project.id,
-        slug: Slug::parse(branch).unwrap(),
-        objective: None,
-        objective_epistemic: None,
-        branch: BranchName::parse(branch).unwrap(),
-        parent_branch: None,
-        status: UnitStatus::Open,
-        created_at: now,
-        updated_at: now,
-    };
-    let environment = Environment {
-        id: EnvId::parse(format!("01ARZ3NDEKTSV4RRFFQ69G5E{index:02}")).unwrap(),
-        unit_id: unit.id,
-        attempt: 1,
-        home: home.to_path_buf(),
-        managed: true,
-        base_id: None,
-        ws_fp_materialized: None,
-        schema_fp_materialized: None,
-        host: host(),
-        db_name: None,
-        ports: Ports::default(),
-        fixed_port: None,
-        state: EnvState::Stopped,
-        created_at: now,
-        last_active: now,
-    };
-    units::insert(store.conn(), &unit).unwrap();
-    environments::insert(store.conn(), &environment).unwrap();
-    unit.id
+///
+/// The host is this fixture's own rather than the machine's: these tests are about what
+/// the list says of a unit that stands somewhere else.
+fn record(store: &Store, project: &Project, branch: &str, index: usize, home: &Path) -> UnitId {
+    let row = rows::Row { index, slug: branch, branch, home, host: host() };
+    rows::record(store, project.id, &row).id
 }
 
 /// The verdict a branch's clone gets, read straight from the Git facade.

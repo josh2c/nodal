@@ -39,8 +39,8 @@ use std::time::{Duration, Instant};
 
 use nodal_core::adapters::claude_code::REFUSED;
 use nodal_core::model::{Epistemic, EventKind};
-use nodal_core::store::{Store, events, projects, units};
-use tempfile::TempDir;
+use nodal_core::store::events;
+use nodal_safety::{InState as _, Workspace};
 
 /// The shell a hook command runs in, named by its path.
 const SHELL: &str = "/bin/sh";
@@ -50,65 +50,37 @@ const SHELL: &str = "/bin/sh";
 const REFUSAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A project, its state directory, and a home directory belonging to nobody.
-struct Project {
-    /// The temporary root, kept so that it outlives the test.
-    _root: TempDir,
-    /// The project's repository.
-    source: PathBuf,
-    /// Nodal's state directory.
-    state: PathBuf,
-    /// What `$HOME` is for every command, so that no test reads the start-up files of
-    /// whoever is running it.
-    home: PathBuf,
+///
+/// The home directory is the reason this suite gives its commands one more variable
+/// than the shared fixture does: the hooks this suite installs are read out of a user's
+/// own settings, and no test may read the ones belonging to whoever is running it.
+fn project() -> Workspace {
+    let workspace = Workspace::new(state::BINARY);
+    let home = workspace.root().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    workspace.with_env("HOME", &home).with_env("USERPROFILE", &home)
 }
 
-impl Project {
-    /// A one-commit repository, with no recipe yet.
-    fn new() -> Self {
-        let root = TempDir::new().unwrap();
-        let source = root.path().join("project");
-        let state = root.path().join("state");
-        let home = root.path().join("home");
-        std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(source.join("app")).unwrap();
-        std::fs::write(source.join("app").join("main.txt"), "shared\n").unwrap();
-        std::fs::write(source.join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
-        for args in [
-            vec!["init", "-q", "-b", "main"],
-            vec!["config", "user.email", "unit@example.invalid"],
-            vec!["config", "user.name", "Test"],
-            vec!["add", "-A"],
-            vec!["commit", "-qm", "first"],
-        ] {
-            let status = Command::new("git").args(&args).current_dir(&source).status().unwrap();
-            assert!(status.success(), "git {args:?}");
-        }
-        Self { _root: root, source, state, home }
-    }
+/// The same, with a recipe written and the hooks installed.
+fn initialised_project() -> Workspace {
+    let project = project();
+    succeed(&project.nodal(&["init", "--claude-hooks"]));
+    project
+}
 
-    /// The same, with a recipe written and the hooks installed.
-    fn initialised() -> Self {
-        let project = Self::new();
-        succeed(&project.nodal(&["init", "--claude-hooks"]));
-        project
-    }
-
-    /// `nodal` with this project's state directory, run in the project.
-    fn nodal(&self, args: &[&str]) -> Output {
-        self.command(args).output().unwrap()
-    }
-
-    /// The same invocation, not yet run.
-    fn command(&self, args: &[&str]) -> Command {
-        let mut command = state::nodal(&self.state);
-        command.args(args).current_dir(&self.source);
-        command.env("HOME", &self.home).env("USERPROFILE", &self.home);
-        command.env("NODAL_SECRETS_FILE", self.state.join("secrets.env"));
-        command.env("NODAL_HOOKS_FILE", self.state.join("hooks.toml"));
-        command
-    }
-
+/// The readings this suite needs beyond the ones the shared fixture has.
+trait Hooked {
     /// Answer one hook, with `payload` on standard input, as Claude Code does.
+    fn hook(&self, event: &str, payload: &str) -> Output;
+
+    /// The settings file this project's hooks are in.
+    fn settings(&self) -> PathBuf;
+
+    /// The one unit this project has.
+    fn unit_row(&self) -> nodal_core::model::Unit;
+}
+
+impl Hooked for Workspace {
     fn hook(&self, event: &str, payload: &str) -> Output {
         let mut child = self
             .command(&["claude-code", event])
@@ -121,21 +93,12 @@ impl Project {
         child.wait_with_output().unwrap()
     }
 
-    /// The settings file this project's hooks are in.
     fn settings(&self) -> PathBuf {
         self.source.join(".claude").join("settings.json")
     }
 
-    /// The registry, opened for reading what a hook wrote.
-    fn store(&self) -> Store {
-        Store::open(self.state.join("registry.db")).unwrap()
-    }
-
-    /// The one unit this project has.
-    fn unit(&self) -> nodal_core::model::Unit {
-        let store = self.store();
-        let project = projects::list(store.conn()).unwrap().pop().expect("the project is known");
-        units::list(store.conn(), project.id).unwrap().pop().expect("a unit was made")
+    fn unit_row(&self) -> nodal_core::model::Unit {
+        self.one_unit()
     }
 }
 
@@ -171,7 +134,7 @@ fn stderr(output: &Output) -> String {
 
 #[test]
 fn the_provider_makes_a_unit_and_answers_with_a_home_claude_would_accept() {
-    let project = Project::initialised();
+    let project = initialised_project();
     let answered = succeed(&project.hook("worktree-create", &create_payload(&project.source)));
 
     let lines: Vec<&str> = answered.lines().collect();
@@ -188,10 +151,10 @@ fn the_provider_makes_a_unit_and_answers_with_a_home_claude_would_accept() {
 
 #[test]
 fn the_slug_claude_derived_becomes_the_unit_and_is_marked_recovered() {
-    let project = Project::initialised();
+    let project = initialised_project();
     succeed(&project.hook("worktree-create", &create_payload(&project.source)));
 
-    let unit = project.unit();
+    let unit = project.unit_row();
     assert_eq!(unit.slug.as_str(), "say-hi-6fac65", "the payload's own slug was not used");
     assert_eq!(
         unit.objective.as_ref().map(nodal_core::model::Objective::as_str),
@@ -206,7 +169,7 @@ fn the_slug_claude_derived_becomes_the_unit_and_is_marked_recovered() {
 
 #[test]
 fn a_project_with_no_recipe_is_refused_with_a_path_claude_would_reject() {
-    let project = Project::new();
+    let project = project();
     let refused = project.hook("worktree-create", &create_payload(&project.source));
 
     assert!(!refused.status.success(), "a project with no recipe made a unit anyway");
@@ -225,7 +188,7 @@ fn a_project_with_no_recipe_is_refused_with_a_path_claude_would_reject() {
 
 #[test]
 fn a_machine_with_no_nodal_refuses_at_once_rather_than_hanging() {
-    let project = Project::initialised();
+    let project = initialised_project();
     let installed = std::fs::read_to_string(project.settings()).unwrap();
     let command = provider_command(&installed);
 
@@ -244,7 +207,7 @@ fn a_machine_with_no_nodal_refuses_at_once_rather_than_hanging() {
 
 #[test]
 fn an_observer_on_a_machine_with_no_nodal_says_nothing_and_succeeds() {
-    let project = Project::initialised();
+    let project = initialised_project();
     let installed = std::fs::read_to_string(project.settings()).unwrap();
     let command = observer_command(&installed, "session-start");
 
@@ -259,7 +222,7 @@ fn an_observer_on_a_machine_with_no_nodal_says_nothing_and_succeeds() {
 
 #[test]
 fn the_memory_is_printed_inside_a_unit_home_and_nowhere_else() {
-    let project = Project::initialised();
+    let project = initialised_project();
     let home = succeed(&project.hook("worktree-create", &create_payload(&project.source)));
     let home = PathBuf::from(home.trim());
 
@@ -278,7 +241,7 @@ fn the_memory_is_printed_inside_a_unit_home_and_nowhere_else() {
 
 #[test]
 fn two_session_identifiers_over_one_path_are_one_answer() {
-    let project = Project::initialised();
+    let project = initialised_project();
     let home = PathBuf::from(
         succeed(&project.hook("worktree-create", &create_payload(&project.source)))
             .trim()
@@ -294,7 +257,7 @@ fn two_session_identifiers_over_one_path_are_one_answer() {
 
 #[test]
 fn a_stop_that_carries_a_message_states_a_handoff() {
-    let project = Project::initialised();
+    let project = initialised_project();
     let home = PathBuf::from(
         succeed(&project.hook("worktree-create", &create_payload(&project.source)))
             .trim()
@@ -311,7 +274,7 @@ fn a_stop_that_carries_a_message_states_a_handoff() {
     assert!(said.is_empty(), "the stop hook printed into a session that was ending: {said}");
 
     let store = project.store();
-    let handoff = events::list_for_unit(store.conn(), project.unit().id)
+    let handoff = events::list_for_unit(store.conn(), project.unit_row().id)
         .unwrap()
         .into_iter()
         .find(|event| event.kind == EventKind::Handoff)
@@ -327,13 +290,14 @@ fn a_stop_that_carries_a_message_states_a_handoff() {
 
 #[test]
 fn a_desktop_stop_that_carries_neither_message_nor_transcript_is_silent() {
-    let project = Project::initialised();
+    let project = initialised_project();
     let home = PathBuf::from(
         succeed(&project.hook("worktree-create", &create_payload(&project.source)))
             .trim()
             .to_owned(),
     );
-    let before = events::list_for_unit(project.store().conn(), project.unit().id).unwrap().len();
+    let before =
+        events::list_for_unit(project.store().conn(), project.unit_row().id).unwrap().len();
     let payload = format!(
         "{{\"session_id\":\"a\",\"transcript_path\":\"\",\"cwd\":\"{}\",\
          \"hook_event_name\":\"Stop\"}}",
@@ -344,7 +308,7 @@ fn a_desktop_stop_that_carries_neither_message_nor_transcript_is_silent() {
     assert!(output.status.success(), "a desktop session ending was reported as a failure");
     assert!(output.stdout.is_empty() && output.stderr.is_empty(), "it said something: {output:?}");
     assert_eq!(
-        events::list_for_unit(project.store().conn(), project.unit().id).unwrap().len(),
+        events::list_for_unit(project.store().conn(), project.unit_row().id).unwrap().len(),
         before,
         "silence was recorded as a handoff"
     );
@@ -352,7 +316,7 @@ fn a_desktop_stop_that_carries_neither_message_nor_transcript_is_silent() {
 
 #[test]
 fn a_worktree_removal_removes_nothing_and_the_unit_outlives_the_session() {
-    let project = Project::initialised();
+    let project = initialised_project();
     let home = PathBuf::from(
         succeed(&project.hook("worktree-create", &create_payload(&project.source)))
             .trim()
@@ -374,7 +338,7 @@ fn a_worktree_removal_removes_nothing_and_the_unit_outlives_the_session() {
 
 #[test]
 fn the_settings_file_names_no_directory_of_this_machine() {
-    let project = Project::initialised();
+    let project = initialised_project();
     let installed = std::fs::read_to_string(project.settings()).unwrap();
 
     for absent in [project.source.display().to_string(), project.state.display().to_string()] {
@@ -386,7 +350,7 @@ fn the_settings_file_names_no_directory_of_this_machine() {
 
 #[test]
 fn the_hooks_go_in_and_come_out_and_leave_the_file_they_found() {
-    let project = Project::new();
+    let project = project();
     let theirs = "{\n  \"hooks\": {\n    \"PreToolUse\": [\n      {\n        \"hooks\": [\n          \
                   {\n            \"type\": \"command\",\n            \"command\": \"./audit.sh\"\n \
                            }\n        ]\n      }\n    ]\n  }\n}\n";
@@ -408,7 +372,7 @@ fn the_hooks_go_in_and_come_out_and_leave_the_file_they_found() {
 
 #[test]
 fn a_second_install_writes_the_same_file_and_a_removal_takes_the_file_it_made() {
-    let project = Project::initialised();
+    let project = initialised_project();
     let once = std::fs::read_to_string(project.settings()).unwrap();
     succeed(&project.nodal(&["init", "--force", "--claude-hooks"]));
     assert_eq!(

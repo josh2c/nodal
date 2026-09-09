@@ -27,16 +27,17 @@ mod state;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use nodal_core::context;
 use nodal_core::model::{
-    Actor, ActorKind, ActorName, BranchName, Digest, EnvId, EnvState, Environment, Epistemic,
-    Event, EventId, EventKind, Ports, Project, ProjectId, ProjectName, Slug, Timestamp, Unit,
-    UnitId, UnitStatus,
+    Actor, ActorKind, ActorName, Digest, Epistemic, Event, EventId, EventKind, Project, ProjectId,
+    ProjectName, Slug, Timestamp, UnitId,
 };
-use nodal_core::store::{Store, environments, events, projects, units};
+use nodal_core::store::{Store, events, projects, units};
 use nodal_fixture::shapes;
+use nodal_safety::git::{git as git_output, git_ok as git};
+use nodal_safety::rows;
 
 /// How many units the size budget is proved at. A dozen is more than a person keeps
 /// open and is the number the file has to stay readable at.
@@ -198,38 +199,8 @@ fn busy(home: &Path, index: usize) {
 
 /// Record one unit and the home it is materialised in.
 fn record(store: &Store, project: &Project, slug: &str, index: usize, home: &Path) {
-    let now = Timestamp::now();
-    let unit = Unit {
-        id: UnitId::parse(format!("01ARZ3NDEKTSV4RRFFQ69G5F{index:02}")).unwrap(),
-        project_id: project.id,
-        slug: Slug::parse(slug).unwrap(),
-        objective: None,
-        objective_epistemic: None,
-        branch: BranchName::parse(slug).unwrap(),
-        parent_branch: None,
-        status: UnitStatus::Open,
-        created_at: now,
-        updated_at: now,
-    };
-    let environment = Environment {
-        id: EnvId::parse(format!("01ARZ3NDEKTSV4RRFFQ69G5E{index:02}")).unwrap(),
-        unit_id: unit.id,
-        attempt: 1,
-        home: home.to_path_buf(),
-        managed: true,
-        base_id: None,
-        ws_fp_materialized: None,
-        schema_fp_materialized: None,
-        host: nodal_core::lifecycle::owner::current_host(),
-        db_name: None,
-        ports: Ports::default(),
-        fixed_port: None,
-        state: EnvState::Stopped,
-        created_at: now,
-        last_active: now,
-    };
-    units::insert(store.conn(), &unit).unwrap();
-    environments::insert(store.conn(), &environment).unwrap();
+    let row = rows::Row { index, slug, branch: slug, home, host: rows::host() };
+    drop(rows::record(store, project.id, &row));
 }
 
 // ---------------------------------------------------------------------------
@@ -607,19 +578,6 @@ fn make_runnable(_path: &Path) {}
 /// Read a file that has to be there.
 fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
-}
-
-/// Run `git` in a repository, refusing a failure.
-fn git(repo: &Path, args: &[&str]) {
-    let output = Command::new("git").args(args).current_dir(repo).output().unwrap();
-    assert!(output.status.success(), "git {args:?}: {}", text(&output.stderr));
-}
-
-/// The standard output of a `git` command that has to succeed.
-fn git_output(repo: &Path, args: &[&str]) -> String {
-    let output = Command::new("git").args(args).current_dir(repo).output().unwrap();
-    assert!(output.status.success(), "git {args:?}: {}", text(&output.stderr));
-    text(&output.stdout).trim().to_owned()
 }
 
 /// The settings that make a fixture's history the same on every machine.

@@ -26,10 +26,13 @@
 mod state;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use nodal_core::model::{EnvState, Epistemic, UnitStatus};
 use nodal_core::store::{Store, environments, projects, trash, units};
+use nodal_safety::git::git_text as git;
+use nodal_safety::project::resolved;
+use nodal_safety::text::{stderr, stdout};
 use tempfile::TempDir;
 
 /// The prompt the fixture's session record holds, which is what a recovery must find.
@@ -58,7 +61,7 @@ impl Workspace {
     fn with_recipe(recipe: &str) -> Self {
         let workspace = Self::new();
         std::fs::write(workspace.source.join("nodal.toml"), recipe).unwrap();
-        stdout(&workspace.nodal(&["init", "--force"]));
+        drop(stdout(&workspace.nodal(&["init", "--force"])));
         workspace
     }
 
@@ -71,17 +74,11 @@ impl Workspace {
         std::fs::create_dir_all(&source).unwrap();
         std::fs::write(source.join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
         std::fs::write(source.join("a.txt"), "one\n").unwrap();
-        for args in [
-            vec!["init", "-q", "-b", "main"],
-            vec!["config", "user.email", "unit@example.invalid"],
-            vec!["config", "user.name", "Test"],
-            vec!["add", "-A"],
-            vec!["commit", "-qm", "first"],
-        ] {
-            git(&source, &args);
-        }
+        nodal_safety::git::init(&source, "main");
+        drop(git(&source, &["add", "-A"]));
+        drop(git(&source, &["commit", "-qm", "first"]));
         let workspace = Self { _root: root, source, state, sessions };
-        git(&workspace.source, &["worktree", "add", "-q", "-b", NESTED_BRANCH, NESTED]);
+        drop(git(&workspace.source, &["worktree", "add", "-q", "-b", NESTED_BRANCH, NESTED]));
         workspace
     }
 
@@ -116,8 +113,6 @@ impl Workspace {
     fn nodal_in(&self, directory: &Path, args: &[&str]) -> Output {
         let mut command = state::nodal(&self.state);
         command.args(args).current_dir(directory);
-        command.env("NODAL_SECRETS_FILE", self.state.join("secrets.env"));
-        command.env("NODAL_HOOKS_FILE", self.state.join("hooks.toml"));
         command.env(nodal_core::doctor::intent::CONFIG_VAR, &self.sessions);
         command.output().unwrap()
     }
@@ -153,14 +148,14 @@ fn a_worktree_adopted_in_place_leaves_git_status_byte_identical() {
     let nested = workspace.nested();
     let before = git(&nested, &["status"]);
 
-    stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"]));
+    drop(stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"])));
 
     assert!(nested.join(".nodal").join("id").is_file(), "the home is marked");
     assert!(nested.join(".envrc").is_file(), "and activated");
     assert_eq!(git(&nested, &["status"]), before, "the checkout looks exactly as it did");
 
     // And still, after the command that writes the unit's memory into it.
-    stdout(&workspace.nodal(&["show", "token-refresh"]));
+    drop(stdout(&workspace.nodal(&["show", "token-refresh"])));
     assert!(nested.join("WORKUNIT.md").is_file(), "the memory was written");
     assert_eq!(git(&nested, &["status"]), before, "and it is invisible to Git as well");
 
@@ -266,13 +261,13 @@ fn a_stated_objective_is_not_replaced_by_a_recovered_one() {
     let workspace = Workspace::new();
     workspace.session(&workspace.nested(), PROMPT);
 
-    stdout(&workspace.nodal(&[
+    drop(stdout(&workspace.nodal(&[
         "adopt",
         NESTED_BRANCH,
         "--in-place",
         "-m",
         "audit the key rotation",
-    ]));
+    ])));
 
     let unit = workspace.unit("token-refresh");
     assert_eq!(
@@ -287,8 +282,8 @@ fn an_adopted_root_refuses_trashing_but_gives_up_its_registration() {
     let workspace = Workspace::new();
     let nested = workspace.nested();
     let before = git(&nested, &["status"]);
-    stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"]));
-    stdout(&workspace.nodal(&["show", "token-refresh"]));
+    drop(stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"])));
+    drop(stdout(&workspace.nodal(&["show", "token-refresh"])));
 
     let report = stdout(&workspace.nodal(&["reclaim", "token-refresh"]));
     assert!(report.contains("left in place"), "{report}");
@@ -311,13 +306,13 @@ fn an_adopted_root_refuses_trashing_but_gives_up_its_registration() {
 #[test]
 fn a_branch_no_checkout_holds_gets_a_home_of_its_own() {
     let workspace = Workspace::new();
-    git(&workspace.source, &["switch", "-q", "-c", "feature/orphan"]);
+    drop(git(&workspace.source, &["switch", "-q", "-c", "feature/orphan"]));
     std::fs::write(workspace.source.join("only-here.txt"), "work\n").unwrap();
-    git(&workspace.source, &["add", "-A"]);
-    git(&workspace.source, &["commit", "-qm", "work on a branch nothing has out"]);
-    git(&workspace.source, &["switch", "-q", "main"]);
+    drop(git(&workspace.source, &["add", "-A"]));
+    drop(git(&workspace.source, &["commit", "-qm", "work on a branch nothing has out"]));
+    drop(git(&workspace.source, &["switch", "-q", "main"]));
 
-    stdout(&workspace.nodal(&["adopt", "feature/orphan"]));
+    drop(stdout(&workspace.nodal(&["adopt", "feature/orphan"])));
 
     let environment = workspace.environment("orphan");
     assert!(environment.managed, "a home Nodal made is one Nodal may reclaim");
@@ -362,7 +357,7 @@ fn a_target_that_cannot_become_a_unit_is_refused_by_name() {
 #[test]
 fn a_checkout_that_is_already_a_unit_is_refused_and_names_the_unit() {
     let workspace = Workspace::new();
-    stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"]));
+    drop(stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"])));
 
     let refused = workspace.nodal(&["adopt", NESTED, "--in-place"]);
     assert!(!refused.status.success());
@@ -375,15 +370,15 @@ fn a_checkout_that_is_already_a_unit_is_refused_and_names_the_unit() {
 #[test]
 fn explain_says_where_each_home_came_from() {
     let workspace = Workspace::new();
-    stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"]));
+    drop(stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"])));
 
     let adopted = stdout(&workspace.nodal(&["explain", "token-refresh"]));
     assert!(adopted.contains("adopted where it stands"), "{adopted}");
     assert!(adopted.contains("nothing was copied"), "{adopted}");
     assert!(adopted.contains("the block"), "it says where the ports came from: {adopted}");
 
-    git(&workspace.source, &["branch", "feature/orphan"]);
-    stdout(&workspace.nodal(&["adopt", "feature/orphan"]));
+    drop(git(&workspace.source, &["branch", "feature/orphan"]));
+    drop(stdout(&workspace.nodal(&["adopt", "feature/orphan"])));
 
     let cloned = stdout(&workspace.nodal(&["explain", "orphan"]));
     assert!(cloned.contains("a clone of base"), "{cloned}");
@@ -401,7 +396,7 @@ fn explain_says_where_each_home_came_from() {
 fn show_writes_the_memory_it_reports() {
     let workspace = Workspace::new();
     workspace.session(&workspace.nested(), PROMPT);
-    stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"]));
+    drop(stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"])));
 
     let shown = stdout(&workspace.nodal(&["show", "token-refresh"]));
     assert!(shown.contains("(recovered)"), "{shown}");
@@ -434,11 +429,11 @@ fn in_place_runs_no_hook_and_a_materialised_adoption_runs_post_new() {
     let workspace = Workspace::with_recipe(HOOKS);
     let log = workspace.source.join("hooks.log");
 
-    stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"]));
+    drop(stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"])));
     assert!(!log.exists(), "adoption in place ran a hook: {:?}", std::fs::read_to_string(&log));
 
-    git(&workspace.source, &["branch", "feature/orphan"]);
-    stdout(&workspace.nodal(&["adopt", "feature/orphan"]));
+    drop(git(&workspace.source, &["branch", "feature/orphan"]));
+    drop(stdout(&workspace.nodal(&["adopt", "feature/orphan"])));
 
     let ran = std::fs::read_to_string(&log).expect("the materialised form ran post_new");
     let phases: Vec<&str> = ran.lines().map(|line| line.split(' ').next().unwrap()).collect();
@@ -451,9 +446,9 @@ fn in_place_runs_no_hook_and_a_materialised_adoption_runs_post_new() {
 #[test]
 fn no_hooks_stops_the_one_hook_a_materialised_adoption_would_run() {
     let workspace = Workspace::with_recipe(HOOKS);
-    git(&workspace.source, &["branch", "feature/orphan"]);
+    drop(git(&workspace.source, &["branch", "feature/orphan"]));
 
-    stdout(&workspace.nodal(&["--no-hooks", "adopt", "feature/orphan"]));
+    drop(stdout(&workspace.nodal(&["--no-hooks", "adopt", "feature/orphan"])));
 
     assert!(!workspace.source.join("hooks.log").exists(), "--no-hooks ran a hook");
 }
@@ -466,7 +461,9 @@ fn a_checkout_named_by_path_is_adopted_from_outside_any_repository() {
     let elsewhere = workspace.state.parent().unwrap().to_path_buf();
 
     let nested = workspace.nested();
-    stdout(&workspace.nodal_in(&elsewhere, &["adopt", nested.to_str().unwrap(), "--in-place"]));
+    drop(stdout(
+        &workspace.nodal_in(&elsewhere, &["adopt", nested.to_str().unwrap(), "--in-place"]),
+    ));
 
     assert_eq!(workspace.environment("token-refresh").home, nested);
     let store = workspace.store();
@@ -476,34 +473,4 @@ fn a_checkout_named_by_path_is_adopted_from_outside_any_repository() {
         resolved(&workspace.source),
         "the project is the one the checkout is of"
     );
-}
-
-/// A path with every symbolic link on the way to it resolved, which is the form a
-/// registry row records.
-fn resolved(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-/// Standard output as text, with the command insisted upon.
-fn stdout(output: &Output) -> String {
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    String::from_utf8(output.stdout.clone()).unwrap()
-}
-
-/// Standard error as text.
-fn stderr(output: &Output) -> String {
-    String::from_utf8(output.stderr.clone()).unwrap()
-}
-
-/// `git` in a directory, as text.
-fn git(directory: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(directory)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
-    String::from_utf8(output.stdout).unwrap()
 }

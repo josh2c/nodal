@@ -24,3 +24,16 @@ pub fn skipped(claim: &str, why: &str) -> bool {
     eprintln!("SKIPPED on {}: {claim} — {why}", std::env::consts::OS);
     true
 }
+
+/// Whether this host publishes a process table, and a word about it when it does not.
+///
+/// A process scan reads `/proc`, which macOS does not have. A test that needs one says
+/// which claim it is not making rather than passing quietly.
+#[must_use]
+pub fn reads_process_table(claim: &str) -> bool {
+    if cfg!(target_os = "linux") {
+        return true;
+    }
+    eprintln!("skipped ({claim}): a process scan reads /proc, which this host does not have");
+    false
+}

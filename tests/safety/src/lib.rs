@@ -1,4 +1,28 @@
-//! The safety suite: what makes one unit of a project independent of every other one.
+//! The test kit of the workspace, and the safety suite that is built on it.
+//!
+//! Two things live here.
+//!
+//! The kit is what every suite in the workspace needs before it can assert anything:
+//!
+//! | module | what it is |
+//! |---|---|
+//! | [`runner`] | a command for the `nodal` binary, with a state directory of its own |
+//! | [`mod@git`] | one `git` call in a directory, with the machine's configuration shut out |
+//! | [`text`] | the two streams of a finished command, as text |
+//! | [`project`] | a project to make units in, and the state directory they go in |
+//! | [`state`] | what a state directory holds, read back after a command has run |
+//! | [`rows`] | the registry rows a test writes by hand |
+//! | [`activation`] | one activated home: the three files a shell reads |
+//! | [`process`] | a process a test starts, and the two shapes it starts one in |
+//!
+//! Each of those was written out again in every file that wanted it. The binary runner
+//! stood in nineteen test files and the `git` runner in sixteen, so a fix to one of them
+//! reached one suite. They are one implementation now, and each module says what its
+//! callers had in common.
+//!
+//! The safety suite is the rest of this crate, and the paragraphs below are about it.
+//!
+//! ## The safety suite: what makes one unit of a project independent of every other one
 //!
 //! Nodal's promise is that two working copies of one project cannot interfere. Every
 //! other property is a convenience; this one is the product. A person runs two agents
@@ -50,12 +74,24 @@
 
 #![allow(
     clippy::expect_used,
-    reason = "a machine that cannot be built fails the property it was built for"
+    reason = "a fixture that cannot be built fails the test it was built for"
 )]
 
+pub mod activation;
+pub mod git;
 pub mod machine;
 pub mod platform;
+pub mod process;
+pub mod project;
+pub mod rows;
+pub mod runner;
+pub mod state;
+pub mod text;
 pub mod tree;
 
-pub use machine::{Machine, git, stderr, stdout, try_git};
+pub use git::{git, git_ok, try_git};
+pub use machine::Machine;
+pub use project::Workspace;
+pub use state::InState;
+pub use text::{answer, json, stderr, stdout};
 pub use tree::Snapshot;

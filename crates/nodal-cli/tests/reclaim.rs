@@ -33,8 +33,12 @@ use std::time::{Duration, Instant};
 
 use nodal_core::lifecycle::journal;
 use nodal_core::model::{EnvState, UnitStatus};
-use nodal_core::store::{Store, environments, projects, trash, units};
-use tempfile::TempDir;
+use nodal_core::store::{environments, projects, trash, units};
+use nodal_safety::git::git_text as git;
+use nodal_safety::project::Layout;
+use nodal_safety::project::resolved;
+use nodal_safety::text::{stderr, stdout};
+use nodal_safety::{InState as _, Workspace};
 
 /// How long a test waits for a killed run to reach the step it is being killed in.
 const REACH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -45,107 +49,34 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often either wait looks.
 const POLL: Duration = Duration::from_millis(5);
 
-/// A project to make units in, and the state directory they go in.
-struct Workspace {
-    /// The temporary root, kept so that it outlives the test.
-    _root: TempDir,
-    /// The project's repository.
-    source: PathBuf,
-    /// Nodal's state directory: the registry, every home, and the trash.
-    state: PathBuf,
+/// This suite's project, which ignores its own build output as well.
+///
+/// `built/` is a row of the project's ignore file rather than of Nodal's default table,
+/// so a file under it is the person's own decision to leave out of Git and the refusal
+/// tests are about what a reclaim does with one.
+fn workspace() -> Workspace {
+    Workspace::laid_out(
+        state::BINARY,
+        &Layout { ignore: "node_modules/\nbuilt/\n", ..Layout::default() },
+    )
 }
 
-impl Workspace {
-    /// A one-commit repository and an empty state directory beside it.
-    fn new() -> Self {
-        let root = TempDir::new().unwrap();
-        let source = root.path().join("project");
-        let state = root.path().join("state");
-        std::fs::create_dir_all(source.join("app")).unwrap();
-        std::fs::write(source.join("app").join("main.txt"), "shared\n").unwrap();
-        std::fs::write(source.join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
-        std::fs::write(source.join(".gitignore"), "node_modules/\nbuilt/\n").unwrap();
-        for args in [
-            vec!["init", "-q", "-b", "main"],
-            vec!["config", "user.email", "unit@example.invalid"],
-            vec!["config", "user.name", "Test"],
-            vec!["add", "-A"],
-            vec!["commit", "-qm", "first"],
-        ] {
-            let status = Command::new("git").args(&args).current_dir(&source).status().unwrap();
-            assert!(status.success(), "git {args:?}");
-        }
-        Self { _root: root, source, state }
-    }
-
-    /// The same, with a recipe this test wrote and this machine has approved.
-    ///
-    /// Approving is what `nodal init` does, so the fixture runs it rather than writing
-    /// the approvals file: an approval a test made by hand would not be evidence that
-    /// the command a person runs makes one.
-    fn with_recipe(recipe: &str) -> Self {
-        let workspace = Self::new();
-        workspace.write_recipe(recipe);
-        stdout(&workspace.nodal(&["init", "--force"]));
-        workspace
-    }
-
-    /// Put a recipe in the project, without approving anything.
-    fn write_recipe(&self, recipe: &str) {
-        std::fs::write(self.source.join("nodal.toml"), recipe).unwrap();
-    }
-
-    /// `nodal` with this workspace's state directory, run in the project.
-    fn nodal(&self, args: &[&str]) -> Output {
-        self.command(args).output().unwrap()
-    }
-
-    /// The same invocation, not yet run.
-    fn command(&self, args: &[&str]) -> Command {
-        let mut command = state::nodal(&self.state);
-        command.args(args).current_dir(&self.source);
-        // Both files are shared by every unit on a machine, and a test must never read
-        // or create the ones belonging to whoever is running it.
-        command.env("NODAL_SECRETS_FILE", self.state.join("secrets.env"));
-        command.env("NODAL_HOOKS_FILE", self.state.join("hooks.toml"));
-        command
-    }
-
-    /// The registry, opened for reading what a command wrote.
-    fn store(&self) -> Store {
-        Store::open(self.state.join("registry.db")).unwrap()
-    }
-
-    /// One segment of this project's directory, `None` until something has made it.
-    fn segment(&self, name: &str) -> Option<PathBuf> {
-        std::fs::read_dir(&self.state)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path().join(name))
-            .find(|path| path.is_dir())
-    }
-
-    /// Every live home this project has, in name order.
-    fn units(&self) -> Vec<PathBuf> {
-        entries(self.segment("e"))
-    }
-
-    /// Everything in this project's trash, in name order.
-    fn trashed(&self) -> Vec<PathBuf> {
-        entries(self.segment("trash"))
-    }
-
-    /// The one unit this project has, and its home.
-    fn one_unit(&self) -> (String, PathBuf) {
-        let store = self.store();
-        let project = projects::list(store.conn()).unwrap().pop().expect("the project is known");
-        let unit = units::list(store.conn(), project.id).unwrap().pop().expect("a unit was made");
-        (unit.id.to_string(), self.units().pop().expect("it has a home"))
-    }
+/// The same, with a recipe this test wrote and this machine has approved.
+///
+/// Approving is what `nodal init` does, so the fixture runs it rather than writing the
+/// approvals file: an approval a test made by hand would not be evidence that the
+/// command a person runs makes one.
+fn workspace_with_recipe(recipe: &str) -> Workspace {
+    let workspace = workspace();
+    workspace.approve_recipe(recipe);
+    workspace
 }
 
-impl Workspace {
+/// The readings this suite needs beyond the ones the shared fixture has.
+trait Reclaiming {
+    /// The one unit this project has: its identifier, and its home.
+    fn one_unit_and_home(&self) -> (String, PathBuf);
+
     /// Make a checkout of this project a unit adopted in place, with `nodal adopt`.
     ///
     /// The directory is a clone of the project, because that is what an adopted
@@ -159,48 +90,26 @@ impl Workspace {
     /// directory is reached through a link — always on macOS, and on Linux under this
     /// suite's second run — and it is the resolved one the registry holds and every
     /// report prints, so it is the one a caller can compare anything against.
+    fn adopt_in_place(&self, slug: &str) -> PathBuf;
+}
+
+impl Reclaiming for Workspace {
+    fn one_unit_and_home(&self) -> (String, PathBuf) {
+        (self.one_unit().id.to_string(), self.homes().pop().expect("it has a home"))
+    }
+
     fn adopt_in_place(&self, slug: &str) -> PathBuf {
-        let root = self.state.parent().unwrap().join(slug);
-        git(&self.source, &["clone", "-q", "--", ".", root.to_str().unwrap()]);
-        stdout(&self.nodal(&["adopt", root.to_str().unwrap(), "--in-place", "--name", slug]));
+        let root = self.state.parent().expect("the state directory has a parent").join(slug);
+        drop(git(&self.source, &["clone", "-q", "--", ".", root.to_str().expect("a path")]));
+        drop(stdout(&self.nodal(&[
+            "adopt",
+            root.to_str().expect("a path"),
+            "--in-place",
+            "--name",
+            slug,
+        ])));
         resolved(&root)
     }
-}
-
-/// What is directly inside a directory, in name order, and nothing when there is no
-/// such directory yet.
-fn entries(directory: Option<PathBuf>) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = directory
-        .into_iter()
-        .flat_map(|path| std::fs::read_dir(path).into_iter().flatten().flatten())
-        .map(|entry| entry.path())
-        .collect();
-    found.sort();
-    found
-}
-
-/// Standard output as text, with the command insisted upon.
-fn stdout(output: &Output) -> String {
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    String::from_utf8(output.stdout.clone()).unwrap()
-}
-
-/// Standard error as text.
-fn stderr(output: &Output) -> String {
-    String::from_utf8(output.stderr.clone()).unwrap()
-}
-
-/// A path with every symbolic link on the way to it resolved, which is what a process
-/// asked for its own working directory answers.
-fn resolved(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-/// `git` in a directory, as text.
-fn git(directory: &Path, args: &[&str]) -> String {
-    let output = Command::new("git").args(args).current_dir(directory).output().unwrap();
-    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
-    String::from_utf8(output.stdout).unwrap()
 }
 
 /// The JSON a `--json` command answered with.
@@ -253,16 +162,16 @@ fn can_see_processes() -> bool {
 
 #[test]
 fn a_clean_unit_is_reclaimed_and_nothing_of_it_is_left_but_the_trash_entry() {
-    let workspace = Workspace::new();
-    stdout(&workspace.nodal(&["new", "--name", "worker-import"]));
-    let (_, home) = workspace.one_unit();
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (_, home) = workspace.one_unit_and_home();
 
     let report = stdout(&workspace.nodal(&["reclaim", "worker-import"]));
     assert!(report.contains("nothing that is only here"), "{report}");
     assert_nothing_left(&report);
 
     assert!(!home.exists(), "the home is not where it was");
-    assert!(workspace.units().is_empty(), "and no live home is left: {:?}", workspace.units());
+    assert!(workspace.homes().is_empty(), "and no live home is left: {:?}", workspace.homes());
     let trashed = workspace.trashed();
     assert_eq!(trashed.len(), 1, "the trash holds it, and only it: {trashed:?}");
     assert_eq!(trashed[0].file_name(), home.file_name(), "under the name it had");
@@ -277,9 +186,9 @@ fn a_clean_unit_is_reclaimed_and_nothing_of_it_is_left_but_the_trash_entry() {
 
 #[test]
 fn a_unit_with_work_that_is_only_there_is_refused_and_told_exactly_what() {
-    let workspace = Workspace::new();
-    stdout(&workspace.nodal(&["new", "--name", "worker-import"]));
-    let (_, home) = workspace.one_unit();
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (_, home) = workspace.one_unit_and_home();
     std::fs::write(home.join("app").join("main.txt"), "edited\n").unwrap();
     std::fs::write(home.join("app").join("new.txt"), "made here\n").unwrap();
     std::fs::create_dir_all(home.join("built")).unwrap();
@@ -299,16 +208,16 @@ fn a_unit_with_work_that_is_only_there_is_refused_and_told_exactly_what() {
 
 #[test]
 fn a_commit_no_other_tree_has_refuses_a_reclaim_and_a_shared_one_does_not() {
-    let workspace = Workspace::new();
-    stdout(&workspace.nodal(&["new", "--name", "worker-import"]));
-    let (_, home) = workspace.one_unit();
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (_, home) = workspace.one_unit_and_home();
     std::fs::write(home.join("app").join("main.txt"), "committed here\n").unwrap();
     // A home is a clone and carries no identity of its own, as a person's would from
     // their global configuration.
-    git(&home, &["config", "user.email", "unit@example.invalid"]);
-    git(&home, &["config", "user.name", "Test"]);
-    git(&home, &["add", "-A"]);
-    git(&home, &["commit", "-qm", "work only this home has"]);
+    drop(git(&home, &["config", "user.email", "unit@example.invalid"]));
+    drop(git(&home, &["config", "user.name", "Test"]));
+    drop(git(&home, &["add", "-A"]));
+    drop(git(&home, &["commit", "-qm", "work only this home has"]));
 
     let refused = workspace.nodal(&["reclaim", "worker-import"]);
     assert!(!refused.status.success());
@@ -318,16 +227,16 @@ fn a_commit_no_other_tree_has_refuses_a_reclaim_and_a_shared_one_does_not() {
     // The commits the home inherited are in the person's own checkout, so they are not
     // work that is only here. Without that, a project with no remote could never have a
     // unit reclaimed at all.
-    git(&workspace.source, &["fetch", "-q", home.to_str().unwrap(), "HEAD"]);
+    drop(git(&workspace.source, &["fetch", "-q", home.to_str().unwrap(), "HEAD"]));
     let accepted = workspace.nodal(&["reclaim", "worker-import"]);
     assert!(accepted.status.success(), "{}", stderr(&accepted));
 }
 
 #[test]
 fn a_forced_reclaim_commits_the_work_before_it_moves_the_home() {
-    let workspace = Workspace::new();
-    stdout(&workspace.nodal(&["new", "--name", "worker-import"]));
-    let (id, home) = workspace.one_unit();
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (id, home) = workspace.one_unit_and_home();
     std::fs::write(home.join("app").join("main.txt"), "edited\n").unwrap();
     std::fs::write(home.join("only-here.txt"), "never committed\n").unwrap();
 
@@ -349,9 +258,9 @@ fn a_forced_reclaim_commits_the_work_before_it_moves_the_home() {
 
 #[test]
 fn reclaiming_from_inside_the_home_does_not_stop_the_shell_that_asked() {
-    let workspace = Workspace::new();
-    stdout(&workspace.nodal(&["new", "--name", "worker-import"]));
-    let (_, home) = workspace.one_unit();
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (_, home) = workspace.one_unit_and_home();
 
     // The command stands in the home it is about, which is where a person runs it from.
     // Its own process is attributed to the unit by the directory it is in, and stopping
@@ -377,9 +286,9 @@ fn reclaiming_from_inside_the_home_does_not_stop_the_shell_that_asked() {
 
 #[test]
 fn a_reclaimed_unit_is_listed_as_archived_with_no_home_and_no_complaint() {
-    let workspace = Workspace::new();
-    stdout(&workspace.nodal(&["new", "--name", "worker-import"]));
-    stdout(&workspace.nodal(&["reclaim", "worker-import"]));
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
 
     // The unit stays on the list, because the list is the ledger. What must not stay is
     // its home: asking Git about a directory a reclaim moved away on purpose would put
@@ -393,9 +302,9 @@ fn a_reclaimed_unit_is_listed_as_archived_with_no_home_and_no_complaint() {
 
 #[test]
 fn a_unit_that_has_been_reclaimed_is_not_reclaimed_again() {
-    let workspace = Workspace::new();
-    stdout(&workspace.nodal(&["new", "--name", "worker-import"]));
-    stdout(&workspace.nodal(&["reclaim", "worker-import"]));
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
 
     let refused = workspace.nodal(&["reclaim", "worker-import"]);
     assert!(!refused.status.success());
@@ -417,9 +326,9 @@ fn a_unit_that_has_been_reclaimed_is_not_reclaimed_again() {
 /// machine was empty.
 #[test]
 fn a_process_planted_in_a_unit_is_stopped_where_nodal_can_see_it() {
-    let workspace = Workspace::new();
+    let workspace = workspace();
     let created = json(&workspace.nodal(&["new", "--name", "worker-import", "--json"]));
-    let (id, home) = workspace.one_unit();
+    let (id, home) = workspace.one_unit_and_home();
     let port = created["unit"]["environment"]["ports"]["app"].as_u64().expect("a port was granted");
     let planted = plant(&home, &id, "sleep 300");
 
@@ -515,14 +424,14 @@ post_reclaim = "printf 'post_reclaim %s\\n' \"$NODAL_ROOT\" >> \"$NODAL_SOURCE/h
 
 #[test]
 fn the_four_hooks_run_in_order_and_are_told_which_unit_they_are_about() {
-    let workspace = Workspace::with_recipe(HOOKS);
-    stdout(&workspace.nodal(&["new", "--name", "worker-import"]));
-    let (_, home) = workspace.one_unit();
+    let workspace = workspace_with_recipe(HOOKS);
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (_, home) = workspace.one_unit_and_home();
     // Resolved now, while the directory is still there. A path that has been moved
     // cannot be resolved, and asking afterwards would quietly answer with the
     // unresolved name and compare it against the resolved one the shell reported.
     let stood_in = resolved(&home);
-    stdout(&workspace.nodal(&["reclaim", "worker-import"]));
+    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
 
     let log = std::fs::read_to_string(workspace.source.join("hooks.log")).unwrap();
     let phases: Vec<&str> = log.lines().map(|line| line.split(' ').next().unwrap()).collect();
@@ -551,8 +460,8 @@ fn the_four_hooks_run_in_order_and_are_told_which_unit_they_are_about() {
 
 #[test]
 fn a_hook_command_nobody_approved_refuses_to_run() {
-    let workspace = Workspace::with_recipe(HOOKS);
-    stdout(&workspace.nodal(&["new", "--name", "worker-import"]));
+    let workspace = workspace_with_recipe(HOOKS);
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     // The recipe changes after it was approved, which is what arrives with a pull.
     workspace.write_recipe(&HOOKS.replace("pre_reclaim %s", "SOMETHING ELSE %s"));
 
@@ -568,17 +477,17 @@ fn a_hook_command_nobody_approved_refuses_to_run() {
     assert!(workspace.trashed().is_empty(), "the refusal happened before anything moved");
 
     // Approving is what `nodal init` does, and the same reclaim then works.
-    stdout(&workspace.nodal(&["init", "--force"]));
-    stdout(&workspace.nodal(&["reclaim", "worker-import"]));
+    drop(stdout(&workspace.nodal(&["init", "--force"])));
+    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
     let log = std::fs::read_to_string(workspace.source.join("hooks.log")).unwrap();
     assert!(log.contains("SOMETHING ELSE"), "{log}");
 }
 
 #[test]
 fn a_hook_that_fails_stops_the_reclaim_before_anything_moves() {
-    let workspace = Workspace::with_recipe("[hooks]\npre_reclaim = \"exit 3\"\n");
-    stdout(&workspace.nodal(&["new", "--name", "worker-import"]));
-    let (_, home) = workspace.one_unit();
+    let workspace = workspace_with_recipe("[hooks]\npre_reclaim = \"exit 3\"\n");
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (_, home) = workspace.one_unit_and_home();
 
     let refused = workspace.nodal(&["reclaim", "worker-import"]);
     assert!(!refused.status.success(), "a hook that fails is a reclaim that does not happen");
@@ -591,10 +500,10 @@ fn a_hook_that_fails_stops_the_reclaim_before_anything_moves() {
 
 #[test]
 fn no_hooks_runs_none_of_them_without_needing_an_approval() {
-    let workspace = Workspace::new();
+    let workspace = workspace();
     workspace.write_recipe(HOOKS);
-    stdout(&workspace.nodal(&["--no-hooks", "new", "--name", "worker-import"]));
-    stdout(&workspace.nodal(&["--no-hooks", "reclaim", "worker-import"]));
+    drop(stdout(&workspace.nodal(&["--no-hooks", "new", "--name", "worker-import"])));
+    drop(stdout(&workspace.nodal(&["--no-hooks", "reclaim", "worker-import"])));
     assert!(!workspace.source.join("hooks.log").exists(), "no hook ran");
     assert_eq!(workspace.trashed().len(), 1, "and the unit was still reclaimed");
 }
@@ -605,9 +514,9 @@ fn no_hooks_runs_none_of_them_without_needing_an_approval() {
 
 #[test]
 fn gc_removes_a_trashed_home_once_its_retention_has_run_out_and_not_before() {
-    let workspace = Workspace::with_recipe("[reclaim]\ntrash_retention = 14\n");
-    stdout(&workspace.nodal(&["new", "--name", "kept"]));
-    stdout(&workspace.nodal(&["reclaim", "kept"]));
+    let workspace = workspace_with_recipe("[reclaim]\ntrash_retention = 14\n");
+    drop(stdout(&workspace.nodal(&["new", "--name", "kept"])));
+    drop(stdout(&workspace.nodal(&["reclaim", "kept"])));
     let kept = workspace.trashed().pop().expect("the home is in the trash");
 
     let held = stdout(&workspace.nodal(&["gc"]));
@@ -616,9 +525,9 @@ fn gc_removes_a_trashed_home_once_its_retention_has_run_out_and_not_before() {
 
     // A project that keeps nothing: the same reclaim, the same sweep, the other answer.
     workspace.write_recipe("[reclaim]\ntrash_retention = 0\n");
-    stdout(&workspace.nodal(&["init", "--force"]));
-    stdout(&workspace.nodal(&["new", "--name", "swept"]));
-    stdout(&workspace.nodal(&["reclaim", "swept"]));
+    drop(stdout(&workspace.nodal(&["init", "--force"])));
+    drop(stdout(&workspace.nodal(&["new", "--name", "swept"])));
+    drop(stdout(&workspace.nodal(&["reclaim", "swept"])));
     assert_eq!(workspace.trashed().len(), 2, "two homes in the trash");
 
     let swept = stdout(&workspace.nodal(&["gc"]));
@@ -647,9 +556,9 @@ fn gc_removes_a_trashed_home_once_its_retention_has_run_out_and_not_before() {
 /// reclaims the home anyway.
 #[test]
 fn a_reclaim_killed_between_two_steps_is_rolled_back_by_the_next_invocation() {
-    let workspace = Workspace::new();
-    stdout(&workspace.nodal(&["new", "--name", "worker-import"]));
-    let (id, home) = workspace.one_unit();
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (id, home) = workspace.one_unit_and_home();
     let planted = plant(&home, &id, "trap '' TERM; sleep 300");
 
     if !can_see_processes() {
@@ -711,8 +620,8 @@ fn wait_for_the_reclaim_to_start(workspace: &Workspace, child: &mut Child) {
 
 #[test]
 fn a_checkout_adopted_in_place_is_unregistered_and_never_trashed() {
-    let workspace = Workspace::new();
-    stdout(&workspace.nodal(&["new", "--name", "worker-import"]));
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let root = workspace.adopt_in_place("in-place");
 
     let report = stdout(&workspace.nodal(&["reclaim", "in-place"]));
@@ -738,14 +647,14 @@ fn a_checkout_adopted_in_place_is_unregistered_and_never_trashed() {
     assert_eq!(environment.state, EnvState::Absent);
 
     // The one home Nodal did make is untouched by any of this.
-    assert_eq!(workspace.units().len(), 1, "{:?}", workspace.units());
+    assert_eq!(workspace.homes().len(), 1, "{:?}", workspace.homes());
 }
 
 #[test]
 fn a_home_somebody_deleted_by_hand_still_closes_its_rows() {
-    let workspace = Workspace::new();
-    stdout(&workspace.nodal(&["new", "--name", "worker-import"]));
-    let (_, home) = workspace.one_unit();
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (_, home) = workspace.one_unit_and_home();
     std::fs::remove_dir_all(&home).unwrap();
 
     let report = stdout(&workspace.nodal(&["reclaim", "worker-import"]));

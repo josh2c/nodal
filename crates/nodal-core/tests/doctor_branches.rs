@@ -34,6 +34,7 @@ use nodal_core::doctor::branches;
 use nodal_core::model::Timestamp;
 use nodal_core::output::Render;
 use nodal_core::output::view::doctor::{BranchRow, Branches, Standing};
+use nodal_safety::git::{self, git as text, git_ok as git};
 
 /// A checkout, its remote, and the branches of both.
 struct Planted {
@@ -283,39 +284,8 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, Option<SystemTime>)> {
     found
 }
 
-fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
-        .status()
-        .expect("git runs");
-    assert!(status.success(), "git {args:?} failed in {}", dir.display());
-}
-
-/// What a Git command printed, without its trailing newline.
-fn text(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .output()
-        .expect("git runs");
-    assert!(output.status.success(), "git {args:?} failed");
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
-}
-
 fn commit(dir: &Path, message: &str) {
-    git(dir, &["add", "--all"]);
-    git(dir, &["commit", "--quiet", "--message", message]);
+    git::commit(dir, message);
 }
 
 fn write(path: &Path, body: &str) {

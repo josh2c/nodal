@@ -24,7 +24,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 use nodal_core::doctor::{self, Machine};
@@ -32,6 +31,7 @@ use nodal_core::model::Timestamp;
 use nodal_core::output::view::doctor::{Doctor, Finding, Kind};
 use nodal_core::services::docker::{Docker, Output};
 use nodal_core::store::Store;
+use nodal_safety::git::{self, git_ok as git};
 
 /// The container the fake daemon reports as exited, with a writable layer of 120 MB.
 const EXITED: &str = concat!(
@@ -246,33 +246,8 @@ fn session(sessions: &Path, worktree: &Path) {
     );
 }
 
-fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .status()
-        .expect("git runs");
-    assert!(status.success(), "git {args:?} failed in {}", dir.display());
-}
-
 fn commit(dir: &Path, message: &str) {
-    git(dir, &["add", "--all"]);
-    git(
-        dir,
-        &[
-            "-c",
-            "user.email=t@example.invalid",
-            "-c",
-            "user.name=test",
-            "commit",
-            "--quiet",
-            "--message",
-            message,
-        ],
-    );
+    git::commit(dir, message);
 }
 
 fn write(path: &Path, body: &str) {

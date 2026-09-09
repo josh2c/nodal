@@ -36,8 +36,8 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use nodal_core::model::{EnvId, EnvState, Session, Timestamp};
-use nodal_core::store::{Store, environments, projects, sessions, units};
-use tempfile::TempDir;
+use nodal_core::store::{environments, projects, sessions, units};
+use nodal_safety::{InState as _, Workspace};
 
 /// How long a test waits for something it has started to reach the state it needs.
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -49,57 +49,19 @@ const POLL: Duration = Duration::from_millis(10);
 // The workspace.
 // ---------------------------------------------------------------------------
 
-/// A one-commit project, the state directory its units go in, and a scratch directory
-/// the tethered commands write to.
+/// This suite's project, and a scratch directory the tethered commands write to.
 ///
 /// The scratch directory is outside every home on purpose. A file a test wrote inside a
 /// unit's home would be untracked work, and the uniqueness check would refuse to reclaim
 /// the unit — which is the check doing its job, and nothing to do with tethers.
-struct Workspace {
-    _root: TempDir,
-    source: PathBuf,
-    state: PathBuf,
-    scratch: PathBuf,
+fn workspace() -> Workspace {
+    let workspace = Workspace::new(state::BINARY);
+    std::fs::create_dir_all(workspace.root().join("scratch")).unwrap();
+    workspace
 }
 
-impl Workspace {
-    fn new() -> Self {
-        let root = TempDir::new().unwrap();
-        let source = root.path().join("project");
-        let state = root.path().join("state");
-        let scratch = root.path().join("scratch");
-        std::fs::create_dir_all(source.join("app")).unwrap();
-        std::fs::create_dir_all(&scratch).unwrap();
-        std::fs::write(source.join("app").join("main.txt"), "shared\n").unwrap();
-        std::fs::write(source.join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
-        std::fs::write(source.join(".gitignore"), "node_modules/\n").unwrap();
-        for args in [
-            vec!["init", "-q", "-b", "main"],
-            vec!["config", "user.email", "unit@example.invalid"],
-            vec!["config", "user.name", "Test"],
-            vec!["add", "-A"],
-            vec!["commit", "-qm", "first"],
-        ] {
-            let status = Command::new("git").args(&args).current_dir(&source).status().unwrap();
-            assert!(status.success(), "git {args:?}");
-        }
-        Self { _root: root, source, state, scratch }
-    }
-
-    /// `nodal` with this workspace's state directory, not yet run.
-    fn command(&self, args: &[&str], cwd: &Path) -> Command {
-        let mut command = state::nodal(&self.state);
-        command.args(args).current_dir(cwd);
-        command.env("NODAL_SECRETS_FILE", self.state.join("secrets.env"));
-        command.env("NODAL_HOOKS_FILE", self.state.join("hooks.toml"));
-        command
-    }
-
-    /// `nodal` run in the project.
-    fn nodal(&self, args: &[&str]) -> Output {
-        self.command(args, &self.source).output().unwrap()
-    }
-
+/// The readings this suite needs beyond the ones the shared fixture has.
+trait Tethering {
     /// A `nodal run` whose output goes nowhere, not yet run.
     ///
     /// A tethered command keeps whatever it was given for standard output, which is
@@ -107,19 +69,26 @@ impl Workspace {
     /// it starts, so a test that collected the output would wait for the last of them to
     /// exit — which is the thing the test is about to reclaim. These tests read the
     /// registry and the process table instead, and let the output go.
+    fn quiet(&self, args: &[&str], cwd: &Path) -> Command;
+
+    /// Make one unit and answer with its home and its materialisation.
+    fn unit_home(&self, name: &str) -> (PathBuf, EnvId);
+
+    /// A path in the scratch directory, which no home contains.
+    fn scratch(&self, name: &str) -> PathBuf;
+
+    /// The tethers of one materialisation that are still open.
+    fn tethers(&self, environment: EnvId) -> Vec<Session>;
+}
+
+impl Tethering for Workspace {
     fn quiet(&self, args: &[&str], cwd: &Path) -> Command {
-        let mut command = self.command(args, cwd);
+        let mut command = self.command_in(cwd, args);
         command.stdout(Stdio::null()).stderr(Stdio::null());
         command
     }
 
-    /// The registry, opened for reading what a command wrote.
-    fn store(&self) -> Store {
-        Store::open(self.state.join("registry.db")).unwrap()
-    }
-
-    /// Make one unit and answer with its home and its materialisation.
-    fn unit(&self, name: &str) -> (PathBuf, EnvId) {
+    fn unit_home(&self, name: &str) -> (PathBuf, EnvId) {
         assert_ok(&self.nodal(&["new", "--name", name]));
         let store = self.store();
         let project = projects::list(store.conn()).unwrap().pop().expect("the project is known");
@@ -133,12 +102,10 @@ impl Workspace {
         (environment.home.clone(), environment.id)
     }
 
-    /// A path in the scratch directory, which no home contains.
     fn scratch(&self, name: &str) -> PathBuf {
-        self.scratch.join(name)
+        self.root().join("scratch").join(name)
     }
 
-    /// The tethers of one materialisation that are still open.
     fn tethers(&self, environment: EnvId) -> Vec<Session> {
         sessions::list_open_tethers(self.store().conn(), environment).unwrap()
     }
@@ -214,8 +181,8 @@ fn pids(path: &Path) -> Vec<u32> {
 /// still running are two generations below it.
 #[test]
 fn a_tethered_group_is_dead_whole_after_the_unit_is_reclaimed() {
-    let workspace = Workspace::new();
-    let (home, environment) = workspace.unit("dev-server");
+    let workspace = workspace();
+    let (home, environment) = workspace.unit_home("dev-server");
     let children = workspace.scratch("children");
     let script = workspace.scratch("server.sh");
     std::fs::write(
@@ -262,8 +229,8 @@ fn a_tethered_group_is_dead_whole_after_the_unit_is_reclaimed() {
 /// file is written by the process under test rather than inferred from the outside.
 #[test]
 fn a_tether_that_stops_on_the_interrupt_is_never_sent_the_next_signal() {
-    let workspace = Workspace::new();
-    let (home, environment) = workspace.unit("polite-server");
+    let workspace = workspace();
+    let (home, environment) = workspace.unit_home("polite-server");
     let signals = workspace.scratch("signals");
     let ready = workspace.scratch("ready");
     let script = workspace.scratch("polite.sh");
@@ -306,8 +273,8 @@ fn a_tether_that_stops_on_the_interrupt_is_never_sent_the_next_signal() {
 /// case that matters there is no parent left to ask.
 #[test]
 fn a_tether_outlives_the_nodal_run_that_started_it_and_is_still_stopped() {
-    let workspace = Workspace::new();
-    let (home, environment) = workspace.unit("orphan-server");
+    let workspace = workspace();
+    let (home, environment) = workspace.unit_home("orphan-server");
     let mut run = workspace.quiet(&["run", "--tether", "sleep", "600"], &home).spawn().unwrap();
     wait_for("the tether to be recorded", || !workspace.tethers(environment).is_empty());
     let group = workspace.tethers(environment)[0].pgid.expect("the row records a group");
@@ -343,8 +310,8 @@ fn kill_hard(run: &mut Child) {
 /// process never gets a row, and never joins anybody's group.
 #[test]
 fn an_untethered_process_in_the_home_is_stopped_by_attribution_and_not_by_the_tether() {
-    let workspace = Workspace::new();
-    let (home, environment) = workspace.unit("mixed");
+    let workspace = workspace();
+    let (home, environment) = workspace.unit_home("mixed");
     let plain = workspace.scratch("plain.pid");
     let script = workspace.scratch("plain.sh");
     std::fs::write(&script, format!("sleep 600 & printf '%s\\n' \"$!\" > {}\n", plain.display()))
@@ -394,8 +361,8 @@ fn an_untethered_process_in_the_home_is_stopped_by_attribution_and_not_by_the_te
 /// `gc` something to do is to put the registry in the state a failed reclaim leaves.
 #[test]
 fn a_tether_left_behind_by_a_reclaimed_unit_is_stopped_by_the_next_sweep() {
-    let workspace = Workspace::new();
-    let (home, environment) = workspace.unit("stale");
+    let workspace = workspace();
+    let (home, environment) = workspace.unit_home("stale");
     let mut run = workspace.quiet(&["run", "--tether", "sleep", "600"], &home).spawn().unwrap();
     wait_for("the tether to be recorded", || !workspace.tethers(environment).is_empty());
     let group = workspace.tethers(environment)[0].pgid.expect("the row records a group");
@@ -419,11 +386,11 @@ fn a_tether_left_behind_by_a_reclaimed_unit_is_stopped_by_the_next_sweep() {
 /// record a group would ever have.
 #[test]
 fn a_tether_is_refused_where_nothing_could_record_the_group() {
-    let workspace = Workspace::new();
-    let (home, _) = workspace.unit("unknown");
+    let workspace = workspace();
+    let (home, _) = workspace.unit_home("unknown");
     let empty = workspace.scratch("other-registry.db");
 
-    let mut command = workspace.command(&["run", "--tether", "sleep", "600"], &home);
+    let mut command = workspace.command_in(&home, &["run", "--tether", "sleep", "600"]);
     command.env("NODAL_STORE", &empty);
     let refused = command.output().unwrap();
 
@@ -433,7 +400,7 @@ fn a_tether_is_refused_where_nothing_could_record_the_group() {
     assert!(why.contains("record"), "{why}");
 
     // The same command without the flag still runs, and still loses only its event.
-    let mut plain = workspace.command(&["run", "true"], &home);
+    let mut plain = workspace.command_in(&home, &["run", "true"]);
     plain.env("NODAL_STORE", &empty);
     assert!(plain.output().unwrap().status.success(), "an untethered run carries on");
 }

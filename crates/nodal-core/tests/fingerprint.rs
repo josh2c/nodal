@@ -12,7 +12,6 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::process::Command;
 
 use nodal_core::fingerprint::{self, GitTreeAtCommit};
 use nodal_core::git::Git;
@@ -60,9 +59,7 @@ impl Repo {
     }
 
     fn git(&self, args: &[&str]) -> String {
-        let out = Command::new("git").args(args).current_dir(self.path()).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        String::from_utf8(out.stdout).unwrap()
+        nodal_safety::git::git(self.path(), args)
     }
 
     fn write(&self, path: &str, body: &str) {

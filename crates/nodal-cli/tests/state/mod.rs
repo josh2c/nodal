@@ -9,12 +9,10 @@
 //! units, and a build older than the migrations in that file refused to start at all, so
 //! four suites failed on a workstation and passed on every clean runner.
 //!
-//! So this is the one place in this crate's tests where a command for the binary is
-//! made. [`nodal`] names the state directory in the command's own environment, and
-//! [`Machine`] is a state directory for a test that had no other reason to make one.
-//! The per-machine secrets file and the hook approvals are read from the state directory
-//! unless their own variables say otherwise (`env::secrets::path_in`,
-//! `lifecycle::hooks::path_in`), so naming it moves all three.
+//! So this is the one place in this crate's tests where the binary is named. What is
+//! done with the name is the test kit's [`nodal_safety::runner`], which every suite in
+//! the workspace builds its commands with; [`Machine`] is a state directory for a test
+//! that had no other reason to make one.
 //!
 //! `tests/state_directory.rs` is what keeps this true. It proves both halves — a command
 //! built the old way writes into the home directory it is given, and a command from here
@@ -35,16 +33,10 @@ use tempfile::TempDir;
 /// [`Machine::path`] as `NODAL_HOME`, which is what [`nodal`] does for a direct spawn.
 pub const BINARY: &str = env!("CARGO_BIN_EXE_nodal");
 
-/// A command for the binary, with `state` as its state directory.
-///
-/// `NODAL_CD_FILE` is removed as well. It names a file a waiting shell reads a path
-/// from, and a test run from inside an activated home would otherwise inherit the one
-/// belonging to that shell.
+/// A command for the binary, with `state` as its state directory and the two files
+/// every unit on a machine shares moved into it.
 pub fn nodal(state: &Path) -> Command {
-    let mut command = Command::new(BINARY);
-    command.env(nodal_core::workspace::home::DIRECTORY_VAR, state);
-    command.env_remove("NODAL_CD_FILE");
-    command
+    nodal_safety::runner::isolated(BINARY, state)
 }
 
 /// A state directory of a test's own, removed when the test ends.

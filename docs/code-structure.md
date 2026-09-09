@@ -20,7 +20,7 @@ nodal/
 ├── shims/                     tiny shell scripts: PATH shims, per-unit git hooks, rc hook, .envrc template
 ├── tests/                     workspace-level integration and safety suites
 │   ├── fixture/               generator for the small pnpm+migrations project
-│   ├── safety/                one test per interference row
+│   ├── safety/                the test kit every suite runs on, and one test per interference row
 │   └── e2e/                   new → shell → sync → reclaim on the fixture
 └── crates/
     ├── nodal-core/
@@ -246,3 +246,8 @@ commands/              one file per command, each ≤ 40 lines: parse args → c
 - One process-spawning function per external tool (`git::cmd::run`, `services::docker`), so mocking is one seam.
 - Tests: unit tests beside code for pure functions; integration tests in `tests/` against the fixture;
   safety suite is its own directory and is a required CI job.
+- One test kit, in `tests/safety/src`: the runner for the binary (`runner`), the runner for `git`
+  (`git`), the two streams of a finished command (`text`), the project to make units in (`project`),
+  the registry rows a test writes by hand (`rows`), and what a state directory answers (`state`).
+  A suite that needs one of those asks the kit; it never writes a second copy. The two crates that
+  depend on the kit are the two it depends on, so the edge back is a dev-dependency.

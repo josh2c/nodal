@@ -36,6 +36,7 @@ use nodal_core::store::{Store, environments, units};
 use nodal_core::substrate::progress::{Collector, Reporter};
 use nodal_core::substrate::{self, BaseBuild, Origin, Request};
 use nodal_core::{Error, lifecycle, recipe};
+use nodal_safety::git::{git, identity};
 use tempfile::TempDir;
 
 /// The environment variable the child reads its root from.
@@ -195,22 +196,13 @@ fn write(path: &Path, contents: &str) {
     std::fs::write(path, contents).unwrap();
 }
 
-/// Run `git` and insist it worked. Identity and signing are given on the command line,
-/// so the test does not depend on the machine's Git configuration.
-fn git(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "user.name=nodal test", "-c", "user.email=test@example.invalid"])
-        .args(["-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always"])
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
-    String::from_utf8_lossy(&output.stdout).trim().to_owned()
-}
-
+/// Commit everything a tree holds, and answer with the commit.
+///
+/// The identity is written into the repository first. The runner shuts the machine's
+/// own Git configuration out, so a repository this test made has no identity until the
+/// test gives it one.
 fn commit(dir: &Path, message: &str) -> String {
+    identity(dir);
     git(dir, &["add", "-A"]);
     git(dir, &["commit", "--quiet", "--allow-empty", "-m", message]);
     git(dir, &["rev-parse", "HEAD"])
@@ -224,7 +216,7 @@ fn move_the_workspace_key(world: &World, marker: &str) -> String {
 }
 
 fn push(world: &World) {
-    git(&world.checkout(), &["push", "--quiet", "origin", "HEAD:main"]);
+    git(world.checkout(), &["push", "--quiet", "origin", "HEAD:main"]);
 }
 
 /// Build the base the checkout needs, reporting into a collector the test can read.

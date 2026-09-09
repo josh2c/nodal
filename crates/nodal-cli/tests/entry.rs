@@ -23,7 +23,8 @@ mod state;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use home::{Fixture, PORT, SECRET, SLUG, Workspace};
+use home::{Fixture, PORT, SECRET, SLUG};
+use nodal_safety::Workspace;
 
 /// A terminal: a real shell, started interactive, reading its commands from a pipe,
 /// with the integration installed in the start-up file it reads.
@@ -212,7 +213,7 @@ fn nodal_cd_moves_the_zsh_it_is_run_from() {
 #[test]
 fn nodal_new_moves_the_shell_into_the_unit_it_made() {
     let bash = shell_or_skip!("bash");
-    let project = Workspace::new();
+    let project = Workspace::new(state::BINARY);
     let terminal = Terminal::bash(bash, project.root())
         .with("NODAL_HOME", &project.state)
         // The per-machine secrets file is shared by every unit on a machine, and a test

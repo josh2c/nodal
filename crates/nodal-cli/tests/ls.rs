@@ -23,12 +23,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-use nodal_core::model::{
-    BranchName, Digest, EnvId, EnvState, Environment, Ports, Project, ProjectId, ProjectName, Slug,
-    Timestamp, Unit, UnitId, UnitStatus,
-};
-use nodal_core::store::{Store, environments, projects, units};
+use nodal_core::model::{Digest, Project, ProjectId, ProjectName, Timestamp};
+use nodal_core::store::{Store, projects};
 use nodal_fixture::shapes;
+use nodal_safety::rows;
 
 /// How many units the list is measured at.
 const UNITS: usize = 10;
@@ -68,7 +66,7 @@ impl Fixture {
             let slug = format!("{branch}-{index}");
             let home = shapes::home(&project_root, root.join("homes").join(&slug), branch);
             shapes::take_branch(&home, &slug);
-            record(&opened, &project, &Row { slug: &slug, index, home: &home }, now);
+            record(&opened, &project, &slug, index, &home);
         }
         drop(opened);
         Self { directory, project: project_root, store }
@@ -133,50 +131,10 @@ fn has_proc() -> bool {
     cfg!(target_os = "linux")
 }
 
-/// One unit of the fixture: what it is called, which one it is, and where it lives.
-struct Row<'a> {
-    /// The unit's handle, which is also its branch here.
-    slug: &'a str,
-    /// Which unit of the ten this is, so identifiers stay fixed.
-    index: usize,
-    /// The clone the unit is materialised in.
-    home: &'a Path,
-}
-
 /// Record one unit and the home it is materialised in.
-fn record(store: &Store, project: &Project, row: &Row<'_>, now: Timestamp) {
-    let (slug, index, home) = (row.slug, row.index, row.home);
-    let unit = Unit {
-        id: UnitId::parse(format!("01ARZ3NDEKTSV4RRFFQ69G5F{index:02}")).unwrap(),
-        project_id: project.id,
-        slug: Slug::parse(slug).unwrap(),
-        objective: None,
-        objective_epistemic: None,
-        branch: BranchName::parse(slug).unwrap(),
-        parent_branch: None,
-        status: UnitStatus::Open,
-        created_at: now,
-        updated_at: now,
-    };
-    let environment = Environment {
-        id: EnvId::parse(format!("01ARZ3NDEKTSV4RRFFQ69G5E{index:02}")).unwrap(),
-        unit_id: unit.id,
-        attempt: 1,
-        home: home.to_path_buf(),
-        managed: true,
-        base_id: None,
-        ws_fp_materialized: None,
-        schema_fp_materialized: None,
-        host: nodal_core::lifecycle::owner::current_host(),
-        db_name: None,
-        ports: Ports::default(),
-        fixed_port: None,
-        state: EnvState::Stopped,
-        created_at: now,
-        last_active: now,
-    };
-    units::insert(store.conn(), &unit).unwrap();
-    environments::insert(store.conn(), &environment).unwrap();
+fn record(store: &Store, project: &Project, slug: &str, index: usize, home: &Path) {
+    let row = rows::Row { index, slug, branch: slug, home, host: rows::host() };
+    drop(rows::record(store, project.id, &row));
 }
 
 #[test]
