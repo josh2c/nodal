@@ -11,7 +11,7 @@
 #     as it is committed and writing rows through SQL, so a writer that changed shape
 #     since cannot make the check pass by accident;
 #   - `nodal upgrade` and `nodal update` answer identically, and each names the channel
-#     that installed the copy it is run from: the binary is copied into a cargo bin
+#     that installed the copy it is run from: the binary is linked into a cargo bin
 #     directory and into a plain one, and each is asked;
 #   - no code path in either crate can reach a network, and the shell hook evaluates
 #     only what Nodal's own binary printed. Both are read out of the source and out of

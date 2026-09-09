@@ -369,16 +369,38 @@ fn a_clean_unit_is_not_a_reason_to_refuse_and_the_summary_counts_it() {
 // Upgrade and update.
 // ---------------------------------------------------------------------------
 
-/// A copy of the binary at `path`, so that the channel it reports is the channel of the
-/// directory the test put it in.
-fn copy_binary(to: &Path) -> PathBuf {
-    std::fs::create_dir_all(to).unwrap();
-    let copy = to.join("nodal");
-    std::fs::copy(state::BINARY, &copy).unwrap();
-    copy
+/// A directory for a fake install tree, on the file system the binary is on.
+///
+/// `CARGO_TARGET_TMPDIR` is the directory Cargo gives an integration test inside the
+/// target directory, so a name under it and the binary under test are always on one
+/// file system. [`link_binary`] needs that, and nothing else here does.
+fn install_root() -> TempDir {
+    TempDir::new_in(env!("CARGO_TARGET_TMPDIR")).unwrap()
 }
 
-/// Run a copy of the binary and return what it printed.
+/// The binary at `to`, so that the channel it reports is the channel of the directory
+/// the test put it in.
+///
+/// A hard link, not a copy, and the difference is what stops these tests racing each
+/// other. Four tests here put the binary somewhere and run it, the harness runs them as
+/// threads of one process, and a thread that starts a process forks: for as long as the
+/// child has not reached its own `exec`, it holds a copy of every descriptor its parent
+/// had open, the descriptor another thread is writing a copy of the binary through
+/// included. Linux refuses to execute a file that any process holds open for writing,
+/// with `Text file busy`, and that is what these tests raced for. A link writes nothing,
+/// so no descriptor to what is about to run ever exists.
+///
+/// The link names the same file under a second name, which is what these tests need:
+/// the channel is read from the path the process was started as, and that is the path
+/// given here rather than the one Cargo built.
+fn link_binary(to: &Path) -> PathBuf {
+    std::fs::create_dir_all(to).unwrap();
+    let linked = to.join("nodal");
+    std::fs::hard_link(state::BINARY, &linked).unwrap();
+    linked
+}
+
+/// Run the binary under the name it was given, and return what it printed.
 fn run(binary: &Path, args: &[&str], state: &Path) -> String {
     let output = Command::new(binary)
         .args(args)
@@ -392,15 +414,15 @@ fn run(binary: &Path, args: &[&str], state: &Path) -> String {
 
 #[test]
 fn a_cargo_install_is_told_to_use_cargo_and_a_plain_binary_is_told_where_releases_are() {
-    let root = TempDir::new().unwrap();
+    let root = install_root();
     let state = root.path().join("state");
 
-    let cargo = copy_binary(&root.path().join("home/.cargo/bin"));
+    let cargo = link_binary(&root.path().join("home/.cargo/bin"));
     let answer = run(&cargo, &["upgrade"], &state);
     assert!(answer.contains("cargo"), "{answer}");
     assert!(answer.contains("cargo install nodal --force"), "{answer}");
 
-    let plain = copy_binary(&root.path().join("opt/tools"));
+    let plain = link_binary(&root.path().join("opt/tools"));
     let answer = run(&plain, &["upgrade"], &state);
     assert!(answer.contains("releases"), "{answer}");
     assert!(!answer.contains("cargo install"), "{answer}");
@@ -408,9 +430,9 @@ fn a_cargo_install_is_told_to_use_cargo_and_a_plain_binary_is_told_where_release
 
 #[test]
 fn upgrade_and_update_are_the_same_answer() {
-    let root = TempDir::new().unwrap();
+    let root = install_root();
     let state = root.path().join("state");
-    let binary = copy_binary(&root.path().join("home/.cargo/bin"));
+    let binary = link_binary(&root.path().join("home/.cargo/bin"));
 
     assert_eq!(run(&binary, &["upgrade"], &state), run(&binary, &["update"], &state));
     assert_eq!(
@@ -421,9 +443,9 @@ fn upgrade_and_update_are_the_same_answer() {
 
 #[test]
 fn upgrade_says_that_nodal_fetches_nothing() {
-    let root = TempDir::new().unwrap();
+    let root = install_root();
     let state = root.path().join("state");
-    let binary = copy_binary(&root.path().join("opt/tools"));
+    let binary = link_binary(&root.path().join("opt/tools"));
 
     let answer = run(&binary, &["upgrade"], &state);
 
@@ -432,9 +454,9 @@ fn upgrade_says_that_nodal_fetches_nothing() {
 
 #[test]
 fn upgrade_makes_no_state_directory_of_its_own() {
-    let root = TempDir::new().unwrap();
+    let root = install_root();
     let state = root.path().join("state");
-    let binary = copy_binary(&root.path().join("opt/tools"));
+    let binary = link_binary(&root.path().join("opt/tools"));
 
     run(&binary, &["upgrade"], &state);
 

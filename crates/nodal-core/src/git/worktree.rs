@@ -140,12 +140,81 @@ pub(super) fn classify(git_dir: PathBuf, common_dir: PathBuf, bare: bool) -> Lay
     Layout { kind, git_dir, common_dir }
 }
 
+/// The variables that move a repository's Git directory away from where the working
+/// tree keeps it. Any one of them set makes the shape on disk an unreliable answer, so
+/// [`ordinary`] declines and Git is asked.
+const RELOCATING: [&str; 3] = ["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"];
+
+/// The layout of an ordinary checkout, read from the shape on disk, or `None`.
+///
+/// Every home Nodal makes is an independent clone: a working tree with its own `.git`
+/// directory, shared with nothing. For that shape the two `git rev-parse` invocations
+/// [`super::Git::layout`] runs answer constants, and the list pays for them once per
+/// unit on every command. This reads the same answer from the file system instead.
+///
+/// The shape must be unmistakable, because a wrong answer here would write in another
+/// repository's Git directory. Four things are required, and each one is a way the
+/// answer could differ:
+///
+/// - no variable of [`RELOCATING`] is set, because each one names a Git directory
+///   somewhere other than the working tree;
+/// - `.git` is a directory holding `HEAD` and `refs`. A linked worktree keeps a `.git`
+///   **file**, and a directory without those two entries is not a Git directory;
+/// - `.git/commondir` is absent. That file is what a linked worktree's own Git
+///   directory uses to name the repository it shares, and a checkout that has one
+///   shares its objects with another;
+/// - the configuration does not make the repository bare. `bare = false` is what
+///   `git init` writes and is the ordinary case; any other value is left to Git.
+///
+/// The path is canonical, which is what `git rev-parse --path-format=absolute` reports:
+/// Git runs from the working tree and the kernel gives it the physical path, so a home
+/// reached through a symbolic link is reported through its real one.
+///
+/// A checkout this declines to classify costs the two invocations it always cost.
+pub(super) fn ordinary(root: &Path) -> Option<Layout> {
+    if RELOCATING.iter().any(|name| std::env::var_os(name).is_some()) {
+        return None;
+    }
+    let git_dir = root.join(".git");
+    if !git_dir.is_dir() || !git_dir.join("HEAD").exists() || !git_dir.join("refs").exists() {
+        return None;
+    }
+    if git_dir.join("commondir").exists() {
+        return None;
+    }
+    if !states_a_working_tree(&git_dir.join("config")) {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(&git_dir).ok()?;
+    Some(Layout { kind: Kind::Main, git_dir: canonical.clone(), common_dir: canonical })
+}
+
+/// Whether the configuration leaves the repository with a working tree.
+///
+/// True when the file states no `bare` key, and when every `bare` key it states is
+/// false. The reading is deliberately narrow: a value this does not recognise, and a
+/// file that cannot be read, both answer false, and false only means that Git is asked.
+fn states_a_working_tree(config: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(config) else {
+        return false;
+    };
+    text.lines()
+        .filter_map(bare_value)
+        .all(|value| matches!(value.to_ascii_lowercase().as_str(), "false" | "no" | "off" | "0"))
+}
+
+/// The value of a `bare` line of a configuration file, when the line states one.
+fn bare_value(line: &str) -> Option<&str> {
+    let (key, value) = line.split_once('=')?;
+    (key.trim() == "bare").then(|| value.trim())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 mod tests {
     use std::path::PathBuf;
 
-    use super::{Kind, classify, parse_list};
+    use super::{Kind, bare_value, classify, parse_list};
 
     #[test]
     fn a_locked_worktree_states_the_reason_it_was_locked() {
@@ -204,5 +273,18 @@ mod tests {
 
         let bare = classify(PathBuf::from("/r.git"), PathBuf::from("/r.git"), true);
         assert_eq!(bare.kind, Kind::Bare);
+    }
+
+    /// The configuration reading that decides whether a checkout has a working tree.
+    ///
+    /// `bare = false` is the line `git init` writes and must be read as a working tree;
+    /// `bare = true` is what `git init --bare` writes and must not. A line about
+    /// anything else says nothing about bareness.
+    #[test]
+    fn a_bare_line_is_read_and_every_other_line_is_not() {
+        assert_eq!(bare_value("\tbare = false"), Some("false"));
+        assert_eq!(bare_value("bare=true"), Some("true"));
+        assert_eq!(bare_value("\tlogallrefupdates = true"), None);
+        assert_eq!(bare_value("[core]"), None);
     }
 }

@@ -121,6 +121,75 @@ fn layout_distinguishes_main_linked_and_bare_checkouts() {
     assert_eq!(Git::open(&bare_path).unwrap().layout().unwrap().kind, worktree::Kind::Bare);
 }
 
+/// The layout of an ordinary checkout is the one Git reports, path for path.
+///
+/// `Git::layout` answers an ordinary checkout from the shape on disk and starts no
+/// process. This is the lock on that: the answer is compared with what `git rev-parse`
+/// says of the same checkout, reached directly and reached through a symbolic link,
+/// because a home under a linked temporary directory is what CI runs.
+#[test]
+fn an_ordinary_checkout_is_laid_out_where_git_says_it_is() {
+    let repo = Repo::seeded();
+    let asked = run_git(repo.path(), &["rev-parse", "--path-format=absolute", "--git-dir"]);
+    let layout = repo.git_facade().layout().unwrap();
+    assert_eq!(layout.kind, worktree::Kind::Main);
+    assert_eq!(layout.git_dir, PathBuf::from(&asked));
+    assert_eq!(layout.common_dir, PathBuf::from(&asked));
+    assert_eq!(run_git(repo.path(), &["rev-parse", "--is-bare-repository"]), "false");
+
+    let elsewhere = TempDir::new().unwrap();
+    let link = elsewhere.path().join("home");
+    std::os::unix::fs::symlink(repo.path(), &link).unwrap();
+    let through_link = Git::at(&link).layout().unwrap();
+    assert_eq!(
+        through_link.git_dir,
+        PathBuf::from(run_git(&link, &["rev-parse", "--path-format=absolute", "--git-dir"]))
+    );
+    assert_eq!(through_link, layout);
+}
+
+/// A checkout that is not an ordinary one is laid out where Git says it is too.
+///
+/// The two shapes the fast path must decline: a linked worktree, whose Git directory
+/// belongs to another repository, and a bare repository, which has no working tree.
+/// Both answers are compared with `git rev-parse`, so a fast path that took either of
+/// them would report a Git directory that is not the one Git names.
+#[test]
+fn a_linked_worktree_and_a_bare_repository_are_laid_out_where_git_says_they_are() {
+    let repo = Repo::seeded();
+    let linked_path = repo.path().join("linked");
+    repo.git(&["worktree", "add", "--detach", linked_path.to_str().unwrap()]);
+    let linked = Git::at(&linked_path).layout().unwrap();
+    assert_eq!(linked.kind, worktree::Kind::Linked);
+    assert_eq!(
+        linked.git_dir,
+        PathBuf::from(run_git(&linked_path, &["rev-parse", "--path-format=absolute", "--git-dir"]))
+    );
+    assert_eq!(
+        linked.common_dir,
+        PathBuf::from(run_git(
+            &linked_path,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"]
+        ))
+    );
+
+    let bare_dir = TempDir::new().unwrap();
+    let bare_path = bare_dir.path().join("bare.git");
+    assert!(
+        Command::new("git")
+            .args(["init", "--bare", bare_path.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let bare = Git::at(&bare_path).layout().unwrap();
+    assert_eq!(bare.kind, worktree::Kind::Bare);
+    assert_eq!(run_git(&bare_path, &["rev-parse", "--is-bare-repository"]), "true");
+
+    let plain = TempDir::new().unwrap();
+    assert!(Git::at(plain.path()).layout().is_err());
+}
+
 /// `Git::rev_parse` resolves what exists; `rev_parse_opt` reports what does not.
 #[test]
 fn rev_parse_resolves_revisions_and_reports_missing_ones() {

@@ -79,9 +79,16 @@ impl Git {
 
     /// Where this checkout keeps its Git state, and whether it shares it with another.
     ///
+    /// An ordinary checkout is answered from the shape on disk and costs no process at
+    /// all ([`worktree::ordinary`]). Every home Nodal makes has that shape, and the
+    /// list asks this of every home on every command; anything else is asked of Git.
+    ///
     /// # Errors
     /// [`Error::Git`] when `git rev-parse` failed.
     pub fn layout(&self) -> Result<worktree::Layout> {
+        if let Some(layout) = worktree::ordinary(&self.root) {
+            return Ok(layout);
+        }
         let paths = cmd::run_ok(
             &self.root,
             &["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
