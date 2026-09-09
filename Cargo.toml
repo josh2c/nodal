@@ -19,6 +19,10 @@ repository = "https://github.com/josh2c/nodal"
 nodal-core = { path = "crates/nodal-core", version = "0.1.0" }
 # Test-only: the project CI runs Nodal against, so CI never needs a real one.
 nodal-fixture = { path = "tests/fixture" }
+# Test-only: the test kit every suite runs on, and the safety suite built on it. The
+# two crates that depend on it are the two it depends on, so the edge back is a
+# dev-dependency and Cargo resolves the loop.
+nodal-safety = { path = "tests/safety" }
 clap = { version = "4", features = ["derive", "env"] }
 # Two calls, both about the process that is running an operation: the host name that
 # goes in the journal, and the signal-zero check for whether an interrupted run's

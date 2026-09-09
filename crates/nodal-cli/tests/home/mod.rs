@@ -9,15 +9,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
-use nodal_core::env::secrets::{MachineSecrets, SecretSource, UnitGenerated};
-use nodal_core::env::{self, Produced, files};
 use nodal_core::model::{
-    BranchName, Digest, EnvId, EnvName, EnvState, Environment, Event, Ports, Project, ProjectId,
-    ProjectName, Recipe, Slug, Timestamp, Unit, UnitId, UnitStatus,
+    EnvId, EnvName, Environment, Event, Project, ProjectId, Recipe, Timestamp, Unit, UnitId,
 };
 use nodal_core::store::{Store, environments, events, projects, units};
+use nodal_safety::activation::{self, name};
+use nodal_safety::rows;
 
 /// The credential the home carries, distinctive enough to search any output for.
 pub const SECRET: &str = "s3cr3t-canary-value";
@@ -51,7 +50,7 @@ impl Fixture {
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(root.join("elsewhere")).unwrap();
 
-        let (unit, environment, project) = rows(&root, &home);
+        let (unit, environment, project) = registry_rows(&root, &home);
         write_activation(&root, &home, (&unit, &environment, &project));
 
         let store = root.join("registry.db");
@@ -117,50 +116,23 @@ impl Default for Fixture {
 }
 
 /// The registry rows this home is a materialisation of.
-fn rows(root: &Path, home: &Path) -> (Unit, Environment, Project) {
+fn registry_rows(root: &Path, home: &Path) -> (Unit, Environment, Project) {
     let now = Timestamp::now();
-    let unit = Unit {
-        id: UnitId::parse(UNIT).unwrap(),
-        project_id: ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap(),
-        slug: Slug::parse(SLUG).unwrap(),
-        objective: None,
-        objective_epistemic: None,
-        branch: BranchName::parse("nodal/fix-worker-import").unwrap(),
-        parent_branch: None,
-        status: UnitStatus::Open,
-        created_at: now,
-        updated_at: now,
-    };
-    let environment = Environment {
-        id: EnvId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAX").unwrap(),
-        unit_id: unit.id,
-        attempt: 1,
-        home: home.to_path_buf(),
-        managed: true,
-        base_id: None,
-        ws_fp_materialized: None,
-        schema_fp_materialized: None,
-        host: nodal_core::lifecycle::owner::current_host(),
-        db_name: None,
-        ports: Ports::default(),
-        fixed_port: None,
-        state: EnvState::Stopped,
-        created_at: now,
-        last_active: now,
-    };
-    let project = Project {
-        id: unit.project_id,
-        root: root.join("checkout"),
-        name: ProjectName::parse("fixture").unwrap(),
-        recipe_hash: Digest::parse("0".repeat(64)).unwrap(),
-        created_at: now,
-    };
+    let unit = rows::unit(
+        UnitId::parse(UNIT).unwrap(),
+        ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap(),
+        SLUG,
+        "nodal/fix-worker-import",
+        now,
+    );
+    let environment =
+        rows::environment(EnvId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAX").unwrap(), unit.id, home, now);
+    let project = rows::project(unit.project_id, root.join("checkout"), "fixture", now);
     (unit, environment, project)
 }
 
 /// Resolve the environment and write the three activation files.
 fn write_activation(root: &Path, home: &Path, subject: (&Unit, &Environment, &Project)) {
-    let name = |text: &str| EnvName::parse(text).unwrap();
     let mut recipe = Recipe::default();
     recipe.env.generated = vec![name("PORT"), name("APP_URL")];
     recipe.env.secrets = vec![name("SESSION_SECRET")];
@@ -170,76 +142,6 @@ fn write_activation(root: &Path, home: &Path, subject: (&Unit, &Environment, &Pr
             .into();
 
     let secrets_file = root.join("secrets.env");
-    std::fs::write(&secrets_file, format!("SESSION_SECRET={SECRET}\n")).unwrap();
-    set_owner_only(&secrets_file);
-    let machine = MachineSecrets::open(&secrets_file).unwrap();
-    let generated = UnitGenerated::default();
-    let sources: [&dyn SecretSource; 2] = [&generated, &machine];
-
-    let activation = env::resolve(subject, &recipe, &Produced::new(produced), &sources).unwrap();
-    let (unit, environment, project) = subject;
-    let manifest = activation.manifest(unit, environment, project);
-    files::write(home, &activation, &manifest).unwrap();
+    activation::write_secrets(&secrets_file, &format!("SESSION_SECRET={SECRET}\n"));
+    activation::write(home, &secrets_file, &recipe, produced, subject);
 }
-
-/// A one-commit project, and the state directory the units it makes go in.
-///
-/// Named for what it holds rather than for the project inside it, because
-/// `nodal_core::model::Project` is a row in the registry and this is a place on a disk.
-///
-/// `nodal new` needs a repository with a commit in it; this is the smallest one that is
-/// still a project a recipe can be inferred from.
-pub struct Workspace {
-    /// The temporary root, kept so it outlives the test.
-    directory: tempfile::TempDir,
-    /// The repository units are made from.
-    pub source: PathBuf,
-    /// Nodal's state directory: the registry, and every home.
-    pub state: PathBuf,
-}
-
-impl Workspace {
-    /// Build the repository and its one commit.
-    #[must_use]
-    pub fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let source = directory.path().join("project");
-        let state = directory.path().join("state");
-        std::fs::create_dir_all(source.join("app")).unwrap();
-        std::fs::write(source.join("app").join("main.txt"), "shared\n").unwrap();
-        std::fs::write(source.join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
-        std::fs::write(source.join(".gitignore"), "node_modules/\n").unwrap();
-        for args in [
-            vec!["init", "-q", "-b", "main"],
-            vec!["config", "user.email", "unit@example.invalid"],
-            vec!["config", "user.name", "Test"],
-            vec!["add", "-A"],
-            vec!["commit", "-qm", "first"],
-        ] {
-            let status = Command::new("git").args(&args).current_dir(&source).status().unwrap();
-            assert!(status.success(), "git {args:?}");
-        }
-        Self { directory, source, state }
-    }
-
-    /// The temporary root, which is where a test writes a shell start-up file.
-    #[must_use]
-    pub fn root(&self) -> &Path {
-        self.directory.path()
-    }
-}
-
-impl Default for Workspace {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(unix)]
-fn set_owner_only(path: &Path) {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
-}
-
-#[cfg(not(unix))]
-fn set_owner_only(_path: &Path) {}

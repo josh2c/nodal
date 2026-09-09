@@ -25,6 +25,11 @@ use std::process::{Command, Output};
 use nodal_core::store::{Store, projects, units};
 use tempfile::TempDir;
 
+use crate::git::git;
+use crate::runner::Runner;
+use crate::state::InState;
+use crate::text::stderr;
+
 /// The name of the binary the suite drives.
 const BINARY: &str = "nodal";
 
@@ -46,12 +51,18 @@ const IDENTITY: [(&str, &str); 2] =
 pub struct Machine {
     /// The temporary root, kept so that it outlives the test.
     _root: TempDir,
+    /// The binary under test, and where it writes.
+    runner: Runner,
     /// The person's checkout: the fixture project, committed.
     pub source: PathBuf,
     /// Nodal's state directory: the registry, every base, every home and the trash.
     pub state: PathBuf,
-    /// Where the stub package manager is, which every command gets on its path.
-    tools: PathBuf,
+}
+
+impl InState for Machine {
+    fn state_dir(&self) -> &Path {
+        &self.state
+    }
 }
 
 impl Machine {
@@ -121,7 +132,8 @@ impl Machine {
         }
         git(&source, &["commit", "--quiet", "--message", "the fixture project"]);
 
-        Self { _root: root, source, state, tools }
+        let runner = Runner::new(binary(), &state, &source).with_env("PATH", path(&tools));
+        Self { _root: root, runner, source, state }
     }
 
     /// `nodal` with this machine's state, run in the project.
@@ -132,7 +144,7 @@ impl Machine {
     /// and several properties here are about a refusal.
     #[must_use]
     pub fn nodal(&self, args: &[&str]) -> Output {
-        self.command(args).output().expect("the binary runs")
+        self.runner.nodal(args)
     }
 
     /// The same invocation, run somewhere other than the project.
@@ -142,23 +154,13 @@ impl Machine {
     /// As [`Machine::nodal`].
     #[must_use]
     pub fn nodal_in(&self, cwd: &Path, args: &[&str]) -> Output {
-        let mut command = self.command(args);
-        command.current_dir(cwd);
-        command.output().expect("the binary runs")
+        self.runner.nodal_in(cwd, args)
     }
 
     /// The invocation itself, not yet run.
     #[must_use]
     pub fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(binary());
-        command.args(args).current_dir(&self.source);
-        command.env("NODAL_HOME", &self.state);
-        // All three are shared by every unit on a machine, and a safety test must never
-        // read or create the ones belonging to whoever is running it.
-        command.env("NODAL_SECRETS_FILE", self.state.join("secrets.env"));
-        command.env("NODAL_HOOKS_FILE", self.state.join("hooks.toml"));
-        command.env("PATH", self.path());
-        command
+        self.runner.command(args)
     }
 
     /// Make one unit and answer with its home, with an identity Git will commit under.
@@ -219,22 +221,6 @@ impl Machine {
             .home
     }
 
-    /// The registry, opened for reading what a command wrote.
-    ///
-    /// # Panics
-    ///
-    /// If it could not be opened.
-    #[must_use]
-    pub fn store(&self) -> Store {
-        Store::open(self.registry()).expect("the registry opens")
-    }
-
-    /// Where the registry file is.
-    #[must_use]
-    pub fn registry(&self) -> PathBuf {
-        self.state.join("registry.db")
-    }
-
     /// The one project this machine has.
     ///
     /// # Panics
@@ -246,22 +232,6 @@ impl Machine {
             .expect("the projects are readable")
             .pop()
             .expect("no command has registered the project yet")
-    }
-
-    /// Every live home of this project, in name order.
-    #[must_use]
-    pub fn homes(&self) -> Vec<PathBuf> {
-        entries(self.segment("e"))
-    }
-
-    /// Every base of this project, in name order. One still being assembled carries a
-    /// suffix and is not a base yet.
-    #[must_use]
-    pub fn bases(&self) -> Vec<PathBuf> {
-        entries(self.segment("b"))
-            .into_iter()
-            .filter(|path| !path.to_string_lossy().ends_with(".partial"))
-            .collect()
     }
 
     /// The one base every unit of this project is cloned from.
@@ -276,37 +246,21 @@ impl Machine {
         built.pop().unwrap_or_default()
     }
 
-    /// Everything this project's trash holds, in name order.
-    #[must_use]
-    pub fn trashed(&self) -> Vec<PathBuf> {
-        entries(self.segment("trash"))
-    }
-
     /// The file the stub package manager writes, relative to a tree's root.
     #[must_use]
     pub const fn installed() -> &'static str {
         INSTALLED
     }
+}
 
-    /// One segment of this project's directory, and nothing until something made it.
-    fn segment(&self, name: &str) -> Option<PathBuf> {
-        std::fs::read_dir(&self.state)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path().join(name))
-            .find(|path| path.is_dir())
+/// The search path a command gets: the stub package manager, then the real one.
+fn path(tools: &Path) -> std::ffi::OsString {
+    let mut value = tools.to_path_buf().into_os_string();
+    if let Some(inherited) = std::env::var_os("PATH") {
+        value.push(":");
+        value.push(inherited);
     }
-
-    /// The search path a command gets: the stub package manager, then the real one.
-    fn path(&self) -> std::ffi::OsString {
-        let mut value = self.tools.clone().into_os_string();
-        if let Some(inherited) = std::env::var_os("PATH") {
-            value.push(":");
-            value.push(inherited);
-        }
-        value
-    }
+    value
 }
 
 impl Default for Machine {
@@ -365,70 +319,4 @@ pub fn binary() -> PathBuf {
          or name it with {BINARY_VAR}",
         test.display()
     );
-}
-
-/// What is directly inside a directory, in name order, and nothing when there is no such
-/// directory yet.
-fn entries(directory: Option<PathBuf>) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = directory
-        .into_iter()
-        .flat_map(|path| std::fs::read_dir(path).into_iter().flatten().flatten())
-        .map(|entry| entry.path())
-        .collect();
-    found.sort();
-    found
-}
-
-/// Standard output as text, with the command insisted upon.
-///
-/// # Panics
-///
-/// If the command failed, printing what it said about that.
-#[must_use]
-pub fn stdout(output: &Output) -> String {
-    assert!(output.status.success(), "{}", stderr(output));
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-/// Standard error as text.
-#[must_use]
-pub fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-/// One `git` command in a directory, as trimmed text, with the call insisted upon.
-///
-/// The global and system configuration are shut out, so that a property holds whatever
-/// the person running the tests has in theirs.
-///
-/// # Panics
-///
-/// If `git` is not there or refused the command.
-pub fn git(directory: impl AsRef<Path>, args: &[&str]) -> String {
-    let output = try_git(directory.as_ref(), args);
-    assert!(
-        output.status.success(),
-        "git {args:?} in {}: {}",
-        directory.as_ref().display(),
-        stderr(&output)
-    );
-    String::from_utf8_lossy(&output.stdout).trim_end().to_owned()
-}
-
-/// The same, for a command that is asked because it may fail.
-///
-/// # Panics
-///
-/// If `git` is not there at all.
-#[must_use]
-pub fn try_git(directory: &Path, args: &[&str]) -> Output {
-    Command::new("git")
-        .arg("-C")
-        .arg(directory)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .output()
-        .expect("git runs")
 }

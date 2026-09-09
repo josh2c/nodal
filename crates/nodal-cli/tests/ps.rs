@@ -16,28 +16,8 @@
 mod home;
 mod state;
 
-use std::process::{Child, Command};
-
 use home::{Fixture, SLUG};
-
-/// A child that is killed when the test ends, whichever way it ends.
-struct Sleeper(Child);
-
-impl Drop for Sleeper {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-/// Whether this host publishes a process table, and a word about it when it does not.
-fn has_proc(claim: &str) -> bool {
-    if cfg!(target_os = "linux") {
-        return true;
-    }
-    eprintln!("skipped ({claim}): a process scan reads /proc, which this host does not have");
-    false
-}
+use nodal_safety::{platform, process};
 
 /// The line of `nodal ps` output about one process.
 fn line(text: &str, pid: u32) -> String {
@@ -49,23 +29,16 @@ fn line(text: &str, pid: u32) -> String {
 
 #[test]
 fn a_process_started_with_the_homes_environment_is_certain() {
-    if !has_proc("certain by environment") {
+    if !platform::reads_process_table("certain by environment") {
         return;
     }
     let fixture = Fixture::new();
-    let child = Sleeper(
-        Command::new("sleep")
-            .arg("30")
-            .env("NODAL_ID", Fixture::unit_id())
-            .env("NODAL_ROOT", &fixture.home)
-            .spawn()
-            .unwrap(),
-    );
+    let child = process::carrying(Fixture::unit_id(), &fixture.home);
 
     let output = fixture.nodal(&["ps"], &fixture.outside());
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let text = String::from_utf8_lossy(&output.stdout);
-    let row = line(&text, child.0.id());
+    let row = line(&text, child.pid());
     assert!(row.contains(SLUG), "{row}");
     assert!(row.contains("process"), "{row}");
     assert!(row.contains("sleep 30"), "{row}");
@@ -75,23 +48,15 @@ fn a_process_started_with_the_homes_environment_is_certain() {
 
 #[test]
 fn a_process_that_only_stands_in_the_home_is_probable() {
-    if !has_proc("probable by directory") {
+    if !platform::reads_process_table("probable by directory") {
         return;
     }
     let fixture = Fixture::new();
-    let child = Sleeper(
-        Command::new("sleep")
-            .arg("30")
-            .current_dir(&fixture.home)
-            .env_remove("NODAL_ID")
-            .env_remove("NODAL_ROOT")
-            .spawn()
-            .unwrap(),
-    );
+    let child = process::standing_in(&fixture.home);
 
     let output = fixture.nodal(&["ps"], &fixture.outside());
     let text = String::from_utf8_lossy(&output.stdout);
-    let row = line(&text, child.0.id());
+    let row = line(&text, child.pid());
     assert!(row.contains(SLUG), "{row}");
     assert!(row.contains("probable"), "{row}");
     assert!(row.contains("cwd"), "{row}");
@@ -99,18 +64,11 @@ fn a_process_that_only_stands_in_the_home_is_probable() {
 
 #[test]
 fn the_json_answer_carries_the_same_row_with_its_confidence() {
-    if !has_proc("json") {
+    if !platform::reads_process_table("json") {
         return;
     }
     let fixture = Fixture::new();
-    let child = Sleeper(
-        Command::new("sleep")
-            .arg("30")
-            .env("NODAL_ID", Fixture::unit_id())
-            .env("NODAL_ROOT", &fixture.home)
-            .spawn()
-            .unwrap(),
-    );
+    let child = process::carrying(Fixture::unit_id(), &fixture.home);
 
     let output = fixture.nodal(&["ps", "--json"], &fixture.outside());
     let answer: serde_json::Value =
@@ -118,7 +76,7 @@ fn the_json_answer_carries_the_same_row_with_its_confidence() {
     let rows = answer["rows"].as_array().unwrap();
     let row = rows
         .iter()
-        .find(|row| row["pid"].as_u64() == Some(u64::from(child.0.id())))
+        .find(|row| row["pid"].as_u64() == Some(u64::from(child.pid())))
         .unwrap_or_else(|| panic!("no row for the process in {answer}"));
     assert_eq!(row["confidence"], "certain");
     assert_eq!(row["signal"], "environment");

@@ -33,82 +33,67 @@
 mod state;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
 use nodal_core::model::UnitStatus;
-use nodal_core::store::{Store, projects, units};
-use tempfile::TempDir;
+use nodal_core::store::{projects, units};
+use nodal_safety::git::{git, git_ok, identity};
+use nodal_safety::text::stdout;
+use nodal_safety::{InState as _, Workspace};
 
 /// The address the compare-page test pretends its remote lives at.
 const GITHUB: &str = "https://github.com/team/project.git";
 
-/// A project with a remote, and the state directory its units go in.
-struct Workspace {
-    /// The temporary root, kept so that it outlives the test.
-    _root: TempDir,
-    /// The bare repository the project pushes to.
-    remote: PathBuf,
-    /// The project's own checkout.
-    source: PathBuf,
-    /// Nodal's state directory: the registry, every home, and the trash.
-    state: PathBuf,
+/// This suite's project: a one-commit repository, pushed to a bare remote beside it.
+///
+/// `nodal done` is about what a person sees after a review, so the project has the
+/// remote a review happens on.
+fn workspace() -> Workspace {
+    let workspace = Workspace::new(state::BINARY);
+    let remote = workspace.root().join("remote.git");
+    git_ok(workspace.root(), &["init", "-q", "--bare", remote.to_str().unwrap()]);
+    git_ok(&workspace.source, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    git_ok(&workspace.source, &["push", "-q", "-u", "origin", "main"]);
+    workspace
 }
 
-impl Workspace {
-    /// A one-commit repository, a bare remote it has been pushed to, and an empty state
-    /// directory beside them.
-    fn new() -> Self {
-        let root = TempDir::new().unwrap();
-        let remote = root.path().join("remote.git");
-        let source = root.path().join("project");
-        let state = root.path().join("state");
-        git(root.path(), &["init", "-q", "--bare", remote.to_str().unwrap()]);
-        std::fs::create_dir_all(source.join("app")).unwrap();
-        std::fs::write(source.join("app").join("main.txt"), "shared\n").unwrap();
-        std::fs::write(source.join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
-        init_repository(&source);
-        git(&source, &["remote", "add", "origin", remote.to_str().unwrap()]);
-        git(&source, &["push", "-q", "-u", "origin", "main"]);
-        Self { _root: root, remote, source, state }
-    }
+/// The same, with a recipe this test wrote and this machine has approved.
+fn workspace_with_recipe(recipe: &str) -> Workspace {
+    let workspace = workspace();
+    workspace.approve_recipe(recipe);
+    workspace
+}
 
-    /// The same, with a recipe this test wrote and this machine has approved.
-    fn with_recipe(recipe: &str) -> Self {
-        let workspace = Self::new();
-        workspace.write_recipe(recipe);
-        stdout(&workspace.nodal(&["init", "--force"]));
-        workspace
-    }
-
-    /// Put a recipe in the project, without approving anything.
-    fn write_recipe(&self, recipe: &str) {
-        std::fs::write(self.source.join("nodal.toml"), recipe).unwrap();
-    }
-
-    /// `nodal` with this workspace's state directory, run in the project.
-    fn nodal(&self, args: &[&str]) -> Output {
-        let mut command = state::nodal(&self.state);
-        command.args(args).current_dir(&self.source);
-        command.env("NODAL_SECRETS_FILE", self.state.join("secrets.env"));
-        command.env("NODAL_HOOKS_FILE", self.state.join("hooks.toml"));
-        command.output().unwrap()
-    }
+/// The readings this suite needs beyond the ones the shared fixture has.
+trait Finishing {
+    /// The bare repository the project pushes to.
+    fn remote(&self) -> PathBuf;
 
     /// Make a unit, and answer with its home, ready to be committed in.
-    fn unit(&self, name: &str) -> PathBuf {
-        stdout(&self.nodal(&["new", "--name", name]));
+    fn unit_home(&self, name: &str) -> PathBuf;
+
+    /// The state the registry holds for a unit, which is the answer that matters.
+    fn status(&self, slug: &str) -> UnitStatus;
+
+    /// Every ref the remote holds, as `git for-each-ref` names them.
+    fn remote_refs(&self) -> Vec<String>;
+
+    /// Squash the unit's branch into `main` in the project's own checkout and push it,
+    /// which is what a reviewer pressing the button on a website does.
+    fn squash_merge(&self, branch: &str);
+}
+
+impl Finishing for Workspace {
+    fn remote(&self) -> PathBuf {
+        self.root().join("remote.git")
+    }
+
+    fn unit_home(&self, name: &str) -> PathBuf {
+        drop(stdout(&self.nodal(&["new", "--name", name])));
         let home = PathBuf::from(stdout(&self.nodal(&["cd", name])).trim());
-        git(&home, &["config", "user.email", "unit@example.invalid"]);
-        git(&home, &["config", "user.name", "Test"]);
+        identity(&home);
         home
     }
 
-    /// The registry, opened for reading.
-    fn store(&self) -> Store {
-        Store::open(self.state.join("registry.db")).unwrap()
-    }
-
-    /// The state the registry holds for a unit, which is the answer that matters.
     fn status(&self, slug: &str) -> UnitStatus {
         let store = self.store();
         let project = projects::list(store.conn()).unwrap().pop().expect("one project");
@@ -118,59 +103,26 @@ impl Workspace {
             .status
     }
 
-    /// Every ref the remote holds, as `git for-each-ref` names them.
     fn remote_refs(&self) -> Vec<String> {
-        stdout(
-            &Command::new("git")
-                .args(["-C", self.remote.to_str().unwrap(), "for-each-ref", "--format=%(refname)"])
-                .output()
-                .unwrap(),
-        )
-        .lines()
-        .map(str::to_owned)
-        .collect()
+        git(self.remote(), &["for-each-ref", "--format=%(refname)"])
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
-    /// Squash the unit's branch into `main` in the project's own checkout and push it,
-    /// which is what a reviewer pressing the button on a website does.
     fn squash_merge(&self, branch: &str) {
-        git(&self.source, &["fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*"]);
-        git(&self.source, &["merge", "--squash", "-q", &format!("origin/{branch}")]);
-        git(&self.source, &["commit", "-qm", "squashed"]);
-        git(&self.source, &["push", "-q", "origin", "main"]);
+        git_ok(&self.source, &["fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*"]);
+        git_ok(&self.source, &["merge", "--squash", "-q", &format!("origin/{branch}")]);
+        git_ok(&self.source, &["commit", "-qm", "squashed"]);
+        git_ok(&self.source, &["push", "-q", "origin", "main"]);
     }
-}
-
-/// Run `git` in a directory and fail the test if it did not work.
-fn git(directory: &Path, args: &[&str]) -> String {
-    let output = Command::new("git").args(args).current_dir(directory).output().unwrap();
-    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
-    String::from_utf8(output.stdout).unwrap()
-}
-
-/// A repository with one commit and an identity of its own.
-fn init_repository(source: &Path) {
-    for args in [
-        vec!["init", "-q", "-b", "main"],
-        vec!["config", "user.email", "unit@example.invalid"],
-        vec!["config", "user.name", "Test"],
-        vec!["add", "-A"],
-        vec!["commit", "-qm", "first"],
-    ] {
-        git(source, &args);
-    }
-}
-
-/// The standard output of a command that was meant to work.
-fn stdout(output: &Output) -> String {
-    assert!(output.status.success(), "command failed: {}", String::from_utf8_lossy(&output.stderr));
-    String::from_utf8(output.stdout.clone()).unwrap()
 }
 
 /// Commit a change in a home, so the unit's branch carries work of its own.
 fn commit(home: &Path, text: &str) {
     std::fs::write(home.join("app").join("main.txt"), text).unwrap();
-    git(home, &["commit", "-qam", "the unit's own work"]);
+    identity(home);
+    git_ok(home, &["commit", "-qam", "the unit's own work"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -179,8 +131,8 @@ fn commit(home: &Path, text: &str) {
 
 #[test]
 fn done_pushes_the_branch_and_the_wip_ref_and_puts_the_unit_up_for_review() {
-    let workspace = Workspace::new();
-    let home = workspace.unit("worker-import");
+    let workspace = workspace();
+    let home = workspace.unit_home("worker-import");
     commit(&home, "fixed\n");
     std::fs::write(home.join("notes.txt"), "not committed yet\n").unwrap();
 
@@ -198,25 +150,25 @@ fn done_pushes_the_branch_and_the_wip_ref_and_puts_the_unit_up_for_review() {
     assert!(report.contains("nodal opens none"), "and what it did not do: {report}");
 
     // The uncommitted file is on the remote in the snapshot and not on the branch.
-    let carried = git(&workspace.remote, &["ls-tree", "--name-only", wip.as_str()]);
+    let carried = git(workspace.remote(), &["ls-tree", "--name-only", wip.as_str()]);
     assert!(carried.contains("notes.txt"), "the snapshot carries the uncommitted work: {carried}");
     let branch =
-        git(&workspace.remote, &["ls-tree", "--name-only", "refs/heads/nodal/worker-import"]);
+        git(workspace.remote(), &["ls-tree", "--name-only", "refs/heads/nodal/worker-import"]);
     assert!(!branch.contains("notes.txt"), "and the branch does not: {branch}");
 }
 
 #[test]
 fn done_prints_the_compare_url_of_the_host_the_remote_names() {
-    let workspace = Workspace::new();
-    let home = workspace.unit("worker-import");
+    let workspace = workspace();
+    let home = workspace.unit_home("worker-import");
     commit(&home, "fixed\n");
     // The remote is called by its GitHub name and reached next door. Everything that
     // reads the remote sees github.com; `pushInsteadOf` sends the push itself to the
     // bare repository, so nothing here touches a network.
-    git(&home, &["remote", "set-url", "origin", GITHUB]);
-    git(
+    drop(git(&home, &["remote", "set-url", "origin", GITHUB]));
+    git_ok(
         &home,
-        &["config", &format!("url.{}.pushInsteadOf", workspace.remote.to_str().unwrap()), GITHUB],
+        &["config", &format!("url.{}.pushInsteadOf", workspace.remote().to_str().unwrap()), GITHUB],
     );
 
     let report = stdout(&workspace.nodal(&["done", "worker-import"]));
@@ -233,13 +185,13 @@ fn done_prints_the_compare_url_of_the_host_the_remote_names() {
 
 #[test]
 fn done_on_a_second_run_pushes_again_and_leaves_the_unit_in_review() {
-    let workspace = Workspace::new();
-    let home = workspace.unit("worker-import");
+    let workspace = workspace();
+    let home = workspace.unit_home("worker-import");
     commit(&home, "fixed\n");
-    stdout(&workspace.nodal(&["done", "worker-import"]));
+    drop(stdout(&workspace.nodal(&["done", "worker-import"])));
     std::fs::write(home.join("notes.txt"), "more, still uncommitted\n").unwrap();
 
-    stdout(&workspace.nodal(&["done", "worker-import"]));
+    drop(stdout(&workspace.nodal(&["done", "worker-import"])));
 
     assert_eq!(workspace.status("worker-import"), UnitStatus::Review);
     let wip = workspace
@@ -247,15 +199,15 @@ fn done_on_a_second_run_pushes_again_and_leaves_the_unit_in_review() {
         .into_iter()
         .find(|name| name.ends_with("/wip"))
         .expect("the wip ref is there");
-    let carried = git(&workspace.remote, &["ls-tree", "--name-only", &wip]);
+    let carried = git(workspace.remote(), &["ls-tree", "--name-only", &wip]);
     assert!(carried.contains("notes.txt"), "the second snapshot replaced the first: {carried}");
 }
 
 #[test]
 fn a_home_whose_repository_names_no_remote_is_told_so_rather_than_guessed_at() {
-    let workspace = Workspace::new();
-    let home = workspace.unit("worker-import");
-    git(&home, &["remote", "remove", "origin"]);
+    let workspace = workspace();
+    let home = workspace.unit_home("worker-import");
+    drop(git(&home, &["remote", "remove", "origin"]));
 
     let refused = workspace.nodal(&["done", "worker-import"]);
 
@@ -329,10 +281,10 @@ fn walk(directory: &Path, found: &mut Vec<PathBuf>) {
 
 #[test]
 fn a_squash_merged_unit_flips_to_merged_once_its_branch_is_on_the_remote() {
-    let workspace = Workspace::new();
-    let home = workspace.unit("worker-import");
+    let workspace = workspace();
+    let home = workspace.unit_home("worker-import");
     commit(&home, "fixed\n");
-    stdout(&workspace.nodal(&["done", "worker-import"]));
+    drop(stdout(&workspace.nodal(&["done", "worker-import"])));
     assert_eq!(workspace.status("worker-import"), UnitStatus::Review);
 
     workspace.squash_merge("nodal/worker-import");
@@ -344,7 +296,7 @@ fn a_squash_merged_unit_flips_to_merged_once_its_branch_is_on_the_remote() {
 
     // The home hears about it the way it hears about anything on the remote: a fetch,
     // run by the person's own git. The list does not fetch; it reads.
-    git(&home, &["fetch", "-q", "origin"]);
+    drop(git(&home, &["fetch", "-q", "origin"]));
     let listed = stdout(&workspace.nodal(&["ls"]));
 
     assert!(listed.contains("merged"), "the list says so: {listed}");
@@ -370,8 +322,8 @@ fn a_squash_merged_unit_flips_to_merged_once_its_branch_is_on_the_remote() {
 /// the setting under which the defect removed the home in a single sweep.
 #[test]
 fn a_brand_new_unit_is_not_merged_and_its_home_is_never_reclaimed() {
-    let workspace = Workspace::with_recipe("[reclaim]\ntrash_retention = 0\n");
-    let home = workspace.unit("brand-new");
+    let workspace = workspace_with_recipe("[reclaim]\ntrash_retention = 0\n");
+    let home = workspace.unit_home("brand-new");
 
     let listed = stdout(&workspace.nodal(&["ls"]));
 
@@ -393,13 +345,13 @@ fn a_brand_new_unit_is_not_merged_and_its_home_is_never_reclaimed() {
 /// it is the exact property that separates this from the unit above.
 #[test]
 fn a_unit_whose_commits_were_squash_absorbed_still_flips_to_merged() {
-    let workspace = Workspace::new();
-    let home = workspace.unit("worker-import");
+    let workspace = workspace();
+    let home = workspace.unit_home("worker-import");
     commit(&home, "fixed\n");
     let tip = git(&home, &["rev-parse", "HEAD"]).trim().to_owned();
-    stdout(&workspace.nodal(&["done", "worker-import"]));
+    drop(stdout(&workspace.nodal(&["done", "worker-import"])));
     workspace.squash_merge("nodal/worker-import");
-    git(&home, &["fetch", "-q", "origin"]);
+    drop(git(&home, &["fetch", "-q", "origin"]));
 
     let carried = git(&workspace.source, &["branch", "--contains", &tip, "--format=%(refname)"]);
     assert!(
@@ -421,15 +373,15 @@ fn a_unit_whose_commits_were_squash_absorbed_still_flips_to_merged() {
 /// calling work that exists on one disk finished.
 #[test]
 fn work_that_is_on_no_remote_is_not_merged_however_integrated_it_reads() {
-    let workspace = Workspace::new();
-    let home = workspace.unit("worker-import");
+    let workspace = workspace();
+    let home = workspace.unit_home("worker-import");
     commit(&home, "fixed\n");
-    stdout(&workspace.nodal(&["done", "worker-import"]));
+    drop(stdout(&workspace.nodal(&["done", "worker-import"])));
     workspace.squash_merge("nodal/worker-import");
-    git(&home, &["fetch", "-q", "origin"]);
+    drop(git(&home, &["fetch", "-q", "origin"]));
     // Take the second signal away: the branch's own commit is now on no remote-tracking
     // ref, exactly as it would be had it never been pushed.
-    git(&home, &["update-ref", "-d", "refs/remotes/origin/nodal/worker-import"]);
+    drop(git(&home, &["update-ref", "-d", "refs/remotes/origin/nodal/worker-import"]));
 
     let listed = stdout(&workspace.nodal(&["ls"]));
 
@@ -447,7 +399,7 @@ fn work_that_is_on_no_remote_is_not_merged_however_integrated_it_reads() {
 
 #[test]
 fn gc_reclaims_a_merged_unit_once_its_retention_has_run_out_and_not_before() {
-    let workspace = Workspace::with_recipe("[reclaim]\ntrash_retention = 14\n");
+    let workspace = workspace_with_recipe("[reclaim]\ntrash_retention = 14\n");
     let home = merged_unit(&workspace, "worker-import");
 
     let held = stdout(&workspace.nodal(&["gc"]));
@@ -455,7 +407,7 @@ fn gc_reclaims_a_merged_unit_once_its_retention_has_run_out_and_not_before() {
     assert!(home.is_dir(), "and the home is where it was");
 
     workspace.write_recipe("[reclaim]\ntrash_retention = 0\n");
-    stdout(&workspace.nodal(&["init", "--force"]));
+    drop(stdout(&workspace.nodal(&["init", "--force"])));
     let swept = stdout(&workspace.nodal(&["gc"]));
 
     assert!(swept.contains("1 unit reclaimed"), "{swept}");
@@ -465,7 +417,7 @@ fn gc_reclaims_a_merged_unit_once_its_retention_has_run_out_and_not_before() {
 
 #[test]
 fn gc_refuses_a_merged_unit_somebody_has_put_new_work_in() {
-    let workspace = Workspace::with_recipe("[reclaim]\ntrash_retention = 0\n");
+    let workspace = workspace_with_recipe("[reclaim]\ntrash_retention = 0\n");
     let home = merged_unit(&workspace, "worker-import");
     std::fs::write(home.join("later.txt"), "written after the merge\n").unwrap();
 
@@ -482,10 +434,10 @@ fn gc_refuses_a_merged_unit_somebody_has_put_new_work_in() {
 fn merged_unit(workspace: &Workspace, name: &str) -> PathBuf {
     let home = workspace.unit(name);
     commit(&home, "fixed\n");
-    stdout(&workspace.nodal(&["done", name]));
+    drop(stdout(&workspace.nodal(&["done", name])));
     workspace.squash_merge(&format!("nodal/{name}"));
-    git(&home, &["fetch", "-q", "origin"]);
-    stdout(&workspace.nodal(&["ls"]));
+    drop(git(&home, &["fetch", "-q", "origin"]));
+    drop(stdout(&workspace.nodal(&["ls"])));
     assert_eq!(workspace.status(name), UnitStatus::Merged);
     home
 }
@@ -496,8 +448,8 @@ fn merged_unit(workspace: &Workspace, name: &str) -> PathBuf {
 
 #[test]
 fn gc_idle_reports_a_quiet_live_unit_and_leaves_everything_of_it_alone() {
-    let workspace = Workspace::new();
-    let home = workspace.unit("worker-import");
+    let workspace = workspace();
+    let home = workspace.unit_home("worker-import");
 
     let reported = stdout(&workspace.nodal(&["gc", "--idle", "0"]));
 
@@ -510,8 +462,8 @@ fn gc_idle_reports_a_quiet_live_unit_and_leaves_everything_of_it_alone() {
 
 #[test]
 fn a_unit_inside_the_threshold_is_not_reported_and_no_threshold_asks_nothing() {
-    let workspace = Workspace::new();
-    workspace.unit("worker-import");
+    let workspace = workspace();
+    workspace.unit_home("worker-import");
 
     let inside = stdout(&workspace.nodal(&["gc", "--idle", "7"]));
     assert!(inside.contains("0 live units past the threshold"), "{inside}");
@@ -539,8 +491,8 @@ fn a_unit_inside_the_threshold_is_not_reported_and_no_threshold_asks_nothing() {
 /// and untracked paths are read independently of any remote.
 #[test]
 fn a_unit_with_no_commits_is_safe_to_reclaim_and_one_with_new_files_is_still_refused() {
-    let workspace = Workspace::new();
-    let dirty = workspace.unit("has-a-file");
+    let workspace = workspace();
+    let dirty = workspace.unit_home("has-a-file");
     std::fs::write(dirty.join("scratch.txt"), "not committed anywhere\n").unwrap();
 
     let refused = workspace.nodal(&["reclaim", "has-a-file"]);
@@ -549,7 +501,7 @@ fn a_unit_with_no_commits_is_safe_to_reclaim_and_one_with_new_files_is_still_ref
     assert!(told.contains("untracked files"), "{told}");
     assert!(dirty.is_dir(), "and the home is where it was");
 
-    let empty = workspace.unit("nothing-in-it");
+    let empty = workspace.unit_home("nothing-in-it");
     let report = stdout(&workspace.nodal(&["reclaim", "nothing-in-it", "--json"]));
     assert!(report.contains("\"findings\": []"), "nothing is only here: {report}");
     assert!(!empty.exists(), "so the home goes, without a refusal");

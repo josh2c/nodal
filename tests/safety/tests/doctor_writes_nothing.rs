@@ -22,6 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use nodal_core::store::{Store, environments, projects, units};
+use nodal_safety::InState as _;
 use nodal_safety::{Machine, Snapshot, git, stdout};
 
 /// The worktree planted inside the checkout, so doctor has something to report.

@@ -14,6 +14,7 @@
 
 use std::path::Path;
 
+use nodal_safety::InState as _;
 use nodal_safety::{Machine, git, stderr, stdout};
 
 /// A tracked file of the fixture, changed to make uncommitted work.

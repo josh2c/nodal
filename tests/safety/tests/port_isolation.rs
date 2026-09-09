@@ -25,6 +25,7 @@ use std::sync::Barrier;
 use nodal_core::model::{EnvId, PortName, Ports};
 use nodal_core::services::{listeners, ports};
 use nodal_core::store::{Store, environments, port_allocations, port_blocks};
+use nodal_safety::InState as _;
 use nodal_safety::{Machine, platform};
 
 /// How many callers race for a port. The number T1.7 chose: well past the units a person

@@ -18,6 +18,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
+use nodal_safety::InState as _;
 use nodal_safety::{Machine, Snapshot};
 
 /// How many units the second property makes. Ten is the threshold `nodal doctor` calls

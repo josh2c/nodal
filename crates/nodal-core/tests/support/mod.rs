@@ -39,6 +39,7 @@ use nodal_core::model::{
 use nodal_core::runtime::stop::{Stopped, Target};
 use nodal_core::store::{Store, bases, environments, events, projects, sessions, trash, units};
 use nodal_core::{Error, lifecycle::ops};
+use nodal_safety::git::{git, git_ok};
 use tempfile::TempDir;
 
 /// The instant every fixture row is stamped with.
@@ -155,29 +156,66 @@ pub struct World {
     pub environment_id: nodal_core::model::EnvId,
 }
 
+/// Open everything a world made before its temporary directory is removed.
+///
+/// A test here plants the read-only content a base really holds, and a directory that
+/// denies a write is a directory `TempDir` cannot remove: without this, every run of
+/// the suite would leave one behind in the temporary directory, which is the very fault
+/// those tests exist to catch. It runs before the `TempDir` field is dropped, and it
+/// runs when a test panics as well as when it passes.
+impl Drop for World {
+    fn drop(&mut self) {
+        let mut pending = vec![self.root.path().to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            nodal_fixture::read_only::open(&directory);
+            let Ok(entries) = std::fs::read_dir(&directory) else { continue };
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    pending.push(entry.path());
+                }
+            }
+        }
+    }
+}
+
 impl World {
     /// A checkout with one commit, and a base cloned from it.
+    ///
+    /// The base carries a cache the create's relocation sweep removes. Without one the
+    /// relocation report is empty and writes no event, which is the very thing one of
+    /// the locks is about.
     pub fn new() -> Self {
+        Self::built(true)
+    }
+
+    /// The same, with nothing in the base but what the checkout committed.
+    ///
+    /// This is the world for a test about what a create does to a base, where anything
+    /// the fixture planted would be one more thing to explain.
+    pub fn plain() -> Self {
+        Self::built(false)
+    }
+
+    /// A world, with or without the cache the sweep looks for.
+    fn built(cache: bool) -> Self {
         let root = TempDir::new().unwrap();
         let resolved = root.path().canonicalize().unwrap();
         let source = resolved.join("project");
         std::fs::create_dir_all(&source).unwrap();
         std::fs::write(source.join("README.md"), "a project\n").unwrap();
-        git_ok(&source, &["init", "-q", "-b", "main"]);
-        git_ok(&source, &["config", "user.email", "unit@example.invalid"]);
-        git_ok(&source, &["config", "user.name", "Test"]);
+        nodal_safety::git::init(&source, "main");
         git_ok(&source, &["add", "-A"]);
         git_ok(&source, &["commit", "-qm", "first"]);
 
         let state = resolved.join("state");
         let base = state.join("project").join("b").join("00000004");
         clone_to_base(&source, &base);
-        // The sweep removes a cache that records the path it was made at. Without one
-        // the create's relocation report is empty and writes no event, which is the
-        // very thing one of the locks is about.
-        std::fs::create_dir_all(base.join(CACHE)).unwrap();
-        std::fs::write(base.join(CACHE).join("module.pyc"), base.display().to_string()).unwrap();
-        assert!(base.join(CACHE).is_dir(), "the base carries a cache for the sweep to find");
+        if cache {
+            std::fs::create_dir_all(base.join(CACHE)).unwrap();
+            std::fs::write(base.join(CACHE).join("module.pyc"), base.display().to_string())
+                .unwrap();
+            assert!(base.join(CACHE).is_dir(), "the base carries a cache for the sweep to find");
+        }
 
         Self { root, resolved, source, state, base, unit_id: id('2'), environment_id: id('3') }
     }
@@ -352,25 +390,6 @@ pub fn at() -> Timestamp {
     Timestamp::parse(AT).unwrap()
 }
 
-/// `git` in a directory, as trimmed text, with the call insisted upon.
-pub fn git(directory: &Path, args: &[&str]) -> String {
-    let output = Command::new("git").args(args).current_dir(directory).output().unwrap();
-    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
-}
-
-/// `git` in a directory, with only its success insisted upon.
-pub fn git_ok(directory: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .args(args)
-        .current_dir(directory)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap();
-    assert!(status.success(), "git {args:?}");
-}
-
 /// Make the base the plan clones, the way the substrate makes one: a clone of the
 /// checkout, detached at its commit, so the base holds what is committed and no more.
 fn clone_to_base(source: &Path, base: &Path) {
@@ -500,8 +519,7 @@ impl World {
                 &checkout.display().to_string(),
             ],
         );
-        git_ok(&checkout, &["config", "user.email", "unit@example.invalid"]);
-        git_ok(&checkout, &["config", "user.name", "Test"]);
+        nodal_safety::git::identity(&checkout);
         git_ok(&checkout, &["checkout", "-q", "-b", "nodal/worker-import"]);
         std::fs::write(checkout.join("worker.txt"), "the work\n").unwrap();
         git_ok(&checkout, &["add", "-A"]);

@@ -25,12 +25,13 @@
 mod state;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use nodal_core::lifecycle::journal;
-use nodal_core::store::{Store, projects, units};
-use tempfile::TempDir;
+use nodal_safety::git::{commit, git_text as git};
+use nodal_safety::text::{answer, stderr, stdout};
+use nodal_safety::{InState as _, Workspace};
 
 /// How long a test waits for a killed run to reach the step it is being killed in.
 const REACH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -38,157 +39,16 @@ const REACH_TIMEOUT: Duration = Duration::from_secs(60);
 /// How often any wait looks.
 const POLL: Duration = Duration::from_millis(5);
 
-/// A project to make units in, and the state directory they go in.
-struct Workspace {
-    /// The temporary root, kept so that it outlives the test.
-    _root: TempDir,
-    /// The project's repository, which is what a merge fast-forwards.
-    source: PathBuf,
-    /// Nodal's state directory: the registry, every home, and the trash.
-    state: PathBuf,
+/// The readings this suite needs beyond the ones the shared fixture has.
+trait Merging {
+    /// The subject lines of the target branch, newest first.
+    fn main_log(&self) -> Vec<String>;
 }
 
-impl Workspace {
-    /// A one-commit repository and an empty state directory beside it.
-    fn new() -> Self {
-        let root = TempDir::new().unwrap();
-        let source = root.path().join("project");
-        let state = root.path().join("state");
-        std::fs::create_dir_all(source.join("app")).unwrap();
-        std::fs::write(source.join("app").join("main.txt"), "shared\n").unwrap();
-        std::fs::write(source.join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
-        std::fs::write(source.join(".gitignore"), "node_modules/\n").unwrap();
-        for args in [
-            vec!["init", "-q", "-b", "main"],
-            vec!["config", "user.email", "unit@example.invalid"],
-            vec!["config", "user.name", "Test"],
-            vec!["add", "-A"],
-            vec!["commit", "-qm", "first"],
-        ] {
-            let status = Command::new("git").args(&args).current_dir(&source).status().unwrap();
-            assert!(status.success(), "git {args:?}");
-        }
-        Self { _root: root, source, state }
-    }
-
-    /// The same, with a recipe this test wrote and this machine has approved.
-    fn with_recipe(recipe: &str) -> Self {
-        let workspace = Self::new();
-        workspace.write_recipe(recipe);
-        stdout(&workspace.nodal(&["init", "--force"]));
-        workspace
-    }
-
-    /// Put a recipe in the project, without approving anything.
-    fn write_recipe(&self, recipe: &str) {
-        std::fs::write(self.source.join("nodal.toml"), recipe).unwrap();
-    }
-
-    /// `nodal` with this workspace's state directory, run in the project.
-    fn nodal(&self, args: &[&str]) -> Output {
-        self.command(args).output().unwrap()
-    }
-
-    /// The same invocation, not yet run.
-    fn command(&self, args: &[&str]) -> Command {
-        let mut command = state::nodal(&self.state);
-        command.args(args).current_dir(&self.source);
-        command.env("NODAL_SECRETS_FILE", self.state.join("secrets.env"));
-        command.env("NODAL_HOOKS_FILE", self.state.join("hooks.toml"));
-        command
-    }
-
-    /// A unit of this project, with its home.
-    fn unit(&self, name: &str) -> PathBuf {
-        stdout(&self.nodal(&["new", "--name", name]));
-        self.one_home()
-    }
-
-    /// The registry, opened for reading what a command wrote.
-    fn store(&self) -> Store {
-        Store::open(self.state.join("registry.db")).unwrap()
-    }
-
-    /// One segment of this project's directory, `None` until something has made it.
-    fn segment(&self, name: &str) -> Option<PathBuf> {
-        std::fs::read_dir(&self.state)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path().join(name))
-            .find(|path| path.is_dir())
-    }
-
-    /// Every live home this project has, in name order.
-    fn homes(&self) -> Vec<PathBuf> {
-        entries(self.segment("e"))
-    }
-
-    /// Everything in this project's trash, in name order.
-    fn trashed(&self) -> Vec<PathBuf> {
-        entries(self.segment("trash"))
-    }
-
-    /// The one home this project has.
-    fn one_home(&self) -> PathBuf {
-        self.homes().pop().expect("the unit has a home")
-    }
-
-    /// The identifier of the one unit this project has.
-    fn one_unit(&self) -> String {
-        let store = self.store();
-        let project = projects::list(store.conn()).unwrap().pop().expect("the project is known");
-        let unit = units::list(store.conn(), project.id).unwrap().pop().expect("a unit was made");
-        unit.id.to_string()
-    }
-
-    /// The subject lines of the target branch, newest first.
+impl Merging for Workspace {
     fn main_log(&self) -> Vec<String> {
         git(&self.source, &["log", "--format=%s", "main"]).lines().map(ToOwned::to_owned).collect()
     }
-}
-
-/// What is directly inside a directory, in name order.
-fn entries(directory: Option<PathBuf>) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = directory
-        .into_iter()
-        .flat_map(|path| std::fs::read_dir(path).into_iter().flatten().flatten())
-        .map(|entry| entry.path())
-        .collect();
-    found.sort();
-    found
-}
-
-/// Standard output as text, with the command insisted upon.
-fn stdout(output: &Output) -> String {
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    String::from_utf8(output.stdout.clone()).unwrap()
-}
-
-/// Standard output as text, whatever the exit code. What a command that reports a
-/// refusal rather than raising it is read with.
-fn answer(output: &Output) -> String {
-    String::from_utf8(output.stdout.clone()).unwrap()
-}
-
-/// Standard error as text.
-fn stderr(output: &Output) -> String {
-    String::from_utf8(output.stderr.clone()).unwrap()
-}
-
-/// `git` in a directory, as text.
-fn git(directory: &Path, args: &[&str]) -> String {
-    let output = Command::new("git").args(args).current_dir(directory).output().unwrap();
-    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
-    String::from_utf8(output.stdout).unwrap()
-}
-
-/// Commit everything a directory holds, as a person working in it would.
-fn commit(directory: &Path, message: &str) {
-    git(directory, &["config", "user.email", "unit@example.invalid"]);
-    git(directory, &["config", "user.name", "Test"]);
-    git(directory, &["add", "-A"]);
-    git(directory, &["commit", "-qm", message]);
 }
 
 /// Whether a repository is in the middle of a rebase.
@@ -202,7 +62,7 @@ fn rebasing(repo: &Path) -> bool {
 
 #[test]
 fn a_dirty_unit_reaches_the_target_in_one_command_and_the_home_is_in_the_trash() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::new(state::BINARY);
     let home = workspace.unit("worker-import");
     std::fs::write(home.join("app").join("main.txt"), "edited by the unit\n").unwrap();
     std::fs::write(home.join("app").join("new.txt"), "made here\n").unwrap();
@@ -232,16 +92,22 @@ fn a_dirty_unit_reaches_the_target_in_one_command_and_the_home_is_in_the_trash()
 
 #[test]
 fn the_commits_a_squash_folded_stay_on_the_premerge_ref() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::new(state::BINARY);
     let home = workspace.unit("worker-import");
     for step in ["one", "two"] {
         std::fs::write(home.join("app").join(format!("{step}.txt")), format!("{step}\n")).unwrap();
         commit(&home, &format!("work {step}"));
     }
-    let id = workspace.one_unit();
+    let id = workspace.one_unit().id.to_string();
     let before = git(&home, &["rev-parse", "HEAD"]).trim().to_owned();
 
-    stdout(&workspace.nodal(&["merge", "worker-import", "--yes", "-m", "one squashed commit"]));
+    drop(stdout(&workspace.nodal(&[
+        "merge",
+        "worker-import",
+        "--yes",
+        "-m",
+        "one squashed commit",
+    ])));
 
     assert_eq!(workspace.main_log().first().map(String::as_str), Some("one squashed commit"));
     assert_eq!(workspace.main_log().len(), 2, "two commits became one: {:?}", workspace.main_log());
@@ -260,7 +126,7 @@ fn the_commits_a_squash_folded_stay_on_the_premerge_ref() {
 
 #[test]
 fn no_commit_leaves_the_work_where_it_is_and_the_unit_with_it() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::new(state::BINARY);
     let home = workspace.unit("worker-import");
     std::fs::write(home.join("app").join("committed.txt"), "committed\n").unwrap();
     commit(&home, "the part that was committed");
@@ -287,14 +153,14 @@ fn no_commit_leaves_the_work_where_it_is_and_the_unit_with_it() {
 
 #[test]
 fn no_squash_puts_every_commit_of_the_branch_on_the_target() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::new(state::BINARY);
     let home = workspace.unit("worker-import");
     for step in ["one", "two"] {
         std::fs::write(home.join("app").join(format!("{step}.txt")), format!("{step}\n")).unwrap();
         commit(&home, &format!("work {step}"));
     }
 
-    stdout(&workspace.nodal(&["merge", "worker-import", "--yes", "--no-squash"]));
+    drop(stdout(&workspace.nodal(&["merge", "worker-import", "--yes", "--no-squash"])));
 
     let log = workspace.main_log();
     assert_eq!(log, ["work two", "work one", "first"], "both commits are on main: {log:?}");
@@ -302,7 +168,7 @@ fn no_squash_puts_every_commit_of_the_branch_on_the_target() {
 
 #[test]
 fn no_rebase_refuses_a_target_that_has_moved_and_a_rebase_takes_it() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::new(state::BINARY);
     let home = workspace.unit("worker-import");
     std::fs::write(home.join("app").join("new.txt"), "made here\n").unwrap();
     // Somebody else merges something while this unit is open.
@@ -322,7 +188,7 @@ fn no_rebase_refuses_a_target_that_has_moved_and_a_rebase_takes_it() {
     );
 
     // The same merge, allowed to rebase, takes the target as it is now.
-    stdout(&workspace.nodal(&["merge", "worker-import", "--yes"]));
+    drop(stdout(&workspace.nodal(&["merge", "worker-import", "--yes"])));
     let log = workspace.main_log();
     assert_eq!(log.len(), 3, "{log:?}");
     assert_eq!(git(&workspace.source, &["show", "main:app/other.txt"]), "theirs\n");
@@ -331,7 +197,7 @@ fn no_rebase_refuses_a_target_that_has_moved_and_a_rebase_takes_it() {
 
 #[test]
 fn no_remove_leaves_the_unit_where_it_is() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::new(state::BINARY);
     let home = workspace.unit("worker-import");
     std::fs::write(home.join("app").join("new.txt"), "made here\n").unwrap();
 
@@ -351,7 +217,7 @@ fn no_remove_leaves_the_unit_where_it_is() {
 
 /// A unit and a target that have each changed the same line.
 fn conflicting() -> (Workspace, PathBuf) {
-    let workspace = Workspace::new();
+    let workspace = Workspace::new(state::BINARY);
     let home = workspace.unit("worker-import");
     std::fs::write(home.join("app").join("main.txt"), "the unit's line\n").unwrap();
     std::fs::write(workspace.source.join("app").join("main.txt"), "somebody else's line\n")
@@ -382,7 +248,7 @@ fn a_conflict_stops_the_merge_and_a_second_merge_resumes_it() {
 /// What a person does next: resolve the paths, then run the same command again.
 fn resume(workspace: &Workspace, home: &Path) {
     std::fs::write(home.join("app").join("main.txt"), "both lines\n").unwrap();
-    git(home, &["add", "app/main.txt"]);
+    drop(git(home, &["add", "app/main.txt"]));
     let finished = workspace.nodal(&["merge", "worker-import", "--yes"]);
     assert!(finished.status.success(), "{}", stderr(&finished));
     assert!(!home.exists(), "the home went to the trash");
@@ -393,7 +259,7 @@ fn resume(workspace: &Workspace, home: &Path) {
 #[test]
 fn a_conflict_can_be_aborted_and_the_branch_is_back_where_the_merge_found_it() {
     let (workspace, home) = conflicting();
-    let id = workspace.one_unit();
+    let id = workspace.one_unit().id.to_string();
     let stopped = answer(&workspace.nodal(&["merge", "worker-import", "--yes"]));
     assert!(stopped.contains("the rebase stopped"), "{stopped}");
     let stopped_at = git(&home, &["rev-parse", &format!("refs/nodal/{id}/premerge")]);
@@ -440,12 +306,12 @@ post_reclaim = "printf 'post_reclaim %s\\n' \"$NODAL_UNIT\" >> \"$NODAL_SOURCE/h
 
 #[test]
 fn the_six_hooks_run_in_order_and_the_merge_hooks_are_told_which_branch() {
-    let workspace = Workspace::with_recipe(HOOKS);
+    let workspace = Workspace::with_recipe(state::BINARY, HOOKS);
     let home = workspace.unit("worker-import");
     std::fs::write(home.join("app").join("new.txt"), "made here\n").unwrap();
     let stood_in = std::fs::canonicalize(&home).unwrap();
 
-    stdout(&workspace.nodal(&["merge", "worker-import", "--yes"]));
+    drop(stdout(&workspace.nodal(&["merge", "worker-import", "--yes"])));
 
     let log = std::fs::read_to_string(workspace.source.join("hooks.log")).unwrap();
     let phases: Vec<&str> = log.lines().map(|line| line.split(' ').next().unwrap()).collect();
@@ -476,7 +342,7 @@ fn the_six_hooks_run_in_order_and_the_merge_hooks_are_told_which_branch() {
 
 #[test]
 fn a_merge_hook_nobody_approved_refuses_to_run() {
-    let workspace = Workspace::with_recipe(HOOKS);
+    let workspace = Workspace::with_recipe(state::BINARY, HOOKS);
     let home = workspace.unit("worker-import");
     std::fs::write(home.join("app").join("new.txt"), "made here\n").unwrap();
     // The recipe changes after it was approved, which is what arrives with a pull.
@@ -500,7 +366,7 @@ fn a_merge_hook_nobody_approved_refuses_to_run() {
 
 #[test]
 fn a_plan_nobody_agreed_to_does_nothing() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::new(state::BINARY);
     let home = workspace.unit("worker-import");
     std::fs::write(home.join("app").join("new.txt"), "made here\n").unwrap();
 
@@ -529,7 +395,7 @@ fi
 
 #[test]
 fn a_merge_killed_between_two_steps_is_rolled_back_by_the_next_invocation() {
-    let workspace = Workspace::new();
+    let workspace = Workspace::new(state::BINARY);
     let home = workspace.unit("worker-import");
     std::fs::write(home.join("app").join("new.txt"), "made here\n").unwrap();
     park(&workspace);

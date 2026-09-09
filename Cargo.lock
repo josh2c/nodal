@@ -407,6 +407,7 @@ dependencies = [
  "clap",
  "nodal-core",
  "nodal-fixture",
+ "nodal-safety",
  "serde_json",
  "tempfile",
  "tracing",
@@ -419,6 +420,7 @@ dependencies = [
  "fancy-regex",
  "libc",
  "nodal-fixture",
+ "nodal-safety",
  "rusqlite",
  "schemars",
  "serde",
@@ -447,6 +449,7 @@ version = "0.1.0"
 dependencies = [
  "nodal-core",
  "nodal-fixture",
+ "serde_json",
  "tempfile",
 ]
 

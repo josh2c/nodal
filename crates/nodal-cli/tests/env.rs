@@ -19,20 +19,13 @@ use std::process::{Command, Output};
 
 use state::Machine;
 
-use nodal_core::env::secrets::{MachineSecrets, SecretSource, UnitGenerated};
-use nodal_core::env::{self, Produced, files};
-use nodal_core::model::{
-    BranchName, Digest, EnvId, EnvName, EnvState, Environment, HostName, Ports, Project, ProjectId,
-    ProjectName, Recipe, Slug, Timestamp, Unit, UnitId, UnitStatus,
-};
+use nodal_core::model::{EnvId, EnvName, HostName, ProjectId, Recipe, Timestamp, UnitId};
+use nodal_safety::activation::{self, name};
+use nodal_safety::rows;
 
 /// The credential the test hides, and the port it looks for in a shell.
 const SECRET: &str = "s3cr3t-canary-value";
 const PORT: &str = "3011";
-
-fn name(text: &str) -> EnvName {
-    EnvName::parse(text).unwrap()
-}
 
 /// A recipe that declares one generated name and one credential. The engine test uses
 /// the whole fixture; here the seam is what matters, so the recipe is the smallest one
@@ -49,73 +42,26 @@ fn write_home(root: &Path) -> std::path::PathBuf {
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let now = Timestamp::now();
-    let unit = Unit {
-        id: UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
-        project_id: ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap(),
-        slug: Slug::parse("fix-worker-import").unwrap(),
-        objective: None,
-        objective_epistemic: None,
-        branch: BranchName::parse("nodal/fix-worker-import").unwrap(),
-        parent_branch: None,
-        status: UnitStatus::Open,
-        created_at: now,
-        updated_at: now,
-    };
-    let environment = Environment {
-        id: EnvId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAX").unwrap(),
-        unit_id: unit.id,
-        attempt: 1,
-        home: home.clone(),
-        managed: true,
-        base_id: None,
-        ws_fp_materialized: None,
-        schema_fp_materialized: None,
-        host: HostName::parse("workstation").unwrap(),
-        db_name: None,
-        ports: Ports::default(),
-        fixed_port: None,
-        state: EnvState::Stopped,
-        created_at: now,
-        last_active: now,
-    };
-    let project = Project {
-        id: unit.project_id,
-        root: root.to_path_buf(),
-        name: ProjectName::parse("fixture").unwrap(),
-        recipe_hash: Digest::parse("0".repeat(64)).unwrap(),
-        created_at: now,
-    };
+    let unit = rows::unit(
+        UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
+        ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap(),
+        "fix-worker-import",
+        "nodal/fix-worker-import",
+        now,
+    );
+    let mut environment =
+        rows::environment(EnvId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAX").unwrap(), unit.id, &home, now);
+    environment.host = HostName::parse("workstation").unwrap();
+    let project = rows::project(unit.project_id, root.to_path_buf(), "fixture", now);
 
     let produced: BTreeMap<EnvName, String> =
         [(name("PORT"), String::from(PORT)), (name("APP_URL"), format!("http://localhost:{PORT}"))]
             .into();
     let secrets_file = root.join("secrets.env");
-    std::fs::write(&secrets_file, format!("SESSION_SECRET={SECRET}\n")).unwrap();
-    set_owner_only(&secrets_file);
-    let machine = MachineSecrets::open(&secrets_file).unwrap();
-    let generated = UnitGenerated::default();
-    let sources: [&dyn SecretSource; 2] = [&generated, &machine];
-
-    let activation = env::resolve(
-        (&unit, &environment, &project),
-        &recipe(),
-        &Produced::new(produced),
-        &sources,
-    )
-    .unwrap();
-    let manifest = activation.manifest(&unit, &environment, &project);
-    files::write(&home, &activation, &manifest).unwrap();
+    activation::write_secrets(&secrets_file, &format!("SESSION_SECRET={SECRET}\n"));
+    activation::write(&home, &secrets_file, &recipe(), produced, (&unit, &environment, &project));
     home
 }
-
-#[cfg(unix)]
-fn set_owner_only(path: &Path) {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
-}
-
-#[cfg(not(unix))]
-fn set_owner_only(_path: &Path) {}
 
 fn nodal(machine: &Machine, args: &[&str]) -> Output {
     machine.nodal().arg("env").args(args).output().unwrap()

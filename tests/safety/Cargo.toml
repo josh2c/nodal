@@ -15,6 +15,7 @@ path = "src/lib.rs"
 [dependencies]
 nodal-core.workspace = true
 nodal-fixture.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

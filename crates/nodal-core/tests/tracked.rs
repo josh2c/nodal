@@ -28,6 +28,7 @@ use std::process::Command;
 
 use nodal_core::recipe;
 use nodal_core::workspace::{Excludes, select_backend, tracked};
+use nodal_safety::git;
 
 /// The heavy directory the fixture tracks in these tests.
 const TRACKED: &str = "coverage";
@@ -43,27 +44,12 @@ const UNTRACKED: &str = "test-results";
 fn fixture_repository() -> (tempfile::TempDir, PathBuf) {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let root = nodal_fixture::write(directory.path());
-    git(&root, &["init", "--quiet", "."]);
-    git(&root, &["add", "--all"]);
-    git(&root, &["add", "--force", "--", TRACKED]);
-    git(
-        &root,
-        &[
-            "-c",
-            "user.email=t@example.invalid",
-            "-c",
-            "user.name=test",
-            "commit",
-            "--quiet",
-            "--message=fixture",
-        ],
-    );
+    git::git_ok(&root, &["init", "--quiet", "."]);
+    git::git_ok(&root, &["add", "--all"]);
+    git::git_ok(&root, &["add", "--force", "--", TRACKED]);
+    git::identity(&root);
+    git::git_ok(&root, &["commit", "--quiet", "--message=fixture"]);
     (directory, root)
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git").arg("-C").arg(dir).args(args).status().expect("git runs");
-    assert!(status.success(), "git {args:?} failed in {}", dir.display());
 }
 
 /// What `git status --porcelain` reports in a tree, one line per path.

@@ -53,19 +53,7 @@ impl Repo {
 
     /// Run `git` directly, so the tests never depend on the code they exercise.
     fn git(&self, args: &[&str]) -> String {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(self.path())
-            .args(args)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8(output.stdout).unwrap().trim_end().to_owned()
+        nodal_safety::git::git(self.path(), args)
     }
 
     /// Write a file, creating parent directories.

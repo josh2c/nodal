@@ -23,6 +23,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
+use nodal_safety::InState as _;
 use nodal_safety::{Machine, git, stderr, stdout};
 
 /// A heavy directory the exclusion table names, which this project commits into.

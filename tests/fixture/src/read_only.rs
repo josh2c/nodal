@@ -85,7 +85,24 @@ pub fn mark(path: &Path) -> bool {
 /// Whether one path carries the fixture's extended attribute.
 #[must_use]
 pub fn marked(path: &Path) -> bool {
-    platform::get(path, ATTRIBUTE).as_deref() == Some(ATTRIBUTE_VALUE)
+    read_attribute(path, ATTRIBUTE).as_deref() == Some(ATTRIBUTE_VALUE)
+}
+
+/// Put one extended attribute on a path, and report whether the filesystem took it.
+///
+/// A test that needs an attribute of its own, rather than the fixture's, asks here. The
+/// two calls behind this are the only ones in the workspace: a suite that wrote its own
+/// pair of them wrote the same unsafe block again, and an unsafe block that exists twice
+/// is one that has to be reviewed twice.
+#[must_use]
+pub fn set_attribute(path: &Path, name: &str, value: &[u8]) -> bool {
+    platform::set(path, name, value)
+}
+
+/// Read one extended attribute back, or nothing when the path does not carry it.
+#[must_use]
+pub fn read_attribute(path: &Path, name: &str) -> Option<Vec<u8>> {
+    platform::get(path, name)
 }
 
 /// Take every write off one path: mode `0444` for a file, `0555` for a directory.

@@ -22,18 +22,16 @@
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Command;
 
-use nodal_core::model::{
-    BranchName, Digest, EnvId, EnvState, Environment, HostName, PortName, Ports, Project,
-    ProjectId, ProjectName, Slug, Timestamp, Unit, UnitId, UnitStatus,
-};
+use nodal_core::model::{EnvId, HostName, PortName, Ports, ProjectId, Timestamp, UnitId};
 use nodal_core::output::view::Ps;
 use nodal_core::runtime::attribute::{Attributed, Confidence, Kind, Source};
 use nodal_core::runtime::processes::{Live, Processes, Running};
 use nodal_core::runtime::ps;
 use nodal_core::services::docker::{self, Docker, Output, UNIT_LABEL};
 use nodal_core::store::{Store, environments, projects, units};
+use nodal_safety::{platform, process, rows};
 
 /// The unit every row in this file belongs to.
 const UNIT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -44,42 +42,17 @@ const ENVIRONMENT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
 /// A registry that holds one unit, materialised at `home` on this host, holding `ports`.
 fn registry(root: &Path, home: &Path, ports: Ports) -> Store {
     let now = Timestamp::now();
-    let unit = Unit {
-        id: UnitId::parse(UNIT).unwrap(),
-        project_id: ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap(),
-        slug: Slug::parse("worker-import").unwrap(),
-        objective: None,
-        objective_epistemic: None,
-        branch: BranchName::parse("nodal/worker-import").unwrap(),
-        parent_branch: None,
-        status: UnitStatus::Open,
-        created_at: now,
-        updated_at: now,
-    };
-    let environment = Environment {
-        id: EnvId::parse(ENVIRONMENT).unwrap(),
-        unit_id: unit.id,
-        attempt: 1,
-        home: home.to_path_buf(),
-        managed: true,
-        base_id: None,
-        ws_fp_materialized: None,
-        schema_fp_materialized: None,
-        host: host(),
-        db_name: None,
-        ports,
-        fixed_port: None,
-        state: EnvState::Stopped,
-        created_at: now,
-        last_active: now,
-    };
-    let project = Project {
-        id: unit.project_id,
-        root: root.join("checkout"),
-        name: ProjectName::parse("fixture").unwrap(),
-        recipe_hash: Digest::parse("0".repeat(64)).unwrap(),
-        created_at: now,
-    };
+    let project_id = ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap();
+    let unit = rows::unit(
+        UnitId::parse(UNIT).unwrap(),
+        project_id,
+        "worker-import",
+        "nodal/worker-import",
+        now,
+    );
+    let mut environment = rows::environment(EnvId::parse(ENVIRONMENT).unwrap(), unit.id, home, now);
+    environment.ports = ports;
+    let project = rows::project(unit.project_id, root.join("checkout"), "fixture", now);
     let store = Store::open(root.join("registry.db")).unwrap();
     projects::insert(store.conn(), &project).unwrap();
     units::insert(store.conn(), &unit).unwrap();
@@ -130,44 +103,17 @@ fn about(answer: &Ps, pid: u32) -> Option<&Attributed> {
     answer.rows.iter().find(|row| row.pid == Some(pid) && row.kind == Kind::Process)
 }
 
-/// Whether this host publishes a process table, and a word about it when it does not.
-fn has_proc(claim: &str) -> bool {
-    if cfg!(target_os = "linux") {
-        return true;
-    }
-    eprintln!("skipped ({claim}): a process scan reads /proc, which this host does not have");
-    false
-}
-
-/// A child that is killed when the test ends, whichever way it ends.
-struct Sleeper(Child);
-
-impl Drop for Sleeper {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
 #[test]
 fn a_process_started_inside_the_homes_environment_is_certain() {
-    if !has_proc("certain by environment") {
+    if !platform::reads_process_table("certain by environment") {
         return;
     }
     let directory = tempfile::tempdir().unwrap();
     let home = make_home(directory.path());
     let store = registry(directory.path(), &home, Ports::default());
 
-    // What `nodal shell`, the prompt hook and direnv all give a process.
-    let child = Sleeper(
-        Command::new("sleep")
-            .arg("30")
-            .env("NODAL_ID", UNIT)
-            .env("NODAL_ROOT", &home)
-            .spawn()
-            .unwrap(),
-    );
-    let pid = child.0.id();
+    let child = process::carrying(UNIT, &home);
+    let pid = child.pid();
 
     let answer = observe(&store);
     let row = about(&answer, pid).unwrap_or_else(|| panic!("no row for {pid}: {:?}", answer.rows));
@@ -180,25 +126,15 @@ fn a_process_started_inside_the_homes_environment_is_certain() {
 
 #[test]
 fn a_process_started_in_a_plain_terminal_in_the_home_is_probable_by_its_directory() {
-    if !has_proc("probable by directory") {
+    if !platform::reads_process_table("probable by directory") {
         return;
     }
     let directory = tempfile::tempdir().unwrap();
     let home = make_home(directory.path());
     let store = registry(directory.path(), &home, Ports::default());
 
-    // A terminal with no integration and no direnv: it carries nothing, it just stands
-    // in the home.
-    let child = Sleeper(
-        Command::new("sleep")
-            .arg("30")
-            .current_dir(&home)
-            .env_remove("NODAL_ID")
-            .env_remove("NODAL_ROOT")
-            .spawn()
-            .unwrap(),
-    );
-    let pid = child.0.id();
+    let child = process::standing_in(&home);
+    let pid = child.pid();
 
     let answer = observe(&store);
     let row = about(&answer, pid).unwrap_or_else(|| panic!("no row for {pid}: {:?}", answer.rows));
