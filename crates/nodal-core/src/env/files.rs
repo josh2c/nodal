@@ -13,6 +13,13 @@
 //! Everything here is idempotent: writing the same activation twice leaves the same
 //! bytes. [`WriteFiles`] is the step form, for a lifecycle operation that has to be
 //! able to undo it.
+//!
+//! # The table
+//!
+//! [`WRITTEN`] is the one list of every file Nodal puts in a home — the activation, the
+//! marker, the memory, the vendor pointers and the Claude Code settings — with the
+//! rule that holds for each. Every part of Nodal that writes, hides, removes or judges
+//! one of those files reads that table. Read it before you add a file to a home.
 
 use std::path::{Path, PathBuf};
 
@@ -49,48 +56,302 @@ pub const ENVRC_CONTENTS: &str = "dotenv .nodal/env\n";
 /// owner-only for the same reason the per-machine file is.
 pub const ENV_MODE: u32 = secrets::OWNER_ONLY;
 
-/// The paths a home's activation writes, and which Git is told to ignore.
+/// The paths a home's activation writes: the [`Kind::Activation`] rows of [`WRITTEN`].
 ///
 /// [`WORKUNIT`] is hidden with them and is not one of them: the activation writes it
 /// no more than the activation compiles it, and a home whose memory has never been
 /// asked for simply has none.
 pub const PATHS: &[&str] = &[ENV, ENVRC, MANIFEST];
 
-/// What a home's Git repository is told to leave alone, written to `.git/info/exclude`.
-///
-/// The unit's own files are not the project's, so they must not appear in
-/// `git status`: a unit whose activation files show as untracked is a unit the
-/// uniqueness check calls dirty, and no one could ever reclaim it.
-///
-/// The same rule is what makes adoption in place possible at all. A checkout adopted
-/// where it stands is a directory Nodal did not create and a person is working in, and
-/// these three lines are why `git status` in it says exactly what it said the moment
-/// before it became a unit.
-const EXCLUDE_LINES: &[&str] = &["/.nodal/", "/.envrc", "/WORKUNIT.md"];
-
 /// The marker `.git/info/exclude` carries, so a reader can see which lines are Nodal's.
 pub const EXCLUDE_MARKER: &str = "# nodal";
 
-/// Write the activation files into `home`.
+/// What one file Nodal writes into a home is for.
+///
+/// The kind is what a reader of [`WRITTEN`] sorts by; nothing branches on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// The three files that deliver the environment: [`ENV`], [`ENVRC`], [`MANIFEST`].
+    Activation,
+    /// The one line that says whose home this is: `.nodal/id`.
+    Marker,
+    /// The compiled memory, [`WORKUNIT`].
+    Memory,
+    /// A vendor file carrying one line that names the memory: `CLAUDE.md`, `AGENTS.md`.
+    Pointer,
+    /// The Claude Code settings a session in this home reads.
+    ClaudeSettings,
+}
+
+/// What [`remove`] does about one of Nodal's files when it leaves a home.
+///
+/// The distinction is whose bytes they are. Nodal wrote every byte of the activation
+/// and of the memory, so those go whole. A vendor pointer and a settings file may hold
+/// a person's own text with Nodal's added to it, so what goes is what Nodal added, and
+/// the file itself goes only when that was the whole of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Taken {
+    /// The whole file.
+    Whole,
+    /// Nothing. Another step owns it: the marker goes with
+    /// [`crate::lifecycle::marker::remove`], which runs first.
+    Nothing,
+    /// The one line [`crate::context::pointer`] wrote.
+    PointerLine,
+    /// The hooks Nodal wrote ([`crate::adapters::settings`]).
+    NodalHooks,
+}
+
+/// When Nodal tells Git to leave one of its own files alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hidden {
+    /// Whenever the home has one. Nodal is the only writer of these names.
+    Always,
+    /// Only where Nodal made the file. A file of that name which was already in the
+    /// home is the person's own, and its place in `git status` stays theirs to decide.
+    WhenNodalMadeIt,
+}
+
+/// One file Nodal writes into a home, and the rules that hold for it.
+#[derive(Debug, Clone, Copy)]
+pub struct Written {
+    /// Where it sits, relative to the home. Slash-separated, as Git names a path.
+    pub path: &'static str,
+    /// What it is for.
+    pub kind: Kind,
+    /// The line `.git/info/exclude` carries for it. Several files share one line:
+    /// everything under `.nodal/` is covered by `/.nodal/`.
+    pub exclude: &'static str,
+    /// When that line is written.
+    pub hidden: Hidden,
+    /// How much of the file [`remove`] takes back out of a home Nodal is leaving.
+    pub removed: Taken,
+    /// Whether an untracked file of this name is Nodal's rather than a person's work
+    /// ([`crate::lifecycle::uniqueness`]).
+    pub own: bool,
+}
+
+/// Every file Nodal writes into a home: one table, and the one rule that holds for all
+/// of them.
+///
+/// **Nodal writes one of these only where Git does not track it, hides it in the home's
+/// `info/exclude` when it wrote it, and never touches it when the project tracks it.**
+///
+/// A tracked file arrived with the clone, so it is the project's. Writing in one would
+/// put the home in `git status` from the moment it exists, which costs three things at
+/// once: `nodal reclaim`, `nodal done` and `nodal gc` refuse the home because the
+/// uniqueness check calls it dirty, and `nodal merge` carries Nodal's rewrite into the
+/// pull request the unit opens.
+///
+/// This table is the only statement of that rule. [`write`], [`remove`], [`hide`],
+/// [`unhide`], [`is_own`], [`tracked_of`], [`crate::lifecycle::uniqueness`],
+/// [`crate::context::pointer`], [`crate::adapters::claude_code`] and `nodal uninstall`
+/// all read it, so none of them can drift from another.
+pub const WRITTEN: &[Written] = &[
+    Written {
+        path: ENV,
+        kind: Kind::Activation,
+        exclude: "/.nodal/",
+        hidden: Hidden::Always,
+        removed: Taken::Whole,
+        own: true,
+    },
+    Written {
+        path: ENVRC,
+        kind: Kind::Activation,
+        exclude: "/.envrc",
+        hidden: Hidden::Always,
+        removed: Taken::Whole,
+        own: true,
+    },
+    Written {
+        path: MANIFEST,
+        kind: Kind::Activation,
+        exclude: "/.nodal/",
+        hidden: Hidden::Always,
+        removed: Taken::Whole,
+        own: true,
+    },
+    Written {
+        path: crate::lifecycle::marker::FILE,
+        kind: Kind::Marker,
+        exclude: "/.nodal/",
+        hidden: Hidden::Always,
+        removed: Taken::Nothing,
+        own: true,
+    },
+    Written {
+        path: WORKUNIT,
+        kind: Kind::Memory,
+        exclude: "/WORKUNIT.md",
+        hidden: Hidden::Always,
+        removed: Taken::Whole,
+        own: true,
+    },
+    Written {
+        path: "CLAUDE.md",
+        kind: Kind::Pointer,
+        exclude: "/CLAUDE.md",
+        hidden: Hidden::WhenNodalMadeIt,
+        removed: Taken::PointerLine,
+        own: false,
+    },
+    Written {
+        path: "AGENTS.md",
+        kind: Kind::Pointer,
+        exclude: "/AGENTS.md",
+        hidden: Hidden::WhenNodalMadeIt,
+        removed: Taken::PointerLine,
+        own: false,
+    },
+    Written {
+        path: crate::adapters::settings::FILE,
+        kind: Kind::ClaudeSettings,
+        exclude: "/.claude/settings.json",
+        hidden: Hidden::WhenNodalMadeIt,
+        removed: Taken::NodalHooks,
+        own: true,
+    },
+];
+
+/// The row of [`WRITTEN`] for `path`, when Nodal writes a file of that name.
+#[must_use]
+pub fn row(path: &str) -> Option<&'static Written> {
+    WRITTEN.iter().find(|written| written.path == path)
+}
+
+/// Every row of one kind, in the order [`WRITTEN`] states them.
+pub fn of_kind(kind: Kind) -> impl Iterator<Item = &'static Written> {
+    WRITTEN.iter().filter(move |written| written.kind == kind)
+}
+
+/// Whether an untracked file at `path` is one Nodal wrote rather than a person's work.
+///
+/// The caller has already established that Git does not track it, which is the other
+/// half of the rule [`WRITTEN`] states. A tracked file of one of these names is the
+/// project's, whatever the name says.
+#[must_use]
+pub fn is_own(path: &Path) -> bool {
+    WRITTEN.iter().filter(|written| written.own).any(|written| Path::new(written.path) == path)
+}
+
+/// What the project tracks, of the names in [`WRITTEN`], in the checkout at `home`.
+///
+/// One `git ls-files` for the whole table, because every writer of a home needs the
+/// same answer and a home is furnished on every command that touches its unit.
+///
+/// A directory with no `.git` in it is not a checkout and tracks nothing. That is read
+/// off the disk rather than asked of Git, so a home a test wrote into a plain directory
+/// costs no process at all.
+#[must_use]
+pub fn tracked_of(home: &Path) -> Tracks {
+    if !home.join(".git").exists() {
+        return Tracks::Known(Vec::new());
+    }
+    let paths: Vec<&str> = WRITTEN.iter().map(|written| written.path).collect();
+    match crate::git::Git::at(home).tracked(&paths) {
+        Ok(tracked) => Tracks::Known(tracked),
+        Err(error) => Tracks::Unknown(format!("git could not be asked what it tracks: {error}")),
+    }
+}
+
+/// The answer [`tracked_of`] gives, including the answer that there is none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tracks {
+    /// The paths of [`WRITTEN`] this checkout tracks. Empty means it tracks none.
+    Known(Vec<PathBuf>),
+    /// Git could not be asked, and why.
+    ///
+    /// Every writer treats this as "leave the file alone and say so". Which files Git
+    /// tracks is what decides whether Nodal may write in one, and writing in a tracked
+    /// file is the harm the question exists to prevent.
+    Unknown(String),
+}
+
+impl Tracks {
+    /// Whether Nodal may write the file at `path`.
+    #[must_use]
+    pub fn may_write(&self, path: &str) -> bool {
+        match self {
+            Self::Known(tracked) => !tracked.iter().any(|held| held == Path::new(path)),
+            Self::Unknown(_) => false,
+        }
+    }
+
+    /// Whether the project tracks the file at `path`. An unanswered question is not a
+    /// claim that it does.
+    #[must_use]
+    pub fn tracks(&self, path: &str) -> bool {
+        match self {
+            Self::Known(tracked) => tracked.iter().any(|held| held == Path::new(path)),
+            Self::Unknown(_) => false,
+        }
+    }
+
+    /// Why the question could not be answered, when it could not be.
+    #[must_use]
+    pub fn cause(&self) -> Option<&str> {
+        match self {
+            Self::Known(_) => None,
+            Self::Unknown(cause) => Some(cause),
+        }
+    }
+
+    /// One note per file Nodal left alone, in the words a person can act on.
+    #[must_use]
+    pub fn left_alone(&self, path: &str) -> String {
+        match self.cause() {
+            Some(cause) => format!("{path}: {cause}, so nodal did not write in it"),
+            None => format!("the project tracks {path}, so nodal did not write in it"),
+        }
+    }
+}
+
+/// Write the activation files into `home`, and say which of them were left alone.
+///
+/// The rule [`WRITTEN`] states holds here: a file the project tracks is not written.
+/// Many projects commit an `.envrc` — direnv and Nix users do — and rewriting that one
+/// would put every home of the project in `git status` from the moment it exists, which
+/// is a home `nodal reclaim`, `nodal done` and `nodal gc` all refuse. The values still
+/// arrive: `.nodal/env` is a name no project uses, so it is written either way, and the
+/// tracked `.envrc` the clone carried reads it.
+///
+/// Each answer is one note naming the file and why. The caller prints them; none of
+/// them is a failure.
 ///
 /// # Errors
 /// [`Error::Io`] if a file or directory cannot be written, and
 /// [`Error::ManifestEncode`] if the manifest cannot be rendered as TOML.
-pub fn write(home: &Path, activation: &Activation, manifest: &Manifest) -> Result<()> {
+pub fn write(home: &Path, activation: &Activation, manifest: &Manifest) -> Result<Vec<String>> {
+    let tracks = tracked_of(home);
+    let mut notes = Vec::new();
     let directory = home.join(DIR);
     std::fs::create_dir_all(&directory).map_err(Error::io(&directory))?;
-    write_owner_only(&home.join(ENV), &dotenv(activation))?;
-    write_text(&home.join(ENVRC), ENVRC_CONTENTS)?;
-    write_text(&home.join(MANIFEST), &render_manifest(manifest)?)?;
-    Ok(())
+    for written in of_kind(Kind::Activation) {
+        if !tracks.may_write(written.path) {
+            notes.push(tracks.left_alone(written.path));
+            continue;
+        }
+        let path = home.join(written.path);
+        match written.path {
+            ENV => write_owner_only(&path, &dotenv(activation))?,
+            ENVRC => write_text(&path, ENVRC_CONTENTS)?,
+            _ => write_text(&path, &render_manifest(manifest)?)?,
+        }
+    }
+    Ok(notes)
 }
 
 /// Take everything Nodal writes into a home back out of it, leaving the home itself.
 ///
-/// That is the three activation files and the compiled memory ([`WORKUNIT`]) — every
-/// path [`hide`] tells Git to ignore, and nothing else. The list is the same one for a
-/// reason: a file Nodal hid from `git status` is a file a person would not see left
-/// behind, so the two must not drift apart.
+/// What goes, and how much of each file goes, is the `removed` column of [`WRITTEN`]
+/// ([`Taken`]). The activation and the memory go whole; a vendor pointer loses the one
+/// line Nodal wrote in it, a settings file loses Nodal's hooks, and either file goes
+/// only when that was the whole of it.
+///
+/// This is the other half of what adoption promises. A checkout adopted where it stands
+/// is a directory Nodal did not create and a person is still working in, so letting go
+/// of it has to leave `git status` saying what it said the moment before.
 ///
 /// Idempotent: a file that is not there is not an error, and `.nodal/` is removed only
 /// when nothing else has been put in it.
@@ -98,22 +359,24 @@ pub fn write(home: &Path, activation: &Activation, manifest: &Manifest) -> Resul
 /// # Errors
 /// [`Error::Io`] if a file that is there cannot be removed.
 pub fn remove(home: &Path) -> Result<()> {
-    for relative in PATHS.iter().chain(std::iter::once(&WORKUNIT)) {
-        let path = home.join(relative);
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(Error::io(&path)(error)),
+    let tracks = tracked_of(home);
+    for written in WRITTEN {
+        let path = home.join(written.path);
+        // A file the project tracks is not Nodal's and never was: Nodal did not write
+        // in one, so there is nothing here to take back out of it.
+        let mine = tracks.may_write(written.path);
+        match written.removed {
+            Taken::Whole if mine => delete(&path)?,
+            Taken::PointerLine if mine => unpoint(&path)?,
+            Taken::NodalHooks if mine => unhook(&path)?,
+            _ => {}
         }
     }
-    let directory = home.join(DIR);
-    if std::fs::read_dir(&directory).is_ok_and(|mut entries| entries.next().is_none()) {
-        std::fs::remove_dir(&directory).map_err(Error::io(&directory))?;
-    }
-    Ok(())
+    tidy(&home.join(DIR))?;
+    tidy(&home.join(crate::adapters::settings::DIR))
 }
 
-/// Add the activation paths to `git_dir/info/exclude`, once.
+/// Add the always-hidden lines of [`WRITTEN`] to `git_dir/info/exclude`, once.
 ///
 /// Returns whether the lines were added, so that a caller can say what it changed.
 /// A second call over a file that already carries them adds nothing.
@@ -122,13 +385,24 @@ pub fn remove(home: &Path) -> Result<()> {
 /// **common** directory. Every worktree of a repository shares one exclude file: a
 /// linked worktree's own `.git/worktrees/<name>/info/exclude` is not read at all. So
 /// hiding the files of a unit adopted in a nested worktree writes one block into the
-/// repository the whole project shares, and the three names it holds are Nodal's own
-/// ([`EXCLUDE_LINES`]) rather than anything a project puts in a tree.
+/// repository the whole project shares, and the names it holds are Nodal's own
+/// ([`WRITTEN`]) rather than anything a project puts in a tree.
 ///
 /// # Errors
 /// [`Error::Io`] if the file cannot be read or written.
 pub fn hide(git_dir: &Path) -> Result<bool> {
-    Ok(!exclude(git_dir, EXCLUDE_LINES)?.is_empty())
+    Ok(!exclude(git_dir, &lines(Hidden::Always))?.is_empty())
+}
+
+/// The `info/exclude` lines of the rows hidden this way, each named once.
+fn lines(hidden: Hidden) -> Vec<&'static str> {
+    let mut found: Vec<&'static str> = Vec::new();
+    for written in WRITTEN.iter().filter(|written| written.hidden == hidden) {
+        if !found.contains(&written.exclude) {
+            found.push(written.exclude);
+        }
+    }
+    found
 }
 
 /// Tell a repository to leave `lines` alone, and say which of them it did not already.
@@ -177,7 +451,7 @@ pub fn exclude<'a>(git_dir: &Path, lines: &[&'a str]) -> Result<Vec<&'a str>> {
     Ok(adding)
 }
 
-/// Take the lines [`hide`] wrote out of `git_dir/info/exclude` again.
+/// Take every line [`WRITTEN`] names out of `git_dir/info/exclude` again.
 ///
 /// Returns whether there was a block to remove. Every other line of the file is kept as
 /// it was written, in the order it was written: this drops the marker line and the
@@ -202,7 +476,7 @@ pub fn unhide(git_dir: &Path) -> Result<bool> {
     let kept: Vec<&str> = existing
         .lines()
         .filter(|line| line.trim_end() != EXCLUDE_MARKER)
-        .filter(|line| !EXCLUDE_LINES.contains(&line.trim_end()))
+        .filter(|line| !WRITTEN.iter().any(|written| written.exclude == line.trim_end()))
         .collect();
     if kept.len() == existing.lines().count() {
         return Ok(false);
@@ -354,6 +628,67 @@ fn render_manifest(manifest: &Manifest) -> Result<String> {
 /// Write a file whose content is not secret.
 fn write_text(path: &Path, text: &str) -> Result<()> {
     std::fs::write(path, text).map_err(Error::io(path))
+}
+
+/// Remove one file. One that is not there is already gone.
+fn delete(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::io(path)(error)),
+    }
+}
+
+/// Remove a directory Nodal made, once nothing else is left in it.
+fn tidy(directory: &Path) -> Result<()> {
+    if std::fs::read_dir(directory).is_ok_and(|mut entries| entries.next().is_none()) {
+        std::fs::remove_dir(directory).map_err(Error::io(directory))?;
+    }
+    Ok(())
+}
+
+/// Take Nodal's line out of a vendor file, and the file too when that was all of it.
+fn unpoint(path: &Path) -> Result<()> {
+    let Some(text) = read_if_there(path)? else { return Ok(()) };
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with(crate::context::pointer::MARK))
+        .collect();
+    if kept.len() == text.lines().count() {
+        return Ok(());
+    }
+    if kept.iter().all(|line| line.trim().is_empty()) {
+        return delete(path);
+    }
+    let mut left = kept.join("\n");
+    left.push('\n');
+    write_text(path, &left)
+}
+
+/// Take Nodal's hooks out of a settings file, and the file too when they were all of it.
+///
+/// A file holding hooks somebody else wrote keeps them, for the reason
+/// [`crate::adapters::settings`] gives: what went in is one region, and that region is
+/// the whole of what comes out.
+fn unhook(path: &Path) -> Result<()> {
+    use crate::adapters::settings;
+    let Some(text) = read_if_there(path)? else { return Ok(()) };
+    let Some(left) = settings::remove(&text, &crate::adapters::claude_code::hooks()) else {
+        return Ok(());
+    };
+    if settings::is_empty(&left) {
+        return delete(path);
+    }
+    write_text(path, &left)
+}
+
+/// A file's text, or nothing at all when there is no such file.
+fn read_if_there(path: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Error::io(path)(error)),
+    }
 }
 
 /// Write a file at owner-only permissions, whether or not it is already there.

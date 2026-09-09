@@ -408,6 +408,20 @@ pub enum Error {
         what: &'static str,
     },
 
+    /// A create was asked for from inside a unit home. A home is a checkout of the
+    /// project and carries its recipe, so making a unit of it would register the home
+    /// as a project of its own and clone a unit of a unit.
+    #[error(
+        "{home} is the home of unit {unit}; run this in the project instead",
+        home = home.display()
+    )]
+    InsideHome {
+        /// The home the command was run in.
+        home: PathBuf,
+        /// The unit the registry says it belongs to.
+        unit: UnitId,
+    },
+
     /// A directory an operation was told to act on carries no `.nodal/id`, so it cannot
     /// be shown to be the home the registry named.
     #[error("{home} carries no marker, so it is not a home Nodal may act on", home = home.display())]

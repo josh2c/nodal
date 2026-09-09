@@ -27,7 +27,13 @@ use crate::git::Git;
 use crate::{Error, Result};
 
 /// The vendor files a pointer goes into, in the order they are written.
-pub const FILES: [&str; 2] = ["CLAUDE.md", "AGENTS.md"];
+///
+/// They are the [`files::Kind::Pointer`] rows of [`files::WRITTEN`], which is where the
+/// rule for each of them is stated.
+#[must_use]
+pub fn files() -> Vec<&'static str> {
+    files::of_kind(files::Kind::Pointer).map(|written| written.path).collect()
+}
 
 /// What marks the line as Nodal's, so the next write replaces it.
 pub const MARK: &str = "<!-- nodal -->";
@@ -51,27 +57,20 @@ pub struct Pointed {
 
 /// Put the pointer in each vendor file of `home`, and hide what this created.
 ///
+/// `tracks` is the one answer about what the project tracks in this home, asked once
+/// for every file Nodal writes there ([`files::tracked_of`]). A question Git could not
+/// answer leaves both files alone and says why: writing in a tracked file is the harm
+/// the question exists to prevent, and a note is the cost of not knowing.
+///
 /// # Errors
 /// [`Error::Io`] when a file cannot be read or written. A file the project tracks is a
 /// note rather than an error.
-pub fn write(home: &Path, git: &Git) -> Result<Pointed> {
+pub fn write(home: &Path, git: &Git, tracks: &files::Tracks) -> Result<Pointed> {
     let mut pointed = Pointed::default();
-    let tracked = match git.tracked(&FILES) {
-        Ok(tracked) => tracked,
-        Err(error) => {
-            // Which files Git tracks is what decides whether Nodal may write in one. A
-            // compile that could not ask leaves both alone: writing in a tracked file
-            // is the harm the question exists to prevent, and a note is the cost of
-            // not knowing.
-            pointed.notes.push(format!("pointer: git could not be asked what it tracks: {error}"));
-            hide(git, &[], &mut pointed);
-            return Ok(pointed);
-        }
-    };
     let mut created: Vec<&str> = Vec::new();
-    for name in FILES {
-        if tracked.iter().any(|path| path == Path::new(name)) {
-            pointed.notes.push(format!("the project tracks {name}, so nodal did not write in it"));
+    for name in files() {
+        if !tracks.may_write(name) {
+            pointed.notes.push(tracks.left_alone(name));
             continue;
         }
         let path = home.join(name);
@@ -101,9 +100,9 @@ pub fn write(home: &Path, git: &Git) -> Result<Pointed> {
 /// worktree, which for a unit adopted in place is the one thing the adoption promised
 /// not to do.
 fn hide(git: &Git, created: &[&str], pointed: &mut Pointed) {
-    let mut lines = vec![format!("/{}", super::FILE)];
-    lines.extend(created.iter().map(|name| format!("/{name}")));
-    let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let mut lines: Vec<&str> = vec![files::row(super::FILE).map_or("/WORKUNIT.md", |w| w.exclude)];
+    lines.extend(created.iter().filter_map(|name| files::row(name).map(|w| w.exclude)));
+    let borrowed = lines;
     let result =
         git.layout().and_then(|layout| files::exclude(&layout.common_dir, &borrowed).map(drop));
     if let Err(error) = result {

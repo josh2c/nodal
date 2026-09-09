@@ -15,7 +15,9 @@
 //!   added: what Nodal wrote and nothing else. The homes are surveyed because a home
 //!   carries a settings file of its own — it is what makes the session's observers fire
 //!   — and a home left with one after an uninstall runs a provider hook that says
-//!   `nodal: not on PATH` and ends a session over a tool the person removed;
+//!   `nodal: not on PATH` and ends a session over a tool the person removed. A home
+//!   whose copy the project tracks is left alone: it is the project's file, and the
+//!   project's own copy is surveyed in its own right;
 //! - the state directory itself, which is asked for by `--state` and never removed
 //!   without it.
 //!
@@ -238,7 +240,7 @@ fn remove_tree(path: &Path) -> Result<()> {
 /// read: it is a note, because "no project has hooks" and "I could not look" are
 /// different answers and a person deciding what to remove needs the right one.
 fn claude_items(request: &Request, items: &mut Vec<Item>, notes: &mut Vec<String>) {
-    match settings_files(request) {
+    match settings_files(request, notes) {
         Ok(found) => items.extend(found),
         Err(error) => notes
             .push(format!("the registry could not be read, so no project was checked: {error}")),
@@ -247,22 +249,54 @@ fn claude_items(request: &Request, items: &mut Vec<Item>, notes: &mut Vec<String
 
 /// Every settings file that holds Nodal's hooks, over every directory Nodal can name.
 ///
-/// The project roots and the unit homes, in that order. A home whose file is the
-/// project's own committed one is treated no differently from the project's: only the
-/// region Nodal wrote comes out of it, and every permission, deny rule and other hook
-/// in it stays.
-fn settings_files(request: &Request) -> Result<Vec<Item>> {
-    let mut directories = project_roots(&request.state, request.project.as_deref())?;
-    directories.extend(homes(&request.state)?.into_iter().map(|(home, _)| home));
+/// The project roots and the unit homes, in that order, and the two are not treated
+/// alike.
+///
+/// In a **project**, `nodal init` wrote the hooks into the person's own file, committed
+/// or not, and an uninstall takes back exactly what that install put in.
+///
+/// In a **home**, Nodal writes the file only where Git does not track it
+/// ([`crate::env::files::WRITTEN`]). A home whose copy the project commits is the
+/// project's file, arrived with the clone; editing or removing it would leave every
+/// home of that project modified from birth, and the removal would ship in the pull
+/// request the unit opens. The project's own copy is surveyed anyway, one directory up
+/// the list, so nothing is missed by leaving the clones alone.
+fn settings_files(request: &Request, notes: &mut Vec<String>) -> Result<Vec<Item>> {
     let mut found = Vec::new();
-    for directory in directories {
-        let path = settings::path(&directory);
-        let text = claude_code::read(&path)?;
-        if settings::holds_hooks(&text) {
-            found.push(Item { kind: Kind::ClaudeHooks, path, detail: kept(&text) });
+    for root in project_roots(&request.state, request.project.as_deref())? {
+        found.extend(hooked(&settings::path(&root), notes));
+    }
+    for (home, _) in homes(&request.state)? {
+        if crate::env::files::tracked_of(&home).tracks(settings::FILE) {
+            continue;
         }
+        found.extend(hooked(&settings::path(&home), notes));
     }
     Ok(found)
+}
+
+/// The item for one settings file, when it holds hooks Nodal wrote and can be read.
+///
+/// A file that cannot be read is one note and no item. The survey visits every project
+/// and every home on the machine, and one unreadable file among forty must not be the
+/// end of the whole answer: a person then sees what can be removed, and one line saying
+/// which file was not looked at.
+fn hooked(path: &Path, notes: &mut Vec<String>) -> Option<Item> {
+    let text = match claude_code::read(path) {
+        Ok(text) => text,
+        Err(error) => {
+            notes.push(format!(
+                "{} could not be read, so it was not checked: {error}",
+                path.display()
+            ));
+            return None;
+        }
+    };
+    settings::holds_hooks(&text).then(|| Item {
+        kind: Kind::ClaudeHooks,
+        path: path.to_path_buf(),
+        detail: kept(&text),
+    })
 }
 
 /// Every project root to look in: the registry's, and the one the person is in.

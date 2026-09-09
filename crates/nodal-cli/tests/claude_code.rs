@@ -411,8 +411,39 @@ fn a_settings_file_the_project_commits_is_left_exactly_as_the_clone_carried_it()
     );
 }
 
+/// The advice a hookless tracked file gets has to be advice that works. `nodal init
+/// --claude-hooks` writes the project's working file, which the home's copy came from a
+/// commit of: running it changes nothing for this unit or the next one cloned. The two
+/// things that do work are committing the hooks and putting them in the person's own
+/// settings, and the note says both.
 #[test]
-fn a_tracked_settings_file_with_no_hooks_in_it_is_one_note_saying_so() {
+fn a_tracked_settings_file_with_no_hooks_in_it_is_one_note_saying_what_to_do() {
+    let project = project();
+    let home = tracked_settings(
+        &project,
+        "{\n  \"permissions\": {\n    \"deny\": [\"Bash(rm:*)\"]\n  }\n}\n",
+    );
+    let said = notes(&project).join("\n");
+
+    assert!(
+        said.contains(".claude/settings.json"),
+        "nothing in the log says why this unit will record nothing: {said}"
+    );
+    assert!(
+        said.contains("Commit the hooks") && said.contains("your own settings"),
+        "the note does not say what would work: {said}"
+    );
+    assert!(
+        !said.contains("nodal init --claude-hooks"),
+        "the note sends a person to a command that is a no-op in this state: {said}"
+    );
+    assert!(home.is_dir());
+}
+
+/// The same note reaches the person watching the session start, not only the log they
+/// may never open.
+#[test]
+fn a_hookless_settings_file_is_said_on_standard_error_as_well_as_recorded() {
     let project = project();
     let theirs = "{\n  \"permissions\": {\n    \"deny\": [\"Bash(rm:*)\"]\n  }\n}\n";
     std::fs::create_dir_all(project.source.join(".claude")).unwrap();
@@ -420,20 +451,39 @@ fn a_tracked_settings_file_with_no_hooks_in_it_is_one_note_saying_so() {
     git(&project.source, &["add", "--", ".claude/settings.json"]);
     git(&project.source, &["commit", "--quiet", "--message", "the project's own settings"]);
     succeed(&project.nodal(&["init", "--claude-hooks"]));
-    succeed(&project.hook("worktree-create", &create_payload(&project.source)));
 
+    let created = project.hook("worktree-create", &create_payload(&project.source));
+    assert!(created.status.success(), "{}", stderr(&created));
+    let said = stderr(&created);
+    assert!(
+        said.contains(".claude/settings.json") && said.contains("Commit the hooks"),
+        "the person who started the session was told nothing: {said}"
+    );
+}
+
+/// Commit a settings file, install the hooks, and make one unit of the project.
+fn tracked_settings(project: &Workspace, theirs: &str) -> PathBuf {
+    std::fs::create_dir_all(project.source.join(".claude")).unwrap();
+    std::fs::write(project.settings(), theirs).unwrap();
+    git(&project.source, &["add", "--", ".claude/settings.json"]);
+    git(&project.source, &["commit", "--quiet", "--message", "the project's own settings"]);
+    succeed(&project.nodal(&["init", "--claude-hooks"]));
+    PathBuf::from(
+        succeed(&project.hook("worktree-create", &create_payload(&project.source)))
+            .trim()
+            .to_owned(),
+    )
+}
+
+/// Every note event this project's one unit carries.
+fn notes(project: &Workspace) -> Vec<String> {
     let store = project.store();
-    let notes: Vec<String> = events::list_for_unit(store.conn(), project.unit_row().id)
+    events::list_for_unit(store.conn(), project.unit_row().id)
         .unwrap()
         .into_iter()
         .filter(|event| event.kind == EventKind::Note)
         .map(|event| event.body)
-        .collect();
-    let said = notes.join("\n");
-    assert!(
-        said.contains(".claude/settings.json") && said.contains("nodal init --claude-hooks"),
-        "nothing in the log says why this unit will record nothing: {said}"
-    );
+        .collect()
 }
 
 #[test]
@@ -563,6 +613,154 @@ fn a_second_install_writes_the_same_file_and_a_removal_takes_the_file_it_made() 
         "a settings file that held nothing but nodal's hooks was left behind"
     );
     assert!(!project.source.join(".claude").exists(), "the directory nodal made was left behind");
+}
+
+/// A home whose settings file the project commits is the project's file, not Nodal's.
+/// An uninstall that rewrites or removes it leaves every home of that project modified
+/// from birth, and ships the removal in the pull request the unit opens. The project's
+/// own copy is still cleaned, one directory up.
+#[test]
+fn an_uninstall_leaves_a_home_whose_settings_the_project_commits_alone() {
+    let project = initialised_project();
+    git(&project.source, &["add", "--", ".claude/settings.json"]);
+    git(&project.source, &["commit", "--quiet", "--message", "commit the hooks"]);
+    let home = PathBuf::from(
+        succeed(&project.hook("worktree-create", &create_payload(&project.source)))
+            .trim()
+            .to_owned(),
+    );
+    let carried = home.join(".claude").join("settings.json");
+    let before = std::fs::read_to_string(&carried).unwrap();
+    assert!(before.contains("nodal claude-code"), "the clone carried no hooks to lose");
+
+    succeed(&project.nodal(&["uninstall", "--yes"]));
+
+    assert_eq!(
+        std::fs::read_to_string(&carried).unwrap(),
+        before,
+        "a file git tracks was rewritten inside a home, so the home is dirty for ever"
+    );
+    let status = git(&home, &["status", "--porcelain"]);
+    assert!(status.is_empty(), "the uninstall left the home dirty: {status}");
+}
+
+/// The survey visits every project and every home on the machine. One file it cannot
+/// read is one line saying so, not the end of the whole answer: a person still gets to
+/// remove everything else.
+#[test]
+fn a_settings_file_that_cannot_be_read_is_one_note_and_not_the_end_of_the_survey() {
+    let project = initialised_project();
+    let home = PathBuf::from(
+        succeed(&project.hook("worktree-create", &create_payload(&project.source)))
+            .trim()
+            .to_owned(),
+    );
+    let carried = home.join(".claude").join("settings.json");
+    std::fs::remove_file(&carried).unwrap();
+    std::fs::create_dir(&carried).unwrap();
+
+    let done = project.nodal(&["uninstall", "--yes"]);
+
+    assert!(
+        done.status.success(),
+        "one unreadable file ended the whole uninstall: {}",
+        stderr(&done)
+    );
+    let installed = std::fs::read_to_string(project.settings()).unwrap_or_default();
+    assert!(
+        !installed.contains("nodal claude-code"),
+        "the project kept its hooks because one home could not be read: {installed}"
+    );
+    let said = format!("{}{}", succeed(&done), stderr(&done));
+    assert!(
+        said.contains("could not be read"),
+        "nothing said which file was not looked at: {said}"
+    );
+}
+
+/// A project file that declares none of Nodal's hooks is still what the home gets: the
+/// hooks may be in the person's own settings, which is how the session reached the
+/// provider at all. What must not happen is that it arrives silently, because the
+/// observers then fire from somewhere this unit's log cannot name.
+#[test]
+fn an_untracked_project_file_with_no_hooks_is_carried_and_said() {
+    let project = project();
+    let theirs = "{\n  \"permissions\": {\n    \"deny\": [\"Bash(rm:*)\"]\n  }\n}\n";
+    std::fs::create_dir_all(project.source.join(".claude")).unwrap();
+    std::fs::write(project.settings(), theirs).unwrap();
+    succeed(&project.nodal(&["init"]));
+
+    let home = PathBuf::from(
+        succeed(&project.hook("worktree-create", &create_payload(&project.source)))
+            .trim()
+            .to_owned(),
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(home.join(".claude").join("settings.json")).unwrap(),
+        theirs,
+        "the home was given settings the project does not declare"
+    );
+    let said = notes(&project).join("\n");
+    assert!(
+        said.contains("declares none of nodal's hooks"),
+        "a home that observes nothing was given one silently: {said}"
+    );
+}
+
+/// A settings file holding only whitespace is no settings file. Copied verbatim it is a
+/// document Claude Code cannot read, so the home would declare nothing at all.
+#[test]
+fn a_project_settings_file_holding_only_whitespace_is_treated_as_none() {
+    let project = project();
+    std::fs::create_dir_all(project.source.join(".claude")).unwrap();
+    std::fs::write(project.settings(), "   \n\n").unwrap();
+    succeed(&project.nodal(&["init"]));
+
+    let home = PathBuf::from(
+        succeed(&project.hook("worktree-create", &create_payload(&project.source)))
+            .trim()
+            .to_owned(),
+    );
+
+    let carried = std::fs::read_to_string(home.join(".claude").join("settings.json")).unwrap();
+    assert!(
+        carried.contains("nodal claude-code"),
+        "the home was given a document Claude Code cannot read: {carried:?}"
+    );
+    assert_eq!(carried.matches("\"type\": \"command\"").count(), 4, "{carried}");
+}
+
+/// A home Claude Code would not accept ends the session. Nothing durable may be written
+/// about a session that never began: no memory, no settings file, and above all no
+/// event saying an agent took this home.
+#[test]
+fn a_home_claude_would_not_accept_is_refused_before_anything_records_it() {
+    let project = project();
+    let state = format!("{}/./state", project.root().display());
+    let project = project.with_env("NODAL_HOME", &state);
+    succeed(&project.nodal(&["init", "--claude-hooks"]));
+
+    let refused = project.hook("worktree-create", &create_payload(&project.source));
+
+    assert!(!refused.status.success(), "a home with a dot segment in it was answered with");
+    assert_eq!(String::from_utf8(refused.stdout.clone()).unwrap().trim(), REFUSED);
+    let attached: Vec<String> =
+        events::list_for_unit(project.store().conn(), project.unit_row().id)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == EventKind::Attached)
+            .map(|event| event.body)
+            .collect();
+    assert!(
+        attached.is_empty(),
+        "a session that never began is recorded as having taken this home: {attached:?}"
+    );
+    let home = project.homes().into_iter().next().expect("the unit was made");
+    assert!(
+        !home.join("WORKUNIT.md").exists() && !home.join(".claude").exists(),
+        "a home nobody was sent to was furnished for a session"
+    );
 }
 
 /// Run one installed command in `directory`, with `payload` on standard input.

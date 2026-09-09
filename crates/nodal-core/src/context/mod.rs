@@ -44,6 +44,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 use crate::Result;
+use crate::adapters::claude_code;
 use crate::git::Git;
 use crate::model::Project;
 use crate::output::notice::{self, Notice};
@@ -107,7 +108,7 @@ pub fn compile(project: &Project, surveyed: &[survey::Snapshot]) -> Report {
         }
         let ledger = ledger::of(subject, surveyed);
         let text = render::memory(subject, &ledger, command.as_deref());
-        match write_home(home, &text) {
+        match write_home(home, &project.root, &text) {
             Ok(causes) => {
                 report.written.push(home.join(FILE));
                 report.notes.extend(
@@ -135,7 +136,8 @@ pub fn refresh_at(conn: &Connection, path: &Path) -> Result<Report> {
     }
 }
 
-/// Write one home: the memory, then the pointers that name it.
+/// Furnish one home: the memory, the pointers that name it, and the Claude Code
+/// settings a session in it reads.
 ///
 /// A compile that produced the bytes the file already holds writes nothing. The memory
 /// is written again by every command that touches the unit, and most of those change
@@ -145,13 +147,22 @@ pub fn refresh_at(conn: &Connection, path: &Path) -> Result<Report> {
 /// The pointers are checked whichever way that goes. A person who removed one of them
 /// gets it back on the next command, and a memory that did not change is no reason to
 /// leave the file that names it missing.
-fn write_home(home: &Path, text: &str) -> Result<Vec<String>> {
+///
+/// The settings file is here rather than in the provider hook, and that is what makes
+/// every home carry it: a unit made by `nodal new`, one adopted in place, and one the
+/// `WorktreeCreate` hook made all pass through here. All three rules are the table's
+/// ([`crate::env::files::WRITTEN`]), and Git is asked once for the whole of it.
+fn write_home(home: &Path, root: &Path, text: &str) -> Result<Vec<String>> {
     let path = home.join(FILE);
     if !std::fs::read_to_string(&path).is_ok_and(|held| held == text) {
         atomic::write(&path, text)?;
     }
-    let pointed = pointer::write(home, &Git::at(home))?;
-    Ok(pointed.notes)
+    let git = Git::at(home);
+    let tracks = crate::env::files::tracked_of(home);
+    let pointed = pointer::write(home, &git, &tracks)?;
+    let mut notes = pointed.notes;
+    notes.extend(claude_code::carry_settings(root, home, &git, &tracks)?);
+    Ok(notes)
 }
 
 /// The command the project's own recipe calls its test suite, when it states one.

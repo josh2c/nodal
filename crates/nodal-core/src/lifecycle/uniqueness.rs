@@ -24,12 +24,13 @@
 //! turns the answer from "every commit in the project" into "the commits this unit
 //! made", which is the question that was being asked.
 //!
-//! One class of path is never work: the files Nodal itself writes into a home — the
-//! activation, the manifest and the marker. They are normally invisible to `git status`
-//! anyway, because a create puts them in the home's `.git/info/exclude`
-//! ([`crate::env::files::hide`]). Leaving them out here as well is what stops a home
-//! whose exclude file somebody edited from refusing every reclaim for ever, over files
-//! Nodal put there and nobody wrote.
+//! One class of path is never work: the files Nodal itself writes into a home. Which
+//! those are is stated once, in [`crate::env::files::WRITTEN`], and read here rather
+//! than listed again. They are normally invisible to `git status` anyway, because a
+//! create puts them in the home's `.git/info/exclude` ([`crate::env::files::hide`]).
+//! Leaving them out here as well is what stops a home whose exclude file somebody
+//! edited from refusing every reclaim for ever, over files Nodal put there and nobody
+//! wrote.
 //!
 //! The check reads and never writes. What is done about a finding — refuse, or take a
 //! snapshot and go on — belongs to the operation.
@@ -188,32 +189,19 @@ fn paths_where(status: &Summary, wanted: impl Fn(&Entry) -> bool) -> Vec<PathBuf
 ///
 /// Two halves, and the second is what keeps this from ever hiding somebody's work.
 ///
-/// The name has to be one of Nodal's ([`written_by_nodal`]). And the entry has to be
-/// **untracked**, because every file Nodal writes into a home is untracked there: it is
-/// written after the clone and it is hidden from `git status` through the home's
+/// The name has to be one Nodal owns ([`crate::env::files::is_own`]). And the entry has
+/// to be **untracked**, because every file Nodal writes into a home is untracked there:
+/// it is written after the clone and it is hidden from `git status` through the home's
 /// `.git/info/exclude`. A path of that name which Git tracks is the project's own file,
-/// carried by the clone, and a change to it is a change somebody made.
+/// carried by the clone, and a change to it is a change somebody made. That is the
+/// same rule the table states, read from the other side.
 ///
 /// That distinction is the whole of the difference between the two settings files. A
 /// project that commits `.claude/settings.json` gets a home whose copy is tracked and
 /// which the adapter never writes to; a project that does not gets one Nodal wrote
 /// ([`crate::adapters::claude_code`]).
 fn is_nodals_own(entry: &Entry) -> bool {
-    entry.state == State::Untracked && written_by_nodal(&entry.path)
-}
-
-/// Whether a path is one of the names Nodal writes into a home.
-///
-/// The activation files, the marker, and the settings file the Claude Code adapter
-/// writes so that a session's observers fire. Every one of them is also a line the home
-/// tells Git to ignore, so this list is what answers for a home written before its own
-/// line was hidden, and what keeps the two rules from drifting apart.
-fn written_by_nodal(path: &Path) -> bool {
-    let own = crate::env::files::PATHS
-        .iter()
-        .chain(std::iter::once(&crate::lifecycle::marker::FILE))
-        .chain(std::iter::once(&crate::adapters::settings::FILE));
-    own.map(Path::new).any(|mine| mine == path)
+    entry.state == State::Untracked && crate::env::files::is_own(&entry.path)
 }
 
 /// A finding over a list of paths, or nothing when the list is empty.

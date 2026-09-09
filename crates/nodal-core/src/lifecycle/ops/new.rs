@@ -44,7 +44,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rusqlite::Transaction;
+use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
 
 use crate::env::files;
@@ -186,6 +186,9 @@ pub fn create(
     request: &Request,
     progress: &Arc<dyn Reporter>,
 ) -> Result<Created> {
+    if let Some((home, unit)) = containing_home(store.conn(), &request.source)? {
+        return Err(Error::InsideHome { home, unit });
+    }
     let params = prepare(store, request, progress)?;
     let environment = params.environment.id;
     let runner = hooks_of(&params, request.hooks)?;
@@ -200,6 +203,62 @@ pub fn create(
         Timestamp::now(),
     )?;
     Ok(created.keeping(done.outputs.read(MATERIALIZE)?.unwrap_or_default()))
+}
+
+/// The unit home `start` is in, and whose it is, when the registry agrees that it is
+/// one.
+///
+/// This is the one answer to "is this directory inside a unit home", and both callers
+/// need it: `nodal new` refuses ([`Error::InsideHome`]) and the Claude Code provider
+/// hook answers with the home rather than making a unit of a unit. Two rules make it
+/// trustworthy.
+///
+/// **The registry decides, not the disk.** A `.nodal/id` says which unit a directory
+/// claims to be; a row says which unit this machine has. A home restored from a backup,
+/// copied out of a trash folder, or left by a build that is no longer installed still
+/// carries its marker, and handing one of those to a session would put the work in a
+/// directory nothing here can reclaim, merge or list. So the marker is read and then
+/// verified: the unit must have a row, and that unit must have an environment whose
+/// home is this directory.
+///
+/// **The path is resolved first, and the answer is the registry's.** Claude Code sends
+/// an absolute `cwd`, but an empty one means the directory Nodal is running in, and a
+/// relative path has no ancestors worth walking. [`guard::resolve`] turns either into
+/// the real directory before the walk, so a session started in a home with `cwd` unset
+/// is still a session in a home. What comes back is the path the row holds, because a
+/// directory can have two names and only one of them is the one Nodal prints.
+///
+/// A marker that cannot be read is not a home. A stale or unreadable `.nodal/id` in any
+/// directory between here and the root would otherwise refuse every create made below
+/// it, which for the provider hook means ending the session.
+///
+/// # Errors
+/// [`Error::Store`] when the registry could not be read.
+pub fn containing_home(conn: &Connection, start: &Path) -> Result<Option<(PathBuf, UnitId)>> {
+    let resolved = guard::resolve(start);
+    for directory in resolved.ancestors() {
+        let Ok(Some(unit)) = marker::read(directory) else { continue };
+        if let Some(home) = home_of(conn, unit, directory)? {
+            return Ok(Some((home, unit)));
+        }
+    }
+    Ok(None)
+}
+
+/// The row's own name for `directory`, when the registry says it is a home of `unit`.
+///
+/// The walk runs over a resolved path and the answer is the path the registry holds.
+/// Those differ wherever a directory has two names — macOS answers `/private/var` for
+/// `/var`, and a `TMPDIR` reached through a symbolic link does the same on any host —
+/// and the registry's name is the one every other command prints.
+fn home_of(conn: &Connection, unit: UnitId, directory: &Path) -> Result<Option<PathBuf>> {
+    if units::get(conn, unit)?.is_none() {
+        return Ok(None);
+    }
+    Ok(environments::list_for_unit(conn, unit)?
+        .into_iter()
+        .find(|environment| guard::resolve(&environment.home) == directory)
+        .map(|environment| environment.home))
 }
 
 /// The project's hooks and this machine's approvals for them.
@@ -580,7 +639,9 @@ impl Step for Activate {
         let subject = (&self.unit, &self.environment, &self.project);
         let activation = resolve_env(subject, &self.recipe, &Produced::default(), &[&machine])?;
         let manifest = activation.manifest(&self.unit, &self.environment, &self.project);
-        files::write(&self.environment.home, &activation, &manifest)?;
+        for note in files::write(&self.environment.home, &activation, &manifest)? {
+            eprintln!("nodal: activation: {note}");
+        }
         Ok(nothing())
     }
 

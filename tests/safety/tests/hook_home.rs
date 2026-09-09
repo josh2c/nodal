@@ -128,3 +128,161 @@ fn a_request_from_inside_a_home_answers_that_home_and_makes_nothing() {
     assert_eq!(Path::new(answered.trim()), home, "it was sent somewhere other than where it is");
     assert_eq!(machine.homes(), before, "a unit of a unit was made");
 }
+
+/// Fire the provider hook in `cwd` with a payload that names no directory at all.
+///
+/// The desktop application sends an absolute `cwd`; nothing promises every version of
+/// every client will. An empty one means the directory the hook is running in, and that
+/// directory may be a home.
+fn worktree_create_without_cwd(machine: &Machine, cwd: &Path) -> (bool, String, String) {
+    let payload = "{\"hook_event_name\":\"WorktreeCreate\",\"name\":\"worker-import\"}";
+    let mut child = machine
+        .command(&["claude-code", "worktree-create"])
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    child.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+    let output = child.wait_with_output().unwrap();
+    (output.status.success(), stdout(&output), stderr(&output))
+}
+
+/// A payload with no `cwd` is a request from the directory the hook runs in, and that
+/// directory is a home. Reading it as "no path at all" made the guard miss, and the
+/// session got a unit of a unit.
+#[test]
+fn a_request_from_a_home_with_no_cwd_in_the_payload_answers_that_home() {
+    let machine = machine();
+    let home = session_home(&machine);
+    let before = machine.homes();
+
+    let (ok, answered, said) = worktree_create_without_cwd(&machine, &home);
+
+    assert!(ok, "a session already in a home was refused: {said}");
+    assert_eq!(Path::new(answered.trim()), home, "it was sent somewhere other than where it is");
+    assert_eq!(machine.homes(), before, "a unit of a unit was made");
+}
+
+/// Many projects commit an `.envrc`: direnv and Nix users do. Rewriting it puts every
+/// home of the project in `git status` before the session starts, which is a home
+/// `nodal reclaim`, `nodal done` and `nodal gc` all refuse.
+#[test]
+fn a_project_that_commits_its_envrc_gets_a_clean_home() {
+    let machine = machine();
+    let theirs = "use flake\n";
+    std::fs::write(machine.source.join(".envrc"), theirs).unwrap();
+    git(&machine.source, &["add", "--", ".envrc"]);
+    git(&machine.source, &["commit", "--quiet", "--message", "the project's own direnv file"]);
+
+    let home = session_home(&machine);
+
+    assert_eq!(
+        std::fs::read_to_string(home.join(".envrc")).unwrap(),
+        theirs,
+        "a file git tracks was overwritten, so the home is modified from birth"
+    );
+    let status = git(&home, &["status", "--porcelain"]);
+    assert!(status.is_empty(), "the home is dirty the moment a session was given it: {status}");
+    assert!(
+        home.join(".nodal").join("env").is_file(),
+        "the values went with the file that was left alone"
+    );
+
+    let reclaimed = machine.nodal(&["reclaim", "worker-import"]);
+    assert!(reclaimed.status.success(), "the home could not be let go of: {}", stderr(&reclaimed));
+}
+
+/// A file in a home that Git does not track is Nodal's to hide whether or not Nodal
+/// wrote its bytes. A base build or a `post_new` hook can leave one, and a settings
+/// file nobody hid is a home the uniqueness check calls dirty.
+#[test]
+fn an_untracked_settings_file_a_home_already_had_is_hidden_and_kept() {
+    let machine = machine();
+    let home = session_home(&machine);
+    let path = home.join(SETTINGS);
+    let theirs = "{\n  \"permissions\": {\n    \"deny\": [\"Bash(rm:*)\"]\n  }\n}\n";
+    unhide_settings(&home);
+    std::fs::write(&path, theirs).unwrap();
+
+    let shown = machine.nodal(&["show", "worker-import"]);
+    assert!(shown.status.success(), "{}", stderr(&shown));
+
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        theirs,
+        "a file nodal did not write was overwritten"
+    );
+    let status = git(&home, &["status", "--porcelain"]);
+    assert!(status.is_empty(), "a file nobody hid is work the uniqueness check refuses: {status}");
+}
+
+/// A directory carrying a `.nodal/id` no row matches is not a home this machine may
+/// hand to a session: nothing here can list it, merge it or reclaim it. One restored
+/// from a backup or copied out of a trash folder still carries its marker.
+#[test]
+fn a_marked_directory_the_registry_does_not_know_is_not_answered_with() {
+    let machine = machine();
+    let restored = machine.source.parent().unwrap().join("restored");
+    copy_tree(&machine.source, &restored);
+    std::fs::create_dir_all(restored.join(".nodal")).unwrap();
+    std::fs::write(restored.join(".nodal").join("id"), "01J8Z6H000000000000000001\n").unwrap();
+
+    let (ok, answered, said) = worktree_create(&machine, &restored);
+
+    assert!(ok, "the provider refused rather than making a unit: {said}");
+    assert_ne!(
+        Path::new(answered.trim()),
+        restored,
+        "a directory no row knows was handed to a session as a home"
+    );
+    assert!(Path::new(answered.trim()).join(".nodal").join("id").is_file());
+}
+
+/// A `.nodal/id` anywhere above the project used to end the session: the read error
+/// travelled out of the hook and Claude got no path. A marker that cannot be read says
+/// nothing about whose home this is, so it is not one.
+///
+/// The copy sits under a directory of its own, away from the state directory, because
+/// a marker above the state directory is a different refusal ([`nodal_core`]'s
+/// placement guard) and this test is about the read.
+#[test]
+fn an_unreadable_marker_above_the_project_does_not_end_the_session() {
+    let machine = machine();
+    let elsewhere = machine.source.parent().unwrap().join("elsewhere");
+    let copy = elsewhere.join("project");
+    copy_tree(&machine.source, &copy);
+    std::fs::create_dir_all(elsewhere.join(".nodal")).unwrap();
+    std::fs::write(elsewhere.join(".nodal").join("id"), "not a unit identifier\n").unwrap();
+
+    let (ok, answered, said) = worktree_create(&machine, &copy);
+
+    assert!(ok, "a marker nobody can read, above the project, ended the session: {said}");
+    assert!(Path::new(answered.trim()).is_dir(), "{answered}");
+}
+
+/// Take Nodal's line for the settings file back out of the home's exclude file, so that
+/// the next command has to put it there again.
+fn unhide_settings(home: &Path) {
+    let exclude = git(home, &["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    let path = Path::new(exclude.trim()).join("info").join("exclude");
+    let held = std::fs::read_to_string(&path).unwrap_or_default();
+    let kept: Vec<&str> =
+        held.lines().filter(|line| line.trim_end() != "/.claude/settings.json").collect();
+    std::fs::write(&path, format!("{}\n", kept.join("\n"))).unwrap();
+}
+
+/// Copy a directory and everything under it.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}

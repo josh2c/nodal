@@ -9,7 +9,7 @@
 //!
 //! | event | what it is | what Nodal does |
 //! |---|---|---|
-//! | `WorktreeCreate` | provider: Claude requires an absolute path on standard output and ends the session without one | makes the unit, carries the project's settings into the home, records the attachment, and prints it |
+//! | `WorktreeCreate` | provider: Claude requires an absolute path on standard output and ends the session without one | makes the unit, furnishes the home, records the attachment, and prints it |
 //! | `SessionStart` | observer, fires more than once per session | prints the unit's memory, which Claude injects as context |
 //! | `Stop` | observer | records the session's last message as a stated handoff |
 //! | `WorktreeRemove` | observer that was never seen to fire | records a detach if it ever does, and removes nothing |
@@ -23,30 +23,29 @@
 //!
 //! This was measured on 2026-09-08, headless and interactive, and it is the same in
 //! both: with `--worktree`, `WorktreeCreate` fires in the project root and no observer
-//! fires anywhere. Without `--worktree`, all three observers fire. So the provider puts
-//! a settings file in the home it answers with ([`carry_settings`]), and the observers
-//! fire for the rest of the session.
+//! fires anywhere. Without `--worktree`, all three observers fire. So a home carries a
+//! settings file of its own ([`carry_settings`]), and the observers fire for the rest
+//! of the session.
 //!
-//! **What it puts there is the project's own file.** A regenerated set of four hooks
-//! would be the only settings in scope for the rest of the session, so the project's
+//! **Every home carries one, not only the ones this hook made.** The write is part of
+//! furnishing a home ([`crate::context`]), beside the memory and the vendor pointers,
+//! so a unit made by `nodal new` and one adopted in place carry it too. There is one
+//! rule for every file Nodal puts in a home and it is stated once, in
+//! [`crate::env::files::WRITTEN`]: Nodal writes it only where Git does not track it,
+//! hides it in the home's `info/exclude` when it wrote it, and never touches it when
+//! the project tracks it.
+//!
+//! **What goes there is the project's own file.** A regenerated set of four hooks would
+//! be the only settings in scope for the rest of the session, so the project's
 //! permissions, its deny rules and every hook somebody else installed would stop
-//! applying the moment the session moved into the home. The project's file already
-//! carries Nodal's hooks, because that is what declared the hook that made the home.
+//! applying the moment the session moved into the home. A project with no settings file
+//! of its own gets the four hooks.
 //!
-//! Whether a project ignores `.claude/` is not something Nodal may assume. Two cases,
-//! and they are decided by what the clone already carries:
-//!
-//! - **The clone carries no settings file.** Then the file Nodal writes is Nodal's own,
-//!   and it is registered as such: hidden from `git status` through the home's
-//!   `.git/info/exclude`, the way [`crate::context::pointer`] hides the memory, and
-//!   named in [`crate::lifecycle::uniqueness`]. A fresh home is clean, `nodal reclaim`
-//!   works, and `nodal merge` commits nothing of Nodal's.
-//! - **The clone carries one**, because the project commits it. Then it is a tracked
-//!   file and it is left byte for byte as it arrived, for the reason
-//!   [`crate::context::pointer`] leaves a tracked `CLAUDE.md` alone: rewriting it would
-//!   put the home permanently in `git status` and the rewrite in the diff of every pull
-//!   request the unit opens. When the file it carries declares none of Nodal's hooks,
-//!   that is one note event saying the observers will not fire and why.
+//! Whether a project ignores `.claude/` is not something Nodal may assume, and neither
+//! is whether the home already has a file. [`carry_settings`] states the three cases.
+//! Wherever the file the home ends up with declares none of Nodal's hooks, that is one
+//! line on standard error and one note event: nothing observes the session, and what
+//! would work is committing the hooks or installing them in the person's own settings.
 //!
 //! The attachment is not left to an observer. `WorktreeCreate` is the one hook that is
 //! certain to have run, so it is what records that Claude Code took the home. It is
@@ -61,6 +60,11 @@
 //! recipe, so making a unit of it would register the home as a project of its own and
 //! clone a unit of a unit. The request is answered with the home the session is already
 //! in, and nothing is created.
+//!
+//! What counts as a home is [`crate::lifecycle::ops::new::containing_home`], which
+//! `nodal new` reads for its own refusal. It asks the registry rather than the disk: a
+//! `.nodal/id` says which unit a directory claims to be, and a row says which unit this
+//! machine has.
 //!
 //! # The provider contract
 //!
@@ -101,6 +105,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::adapters::settings::{self, Hook};
+use crate::env::files;
 use crate::lifecycle::marker;
 use crate::lifecycle::ops::new::{self, Request};
 use crate::model::{
@@ -119,6 +124,8 @@ pub const REFUSED: &str = "./nodal-worktree-create-refused";
 /// The line that hides the settings file Nodal writes into a home, in the form
 /// `.git/info/exclude` takes: anchored at the top of the tree, so a `.claude/` a
 /// project keeps somewhere else is not covered by it.
+///
+/// It is the table's ([`files::WRITTEN`]), read rather than written again here.
 pub const EXCLUDE: &str = "/.claude/settings.json";
 
 /// The name of the provider event.
@@ -272,12 +279,18 @@ pub fn acceptable(path: &Path) -> bool {
 /// A request made from inside a unit home is answered with that home, and creates
 /// nothing. See the module note.
 ///
+/// The order is the contract. The home is checked against [`acceptable`] before
+/// anything durable is written about it, because a refusal ends the session: a home
+/// Claude will not take must not leave behind a furnished directory and an event saying
+/// a session took it. Furnishing and the attachment record come after, and neither may
+/// fail the create.
+///
 /// # Errors
 /// [`Error::InvalidValue`] when the project has no recipe or the home that was made is
 /// not a path Claude would accept, and whatever the create itself reported.
 pub fn worktree_create(store: &mut Store, payload: &Payload) -> Result<PathBuf> {
     let root = project_root(payload);
-    if let Some(home) = home_containing(&root)? {
+    if let Some((home, _)) = new::containing_home(store.conn(), &root)? {
         return answer(home);
     }
     if !recipe::load(&root)?.written {
@@ -298,13 +311,9 @@ pub fn worktree_create(store: &mut Store, payload: &Payload) -> Result<PathBuf> 
         .unit
         .environment
         .ok_or_else(|| refusal(String::from("the unit was made without a home")))?;
-    let home = environment.home;
-    match context::refresh_at(store.conn(), &home) {
-        Ok(report) => context::report_notes(&report),
-        Err(error) => eprintln!("nodal: context: {error}"),
-    }
+    let home = answer(environment.home)?;
     let subject = (unit, Some(environment.id));
-    carry(store, &root, &home, subject);
+    furnish(store, &home, subject);
     told(
         store,
         subject,
@@ -312,7 +321,7 @@ pub fn worktree_create(store: &mut Store, payload: &Payload) -> Result<PathBuf> 
         Epistemic::Observed,
         String::from("claude code took this home for a session"),
     );
-    answer(home)
+    Ok(home)
 }
 
 /// The home the provider prints, when it is one Claude Code would take.
@@ -327,119 +336,146 @@ fn answer(home: PathBuf) -> Result<PathBuf> {
     Err(refusal(format!("{} is not a path Claude Code would accept", home.display())))
 }
 
-/// The unit home `start` is in, when it is in one.
+/// Put the memory, the pointers and the settings in the home, and say what could not be
+/// done.
 ///
-/// The marker is what says so ([`marker`]), read at `start` and at every directory
-/// above it, so a request fired from a subdirectory of a home is still a request from
-/// inside that home. A relative path is left alone: nothing above it can be named
-/// absolutely, and Claude Code sends an absolute `cwd`.
-fn home_containing(start: &Path) -> Result<Option<PathBuf>> {
-    if !start.is_absolute() {
-        return Ok(None);
-    }
-    for directory in start.ancestors() {
-        if marker::read(directory)?.is_some() {
-            return Ok(Some(directory.to_path_buf()));
+/// The writing itself is [`context::refresh_at`], which every command that touches a
+/// unit calls; this is the one caller that also has a unit to write the answer against.
+///
+/// Nothing here may fail the create. The session has a home and must start: a settings
+/// file that could not be written costs it the observers it would have had, and an
+/// event that could not be written costs a line of the log. Ending the session over
+/// either would leave a fully built unit with nobody in it, which is the shape of the
+/// bug this path exists to fix.
+///
+/// What could not be done is said twice: once on standard error, for the person
+/// watching the session start, and once in the unit's log, for whoever reads the unit
+/// afterwards and wonders why it recorded nothing.
+fn furnish(store: &Store, home: &Path, subject: (UnitId, Option<EnvId>)) {
+    let causes = match context::refresh_at(store.conn(), home) {
+        Ok(report) => {
+            context::report_notes(&report);
+            report.notes.into_iter().map(|note| note.cause).collect()
         }
-    }
-    Ok(None)
-}
-
-/// Give the home the settings the session will read, and say what could not be done.
-///
-/// Neither half may fail the create. The session has a home and must start: a settings
-/// file that could not be written costs it the memory it would have had, and an event
-/// that could not be written costs a line of the log. Ending the session over either
-/// would leave a fully built unit with nobody in it, which is the shape of the bug this
-/// path exists to fix.
-///
-/// What could not be done is said twice where the store allows it: once on standard
-/// error, for the person watching the session start, and once in the unit's log, for
-/// whoever reads the unit afterwards and wonders why it recorded nothing.
-fn carry(store: &Store, root: &Path, home: &Path, subject: (UnitId, Option<EnvId>)) {
-    match carry_settings(root, home) {
-        Ok(None) => {}
-        Ok(Some(cause)) => told(store, subject, EventKind::Note, Epistemic::Observed, cause),
         Err(error) => {
-            let cause = format!("the session's own hooks could not be written: {error}");
-            eprintln!("nodal: {cause}");
-            told(store, subject, EventKind::Note, Epistemic::Observed, cause);
+            let cause = format!("the home could not be furnished: {error}");
+            eprintln!("nodal: context: {cause}");
+            vec![cause]
         }
+    };
+    for cause in causes {
+        told(store, subject, EventKind::Note, Epistemic::Observed, cause);
     }
 }
 
-/// Put the settings the session will read into the home it is about to work in.
-///
-/// Returns what is worth writing down, which is nothing at all in both good cases.
+/// Put the settings a session will read into `home`, and say what could not be done.
 ///
 /// Claude Code reads `.claude/settings.json` from the directory a session works in, and
 /// `WorktreeCreate` moves the session out of the project and into the home. Without a
 /// file here the three observers never fire: no memory is injected and no handoff is
 /// recorded. It was measured that way.
 ///
-/// What the clone already carries decides which of the two cases this is, because the
-/// home is new: a settings file in it is one the project commits and Git tracks. It is
-/// left exactly as it arrived, and a file that declares none of Nodal's hooks is a note
-/// rather than a rewrite. Otherwise the project's own file is copied — its permissions,
-/// its deny rules and every hook somebody else installed, not a regenerated four — and
-/// a project with no settings file of its own gets the four hooks.
+/// The rule is the table's ([`files::WRITTEN`]) and `tracks` is the answer to its one
+/// question. Three cases:
 ///
-/// The file Nodal writes is Nodal's own, so it is hidden from `git status` the way the
-/// memory is ([`crate::context::pointer`]), and it is written atomically for the reason
-/// the memory beside it is: an agent may be reading it.
+/// - **The project tracks the file.** It arrived with the clone and it is the
+///   project's. Nodal does not touch it, whatever it says. A file that declares none of
+///   Nodal's hooks is one note ([`hookless`]).
+/// - **Git does not track it and the home has none.** Nodal writes one: the project's
+///   own file ([`settings_for`]) rather than a regenerated four, so the permissions,
+///   the deny rules and every hook somebody else installed keep applying after the
+///   session moves.
+/// - **Git does not track it and the home has one anyway** — a base build wrote it, or
+///   a `post_new` hook did, or an earlier command of Nodal's. Its bytes are somebody
+///   else's and are left alone; it is hidden all the same, because an untracked file in
+///   a home is a home the uniqueness check calls dirty.
+///
+/// Every file Nodal may write here is hidden from `git status` through the home's
+/// `.git/info/exclude`, and written atomically for the reason the memory beside it is:
+/// an agent may be reading it.
 ///
 /// # Errors
 /// [`Error::Io`] when the project's file cannot be read or the home's cannot be
 /// written, and [`Error::InvalidValue`] when the project's file is not a JSON object.
-fn carry_settings(root: &Path, home: &Path) -> Result<Option<String>> {
-    let carried = home.join(settings::FILE);
-    if carried.exists() {
-        let held = read(&carried)?;
-        if settings::holds_hooks(&held) {
-            return Ok(None);
+pub fn carry_settings(
+    root: &Path,
+    home: &Path,
+    git: &crate::git::Git,
+    tracks: &files::Tracks,
+) -> Result<Vec<String>> {
+    let path = home.join(settings::FILE);
+    if !tracks.may_write(settings::FILE) {
+        let held = read(&path)?;
+        if tracks.tracks(settings::FILE) && !settings::holds_hooks(&held) {
+            return Ok(vec![hookless()]);
         }
-        return Ok(Some(format!(
-            "the project tracks {}, so nodal left it byte for byte as the clone carried \
-             it. It declares none of nodal's hooks, so nothing observes this session \
-             starting or stopping and this unit records only what a command writes. \
-             `nodal init --claude-hooks` in the project puts them in that file.",
-            settings::FILE
-        )));
+        return Ok(tracks.cause().map(|_| tracks.left_alone(settings::FILE)).into_iter().collect());
     }
-    let text = settings_for(root)?;
-    let directory = home.join(settings::DIR);
-    std::fs::create_dir_all(&directory).map_err(Error::io(&directory))?;
-    context::atomic::write(&carried, &text)?;
-    Ok(hide(home))
+    let mut notes = Vec::new();
+    let held = read(&path)?;
+    if held.is_empty() {
+        let (text, note) = settings_for(root)?;
+        notes.extend(note);
+        let directory = home.join(settings::DIR);
+        std::fs::create_dir_all(&directory).map_err(Error::io(&directory))?;
+        context::atomic::write(&path, &text)?;
+    } else if !settings::holds_hooks(&held) {
+        notes.push(hookless());
+    }
+    notes.extend(hide(git));
+    Ok(notes)
 }
 
-/// The text the home's settings file is written with.
+/// The one thing to say about a settings file that declares none of Nodal's hooks.
 ///
-/// The project's own file where there is one, and the four hooks where there is not.
-fn settings_for(root: &Path) -> Result<String> {
+/// It is one sentence about a consequence and one about what to do, and what to do is
+/// not `nodal init --claude-hooks`: that writes the hooks into the project's working
+/// file, which changes nothing for a home whose copy came from a commit. The two things
+/// that do work are committing the hooks, so the next clone carries them, and putting
+/// them in the settings Claude Code reads for every project.
+fn hookless() -> String {
+    format!(
+        "{} in this home declares none of nodal's hooks, so nothing observes this session \
+         starting or stopping and this unit records only what a command writes. Commit the \
+         hooks, or install them in your own settings.",
+        settings::FILE
+    )
+}
+
+/// The text the home's settings file is written with, and what is worth saying about it.
+///
+/// The project's own file where there is one, and the four hooks where there is not. A
+/// file holding only whitespace is no file: it would be copied into the home as a
+/// document Claude Code cannot read, so it is treated as absent.
+///
+/// A project file that declares none of Nodal's hooks is still copied verbatim — the
+/// hooks may be in the person's own settings, which is how the session reached this
+/// code at all — but it is never copied silently.
+fn settings_for(root: &Path) -> Result<(String, Option<String>)> {
     let held = read(&settings::path(root))?;
-    if !held.is_empty() {
-        return Ok(held);
+    if held.trim().is_empty() {
+        return Ok((settings::add("", &hooks())?.unwrap_or_default(), None));
     }
-    Ok(settings::add(&held, &hooks())?.unwrap_or(held))
+    if settings::holds_hooks(&held) {
+        return Ok((held, None));
+    }
+    Ok((held, Some(hookless())))
 }
 
-/// Tell the home's repository to leave the settings file Nodal wrote alone.
+/// Tell the home's repository to leave the settings file alone.
 ///
-/// The same rule as the activation files and the memory ([`crate::env::files::hide`]):
-/// a file of Nodal's that shows as untracked is a home the uniqueness check calls
-/// dirty, so `nodal reclaim`, `nodal done` and `nodal gc` refuse it and `nodal merge`
-/// commits Nodal's file onto the unit's branch.
+/// The line comes from the table ([`files::WRITTEN`]), which is the only place the
+/// names Nodal hides are written down. A file of Nodal's that shows as untracked is a
+/// home the uniqueness check calls dirty, so `nodal reclaim`, `nodal done` and
+/// `nodal gc` refuse it and `nodal merge` carries Nodal's file onto the unit's branch.
 ///
 /// The block goes in the repository's **common** directory, for the reason
 /// [`crate::context::pointer`] gives: it is the only `info/exclude` Git reads.
 ///
 /// A repository that could not be asked is a note and not a failure. The file is
 /// written either way, and the note is what says the home will look dirty.
-fn hide(home: &Path) -> Option<String> {
-    let git = crate::git::Git::at(home);
-    let hidden =
-        git.layout().and_then(|layout| crate::env::files::exclude(&layout.common_dir, &[EXCLUDE]));
+fn hide(git: &crate::git::Git) -> Option<String> {
+    let hidden = git.layout().and_then(|layout| files::exclude(&layout.common_dir, &[EXCLUDE]));
     hidden.err().map(|error| {
         format!("info/exclude: {error}; {} will show in git status in this home", settings::FILE)
     })

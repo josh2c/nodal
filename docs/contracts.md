@@ -10,12 +10,32 @@ A unit's home contains `.nodal/id` (marker, verified against the registry), `.no
 `.nodal/manifest.toml`, `WORKUNIT.md` (facts about the unit and its siblings), `.envrc` (`dotenv .nodal/env`),
 and a normal `.git` directory. Nothing else is required for a terminal, IDE or agent to integrate.
 
-Nodal adds `.nodal/`, `.envrc` and `WORKUNIT.md` to the repository's common `info/exclude`, so
-`git status` in a unit stays clean. A vendor file Nodal itself created is added there too. Every
-worktree of a repository shares that one exclude file — a linked worktree's own
+### What Nodal writes into a home, and the one rule for all of it
+
+**Nodal writes one of its own files only where Git does not track it, hides it in the home's
+`info/exclude` when it wrote it, and never touches it when the project tracks it.** A tracked file
+arrived with the clone, so it is the project's. Writing in one would put the home in `git status`
+from the moment it exists, and a home that is dirty at birth is one `nodal reclaim`, `nodal done` and
+`nodal gc` refuse and one whose pull request carries Nodal's rewrite.
+
+| file | what it is | hidden | what `nodal reclaim` takes back |
+|---|---|---|---|
+| `.nodal/env` | activation | always | the file |
+| `.envrc` | activation | always | the file |
+| `.nodal/manifest.toml` | activation | always | the file |
+| `.nodal/id` | marker | always | the file, by its own step |
+| `WORKUNIT.md` | memory | always | the file |
+| `CLAUDE.md` | pointer | where Nodal created it | the one line, and the file when that was all of it |
+| `AGENTS.md` | pointer | where Nodal created it | the one line, and the file when that was all of it |
+| `.claude/settings.json` | Claude Code settings | where Nodal wrote it | Nodal's hooks, and the file when they were all of it |
+
+A project that commits its own `.envrc` — direnv and Nix users do — keeps it: Nodal writes
+`.nodal/env`, which the committed `.envrc` reads, and states in one line that it left the tracked file
+alone. The same holds for every other row.
+
+Every worktree of a repository shares one exclude file — a linked worktree's own
 `.git/worktrees/<name>/info/exclude` is not read — so a unit adopted in a nested worktree writes the
-block into the repository the project shares. The names are Nodal's own, and `nodal reclaim` takes
-both them and the files back out again.
+block into the repository the project shares. The names are Nodal's own.
 
 `.nodal/manifest.toml` states the identity of the home, every environment name it carries, the
 origin of each name, and every declared name that no source answered. It holds no value. Its shape
@@ -526,38 +546,51 @@ and a machine with no `nodal`, and the second is handled by the command text its
 create payload carries a third. **Nothing correlates by session identifier.** The `cwd` a payload carries
 is what names the unit, and a unit home says whose it is in `.nodal/id`.
 
-**The provider carries the project's settings into the home it answers with.** Claude Code reads
-`.claude/settings.json` from the directory a session works in. `WorktreeCreate` moves the session out of
-the project and into a unit home, so the file that declared the hooks is no longer in scope. Without a file
-there the three observers never fire in a session started with `--worktree`: no memory is injected and no
-handoff is recorded. This was measured on 2026-09-08, headless and interactive, and it was the same in
-both.
+**Every home carries a settings file.** Claude Code reads `.claude/settings.json` from the directory a
+session works in. `WorktreeCreate` moves the session out of the project and into a unit home, so the file
+that declared the hooks is no longer in scope. Without a file there the three observers never fire in a
+session started with `--worktree`: no memory is injected and no handoff is recorded. This was measured on
+2026-09-08, headless and interactive, and it was the same in both.
+
+The file is written where the memory and the vendor pointers are written, so a unit made by `nodal new`,
+one adopted in place and one the provider hook made all get it, and all three follow the one rule in
+**Directory contract**.
 
 **What goes there is the project's own file, copied.** Not a regenerated set of four hooks: that file
 would be the only settings in scope for the rest of the session, so the project's permissions, its deny
 rules and every hook somebody else installed would stop applying the moment the session moved. A project
-with no settings file of its own gets the four hooks.
+with no settings file of its own, or one holding only whitespace, gets the four hooks.
 
-**Nodal never assumes a project ignores `.claude/`.** What the clone carries decides which of two cases
-this is, and the home is new, so a settings file already in it is one the project commits and Git tracks.
+**Nodal never assumes a project ignores `.claude/`.** Three cases:
 
-- **The clone carries none.** The file Nodal writes is Nodal's own. `/.claude/settings.json` goes in the
+- **The project tracks the file.** It arrived with the clone and it is the project's. Nodal does not
+  touch it, for the reason it leaves a tracked `CLAUDE.md` alone.
+- **Git does not track it and the home has none.** Nodal writes one. `/.claude/settings.json` goes in the
   home's `.git/info/exclude`, the way `WORKUNIT.md` does, and the uniqueness check names it. So
   `git status` in a new home is empty, `nodal reclaim`, `nodal done` and `nodal gc` do not call the home
   dirty, and `nodal merge` commits nothing of Nodal's onto the unit branch. The write is atomic, as every
   file Nodal writes into a home is.
-- **The clone carries one.** It is left byte for byte as it arrived, for the reason a tracked `CLAUDE.md`
-  is left alone: rewriting it would put the home permanently in `git status` and the rewrite in the diff of
-  every pull request the unit opens. When that file declares none of Nodal's hooks, one `note` event says
-  the observers will not fire and what would put them back.
+- **Git does not track it and the home has one anyway** — a base build wrote it, or a `post_new` hook
+  did. Its bytes are somebody else's and stay as they are; it is hidden all the same, because an untracked
+  file in a home is a home the uniqueness check calls dirty.
+
+Wherever the file that ends up in the home declares none of Nodal's hooks, Nodal says so once on standard
+error and once as a `note` event: nothing observes the session, and the two things that would work are
+committing the hooks or installing them in the person's own settings.
 
 **A `WorktreeCreate` fired from inside a unit home answers that home and creates nothing.** A home now
 carries the provider hook and also carries the project's recipe, so making a unit of it would register the
-home as a project of its own and clone a unit of a unit.
+home as a project of its own and clone a unit of a unit. A directory is a home when it carries `.nodal/id`
+**and** the registry holds that unit with an environment at that directory; a marker no row matches, or one
+that cannot be read, is not a home. A payload with no `cwd` means the directory the hook is running in, and
+that directory is resolved before the question is asked. `nodal new` refuses in the same case rather than
+registering the home as a project.
 
 `WorktreeCreate` also records one `attached` event, `observed`, with `claude-code` as the actor. It is the
 one hook that is certain to have run, so the record of a session taking a home does not depend on an
-observer firing. **Neither that record nor the settings file may fail the create.** A store or filesystem
+observer firing. **The home is checked against the provider contract before anything durable is written
+about it**, so a home Claude would not accept leaves neither a furnished directory nor an event saying a
+session took it. **Neither that record nor the settings file may fail the create.** A store or filesystem
 error is one line on standard error, and a note event where the store allows one; the home is still
 answered with. Ending the session there would leave a fully built unit with nobody in it, which is the
 failure this whole path exists to prevent.
@@ -565,7 +598,9 @@ failure this whole path exists to prevent.
 `nodal uninstall` surveys the homes of registered units as well as project roots, and takes only Nodal's
 own region out of each settings file it finds. A home left carrying the provider hook after the binary has
 gone would answer a later `claude --worktree` with `nodal: not on PATH` and end the session over a tool
-the person removed.
+the person removed. A home whose copy the project tracks is left alone: that file is the project's, and the
+project's own copy is surveyed in its own right. One file the survey cannot read is one line saying so, and
+the rest of the plan still stands.
 
 `WorktreeRemove` fired in **none** of four measured session lifecycles, and nothing depends on it. Cleanup
 is Nodal's own lifecycle: the unit persists when the session ends, `nodal ls` shows it, and `done`, `merge`,

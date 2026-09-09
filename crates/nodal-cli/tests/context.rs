@@ -225,7 +225,7 @@ impl Tracking {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().to_path_buf();
         let project_root = shapes::origin(root.join("origin"));
-        for name in context::pointer::FILES {
+        for name in context::pointer::files() {
             write(&project_root, name, "# The project's own rules\n");
         }
         git(&project_root, &["add", "--all"]);
@@ -445,7 +445,7 @@ fn the_pointer_is_one_line_in_each_file_and_the_home_stays_clean() {
         workspace.ok(&["ls"], &workspace.source);
     }
 
-    for name in context::pointer::FILES {
+    for name in context::pointer::files() {
         let text = read(&home.join(name));
         assert_eq!(text.lines().count(), 1, "{name} is one line: {text}");
         assert!(text.contains(context::FILE), "{name} names the memory: {text}");
@@ -613,7 +613,7 @@ fn the_pointer_notice_is_one_line_per_cause_however_many_units_report_it() {
         let first = compiler_lines(&fixture.nodal(&["ls"]));
         assert_eq!(
             first.len(),
-            context::pointer::FILES.len(),
+            context::pointer::files().len(),
             "{units} units printed {} lines: {first:?}",
             first.len()
         );
@@ -631,7 +631,7 @@ fn the_collapsed_notice_names_the_file_and_counts_the_units() {
     let expected =
         "nodal: context: 3 units: the project tracks CLAUDE.md, so nodal did not write in it";
     assert!(lines.iter().any(|line| line == expected), "{lines:?}");
-    for name in context::pointer::FILES {
+    for name in context::pointer::files() {
         assert!(lines.iter().any(|line| line.contains(name)), "no line names {name}: {lines:?}");
     }
 }
