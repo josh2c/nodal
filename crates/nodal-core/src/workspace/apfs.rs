@@ -71,6 +71,7 @@ fn put(source: &Path, destination: &Path, metadata: &Metadata) -> Result<Put> {
 /// Everything that is one call on macOS and nothing anywhere else.
 #[cfg(target_os = "macos")]
 mod platform {
+    use std::ffi::{CStr, CString};
     use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
@@ -116,13 +117,17 @@ mod platform {
     /// the one call that could break it. Without the flag `clonefile` resolves a
     /// source that is a link and copies what it points at, so a link the walk had
     /// already classified would become a file if it were replaced between the two.
+    ///
+    /// This is the boundary between the two error types. Everything below it answers
+    /// with the operating system's own error, and this function is where that error
+    /// becomes [`Error::Io`] naming the path it is about.
+    ///
+    /// # Errors
+    /// [`Error::Io`] naming the file that could not be cloned.
     pub(super) fn clone(source: &Path, destination: &Path) -> Result<()> {
-        let (from, to) = (c_path(source)?, c_path(destination)?);
-        // SAFETY: both paths are NUL-terminated C strings that outlive the call.
-        if unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), CLONE_NOFOLLOW) } == 0 {
-            return Ok(());
-        }
-        Err(Error::Io { path: destination.to_path_buf(), source: std::io::Error::last_os_error() })
+        let from = c_path(source).map_err(Error::io(source))?;
+        let to = c_path(destination).map_err(Error::io(destination))?;
+        call(&from, &to).map_err(Error::io(destination))
     }
 
     /// The one call a probe makes: `clonefile` and nothing else.
@@ -131,7 +136,15 @@ mod platform {
     /// The operating system's own error, unchanged, so that the caller can tell a
     /// volume that will not clone from one it could not write in.
     pub(super) fn clone_probe(source: &Path, destination: &Path) -> std::io::Result<()> {
-        let (from, to) = (c_path(source)?, c_path(destination)?);
+        call(&c_path(source)?, &c_path(destination)?)
+    }
+
+    /// The call itself, which both callers make and neither repeats.
+    ///
+    /// # Errors
+    /// The operating system's own error. A caller that owes its own kind of error maps
+    /// this one; a caller that does not hands it on.
+    fn call(from: &CStr, to: &CStr) -> std::io::Result<()> {
         // SAFETY: both paths are NUL-terminated C strings that outlive the call.
         if unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), CLONE_NOFOLLOW) } == 0 {
             return Ok(());
@@ -140,11 +153,12 @@ mod platform {
     }
 
     /// A path as the C string `clonefile` takes.
-    fn c_path(path: &Path) -> Result<std::ffi::CString> {
-        std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| Error::Io {
-            path: path.to_path_buf(),
-            source: std::io::Error::from(std::io::ErrorKind::InvalidInput),
-        })
+    ///
+    /// # Errors
+    /// `InvalidInput`, for the one path a C string cannot hold: one with a NUL in it.
+    fn c_path(path: &Path) -> std::io::Result<CString> {
+        CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
     }
 }
 
