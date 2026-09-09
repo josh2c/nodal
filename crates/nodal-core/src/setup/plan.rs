@@ -9,10 +9,13 @@
 //!
 //! - the block in a start-up file, per shell that has one ([`super::rc`]);
 //! - the shell script in the state directory, per shell that has one ([`super::shims`]);
-//! - the hooks in one project's `.claude/settings.json`, per project the registry knows
-//!   ([`crate::adapters::claude_code`]). Those live in somebody's repository rather than
-//!   on their machine, so they are removed the way they were added: what Nodal wrote and
-//!   nothing else;
+//! - the hooks in a `.claude/settings.json`, per project the registry knows and per unit
+//!   home it made ([`crate::adapters::claude_code`]). Those live in somebody's
+//!   repository rather than on their machine, so they are removed the way they were
+//!   added: what Nodal wrote and nothing else. The homes are surveyed because a home
+//!   carries a settings file of its own — it is what makes the session's observers fire
+//!   — and a home left with one after an uninstall runs a provider hook that says
+//!   `nodal: not on PATH` and ends a session over a tool the person removed;
 //! - the state directory itself, which is asked for by `--state` and never removed
 //!   without it.
 //!
@@ -242,11 +245,18 @@ fn claude_items(request: &Request, items: &mut Vec<Item>, notes: &mut Vec<String
     }
 }
 
-/// Every settings file that holds Nodal's hooks, over every project Nodal can name.
+/// Every settings file that holds Nodal's hooks, over every directory Nodal can name.
+///
+/// The project roots and the unit homes, in that order. A home whose file is the
+/// project's own committed one is treated no differently from the project's: only the
+/// region Nodal wrote comes out of it, and every permission, deny rule and other hook
+/// in it stays.
 fn settings_files(request: &Request) -> Result<Vec<Item>> {
+    let mut directories = project_roots(&request.state, request.project.as_deref())?;
+    directories.extend(homes(&request.state)?.into_iter().map(|(home, _)| home));
     let mut found = Vec::new();
-    for root in project_roots(&request.state, request.project.as_deref())? {
-        let path = settings::path(&root);
+    for directory in directories {
+        let path = settings::path(&directory);
         let text = claude_code::read(&path)?;
         if settings::holds_hooks(&text) {
             found.push(Item { kind: Kind::ClaudeHooks, path, detail: kept(&text) });

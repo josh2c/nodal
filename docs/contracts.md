@@ -506,7 +506,7 @@ the same either way.** A clone of it on a machine with no Nodal does nothing.
 
 | event | kind | what Nodal does |
 |---|---|---|
-| `WorktreeCreate` | provider | `nodal claude-code worktree-create` makes the unit, records the attachment, and prints its home |
+| `WorktreeCreate` | provider | `nodal claude-code worktree-create` makes the unit, carries the project's settings into its home, records the attachment, and prints the home |
 | `SessionStart` | observer | prints the unit's memory, which Claude injects as context |
 | `Stop` | observer | records the session's last message as a stated handoff |
 | `WorktreeRemove` | observer | records a detach if it ever fires, and removes nothing |
@@ -526,16 +526,46 @@ and a machine with no `nodal`, and the second is handled by the command text its
 create payload carries a third. **Nothing correlates by session identifier.** The `cwd` a payload carries
 is what names the unit, and a unit home says whose it is in `.nodal/id`.
 
-**The provider carries the hooks into the home it answers with.** Claude Code reads `.claude/settings.json`
-from the directory a session works in. `WorktreeCreate` moves the session out of the project and into a
-unit home, so the file that declared the hooks is no longer in scope, and `.claude/` is a directory a
-project ignores, so no clone carries it. Without this step the three observers never fire in a session
-started with `--worktree`: no memory is injected and no handoff is recorded. This was measured on
-2026-09-08, headless and interactive, and it was the same in both.
+**The provider carries the project's settings into the home it answers with.** Claude Code reads
+`.claude/settings.json` from the directory a session works in. `WorktreeCreate` moves the session out of
+the project and into a unit home, so the file that declared the hooks is no longer in scope. Without a file
+there the three observers never fire in a session started with `--worktree`: no memory is injected and no
+handoff is recorded. This was measured on 2026-09-08, headless and interactive, and it was the same in
+both.
+
+**What goes there is the project's own file, copied.** Not a regenerated set of four hooks: that file
+would be the only settings in scope for the rest of the session, so the project's permissions, its deny
+rules and every hook somebody else installed would stop applying the moment the session moved. A project
+with no settings file of its own gets the four hooks.
+
+**Nodal never assumes a project ignores `.claude/`.** What the clone carries decides which of two cases
+this is, and the home is new, so a settings file already in it is one the project commits and Git tracks.
+
+- **The clone carries none.** The file Nodal writes is Nodal's own. `/.claude/settings.json` goes in the
+  home's `.git/info/exclude`, the way `WORKUNIT.md` does, and the uniqueness check names it. So
+  `git status` in a new home is empty, `nodal reclaim`, `nodal done` and `nodal gc` do not call the home
+  dirty, and `nodal merge` commits nothing of Nodal's onto the unit branch. The write is atomic, as every
+  file Nodal writes into a home is.
+- **The clone carries one.** It is left byte for byte as it arrived, for the reason a tracked `CLAUDE.md`
+  is left alone: rewriting it would put the home permanently in `git status` and the rewrite in the diff of
+  every pull request the unit opens. When that file declares none of Nodal's hooks, one `note` event says
+  the observers will not fire and what would put them back.
+
+**A `WorktreeCreate` fired from inside a unit home answers that home and creates nothing.** A home now
+carries the provider hook and also carries the project's recipe, so making a unit of it would register the
+home as a project of its own and clone a unit of a unit.
 
 `WorktreeCreate` also records one `attached` event, `observed`, with `claude-code` as the actor. It is the
 one hook that is certain to have run, so the record of a session taking a home does not depend on an
-observer firing.
+observer firing. **Neither that record nor the settings file may fail the create.** A store or filesystem
+error is one line on standard error, and a note event where the store allows one; the home is still
+answered with. Ending the session there would leave a fully built unit with nobody in it, which is the
+failure this whole path exists to prevent.
+
+`nodal uninstall` surveys the homes of registered units as well as project roots, and takes only Nodal's
+own region out of each settings file it finds. A home left carrying the provider hook after the binary has
+gone would answer a later `claude --worktree` with `nodal: not on PATH` and end the session over a tool
+the person removed.
 
 `WorktreeRemove` fired in **none** of four measured session lifecycles, and nothing depends on it. Cleanup
 is Nodal's own lifecycle: the unit persists when the session ends, `nodal ls` shows it, and `done`, `merge`,

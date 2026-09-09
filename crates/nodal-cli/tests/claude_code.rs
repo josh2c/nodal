@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 use nodal_core::adapters::claude_code::REFUSED;
 use nodal_core::model::{Epistemic, EventKind};
 use nodal_core::store::events;
-use nodal_safety::{InState as _, Workspace};
+use nodal_safety::{InState as _, Workspace, git};
 
 /// The shell a hook command runs in, named by its path.
 const SHELL: &str = "/bin/sh";
@@ -356,6 +356,119 @@ fn the_home_the_provider_answers_with_carries_the_hooks_the_session_will_run() {
         std::fs::read_to_string(project.settings()).unwrap(),
         "the home was given hooks the project does not declare"
     );
+}
+
+#[test]
+fn the_home_is_given_the_projects_own_settings_and_not_a_regenerated_four() {
+    let project = project();
+    let theirs = "{\n  \"permissions\": {\n    \"deny\": [\"Bash(rm:*)\"]\n  }\n}\n";
+    std::fs::create_dir_all(project.source.join(".claude")).unwrap();
+    std::fs::write(project.settings(), theirs).unwrap();
+    succeed(&project.nodal(&["init", "--claude-hooks"]));
+    let home = PathBuf::from(
+        succeed(&project.hook("worktree-create", &create_payload(&project.source)))
+            .trim()
+            .to_owned(),
+    );
+
+    let carried = std::fs::read_to_string(home.join(".claude").join("settings.json")).unwrap();
+    assert_eq!(
+        carried,
+        std::fs::read_to_string(project.settings()).unwrap(),
+        "the home was given settings the project does not declare"
+    );
+    assert!(
+        carried.contains("Bash(rm:*)"),
+        "the project's deny rule stopped applying the moment the session moved: {carried}"
+    );
+}
+
+#[test]
+fn a_settings_file_the_project_commits_is_left_exactly_as_the_clone_carried_it() {
+    let project = project();
+    let theirs = "{\n  \"permissions\": {\n    \"deny\": [\"Bash(rm:*)\"]\n  }\n}\n";
+    std::fs::create_dir_all(project.source.join(".claude")).unwrap();
+    std::fs::write(project.settings(), theirs).unwrap();
+    git(&project.source, &["add", "--", ".claude/settings.json"]);
+    git(&project.source, &["commit", "--quiet", "--message", "the project's own settings"]);
+    succeed(&project.nodal(&["init", "--claude-hooks"]));
+
+    let home = PathBuf::from(
+        succeed(&project.hook("worktree-create", &create_payload(&project.source)))
+            .trim()
+            .to_owned(),
+    );
+
+    let carried = home.join(".claude").join("settings.json");
+    assert_eq!(
+        std::fs::read_to_string(&carried).unwrap(),
+        theirs,
+        "a file git tracks was rewritten, so the home is in git status before the session starts"
+    );
+    assert!(
+        git(&home, &["status", "--porcelain"]).is_empty(),
+        "the home is dirty the moment the session was given it"
+    );
+}
+
+#[test]
+fn a_tracked_settings_file_with_no_hooks_in_it_is_one_note_saying_so() {
+    let project = project();
+    let theirs = "{\n  \"permissions\": {\n    \"deny\": [\"Bash(rm:*)\"]\n  }\n}\n";
+    std::fs::create_dir_all(project.source.join(".claude")).unwrap();
+    std::fs::write(project.settings(), theirs).unwrap();
+    git(&project.source, &["add", "--", ".claude/settings.json"]);
+    git(&project.source, &["commit", "--quiet", "--message", "the project's own settings"]);
+    succeed(&project.nodal(&["init", "--claude-hooks"]));
+    succeed(&project.hook("worktree-create", &create_payload(&project.source)));
+
+    let store = project.store();
+    let notes: Vec<String> = events::list_for_unit(store.conn(), project.unit_row().id)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == EventKind::Note)
+        .map(|event| event.body)
+        .collect();
+    let said = notes.join("\n");
+    assert!(
+        said.contains(".claude/settings.json") && said.contains("nodal init --claude-hooks"),
+        "nothing in the log says why this unit will record nothing: {said}"
+    );
+}
+
+#[test]
+fn an_uninstall_empties_the_hook_region_of_every_home_as_well_as_the_project() {
+    let project = initialised_project();
+    let home = PathBuf::from(
+        succeed(&project.hook("worktree-create", &create_payload(&project.source)))
+            .trim()
+            .to_owned(),
+    );
+    let carried = home.join(".claude").join("settings.json");
+    assert!(carried.is_file(), "the home was given no hooks to lose");
+
+    succeed(&project.nodal(&["uninstall", "--yes"]));
+
+    let left = std::fs::read_to_string(&carried).unwrap_or_default();
+    assert!(
+        !left.contains("nodal claude-code"),
+        "a home was left running a hook for a binary the person removed: {left}"
+    );
+}
+
+#[test]
+fn a_request_from_inside_a_home_answers_that_home_and_registers_no_project() {
+    let project = initialised_project();
+    let home = PathBuf::from(
+        succeed(&project.hook("worktree-create", &create_payload(&project.source)))
+            .trim()
+            .to_owned(),
+    );
+
+    let again = succeed(&project.hook("worktree-create", &create_payload(&home)));
+
+    assert_eq!(Path::new(again.trim()), home, "the session was sent out of the home it is in");
+    assert_eq!(project.homes().len(), 1, "a unit of a unit was cloned: {:?}", project.homes());
 }
 
 #[test]
