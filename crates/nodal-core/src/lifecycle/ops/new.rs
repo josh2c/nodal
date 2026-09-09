@@ -41,9 +41,8 @@
 //! be a plan that wrote them there. The activation is therefore assembled inside the
 //! step that writes it, from sources the step asks at the moment it runs.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
@@ -56,15 +55,13 @@ use crate::git::{Git, scrub};
 use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Runner};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::owner;
-use crate::lifecycle::step::{Commit, Plan, Step};
+use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::{Rebuild, guard, marker, run};
 use crate::model::{
-    BranchName, EnvId, EnvState, Environment, Epistemic, Event, EventId, EventKind, Objective,
-    PortBlock, PortName, Ports, Project, ProjectId, ProjectName, Recipe, RefName, Slug, Timestamp,
-    Unit, UnitId, UnitStatus,
+    BranchName, EnvId, EnvState, Environment, Epistemic, EventKind, Objective, PortBlock, PortName,
+    Ports, Project, ProjectId, ProjectName, Recipe, Slug, Timestamp, Unit, UnitId, UnitStatus,
 };
 use crate::output::view::Created;
-use crate::runtime::actor;
 use crate::services::ports;
 use crate::store::{Store, environments, events, projects, units};
 use crate::substrate::{self, Reporter};
@@ -81,6 +78,15 @@ pub const BRANCH_PREFIX: &str = "nodal/";
 
 /// The port every unit is granted, whatever the project runs: the development server.
 const APP_PORT: &str = "app";
+
+/// The key of the step whose report the registry write reads. Named once, because the
+/// step that writes it and the commit that reads it are two hundred lines apart and a
+/// typo between them would be a silently missing event rather than a failure.
+pub(super) const RELOCATE: &str = "home.relocate";
+
+/// The key of the step that makes the clone, whose answer the report reads: which
+/// default exclusion rows yielded to a path the project tracks.
+pub(super) const MATERIALIZE: &str = "home.materialize";
 
 /// Whether a base built for a create also runs the project's build command.
 ///
@@ -185,11 +191,10 @@ pub fn create(
     let runner = hooks_of(&params, request.hooks)?;
     let context = context_of(&params);
     runner.run(Phase::PreNew, &params.project.root, &context)?;
-    let kept = Arc::new(OnceLock::new());
-    run(store, &plan(&params, &kept)?)?;
+    let done = run(store, &plan(&params)?)?;
     runner.run(Phase::PostNew, &params.environment.home, &context)?;
     let created = Created::of(&params.unit, &read_back(store, environment)?, Timestamp::now())?;
-    Ok(created.keeping(kept.get().cloned().unwrap_or_default()))
+    Ok(created.keeping(done.outputs.read(MATERIALIZE)?.unwrap_or_default()))
 }
 
 /// The project's hooks and this machine's approvals for them.
@@ -269,29 +274,27 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
 
 /// The plan: seven steps in the home, then one registry write.
 ///
-/// `kept` is where the copy leaves the default exclusion rows that yielded to a path the
-/// project tracks, because the report is written after the plan has run.
+/// The default exclusion rows that yielded to a path the project tracks are the clone
+/// step's own output ([`MATERIALIZE`]), because the report is written after the plan has
+/// run and the process that writes it may not be the one that made the clone.
 ///
 /// # Errors
 /// [`Error::Render`] when the parameters cannot be written to the journal.
-pub fn plan(params: &Params, kept: &Arc<OnceLock<Vec<tracked::Kept>>>) -> Result<Plan> {
+pub fn plan(params: &Params) -> Result<Plan> {
     let home = params.environment.home.clone();
     let value = serde_json::to_value(params)
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
-    let relocation = Arc::new(OnceLock::new());
-    Ok(Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params, &relocation))
+    Ok(Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params))
         .then(Materialize {
             base: params.base_path.clone(),
             home: home.clone(),
             excludes: Excludes::with_recipe(&params.recipe.base.exclude),
             backend: select_backend(&params.state_dir),
-            kept: Arc::clone(kept),
         })
         .then(Relocate {
             home: home.clone(),
             base: params.base_path.clone(),
             relocator: InvalidateCache::with_recipe(&params.recipe.base.invalidate),
-            report: relocation,
         })
         .then(Scrub { home: home.clone() })
         .then(TakeBranch {
@@ -318,18 +321,19 @@ pub fn plan(params: &Params, kept: &Arc<OnceLock<Vec<tracked::Kept>>>) -> Result
 /// because a grant names the environment row and cannot be made before it exists.
 ///
 /// The relocation event is written here for the same reason and not by the step that
-/// did the removal: an event names a unit, and no unit row exists until this runs.
-fn commit_of(params: &Params, relocation: &Arc<OnceLock<relocate::Report>>) -> Commit {
+/// did the removal: an event names a unit, and no unit row exists until this runs. What
+/// the removal found reaches this through the journal ([`RELOCATE`]), so a create
+/// resumed by a later process writes the same event the first run would have.
+fn commit_of(params: &Params) -> Commit {
     let (unit, environment) = (params.unit.clone(), params.environment.clone());
     let (block, names) = (params.block, params.ports.clone());
-    let relocation = Arc::clone(relocation);
-    Box::new(move |tx: &Transaction<'_>| -> Result<()> {
+    Box::new(move |tx: &Transaction<'_>, outputs: &Outputs| -> Result<Output> {
         units::insert(tx, &unit)?;
         environments::insert(tx, &environment)?;
         let granted = ports::allocate(tx, block, environment.id, &names)?;
         environments::set_ports(tx, environment.id, &granted)?;
-        record_relocation(tx, unit.id, environment.id, relocation.get())?;
-        Ok(())
+        record_relocation(tx, unit.id, environment.id, outputs.read(RELOCATE)?.as_ref())?;
+        Ok(nothing())
     })
 }
 
@@ -347,30 +351,17 @@ pub(super) fn record_relocation(
     let Some(report) = report.filter(|report| !report.changed_nothing()) else {
         return Ok(());
     };
-    let mut refs = BTreeMap::new();
-    let mut reference = |name: &str, value: String| {
-        if let Ok(name) = RefName::parse(name) {
-            refs.insert(name, value);
-        }
-    };
-    reference("relocator", report.relocator.to_owned());
-    reference("from", report.from.display().to_string());
-    reference("to", report.to.display().to_string());
-    reference("removed", report.removed.len().to_string());
-    events::append(
+    events::note(
         tx,
-        &Event {
-            id: EventId::from_ulid(ulid::Ulid::new()),
-            unit,
-            environment: Some(environment),
-            ts: Timestamp::now(),
-            actor: actor::current()?,
-            kind: EventKind::Note,
-            epistemic: Epistemic::Observed,
-            body: report.describe(),
-            refs,
-            raw_ref: None,
-        },
+        (unit, Some(environment)),
+        EventKind::Note,
+        report.describe(),
+        &[
+            ("relocator", report.relocator.clone()),
+            ("from", report.from.display().to_string()),
+            ("to", report.to.display().to_string()),
+            ("removed", report.removed.len().to_string()),
+        ],
     )
 }
 
@@ -388,7 +379,7 @@ impl Rebuild for New {
         })?;
         // A resumed run finishes the home and writes no report, so the notes it would
         // have carried have nowhere to go.
-        plan(&params, &Arc::new(OnceLock::new()))
+        plan(&params)
     }
 }
 
@@ -407,14 +398,11 @@ pub(super) struct Materialize {
     pub(super) excludes: Excludes,
     /// The one backend chosen for this operation, before it started.
     pub(super) backend: Box<dyn Materializer>,
-    /// Where the step leaves the default rows that yielded to a tracked path, for the
-    /// report the operation ends with. Empty on all but the rare tree that tracks one.
-    pub(super) kept: Arc<OnceLock<Vec<tracked::Kept>>>,
 }
 
 impl Step for Materialize {
     fn key(&self) -> String {
-        String::from("home.materialize")
+        String::from(MATERIALIZE)
     }
 
     /// A clone refuses a destination that is already there, and a run killed part-way
@@ -424,15 +412,20 @@ impl Step for Materialize {
     /// The exclusion list is settled before that removal, because a list that would
     /// drop a tracked path the project wrote stops the operation and must not first take
     /// away the home a resumed run would find. A default row the commit tracks yields
-    /// instead, and the note is left for the report.
-    fn apply(&self) -> Result<()> {
+    /// instead, and the rows that yielded are what this step reports.
+    ///
+    /// Repeatable, and the same answer twice: the rows a tree tracks do not change
+    /// between two attempts at the same clone.
+    fn apply(&self) -> Result<Output> {
         let mut excludes = self.excludes.clone();
-        let _ = self.kept.set(tracked::enforce(&self.base, &mut excludes)?);
+        let kept = tracked::enforce(&self.base, &mut excludes)?;
         remove_tree(&self.home)?;
         if let Some(parent) = self.home.parent() {
             std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
         }
-        self.backend.clone_tree(&self.base, &self.home, &excludes).map(drop)
+        self.backend.clone_tree(&self.base, &self.home, &excludes)?;
+        serde_json::to_value(kept)
+            .map_err(|source| Error::Render { kind: "kept exclusion rows", source })
     }
 
     fn undo(&self) -> Result<()> {
@@ -454,23 +447,23 @@ pub(super) struct Relocate {
     pub(super) base: PathBuf,
     /// What is removed, and why.
     pub(super) relocator: InvalidateCache,
-    /// Where the report is left for the registry write that ends the operation. A step
-    /// cannot hand a value to the step after it, and this hands nothing to one: the
-    /// commit is not a step, and it is the only place a unit row exists to name.
-    pub(super) report: Arc<OnceLock<relocate::Report>>,
 }
 
 impl Step for Relocate {
     fn key(&self) -> String {
-        String::from("home.relocate")
+        String::from(RELOCATE)
     }
 
-    /// Repeatable: a second sweep of a home whose caches have gone removes nothing, and
-    /// the report the first one left is the one the commit writes.
-    fn apply(&self) -> Result<()> {
+    /// The report goes to the commit through the journal, because the commit is the
+    /// only place a unit row exists for the event to name.
+    ///
+    /// Repeatable, and the same answer twice: a second sweep of a home whose caches
+    /// have gone removes nothing and reports nothing, so a resumed run reads the first
+    /// run's report out of the journal rather than overwriting it with an empty one.
+    fn apply(&self) -> Result<Output> {
         let report = self.relocator.relocate(&self.home, &self.base, &self.home)?;
         if report.changed_nothing() {
-            return Ok(());
+            return Ok(nothing());
         }
         tracing::info!(
             home = %self.home.display(),
@@ -478,8 +471,8 @@ impl Step for Relocate {
             examined = report.examined,
             "removed caches that record the path they were made at"
         );
-        let _ = self.report.set(report);
-        Ok(())
+        serde_json::to_value(report)
+            .map_err(|source| Error::Render { kind: "relocation report", source })
     }
 
     /// Nothing. What this removed was inside a directory the first step's undo removes,
@@ -500,8 +493,9 @@ impl Step for Scrub {
         String::from("git.scrub")
     }
 
-    fn apply(&self) -> Result<()> {
-        Git::open(&self.home)?.scrub(&scrub::Options::default()).map(drop)
+    fn apply(&self) -> Result<Output> {
+        Git::open(&self.home)?.scrub(&scrub::Options::default())?;
+        Ok(nothing())
     }
 
     /// Nothing. What this changed is inside a directory the first step's undo removes,
@@ -530,16 +524,18 @@ impl Step for TakeBranch {
 
     /// Repeatable in each of the three states a killed run can leave: the branch not
     /// there, the branch there but not checked out, and the branch already checked out.
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         let git = Git::open(&self.home)?;
         let name = self.branch.as_str();
         if git.current_branch()?.as_deref() == Some(name) {
-            return Ok(());
+            return Ok(nothing());
         }
         if git.branch_exists(name)? {
-            return git.switch(name);
+            git.switch(name)?;
+            return Ok(nothing());
         }
-        git.switch_new(name, self.start.as_ref().map(BranchName::as_str))
+        git.switch_new(name, self.start.as_ref().map(BranchName::as_str))?;
+        Ok(nothing())
     }
 
     /// Nothing, for the reason [`Scrub::undo`] gives: the branch exists only in the
@@ -574,12 +570,13 @@ impl Step for Activate {
     /// A declared name nothing answers is a line of the report, never a failure, and a
     /// name the recipe expects a service to generate is one of those until the task
     /// that starts the services fills it in.
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         let machine = MachineSecrets::open(MachineSecrets::path_in(&self.state_dir))?;
         let subject = (&self.unit, &self.environment, &self.project);
         let activation = resolve_env(subject, &self.recipe, &Produced::default(), &[&machine])?;
         let manifest = activation.manifest(&self.unit, &self.environment, &self.project);
-        files::write(&self.environment.home, &activation, &manifest)
+        files::write(&self.environment.home, &activation, &manifest)?;
+        Ok(nothing())
     }
 
     fn undo(&self) -> Result<()> {

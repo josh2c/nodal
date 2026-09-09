@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use crate::env::{Activation, secrets};
 use crate::lifecycle::Step;
+use crate::lifecycle::step::{Output, nothing};
 use crate::model::{EnvName, Manifest};
 use crate::{Error, Result};
 
@@ -396,8 +397,9 @@ impl Step for WriteFiles {
         String::from("env.write-files")
     }
 
-    fn apply(&self) -> Result<()> {
-        write(&self.home, &self.activation, &self.manifest)
+    fn apply(&self) -> Result<Output> {
+        write(&self.home, &self.activation, &self.manifest)?;
+        Ok(nothing())
     }
 
     fn undo(&self) -> Result<()> {
@@ -421,8 +423,9 @@ impl Step for Hide {
         String::from("git.hide")
     }
 
-    fn apply(&self) -> Result<()> {
-        hide(&exclude_dir(&self.home)?).map(drop)
+    fn apply(&self) -> Result<Output> {
+        hide(&exclude_dir(&self.home)?)?;
+        Ok(nothing())
     }
 
     fn undo(&self) -> Result<()> {

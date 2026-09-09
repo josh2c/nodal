@@ -318,6 +318,31 @@ jobs:
       - name: the fixture infers with zero gaps and builds inside its budget
         run: ci/acceptance-fixture.sh
 
+  measure:
+    name: measure (ceilings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: "clippy" }
+      - uses: Swatinem/rust-cache@v2
+      - name: every structural measurement is inside its ceiling
+        run: ci/measure.sh
+
+  acceptance-behaviour-lock:
+    name: acceptance (behaviour lock)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: every plan is locked, and the two resume divergences still reproduce
+        run: ci/acceptance-behaviour-lock.sh
+
   startup:
     name: startup budget
     runs-on: ubuntu-latest

@@ -183,8 +183,8 @@ adapters/               what nodal writes into somebody's repository for another
 
 lifecycle/             the only module that composes others; each op = plan() pure + apply() IO
   mod.rs               run(plan) and resolve(): the runner, and what the next command does
-  step.rs              Step trait {key, apply, undo}; Plan = steps + the final registry write
-  journal.rs           operation and operation_step rows: op id, step key, state
+  step.rs              Step trait {key, apply -> Output, undo}; Plan = steps + the final registry write
+  journal.rs           operation and operation_step rows: op id, step key, state, output
   owner.rs             whose run an operation is, and whether that process is still there
   guard.rs             the placement rule: a home never overlaps a source, a project or another home
   marker.rs            .nodal/id: write, read, verify against the registry
@@ -230,6 +230,10 @@ commands/              one file per command, each ≤ 40 lines: parse args → c
   a helper would hide the seam the journal needs, which is one key and one undo per thing that changed.
 - No plan holds a resolved secret value. A plan is rebuilt from the journal, which is a table in the registry, so a
   step that needs a value asks its source when it applies rather than carrying one.
+- A step that learns something the registry write needs returns it. The runner writes that value into the step's
+  own journal row in the statement that records the step as applied, and hands the whole set to the commit
+  (`Commit = Fn(&Transaction, &Outputs) -> Result<Output>`). This is what makes a run finished by a second process
+  the same run: that process never ran the steps, and reads what they produced out of the journal.
 - An operation is journalled before and after every step, so a process killed between two steps leaves an
   accurate account. The registry write and the journal's move to `committed` share that one transaction, so
   an operation is either wholly done or wholly not. The next command calls `lifecycle::resolve`, which

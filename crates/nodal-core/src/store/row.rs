@@ -125,6 +125,17 @@ pub(crate) fn json<T: DeserializeOwned>(
     serde_json::from_str(&text).map_err(|source| bad(table, column, source))
 }
 
+/// Read a nullable value whose stored form is JSON.
+pub(crate) fn json_opt<T: DeserializeOwned>(
+    row: &Row<'_>,
+    table: &'static str,
+    column: &'static str,
+) -> Result<Option<T>> {
+    let text: Option<String> = plain(row, table, column)?;
+    text.map(|text| serde_json::from_str(&text).map_err(|source| bad(table, column, source)))
+        .transpose()
+}
+
 /// Read an enum from the name `serde` gives it, which is the name in the schema.
 pub(crate) fn name<T: DeserializeOwned>(
     row: &Row<'_>,

@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::{self, Git, scrub};
 use crate::lifecycle::journal::Operation;
+use crate::lifecycle::step::{Output, Outputs, nothing};
 use crate::lifecycle::{Plan, Rebuild, Recovery, Step};
 use crate::model::recipe::{PackageManager, Recipe};
 use crate::model::{Base, BaseId, CommitId, Platform, ProjectId, Timestamp, WorkspaceFp};
@@ -150,7 +151,10 @@ pub fn plan(params: &Params, progress: &Arc<dyn Reporter>) -> Result<Plan> {
     let row = params.row();
     let json =
         serde_json::to_value(params).map_err(|source| Error::Render { kind: KIND, source })?;
-    let commit = Box::new(move |tx: &rusqlite::Transaction<'_>| bases::insert(tx, &row));
+    let commit = Box::new(move |tx: &rusqlite::Transaction<'_>, _: &Outputs| {
+        bases::insert(tx, &row)?;
+        Ok(nothing())
+    });
     let mut plan = Plan::new(KIND, params.base.to_string(), json, commit)
         .recovering(Recovery::Resume)
         .then(Materialise {
@@ -301,10 +305,10 @@ impl Step for Materialise {
     /// in it and most of a repository under that, and a resumed build that accepted
     /// one would install into a tree that is missing files. A rename is one step in
     /// the filesystem, so a base either has its name or has nothing.
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         if self.destination.exists() {
             self.progress.line("the base directory is already there");
-            return Ok(());
+            return Ok(nothing());
         }
         let parent = self.destination.parent().unwrap_or(Path::new("."));
         std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
@@ -323,7 +327,8 @@ impl Step for Materialise {
         // A copy inherits the source's worktree registrations, hooks path and HEAD; a
         // fresh clone inherits none of that and the scrub is a no-op on it.
         Git::open(&partial)?.scrub(&scrub::Options::default())?;
-        std::fs::rename(&partial, &self.destination).map_err(Error::io(&partial))
+        std::fs::rename(&partial, &self.destination).map_err(Error::io(&partial))?;
+        Ok(nothing())
     }
 
     fn undo(&self) -> Result<()> {
@@ -374,11 +379,12 @@ impl Step for Checkout {
         String::from("checkout")
     }
 
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         let git = Git::open(&self.destination)?;
         self.reach(&git)?;
         self.progress.line(&format!("checking out {}", self.commit));
-        git.checkout_detached(self.commit.as_str())
+        git.checkout_detached(self.commit.as_str())?;
+        Ok(nothing())
     }
 
     fn undo(&self) -> Result<()> {
@@ -407,9 +413,10 @@ impl Step for Tool {
         String::from(self.name)
     }
 
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         self.progress.line(&self.note);
-        run(&self.destination, &self.argv)
+        run(&self.destination, &self.argv)?;
+        Ok(nothing())
     }
 
     fn undo(&self) -> Result<()> {

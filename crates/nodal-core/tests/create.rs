@@ -20,7 +20,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, OnceLock};
 
 use nodal_core::lifecycle::journal::{self, State, StepRecord, StepState};
 use nodal_core::lifecycle::ops::new::{self, Params};
@@ -32,6 +31,7 @@ use nodal_core::model::{
 };
 use nodal_core::store::{Store, bases, environments, projects, units};
 use nodal_core::{Error, lifecycle};
+use serde_json::Value;
 use tempfile::TempDir;
 
 /// A project, the base built from it, a state directory, and the registry in it.
@@ -186,7 +186,7 @@ fn git(directory: &Path, args: &[&str]) -> String {
 fn the_plan_is_the_same_plan_however_it_is_built() {
     let fixture = Fixture::new();
     let params = fixture.params();
-    let built = new::plan(&params, &Arc::new(OnceLock::new())).unwrap();
+    let built = new::plan(&params).unwrap();
     assert_eq!(
         built.keys(),
         [
@@ -217,7 +217,7 @@ fn applying_the_steps_twice_changes_nothing_and_undoing_them_leaves_nothing() {
     let params = fixture.params();
     let home = params.environment.home.clone();
 
-    let plan = new::plan(&params, &Arc::new(OnceLock::new())).unwrap();
+    let plan = new::plan(&params).unwrap();
     for step in &plan.steps {
         step.apply().unwrap();
         step.apply().unwrap();
@@ -240,11 +240,11 @@ fn a_run_whose_process_is_gone_is_rebuilt_and_rolled_back_to_nothing() {
     let record = journalled(&fixture, &params);
 
     // The world as a create killed inside its sixth step would have left it.
-    let plan = new::plan(&params, &Arc::new(OnceLock::new())).unwrap();
+    let plan = new::plan(&params).unwrap();
     let store = fixture.store();
     for (position, step) in plan.steps.iter().enumerate().take(5) {
         step.apply().unwrap();
-        mark(&store, record.id, position, &step.key(), StepState::Applied);
+        mark(&store, record.id, (position, &step.key()), StepState::Applied, None);
     }
     assert!(home.join(".git").is_dir(), "the killed run left a home behind");
     drop(store);
@@ -303,23 +303,24 @@ fn journalled(fixture: &Fixture, params: &Params) -> journal::Operation {
     let id = OperationId::from_ulid(ulid::Ulid::new());
     let gone = Owner { host: Owner::current().host, pid: dead_pid() };
     let at = Timestamp::parse("2026-09-07T09:00:00Z").unwrap();
-    journal::start(
-        store.conn(),
-        id,
-        &new::plan(params, &Arc::new(OnceLock::new())).unwrap(),
-        &gone,
-        at,
-    )
-    .unwrap();
+    journal::start(store.conn(), id, &new::plan(params).unwrap(), &gone, at).unwrap();
     journal::get(store.conn(), id).unwrap().expect("the run is journalled")
 }
 
-/// Write down that a step of a run was applied.
-fn mark(store: &Store, id: OperationId, position: usize, key: &str, state: StepState) {
+/// Write down that a step of a run reached a state, with what it produced.
+fn mark(
+    store: &Store,
+    id: OperationId,
+    step: (usize, &str),
+    state: StepState,
+    output: Option<Value>,
+) {
+    let (position, key) = step;
     let record = StepRecord {
         position: u32::try_from(position).unwrap(),
         key: key.to_owned(),
         state,
+        output,
         updated_at: Timestamp::now(),
     };
     journal::mark_step(store.conn(), id, &record).unwrap();

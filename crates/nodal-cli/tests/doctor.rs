@@ -118,7 +118,8 @@ fn a_registry_a_later_nodal_wrote_is_a_note_and_not_the_end_of_the_answer() {
 
     assert!(text.contains("store:"), "the mismatch is a note: {text}");
     assert!(text.contains("schema 99"), "the note names the version the file carries: {text}");
-    assert!(text.contains("schema 6"), "and the version this binary knows: {text}");
+    let known = format!("schema {}", nodal_core::store::SCHEMA_VERSION);
+    assert!(text.contains(&known), "and the version this binary knows: {text}");
     assert!(text.contains("upgrade this nodal with:"), "{text}");
     assert!(
         text.contains(".claude/worktrees/side"),

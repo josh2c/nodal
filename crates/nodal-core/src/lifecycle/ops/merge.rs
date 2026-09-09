@@ -46,7 +46,6 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
 
 use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
@@ -54,20 +53,21 @@ use serde::{Deserialize, Serialize};
 use crate::git::{Git, Oid, merge as plumbing, refs};
 use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Ran, Runner};
 use crate::lifecycle::journal::Operation;
-use crate::lifecycle::step::{Commit, Plan, Step};
+use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::{Rebuild, marker, run};
 use crate::model::{
-    BranchName, EnvState, Environment, Epistemic, Event, EventId, EventKind, Project, RefName,
-    Timestamp, Unit, UnitStatus,
+    BranchName, EnvState, Environment, EventKind, Project, Timestamp, Unit, UnitStatus,
 };
 use crate::output::view::{Merged, StageLine};
-use crate::runtime::actor;
 use crate::store::{Store, environments, events, units};
 use crate::workspace::home;
 use crate::{Error, Result};
 
 /// What this operation is called in the journal.
 pub const KIND: &str = "merge";
+
+/// The key of the last step, whose answer both the registry write and the report read.
+const FORWARD: &str = "target.forward";
 
 /// The branch names a target is looked for under when the unit does not name one, in
 /// order. `origin/HEAD` is what a clone recorded as the project's own default branch.
@@ -219,9 +219,8 @@ pub fn merge(store: &mut Store, request: &Request) -> Result<Merged> {
     let params = &prepared.params;
     let mut ran = Vec::new();
     ran.extend(prepared.hook(Phase::PreMerge, params.home().to_path_buf())?);
-    let forwarded = Arc::new(OnceLock::new());
-    run(store, &plan(params, &forwarded)?)?;
-    let done = report(params, ran, forwarded.get().copied().unwrap_or(false))?;
+    let finished = run(store, &plan(params)?)?;
+    let done = report(params, ran, Sent::of(&finished.outputs)?.forwarded)?;
     if done.conflict.is_some() {
         return Ok(done);
     }
@@ -266,7 +265,7 @@ pub fn abort(store: &mut Store, request: &Request) -> Result<Merged> {
 ///
 /// # Errors
 /// [`Error::Render`] when the parameters cannot be written to the journal.
-pub fn plan(params: &Params, forwarded: &Arc<OnceLock<bool>>) -> Result<Plan> {
+pub fn plan(params: &Params) -> Result<Plan> {
     let value = serde_json::to_value(params)
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
     let mut plan = Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params));
@@ -288,7 +287,6 @@ pub fn plan(params: &Params, forwarded: &Arc<OnceLock<bool>>) -> Result<Plan> {
         source: params.project.root.clone(),
         branch: params.unit.branch.clone(),
         target: params.target.clone(),
-        report: Arc::clone(forwarded),
     }))
 }
 
@@ -320,48 +318,41 @@ fn rewriting(plan: Plan, params: &Params) -> Plan {
 
 /// The registry write that finishes a merge.
 ///
-/// It reads the home before it writes, and that is the one place in this operation that
-/// a rebuilt plan and a first run have to agree without being told: a merge whose rebase
-/// stopped for a conflict has not merged anything, so it must not record that it did.
-/// The state on disk is what says which of the two happened.
+/// A merge whose rebase stopped for a conflict has not merged anything and must not
+/// record that it did. The step that moves the target is the one that reads the home
+/// and finds out ([`Sent`]), and it hands the answer here through the journal, so a
+/// rebuilt plan and a first run agree without either of them asking Git twice.
+///
+/// Reading it here instead would be worse than duplicated work. This closure runs
+/// inside the registry's one `IMMEDIATE` transaction, which every `nodal` on the
+/// machine queues behind, and a `git rev-parse` inside it holds that lock across a
+/// process spawn.
+///
+/// A journal with no answer in it is treated as "stopped". That is the safe half: a
+/// unit wrongly recorded merged starts a collection clock over work that was never
+/// merged, and a unit wrongly recorded stopped is merged again by a person who looks.
 fn commit_of(params: &Params) -> Commit {
     let (unit, target) = (params.unit.clone(), params.target.branch.clone());
-    let home = params.home().to_path_buf();
-    Box::new(move |tx: &Transaction<'_>| -> Result<()> {
-        let stopped = Git::at(&home).is_rebasing().unwrap_or(false);
-        let body = if stopped {
+    Box::new(move |tx: &Transaction<'_>, outputs: &Outputs| -> Result<Output> {
+        let body = if Sent::of(outputs)?.stopped {
             format!("merge into {target} stopped for a conflict")
         } else {
             units::update_status(tx, unit.id, UnitStatus::Merged, Timestamp::now())?;
             format!("merged into {target}")
         };
-        record(tx, &unit, &target, body)
+        record(tx, &unit, &target, body)?;
+        Ok(nothing())
     })
 }
 
 /// Write the line a later `nodal explain` reads: what was merged, and where.
 fn record(tx: &Transaction<'_>, unit: &Unit, target: &str, body: String) -> Result<()> {
-    let mut references = std::collections::BTreeMap::new();
-    if let Ok(name) = RefName::parse("target") {
-        references.insert(name, target.to_owned());
-    }
-    if let Ok(name) = RefName::parse("branch") {
-        references.insert(name, unit.branch.to_string());
-    }
-    events::append(
+    events::note(
         tx,
-        &Event {
-            id: EventId::from_ulid(ulid::Ulid::new()),
-            unit: unit.id,
-            environment: None,
-            ts: Timestamp::now(),
-            actor: actor::current()?,
-            kind: EventKind::Sync,
-            epistemic: Epistemic::Observed,
-            body,
-            refs: references,
-            raw_ref: None,
-        },
+        (unit.id, None),
+        EventKind::Sync,
+        body,
+        &[("target", target.to_owned()), ("branch", unit.branch.to_string())],
     )
 }
 
@@ -377,7 +368,7 @@ impl Rebuild for Merge {
         let params: Params = serde_json::from_value(record.params.clone()).map_err(|_| {
             Error::InvalidValue { kind: "merge parameters", value: record.id.to_string() }
         })?;
-        plan(&params, &Arc::new(OnceLock::new()))
+        plan(&params)
     }
 }
 
@@ -408,11 +399,11 @@ impl Step for FetchTarget {
     /// the commit the fast-forward will be measured against, so a target that moved
     /// between the plan and this step would be rebased onto one commit and checked
     /// against another.
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         let found =
             plumbing::fetch_branch(&self.home, &self.source, &self.target.branch, &self.into)?;
         if found == self.target.oid {
-            return Ok(());
+            return Ok(nothing());
         }
         Err(Error::MergeTargetMoved {
             branch: self.target.branch.clone(),
@@ -443,9 +434,9 @@ impl Step for CommitWork {
     }
 
     /// Repeatable: a home with nothing left to commit is left alone.
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         plumbing::commit_all(&self.home, &self.message)?;
-        Ok(())
+        Ok(nothing())
     }
 
     /// Take the commit back and leave its content in the working tree, which is the
@@ -471,13 +462,14 @@ impl Step for RecordPremerge {
     /// Repeatable, and deliberately not idempotent in the other direction: a ref that
     /// is already there is left as it is. A second run of a killed merge would
     /// otherwise record the squashed tip and lose the commits the ref exists to keep.
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         let git = Git::at(&self.home);
         if git.read_ref(&self.reference)?.is_some() {
-            return Ok(());
+            return Ok(nothing());
         }
         let head = git.rev_parse("HEAD")?;
-        git.write_ref(&self.reference, &head, "nodal: before the merge squashed it")
+        git.write_ref(&self.reference, &head, "nodal: before the merge squashed it")?;
+        Ok(nothing())
     }
 
     /// Drop the ref, which is safe only in the order the runner undoes steps in: the
@@ -505,9 +497,9 @@ impl Step for Squash {
     }
 
     /// Repeatable: a branch that is already one commit is left alone.
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         plumbing::squash(&self.home, &self.onto, &self.message)?;
-        Ok(())
+        Ok(nothing())
     }
 
     /// Put the branch back at the commit the record kept.
@@ -534,9 +526,9 @@ impl Step for Rebase {
     ///
     /// A conflict is not a failure here. The step leaves the home in the middle of a
     /// rebase and answers `Ok`, and the steps after it read that state and do nothing.
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         plumbing::rebase(&self.home, &Git::at(&self.home).git_dir()?, &self.onto)?;
-        Ok(())
+        Ok(nothing())
     }
 
     /// Stop the rebase, then put the branch back where the record says it was.
@@ -544,6 +536,35 @@ impl Step for Rebase {
         let git = Git::at(&self.home);
         git.abort_rebase()?;
         restore_head(&self.home, &refs::premerge(&marker_of(&self.home)?))
+    }
+}
+
+/// What the last step of a merge found and did: the two facts the registry write and
+/// the report are built from.
+///
+/// One value rather than two outputs, because they are read together and are answers
+/// to the same question — whether this merge finished.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct Sent {
+    /// Whether the home is in the middle of a rebase, which is what says the merge
+    /// stopped for a conflict rather than finishing.
+    stopped: bool,
+    /// Whether the target branch moved.
+    forwarded: bool,
+}
+
+impl Sent {
+    /// This, as the step returns it.
+    fn value(self) -> Result<Output> {
+        serde_json::to_value(self).map_err(|source| Error::Render { kind: "merge result", source })
+    }
+
+    /// What the merge's last step recorded, or the safe answer when it recorded nothing.
+    ///
+    /// Nothing is what a run whose last step never applied leaves, and the safe reading
+    /// of that is a merge that stopped: see [`commit_of`].
+    fn of(outputs: &Outputs) -> Result<Self> {
+        Ok(outputs.read(FORWARD)?.unwrap_or(Self { stopped: true, forwarded: false }))
     }
 }
 
@@ -557,21 +578,23 @@ struct Forward {
     branch: BranchName,
     /// The target, and where it stood when the plan was made.
     target: Target,
-    /// Where the answer is left for the report.
-    report: Arc<OnceLock<bool>>,
 }
 
 impl Step for Forward {
     fn key(&self) -> String {
-        String::from("target.forward")
+        String::from(FORWARD)
     }
 
     /// Repeatable: a target already at the tip is left alone. A home that is in the
     /// middle of a rebase has nothing finished to offer, so nothing moves.
-    fn apply(&self) -> Result<()> {
+    ///
+    /// This is also the step that reads whether the rebase stopped, because it is the
+    /// last one and it has to ask anyway. Both halves of the answer go to the commit
+    /// and to the report as this step's output ([`Sent`]).
+    fn apply(&self) -> Result<Output> {
         let git = Git::at(&self.home);
         if git.is_rebasing()? {
-            return Ok(());
+            return Sent { stopped: true, forwarded: false }.value();
         }
         let tip = git.rev_parse(self.branch.as_str())?;
         // The checkout does not have the unit's commits: they were made in the home,
@@ -579,8 +602,7 @@ impl Step for Forward {
         // the branch that moves next is what keeps them.
         plumbing::fetch_objects(&self.source, &self.home, self.branch.as_str())?;
         let moved = plumbing::fast_forward(&self.source, &self.target.branch, &tip)?;
-        let _ = self.report.set(moved);
-        Ok(())
+        Sent { stopped: false, forwarded: moved }.value()
     }
 
     /// Put the target back at the commit the plan recorded. Refuses to lose a change

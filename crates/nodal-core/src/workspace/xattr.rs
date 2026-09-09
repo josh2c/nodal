@@ -88,9 +88,16 @@ mod unix {
     /// [`Error::Io`] when the names could not be listed.
     pub(super) fn names(path: &Path) -> Result<Vec<OsString>> {
         let c_path = c_path(path)?;
+        // SAFETY: `c_path` is a NUL-terminated C string that lives for the whole call. A
+        // null buffer with a size of zero asks the system for the size it needs, so the
+        // call reads the path and writes nothing.
         let size = call(path, || unsafe { list(c_path.as_ptr(), std::ptr::null_mut(), 0) })?;
         let Some(size) = size else { return Ok(Vec::new()) };
         let mut buffer = vec![0_u8; size];
+        // SAFETY: `c_path` is a NUL-terminated C string that lives for the whole call, and
+        // `buffer` is a live allocation of exactly the length passed, so the call writes
+        // inside it. An attribute list that grew since the probe returns ERANGE, which
+        // `call` reports as an error rather than a write past the end.
         let read = call(path, || unsafe {
             list(c_path.as_ptr(), buffer.as_mut_ptr().cast(), buffer.len())
         })?;
@@ -109,11 +116,18 @@ mod unix {
     /// [`Error::Io`] when the value could not be read.
     pub(super) fn read(path: &Path, name: &OsStr) -> Result<Option<Vec<u8>>> {
         let (c_path, c_name) = (c_path(path)?, c_name(path, name)?);
+        // SAFETY: `c_path` and `c_name` are NUL-terminated C strings that live for the
+        // whole call. A null buffer with a size of zero asks the system for the size it
+        // needs, so the call reads the two strings and writes nothing.
         let size = call(path, || unsafe {
             get(c_path.as_ptr(), c_name.as_ptr(), std::ptr::null_mut(), 0)
         })?;
         let Some(size) = size else { return Ok(None) };
         let mut buffer = vec![0_u8; size];
+        // SAFETY: `c_path` and `c_name` are NUL-terminated C strings that live for the
+        // whole call, and `buffer` is a live allocation of exactly the length passed, so
+        // the call writes inside it. A value that grew since the probe returns ERANGE,
+        // which `call` reports as an error rather than a write past the end.
         let read = call(path, || unsafe {
             get(c_path.as_ptr(), c_name.as_ptr(), buffer.as_mut_ptr().cast(), buffer.len())
         })?;
@@ -128,6 +142,9 @@ mod unix {
     /// [`Error::Io`] when the attribute could not be written.
     pub(super) fn write(path: &Path, name: &OsStr, value: &[u8]) -> Result<()> {
         let (c_path, c_name) = (c_path(path)?, c_name(path, name)?);
+        // SAFETY: `c_path` and `c_name` are NUL-terminated C strings that live for the
+        // whole call, and `value` is a live slice of exactly the length passed. The call
+        // reads all three and writes to none of them.
         let written =
             unsafe { set(c_path.as_ptr(), c_name.as_ptr(), value.as_ptr().cast(), value.len()) };
         if written == 0 {
@@ -153,6 +170,9 @@ mod unix {
     /// List the attribute names of a path, without following a link.
     #[cfg(target_os = "linux")]
     unsafe fn list(path: *const libc::c_char, buffer: *mut libc::c_char, size: usize) -> isize {
+        // SAFETY: the caller of this function guarantees that `path` is a NUL-terminated
+        // C string and that `buffer` holds `size` writable bytes. This function forwards
+        // both unchanged and adds no requirement of its own.
         unsafe { libc::llistxattr(path, buffer, size) }
     }
 
@@ -164,6 +184,9 @@ mod unix {
         buffer: *mut libc::c_void,
         size: usize,
     ) -> isize {
+        // SAFETY: the caller of this function guarantees that `path` and `name` are
+        // NUL-terminated C strings and that `buffer` holds `size` writable bytes. This
+        // function forwards all three unchanged and adds no requirement of its own.
         unsafe { libc::lgetxattr(path, name, buffer, size) }
     }
 
@@ -175,12 +198,18 @@ mod unix {
         value: *const libc::c_void,
         size: usize,
     ) -> libc::c_int {
+        // SAFETY: the caller of this function guarantees that `path` and `name` are
+        // NUL-terminated C strings and that `value` holds `size` readable bytes. This
+        // function forwards all three unchanged and adds no requirement of its own.
         unsafe { libc::lsetxattr(path, name, value, size, 0) }
     }
 
     /// List the attribute names of a path, without following a link.
     #[cfg(target_os = "macos")]
     unsafe fn list(path: *const libc::c_char, buffer: *mut libc::c_char, size: usize) -> isize {
+        // SAFETY: the caller of this function guarantees that `path` is a NUL-terminated
+        // C string and that `buffer` holds `size` writable bytes. This function forwards
+        // both unchanged and adds no requirement of its own.
         unsafe { libc::listxattr(path, buffer, size, libc::XATTR_NOFOLLOW) }
     }
 
@@ -192,6 +221,9 @@ mod unix {
         buffer: *mut libc::c_void,
         size: usize,
     ) -> isize {
+        // SAFETY: the caller of this function guarantees that `path` and `name` are
+        // NUL-terminated C strings and that `buffer` holds `size` writable bytes. This
+        // function forwards all three unchanged and adds no requirement of its own.
         unsafe { libc::getxattr(path, name, buffer, size, 0, libc::XATTR_NOFOLLOW) }
     }
 
@@ -203,6 +235,9 @@ mod unix {
         value: *const libc::c_void,
         size: usize,
     ) -> libc::c_int {
+        // SAFETY: the caller of this function guarantees that `path` and `name` are
+        // NUL-terminated C strings and that `value` holds `size` readable bytes. This
+        // function forwards all three unchanged and adds no requirement of its own.
         unsafe { libc::setxattr(path, name, value, size, 0, libc::XATTR_NOFOLLOW) }
     }
 }

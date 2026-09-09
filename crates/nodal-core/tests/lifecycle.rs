@@ -24,9 +24,12 @@ use std::time::{Duration, Instant};
 
 use nodal_core::lifecycle::journal::{self, State, StepRecord, StepState};
 use nodal_core::lifecycle::owner::{Liveness, Owner};
-use nodal_core::lifecycle::{Action, Plan, Rebuild, Recovery, Resolution, Step, run};
+use nodal_core::lifecycle::{
+    Action, Output, Outputs, Plan, Rebuild, Recovery, Resolution, Step, nothing, run,
+};
 use nodal_core::model::{
-    Digest, HostName, OperationId, Project, ProjectName, Slug, Timestamp, Unit, UnitId, UnitStatus,
+    Digest, HostName, Objective, OperationId, Project, ProjectName, Slug, Timestamp, Unit, UnitId,
+    UnitStatus,
 };
 use nodal_core::store::{Store, projects, units};
 use nodal_core::{Error, Result, lifecycle};
@@ -58,6 +61,10 @@ const WRITE_MARKER: &str = "write-marker";
 const START_SERVICE: &str = "start-service";
 const PARK: &str = "park";
 
+/// What the service step reports, and what the registry write is expected to record.
+/// A resumed run must record this too, having never started the service itself.
+const SERVICE_PORT: &str = "20017";
+
 /// Everything the fixture operation was built from. This is the plan's `params`: what
 /// the journal keeps, and the only thing a later process has to rebuild the plan from.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -86,8 +93,9 @@ impl Step for CreateHome {
         CREATE_HOME.to_owned()
     }
 
-    fn apply(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.0).map_err(Error::io(&self.0))
+    fn apply(&self) -> Result<Output> {
+        std::fs::create_dir_all(&self.0).map_err(Error::io(&self.0))?;
+        Ok(nothing())
     }
 
     fn undo(&self) -> Result<()> {
@@ -112,11 +120,12 @@ impl Step for WriteMarker {
         WRITE_MARKER.to_owned()
     }
 
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         let path = self.path();
         let parent = path.parent().unwrap().to_path_buf();
         std::fs::create_dir_all(&parent).map_err(Error::io(&parent))?;
-        std::fs::write(&path, self.unit.to_string()).map_err(Error::io(&path))
+        std::fs::write(&path, self.unit.to_string()).map_err(Error::io(&path))?;
+        Ok(nothing())
     }
 
     fn undo(&self) -> Result<()> {
@@ -132,16 +141,35 @@ impl Step for StartService {
         START_SERVICE.to_owned()
     }
 
-    fn apply(&self) -> Result<()> {
+    /// Produces a value the registry write needs and no rebuild of the plan can work
+    /// out for itself: which port the service came up on. The number is read from the
+    /// file when there is one, so a second apply answers what the first did.
+    fn apply(&self) -> Result<Output> {
         if let Some(parent) = self.0.parent() {
             std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
         }
-        std::fs::write(&self.0, "running").map_err(Error::io(&self.0))
+        let port = match std::fs::read_to_string(&self.0) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let port = SERVICE_PORT.to_string();
+                std::fs::write(&self.0, &port).map_err(Error::io(&self.0))?;
+                port
+            }
+            Err(error) => return Err(Error::io(&self.0)(error)),
+        };
+        Ok(json!({ "port": port }))
     }
 
     fn undo(&self) -> Result<()> {
         remove_file(&self.0)
     }
+}
+
+/// What [`StartService`] tells the registry write.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Started {
+    /// The port the service came up on.
+    port: String,
 }
 
 /// A step that fails, so the failure path can be tested without a broken machine.
@@ -152,7 +180,7 @@ impl Step for Explode {
         "explode".to_owned()
     }
 
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         Err(Error::InvalidValue { kind: "fixture step", value: String::from("boom") })
     }
 
@@ -171,7 +199,7 @@ impl Step for Park {
         PARK.to_owned()
     }
 
-    fn apply(&self) -> Result<()> {
+    fn apply(&self) -> Result<Output> {
         std::fs::write(&self.0, "parked").map_err(Error::io(&self.0))?;
         loop {
             std::thread::sleep(Duration::from_secs(3600));
@@ -206,11 +234,18 @@ fn remove_dir(path: &Path) -> Result<()> {
 /// what makes a run started by one of them resolvable by the other.
 fn plan(params: &Params) -> Plan {
     let (unit, project_root) = (params.unit, params.project.clone());
-    let commit = Box::new(move |tx: &rusqlite::Transaction<'_>| -> Result<()> {
-        let project = fixture_project(&project_root);
-        projects::insert(tx, &project)?;
-        units::insert(tx, &fixture_unit(unit, project.id))
-    });
+    // The registry write records what the service step found, which is the whole point:
+    // the process that resolves an interrupted run never ran that step and has to read
+    // the answer out of the journal.
+    let commit =
+        Box::new(move |tx: &rusqlite::Transaction<'_>, outputs: &Outputs| -> Result<Output> {
+            let project = fixture_project(&project_root);
+            projects::insert(tx, &project)?;
+            let started: Option<Started> = outputs.read(START_SERVICE)?;
+            let objective = started.map(|started| Objective::parse(&started.port).unwrap());
+            units::insert(tx, &Unit { objective, ..fixture_unit(unit, project.id) })?;
+            Ok(json!({ "wrote": "unit" }))
+        });
     let mut plan = Plan::new(KIND, String::from("fix-worker-import"), json!(params), commit)
         .then(CreateHome(params.home.clone()))
         .then(WriteMarker { home: params.home.clone(), unit: params.unit })
@@ -490,7 +525,8 @@ fn a_plan_that_finishes_writes_the_registry_once_and_leaves_no_work_to_resolve()
     let (_dir, workspace) = workspace();
     let params = workspace.params();
     let mut store = workspace.store();
-    let id = run(&mut store, &plan(&params)).unwrap();
+    let done = run(&mut store, &plan(&params)).unwrap();
+    let id = done.id;
 
     assert!(workspace.home().exists());
     assert!(workspace.service().exists());
@@ -504,7 +540,49 @@ fn a_plan_that_finishes_writes_the_registry_once_and_leaves_no_work_to_resolve()
         [CREATE_HOME, WRITE_MARKER, START_SERVICE]
     );
     assert!(steps.iter().all(|step| step.state == StepState::Applied));
+    assert_eq!(recorded_port(&store, params.unit), Some(String::from(SERVICE_PORT)));
     assert_eq!(next_invocation(&workspace), Vec::new());
+}
+
+/// What a step produced outlives the process that produced it.
+///
+/// The registry write of this plan records the port the service step reported, and the
+/// service step is the one an interrupted run here has already applied. So the process
+/// that finishes the run never starts the service, has nothing in memory to write, and
+/// must read what the first process found out of the journal. Without that column it
+/// writes a unit row a first run would not have written, which is the divergence the
+/// step-output change removes.
+#[test]
+fn a_resumed_run_commits_what_the_steps_of_the_first_run_produced() {
+    let (_dir, workspace) = workspace();
+    let params = Params { resume: true, ..workspace.params() };
+    let id = interrupt_after_every_step(&workspace, &params);
+
+    let reported = next_invocation(&workspace);
+    assert_eq!(
+        reported.first().map(|resolution| &resolution.action),
+        Some(&Action::Resumed { applied: Vec::new() }),
+        "every step was already applied, so the take-over is the registry write alone: \
+         {reported:?}"
+    );
+
+    let store = workspace.store();
+    assert_eq!(journal::get(store.conn(), id).unwrap().unwrap().state, State::Committed);
+    assert_eq!(
+        recorded_port(&store, params.unit),
+        Some(String::from(SERVICE_PORT)),
+        "the write of the run that was finished says what the run that was killed found"
+    );
+}
+
+/// The port the registry write recorded for a unit, which is what the service step
+/// reported to it.
+fn recorded_port(store: &Store, unit: UnitId) -> Option<String> {
+    units::get(store.conn(), unit)
+        .unwrap()
+        .expect("the registry write ran")
+        .objective
+        .map(|objective| objective.to_string())
 }
 
 #[test]
@@ -556,6 +634,7 @@ fn a_step_interrupted_part_way_through_is_undone_like_one_that_finished() {
         position: 0,
         key: CREATE_HOME.to_owned(),
         state: StepState::Applying,
+        output: None,
         updated_at: at(),
     };
     journal::mark_step(store.conn(), id, &record).unwrap();
@@ -651,6 +730,28 @@ fn applying_a_plans_steps_twice_changes_nothing() {
     assert!(!workspace.service().exists());
 }
 
+/// Journal a run as started, apply every step of it, and interrupt it in the gap
+/// before its registry write. The world a process killed there leaves.
+fn interrupt_after_every_step(workspace: &Workspace, params: &Params) -> OperationId {
+    let store = workspace.store();
+    let id = OperationId::from_ulid(ulid::Ulid::new());
+    let gone = Owner { host: Owner::current().host, pid: dead_pid() };
+    let plan = plan(params);
+    journal::start(store.conn(), id, &plan, &gone, at()).unwrap();
+    for (position, step) in plan.steps.iter().enumerate() {
+        let output = step.apply().unwrap();
+        let record = StepRecord {
+            position: u32::try_from(position).unwrap(),
+            key: step.key(),
+            state: StepState::Applied,
+            output: Some(output).filter(|value| !value.is_null()),
+            updated_at: at(),
+        };
+        journal::mark_step(store.conn(), id, &record).unwrap();
+    }
+    id
+}
+
 /// Journal a run as started, then interrupt it after its first step.
 fn interrupt_after_first_step(workspace: &Workspace, params: &Params) -> OperationId {
     let store = workspace.store();
@@ -663,6 +764,7 @@ fn interrupt_after_first_step(workspace: &Workspace, params: &Params) -> Operati
         position: 0,
         key: plan.steps[0].key(),
         state: StepState::Applied,
+        output: None,
         updated_at: at(),
     };
     journal::mark_step(store.conn(), id, &record).unwrap();
