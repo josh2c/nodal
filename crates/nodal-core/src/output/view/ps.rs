@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::{HostName, Timestamp};
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Table};
+use crate::output::notice::{self, Notice};
 use crate::runtime::attribute::{Attributed, Note};
 
 /// The columns of the attribution table, in the order they are printed.
@@ -34,11 +35,20 @@ impl Render for Ps {
         } else {
             doc.push(Block::table(table(&self.rows)));
         }
-        for note in &self.notes {
-            doc.push(Block::line(format!("{}: {}", note.signal.label(), note.why)));
+        for line in notice::collapse(&notices(&self.notes), "signals") {
+            doc.push(Block::line(line));
         }
         doc
     }
+}
+
+/// The notes as notices, so that one cause is one line however many signals it stopped.
+///
+/// A host with no `/proc` stops both process signals for one reason, and the reason
+/// printed twice reads as two faults. Collapsed, it is one line that still names both:
+/// which signals went quiet is the fact a person needs, and a count would lose it.
+fn notices(notes: &[Note]) -> Vec<Notice> {
+    notes.iter().map(|note| Notice::about(note.signal.label(), &note.why)).collect()
 }
 
 /// The attribution table.

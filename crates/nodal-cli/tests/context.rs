@@ -18,7 +18,8 @@
 //!    dozen busy units still compiles to a file somebody reads.
 //! 5. The pointer is one line in `CLAUDE.md` and one in `AGENTS.md`, it stays one line
 //!    however many commands run, and the home's `git status` stays empty.
-//! 6. A `CLAUDE.md` the project tracks is not written in at all.
+//! 6. A `CLAUDE.md` the project tracks is not written in at all, and it says so once
+//!    for the whole project rather than once for every unit of it.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
@@ -229,6 +230,72 @@ fn record(store: &Store, project: &Project, slug: &str, index: usize, home: &Pat
     };
     units::insert(store.conn(), &unit).unwrap();
     environments::insert(store.conn(), &environment).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// A project that tracks its own pointer files, at any number of units.
+// ---------------------------------------------------------------------------
+
+/// A project that commits its own `CLAUDE.md` and `AGENTS.md`, with `units` homes.
+///
+/// Every home of it reports the same two things a compile cannot do, so this is the
+/// fixture the notice rule is measured on: what has to stay constant is the number of
+/// lines, and what varies is the number of units.
+struct Tracking {
+    /// The temporary root, kept so it outlives the test.
+    directory: tempfile::TempDir,
+    /// The origin, which is the project root.
+    project: PathBuf,
+}
+
+impl Tracking {
+    /// Build the origin with both pointer files committed, and `units` homes of it.
+    fn new(units: usize) -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        let project_root = shapes::origin(root.join("origin"));
+        for name in context::pointer::FILES {
+            write(&project_root, name, "# The project's own rules\n");
+        }
+        git(&project_root, &["add", "--all"]);
+        git(&project_root, &["commit", "--quiet", "--message", "the project keeps its own rules"]);
+
+        let store = Store::open(root.join("state").join("registry.db")).unwrap();
+        let project = Project {
+            id: ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap(),
+            root: project_root.clone(),
+            name: ProjectName::parse("fixture").unwrap(),
+            recipe_hash: Digest::parse("0".repeat(64)).unwrap(),
+            created_at: Timestamp::now(),
+        };
+        projects::insert(store.conn(), &project).unwrap();
+        for index in 0..units {
+            let slug = format!("unit-{index:02}");
+            let home = shapes::home(&project_root, root.join("homes").join(&slug), shapes::BASE);
+            shapes::take_branch(&home, &slug);
+            record(&store, &project, &slug, index, &home);
+        }
+        drop(store);
+        Self { directory, project: project_root }
+    }
+
+    /// Run `nodal` in the project.
+    fn nodal(&self, args: &[&str]) -> Output {
+        state::nodal(&self.directory.path().join("state"))
+            .args(args)
+            .current_dir(&self.project)
+            .output()
+            .unwrap()
+    }
+}
+
+/// What the compiler said on standard error, one line per element.
+fn compiler_lines(output: &Output) -> Vec<String> {
+    text(&output.stderr)
+        .lines()
+        .filter(|line| line.starts_with("nodal: context: "))
+        .map(str::to_owned)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -574,4 +641,50 @@ fn text_of(path: &Path) -> String {
 /// Output bytes as text.
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// The reported shape: the pointer notice printed twice per unit on every invocation, so
+/// a project of eight units answered `nodal ls` with sixteen lines of the same two facts.
+///
+/// What is asserted is the property, not a number of units: one line per file the
+/// project tracks, at one unit and at eight, on the first run and on the next.
+#[test]
+fn the_pointer_notice_is_one_line_per_cause_however_many_units_report_it() {
+    for units in [1_usize, 3, 8] {
+        let fixture = Tracking::new(units);
+        let first = compiler_lines(&fixture.nodal(&["ls"]));
+        assert_eq!(
+            first.len(),
+            context::pointer::FILES.len(),
+            "{units} units printed {} lines: {first:?}",
+            first.len()
+        );
+        let again = compiler_lines(&fixture.nodal(&["ls"]));
+        assert_eq!(again, first, "the second invocation said something else: {again:?}");
+    }
+}
+
+/// The collapsed line still carries both facts a person needs: which file was left
+/// alone, and how much of the project it happened to.
+#[test]
+fn the_collapsed_notice_names_the_file_and_counts_the_units() {
+    let fixture = Tracking::new(3);
+    let lines = compiler_lines(&fixture.nodal(&["ls"]));
+    let expected =
+        "nodal: context: 3 units: the project tracks CLAUDE.md, so nodal did not write in it";
+    assert!(lines.iter().any(|line| line == expected), "{lines:?}");
+    for name in context::pointer::FILES {
+        assert!(lines.iter().any(|line| line.contains(name)), "no line names {name}: {lines:?}");
+    }
+}
+
+/// Few enough units to name are named. A person with one unit reads the sentence they
+/// have always read, and the count only appears where a count is what helps.
+#[test]
+fn a_project_of_one_unit_is_named_rather_than_counted() {
+    let fixture = Tracking::new(1);
+    let lines = compiler_lines(&fixture.nodal(&["ls"]));
+    let expected =
+        "nodal: context: unit-00: the project tracks CLAUDE.md, so nodal did not write in it";
+    assert!(lines.iter().any(|line| line == expected), "{lines:?}");
 }

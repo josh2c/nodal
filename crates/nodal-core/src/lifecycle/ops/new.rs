@@ -61,7 +61,7 @@ use crate::model::{
     BranchName, EnvId, EnvState, Environment, Epistemic, EventKind, Objective, PortBlock, PortName,
     Ports, Project, ProjectId, ProjectName, Recipe, Slug, Timestamp, Unit, UnitId, UnitStatus,
 };
-use crate::output::view::Created;
+use crate::output::view::{Arrival, Created};
 use crate::services::ports;
 use crate::store::{Store, environments, events, projects, units};
 use crate::substrate::{self, Reporter};
@@ -193,7 +193,12 @@ pub fn create(
     runner.run(Phase::PreNew, &params.project.root, &context)?;
     let done = run(store, &plan(&params)?)?;
     runner.run(Phase::PostNew, &params.environment.home, &context)?;
-    let created = Created::of(&params.unit, &read_back(store, environment)?, Timestamp::now())?;
+    let created = Created::of(
+        &params.unit,
+        &read_back(store, environment)?,
+        Arrival::Created,
+        Timestamp::now(),
+    )?;
     Ok(created.keeping(done.outputs.read(MATERIALIZE)?.unwrap_or_default()))
 }
 
@@ -641,7 +646,13 @@ pub fn ensure_project(store: &mut Store, root: &Path, recipe: &Recipe) -> Result
 }
 
 /// What a project is called: the name of the directory it is rooted at.
-fn name_of(root: &Path) -> ProjectName {
+///
+/// Public because a project can be named before it is recorded: a directory that holds
+/// a `nodal.toml` and no units yet is a project a person can be told about, and it must
+/// be told about under the name the first `nodal new` will give it
+/// ([`crate::runtime::entry::declared_at`]).
+#[must_use]
+pub fn name_of(root: &Path) -> ProjectName {
     root.file_name()
         .and_then(|name| ProjectName::parse(name.to_string_lossy()).ok())
         .unwrap_or_else(|| ProjectName::parse("project").unwrap_or_else(|_| unreachable!()))

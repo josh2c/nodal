@@ -27,10 +27,14 @@ fn version_flag_prints_name_and_version() {
     assert_eq!(stdout.trim(), format!("nodal {}", env!("CARGO_PKG_VERSION")));
 }
 
+/// The help is the answer where there is no project at all: no units recorded, and no
+/// `nodal.toml` on the disk either. The directory is named for that reason — the
+/// checkout these tests run from holds a recipe, and a bare `nodal` there now answers
+/// with the empty list.
 #[test]
 fn bare_invocation_prints_help_and_succeeds() {
     let machine = Machine::new();
-    let output = nodal(&machine).output().unwrap();
+    let output = nodal(&machine).current_dir(machine.path()).output().unwrap();
     assert!(output.status.success(), "bare invocation exited with {:?}", output.status);
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("--store"), "help is missing the global options: {stdout}");

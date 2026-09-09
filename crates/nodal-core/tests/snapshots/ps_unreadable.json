@@ -6,6 +6,10 @@
     {
       "signal": "environment",
       "why": "a process scan reads /proc, which macos does not have"
+    },
+    {
+      "signal": "cwd",
+      "why": "a process scan reads /proc, which macos does not have"
     }
   ]
 }

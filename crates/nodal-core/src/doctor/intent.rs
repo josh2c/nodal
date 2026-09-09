@@ -23,6 +23,19 @@
 //! before the move. The prompt is still what the worktree was made for. A record with
 //! no `cwd` is used as it is, because an older version of the tool wrote it.
 //!
+//! An opening prompt is not always a statement of the work. A dispatched session is
+//! given a preamble first — an identity check, a role, a list of rules — and the task
+//! comes after it. Taking the prompt verbatim made "IDENTITY CHECK: confirm you are a
+//! FRESH session" the objective of a unit whose work was something else entirely, which
+//! the first day of field use reported. [`objective`] is the reading that steps over
+//! those shapes and takes the first sentence that asks for work.
+//!
+//! What it will not do is invent. Every answer it gives is text out of the record, cut
+//! at a sentence or a line and not otherwise changed, and a prompt it can make nothing
+//! of falls back to the first line rather than to a guess. An objective read this way
+//! is marked observed wherever it is shown ([`crate::model::Epistemic`]), because it is
+//! a reading of what somebody typed and not a statement of intent.
+//!
 //! Nothing here is required. A machine with no Claude Code, a worktree another tool
 //! made, and a session file that has been cleaned up all give the same answer, which is
 //! no intent, and a report prints a row without one.
@@ -49,6 +62,77 @@ const EXTENSION: &str = "jsonl";
 /// reads; the limit is what stops a damaged file from being read to its end.
 const HEAD_LINES: usize = 64;
 
+/// How wide a heading in capitals may be and still be a label rather than a sentence.
+const SHOUT_WIDTH: usize = 32;
+
+/// The verbs a task is written with, sorted so that the search is a binary one.
+///
+/// Kept deliberately plain: what somebody types at the start of the sentence that says
+/// what to do. A verb that is missing costs the first line of the prompt, which is the
+/// answer this gave before the list existed.
+const VERBS: [&str; 60] = [
+    "add",
+    "adjust",
+    "audit",
+    "build",
+    "change",
+    "check",
+    "clean",
+    "collect",
+    "convert",
+    "correct",
+    "cover",
+    "create",
+    "cut",
+    "debug",
+    "delete",
+    "deliver",
+    "diagnose",
+    "document",
+    "draft",
+    "drop",
+    "extend",
+    "extract",
+    "finish",
+    "fix",
+    "handle",
+    "implement",
+    "improve",
+    "investigate",
+    "land",
+    "make",
+    "measure",
+    "migrate",
+    "move",
+    "name",
+    "port",
+    "prepare",
+    "prove",
+    "raise",
+    "reduce",
+    "refactor",
+    "remove",
+    "rename",
+    "repair",
+    "replace",
+    "reproduce",
+    "restore",
+    "review",
+    "rewrite",
+    "ship",
+    "simplify",
+    "split",
+    "support",
+    "teach",
+    "test",
+    "trace",
+    "update",
+    "upgrade",
+    "wire",
+    "work",
+    "write",
+];
+
 /// Where Claude Code keeps its records on this machine, or `None` when nothing says.
 #[must_use]
 pub fn config_directory() -> Option<PathBuf> {
@@ -59,7 +143,12 @@ pub fn config_directory() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(CONFIG_NAME))
 }
 
-/// The first prompt of the earliest session that ran in `worktree`, when there is one.
+/// What the earliest session that ran in `worktree` was opened to do, when a record
+/// says.
+///
+/// The opening prompt is found, and [`objective`] reads the task out of it. One
+/// definition serves every caller, so `nodal adopt` and `nodal doctor` name a worktree
+/// the same way.
 ///
 /// `config` is the directory [`config_directory`] answers with. Reading it is tolerant
 /// throughout: a missing directory, an unreadable file and a line that is not the
@@ -77,7 +166,91 @@ pub fn recover(config: &Path, worktree: &Path) -> Option<String> {
         }
     }
     found.sort_by(|left, right| left.at.cmp(&right.at).then_with(|| left.file.cmp(&right.file)));
-    found.into_iter().next().map(|started| started.prompt)
+    let started = found.into_iter().next()?;
+    let read = objective(&started.prompt);
+    (!read.is_empty()).then_some(read)
+}
+
+/// The task a prompt asks for: one line, taken out of the prompt and not written.
+///
+/// Two passes, in this order.
+///
+/// The first drops the lines that are preamble. A preamble line is one of three shapes,
+/// each of which a person can see at a glance and none of which is ever the work: a line
+/// under a heading in capitals (`IDENTITY CHECK: confirm you are a FRESH session`), a
+/// line the agent tool wrote about itself (`<system-reminder>`), and a rule or a fence
+/// that carries no sentence at all. The shapes are few on purpose. A rule that guessed
+/// more would drop the work of somebody who writes in capitals, and dropping the work
+/// is the failure that matters here.
+///
+/// The second takes the first sentence of what is left that **asks for something**: it
+/// opens with a verb in the plain form, the form an instruction is written in. That is
+/// the sentence a person would point at if asked which one is the job.
+///
+/// When neither pass finds anything — a prompt that is one long description, a prompt
+/// in a language this does not read — the answer is the first line of the prompt, which
+/// is what this did before any of it. That fallback is the honest one: it is still the
+/// record, and it is still the line a person would see first if they opened the file.
+#[must_use]
+pub fn objective(prompt: &str) -> String {
+    let body: Vec<&str> = prompt.lines().map(str::trim).filter(|line| !is_preamble(line)).collect();
+    body.iter()
+        .flat_map(|line| sentences(line))
+        .find(|sentence| asks_for_work(sentence))
+        .map_or_else(|| first_line(prompt), str::to_owned)
+}
+
+/// The first line with anything in it, which is the reading this made before the
+/// preamble rule and is what it falls back to.
+fn first_line(prompt: &str) -> String {
+    prompt.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().to_owned()
+}
+
+/// Whether a line is one of the shapes a task is never written in.
+fn is_preamble(line: &str) -> bool {
+    line.is_empty() || is_shouted_label(line) || line.starts_with('<') || is_rule(line)
+}
+
+/// Whether the line opens with a heading in capitals, as a dispatched preamble does.
+///
+/// The heading is the text before the first colon. It counts as one when it holds a
+/// letter, holds no lower-case letter, and is short enough to be a label rather than a
+/// sentence somebody wrote in capitals for emphasis.
+fn is_shouted_label(line: &str) -> bool {
+    let Some((head, _)) = line.split_once(':') else { return false };
+    let head = head.trim();
+    head.chars().count() <= SHOUT_WIDTH
+        && head.chars().any(char::is_alphabetic)
+        && !head.chars().any(char::is_lowercase)
+}
+
+/// Whether the line is a rule, a fence or another mark with no sentence in it.
+fn is_rule(line: &str) -> bool {
+    !line.chars().any(char::is_alphanumeric)
+}
+
+/// The sentences of one line, in order.
+///
+/// A sentence ends at a full stop, a question mark or an exclamation mark, or at the end
+/// of the line. The mark itself is left off, because an objective is a label and not a
+/// quotation.
+fn sentences(line: &str) -> Vec<&str> {
+    line.split(['.', '?', '!']).map(str::trim).filter(|sentence| !sentence.is_empty()).collect()
+}
+
+/// Whether a sentence asks for work: its first word is an instruction verb.
+///
+/// A list, not a rule about grammar. English gives an imperative no ending to test for,
+/// so the honest way to recognise one is to hold the verbs that a task is actually
+/// written with and to say no to everything else. Saying no costs the first line, which
+/// is a real answer; saying yes wrongly costs a unit labelled with somebody's greeting.
+fn asks_for_work(sentence: &str) -> bool {
+    let mut words = sentence.split_whitespace();
+    let Some(first) = words.next() else { return false };
+    let first: String =
+        first.chars().filter(|character| character.is_alphabetic()).collect::<String>();
+    // A verb on its own is a heading, not an instruction: "Fix" asks for nothing.
+    words.next().is_some() && VERBS.binary_search(&first.to_lowercase().as_str()).is_ok()
 }
 
 /// A session's opening prompt, and what orders it against the other sessions.
@@ -223,7 +396,12 @@ pub fn encode(directory: &Path) -> String {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{encode, recover};
+    use super::{VERBS, encode, objective, recover};
+
+    /// The prompt the field reported: a dispatch preamble, then the work.
+    const DISPATCHED: &str = "IDENTITY CHECK: confirm you are a FRESH session, not a \
+                             continuation.\nROLE: engineer.\n\nAdd a retry to the \
+                             importer and cover it with a test. Report when green.";
 
     /// A config directory holding one session file for `worktree`.
     fn sessions(worktree: &Path, files: &[(&str, &str)]) -> tempfile::TempDir {
@@ -305,6 +483,98 @@ mod tests {
         let good = prompt_line(&worktree, "2026-08-01T00:00:00Z", "Do the thing");
         let config = sessions(&worktree, &[("a.jsonl", &format!("not json\n{{}}\n{good}\n"))]);
         assert_eq!(recover(config.path(), &worktree).as_deref(), Some("Do the thing"));
+    }
+
+    // ------------------------------------------------------- the reading itself
+
+    #[test]
+    fn the_verb_list_is_sorted_so_the_search_can_be_a_binary_one() {
+        let mut sorted = VERBS;
+        sorted.sort_unstable();
+        assert_eq!(VERBS, sorted);
+    }
+
+    /// The reported defect: dispatch boilerplate became the objective.
+    #[test]
+    fn a_prompt_led_by_dispatch_boilerplate_yields_the_task_and_not_the_preamble() {
+        assert_eq!(objective(DISPATCHED), "Add a retry to the importer and cover it with a test");
+    }
+
+    #[test]
+    fn a_prompt_that_opens_with_the_task_keeps_it() {
+        assert_eq!(objective("Fix the token refresh loop"), "Fix the token refresh loop");
+    }
+
+    /// The second half of the same rule: the first sentence, not the whole paragraph.
+    #[test]
+    fn the_task_is_cut_at_its_own_sentence() {
+        let prompt = "Rename the exporter module. It has been wrong since March.";
+        assert_eq!(objective(prompt), "Rename the exporter module");
+    }
+
+    #[test]
+    fn a_prompt_with_nothing_in_it_reads_as_nothing() {
+        assert_eq!(objective(""), "");
+        assert_eq!(objective("   \n\n  \n"), "");
+    }
+
+    /// Nothing qualifies, so the answer is what it always was, cut to one line.
+    #[test]
+    fn a_prompt_that_asks_for_nothing_falls_back_to_its_first_line() {
+        let prompt = "the exporter has been slow since March\nand nobody knows why";
+        assert_eq!(objective(prompt), "the exporter has been slow since March");
+    }
+
+    /// The fallback is the record and not a guess: a preamble-only prompt answers with
+    /// the preamble rather than with an objective nobody typed.
+    #[test]
+    fn a_prompt_that_is_only_preamble_answers_with_the_record() {
+        let prompt = "IDENTITY CHECK: confirm you are a FRESH session.";
+        assert_eq!(objective(prompt), "IDENTITY CHECK: confirm you are a FRESH session.");
+    }
+
+    #[test]
+    fn a_tools_own_note_and_a_rule_are_stepped_over() {
+        let prompt = "<system-reminder>read the rules</system-reminder>\n---\nShip the exporter";
+        assert_eq!(objective(prompt), "Ship the exporter");
+    }
+
+    /// A heading in capitals is a label. A sentence in capitals is somebody shouting the
+    /// work, and it is still the work.
+    #[test]
+    fn a_long_line_in_capitals_is_the_work_and_not_a_label() {
+        let prompt = "MIGRATE THE PAYROLL EXPORTER TO THE NEW QUEUE: it is the last one";
+        assert_eq!(objective(prompt), prompt);
+    }
+
+    #[test]
+    fn a_verb_on_its_own_is_a_heading_rather_than_an_instruction() {
+        let prompt = "Fix\nthe token refresh has been failing";
+        assert_eq!(objective(prompt), "Fix");
+    }
+
+    // ------------------------------------------------------ reading the records
+
+    /// End to end, over a real session file: the boilerplate goes and the task stays.
+    #[test]
+    fn a_boilerplate_led_session_record_recovers_the_task() {
+        let worktree = PathBuf::from("/w");
+        let line = prompt_line(&worktree, "2026-09-08T09:00:00Z", DISPATCHED);
+        let config = sessions(&worktree, &[("a.jsonl", &line)]);
+        assert_eq!(
+            recover(config.path(), &worktree).as_deref(),
+            Some("Add a retry to the importer and cover it with a test")
+        );
+    }
+
+    /// A record whose prompt is white space is a record with no intent in it, not an
+    /// empty objective.
+    #[test]
+    fn a_session_record_with_an_empty_prompt_recovers_nothing() {
+        let worktree = PathBuf::from("/w");
+        let line = prompt_line(&worktree, "2026-09-08T09:00:00Z", "   ");
+        let config = sessions(&worktree, &[("a.jsonl", &line)]);
+        assert_eq!(recover(config.path(), &worktree), None);
     }
 
     #[test]

@@ -16,6 +16,10 @@
 //! The third is the other end of the promise. A root is never trashed: a reclaim gives
 //! up the registration, takes Nodal's own files back out, and leaves the directory where
 //! it always was, back to the same `git status` again.
+//!
+//! The fourth is what a person reads when it is over. An adoption closes with a sentence
+//! that says what happened to their directory, and anything listed under it is
+//! introduced by that sentence.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
@@ -183,6 +187,76 @@ fn a_nested_worktree_an_agent_made_is_adopted_with_its_intent_recovered() {
 
     let listed = stdout(&workspace.nodal(&["ls"]));
     assert!(listed.contains("(recovered)"), "the list says how it is known: {listed}");
+}
+
+/// The reported defect: the report ended with a column of env names and nothing that
+/// said what they were or what had just happened to the checkout.
+///
+/// The last line of the answer is now a sentence. Everything under it is a name that
+/// sentence counted, so a person reading the bottom of the output is never reading a
+/// list with no heading.
+#[test]
+fn an_adoption_closes_with_a_sentence_that_says_what_it_did() {
+    let workspace = Workspace::new();
+    let report = stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"]));
+
+    let lines: Vec<&str> = report.lines().filter(|line| !line.trim().is_empty()).collect();
+    let summary = lines
+        .iter()
+        .position(|line| line.contains("adopted token-refresh in place"))
+        .unwrap_or_else(|| panic!("no summary line in:\n{report}"));
+    assert!(
+        lines[summary].contains("env name"),
+        "the summary accounts for the names: {}",
+        lines[summary]
+    );
+    // Nothing after the summary that the summary did not introduce.
+    let fixture_names: Vec<&str> = lines[summary + 1..].to_vec();
+    for name in &fixture_names {
+        assert!(
+            name.trim().chars().all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()),
+            "a line under the summary that is not one of the names it counted: {name}"
+        );
+    }
+    assert!(!report.contains("no value"), "the unlabelled column is gone:\n{report}");
+}
+
+/// `--json` is not changed by the sentence: it gains the one fact it never carried,
+/// which is how the unit came to be, and keeps everything it had.
+#[test]
+fn the_json_answer_gains_how_the_unit_arrived_and_loses_nothing() {
+    let workspace = Workspace::new();
+    let output = workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place", "--json"]);
+    let document: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("--json is one document");
+    assert_eq!(document["arrival"], "adopted_in_place");
+    assert_eq!(document["unit"]["slug"], "token-refresh");
+    assert!(document["missing"].is_array(), "the names are still there");
+    assert!(document["now"].is_string());
+}
+
+/// The reported defect: a session opened with dispatch boilerplate gave the unit
+/// "IDENTITY CHECK: confirm you are a FRESH session" as its objective.
+///
+/// The preamble is stepped over and the task is what the unit carries, still marked
+/// recovered — and still text out of the record, so a person who opens the session file
+/// finds the sentence they are shown.
+#[test]
+fn a_session_opened_with_dispatch_boilerplate_recovers_the_task_and_not_the_preamble() {
+    let workspace = Workspace::new();
+    let boilerplate = format!(
+        "IDENTITY CHECK: confirm you are a FRESH session, not a continuation.\n\n{PROMPT}."
+    );
+    workspace.session(&workspace.nested(), &boilerplate);
+
+    let report = stdout(&workspace.nodal(&["adopt", NESTED_BRANCH, "--in-place"]));
+    assert!(report.contains(PROMPT), "the task is the objective: {report}");
+    assert!(!report.contains("IDENTITY CHECK"), "the preamble is not: {report}");
+
+    let unit = workspace.unit("token-refresh");
+    assert_eq!(unit.objective.as_ref().map(ToString::to_string).as_deref(), Some(PROMPT));
+    assert_eq!(unit.objective_epistemic, Some(Epistemic::Observed), "still recovered, not stated");
+    assert!(boilerplate.contains(PROMPT), "and every word of it came out of the record");
 }
 
 /// A prompt a person typed wins over one read out of a record, because a statement of

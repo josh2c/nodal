@@ -14,6 +14,7 @@
 
 pub mod human;
 pub mod json;
+pub mod notice;
 pub mod view;
 pub mod watch;
 
@@ -22,6 +23,7 @@ use std::io::Write;
 use serde::Serialize;
 
 pub use crate::output::human::{Block, Doc, Field, Table};
+pub use crate::output::notice::Notice;
 
 /// Which rendering a command was asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

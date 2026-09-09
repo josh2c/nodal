@@ -1,2 +1,2 @@
   laptop: nothing attributed to a unit
-  env: a process scan reads /proc, which macos does not have
+  env, cwd: a process scan reads /proc, which macos does not have

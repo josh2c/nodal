@@ -24,7 +24,7 @@ pub mod status;
 pub mod unit;
 
 pub use crate::output::view::base::{BaseBuild, BaseList, BaseRow, BaseSweep};
-pub use crate::output::view::created::Created;
+pub use crate::output::view::created::{Arrival, Created};
 pub use crate::output::view::doctor::{Checkout, Doctor, Finding, Kind, Note};
 pub use crate::output::view::done::Done;
 pub use crate::output::view::env::{EnvReport, VarLine};

@@ -21,18 +21,20 @@ use std::time::Duration;
 
 use nodal_core::git::integration::{Divergence, Integration, Reason};
 use nodal_core::model::{
-    Actor, ActorKind, ActorName, Base, BaseId, BranchName, CommitId, Digest, EnvId, EnvState,
-    Epistemic, Event, EventId, EventKind, FingerprintPart, HostName, Objective, Platform, PortName,
-    Ports, ProjectId, ProjectName, Slug, Timestamp, UnitId, UnitStatus, WorkspaceFp,
+    Actor, ActorKind, ActorName, Base, BaseId, BranchName, CommitId, Digest, EnvId, EnvName,
+    EnvState, Epistemic, Event, EventId, EventKind, FingerprintPart, HostName, Missing, Objective,
+    Platform, PortName, Ports, ProjectId, ProjectName, Slug, Timestamp, UnitId, UnitStatus, Want,
+    WorkspaceFp,
 };
 use nodal_core::output::view::{
-    BaseList, BaseRow, Done, EnvLine, EventLog, Exclusion, Explained, Freshness, InitReport,
-    Invalidation, Origin, PortLine, Ps, Remote, Running, SharedResource, Status, ToolSessions,
-    UnitDetail, UnitList, UnitRow, WorkTree,
+    Arrival, BaseList, BaseRow, Created, Done, EnvLine, EventLog, Exclusion, Explained, Freshness,
+    InitReport, Invalidation, Origin, PortLine, Ps, Remote, Running, SharedResource, Status,
+    ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
 };
 use nodal_core::output::{Format, Render, render, watch};
 use nodal_core::recipe::gap::{Gap, GapKey};
 use nodal_core::runtime::attribute::{Attributed, Confidence, Kind, Note, Source};
+use nodal_core::workspace::tracked::Kept;
 
 // ---------------------------------------------------------------- fixed values
 
@@ -380,6 +382,72 @@ fn an_empty_list_says_so_rather_than_printing_a_bare_heading() {
     both("unit_list_empty", &list);
 }
 
+/// The two declared names a fixture home has no value for.
+fn missing() -> Vec<Missing> {
+    [("DATABASE_URL", Want::RequiredLocal), ("STRIPE_KEY", Want::Secret)]
+        .into_iter()
+        .map(|(name, want)| Missing { name: EnvName::parse(name).expect("an env name"), want })
+        .collect()
+}
+
+/// What `nodal new` answers with: the fields of the home it made, and no sentence under
+/// them. Nothing here happened to a directory of the person's.
+///
+/// The kept row is on this one because a create is the form that copies: a default
+/// exclusion row that yielded to what the project tracks is a fact about a copy, and an
+/// adoption in place makes none.
+#[test]
+fn a_created_unit_renders_both_ways() {
+    let unit = units().swap_remove(0);
+    let created = Created {
+        now: now(),
+        arrival: Arrival::Created,
+        unit,
+        missing: missing(),
+        kept: vec![Kept {
+            path: PathBuf::from("test-results"),
+            reason: String::from("test output"),
+        }],
+    };
+    both("created", &created);
+}
+
+/// What `nodal adopt --in-place` answers with.
+///
+/// The report closes with a sentence, because the field reported that it closed with a
+/// list of env names under a column heading and nothing that said what the list was or
+/// what had just happened to the checkout.
+#[test]
+fn an_adopted_unit_closes_with_a_summary_of_what_happened() {
+    let mut unit = units().swap_remove(1);
+    if let Some(environment) = unit.environment.as_mut() {
+        environment.managed = false;
+        environment.home = PathBuf::from("/home/j/code/app/.claude/worktrees/payroll");
+    }
+    let adopted = Created {
+        now: now(),
+        arrival: Arrival::AdoptedInPlace,
+        unit,
+        missing: missing(),
+        kept: Vec::new(),
+    };
+    both("created_adopted", &adopted);
+}
+
+/// An adoption that had every value it needed still says what it did, and says that.
+#[test]
+fn an_adoption_with_nothing_missing_still_says_what_it_did() {
+    let unit = units().swap_remove(0);
+    let adopted = Created {
+        now: now(),
+        arrival: Arrival::Adopted,
+        unit,
+        missing: Vec::new(),
+        kept: Vec::new(),
+    };
+    both("created_adopted_complete", &adopted);
+}
+
 #[test]
 fn unit_detail_renders_both_ways() {
     let detail = UnitDetail { now: now(), unit: units().swap_remove(0), history: history() };
@@ -587,6 +655,12 @@ fn every_snapshot_file_is_claimed_by_a_test() {
     let expected: Vec<&str> = vec![
         "base_list.json",
         "base_list.txt",
+        "created.json",
+        "created.txt",
+        "created_adopted.json",
+        "created_adopted.txt",
+        "created_adopted_complete.json",
+        "created_adopted_complete.txt",
         "done.json",
         "done.txt",
         "event_log.json",
@@ -676,16 +750,19 @@ fn ps_renders_both_ways() {
 
 /// A machine where every signal is there and nothing is running is not the same answer
 /// as a machine that could not be read, and the two must not print alike.
+///
+/// The notes are the two a mac really reports: one process table cannot be read, and
+/// both signals that needed it went quiet for that one reason. The JSON keeps both,
+/// because a tool asks which signals it lost. The page prints the reason once and names
+/// them, because a person reading the same sentence twice reads it as two faults.
 #[test]
 fn a_ps_with_nothing_running_says_so_and_still_prints_its_notes() {
+    let why = "a process scan reads /proc, which macos does not have";
     let quiet = Ps {
         now: now(),
         host: HostName::parse("laptop").expect("a host name"),
         rows: Vec::new(),
-        notes: vec![Note::new(
-            Source::Environment,
-            "a process scan reads /proc, which macos does not have",
-        )],
+        notes: vec![Note::new(Source::Environment, why), Note::new(Source::Cwd, why)],
     };
     both("ps_unreadable", &quiet);
 }

@@ -5,8 +5,9 @@ use std::process::ExitCode;
 
 use clap::Args;
 use nodal_core::context::survey::{self, Snapshot};
+use nodal_core::lifecycle::ops::new;
 use nodal_core::lifecycle::states;
-use nodal_core::model::{Project, Timestamp};
+use nodal_core::model::{Project, ProjectName, Timestamp};
 use nodal_core::output::view::UnitList;
 use nodal_core::output::{self, Format};
 use nodal_core::runtime::{entry, ls, processes};
@@ -61,6 +62,28 @@ impl Listing {
     }
 }
 
+/// What a directory turned out to be.
+///
+/// Three answers, not two. A directory Nodal has recorded units of is a [`Self::Listed`]
+/// project. A directory that holds a `nodal.toml` and no units is [`Self::Declared`]:
+/// `nodal init` has been run there and `nodal new` has not, which is the ordinary state
+/// of a project in the minute after it was set up. Everything else is
+/// [`Self::Unknown`].
+///
+/// The middle answer exists because the field reported the wrong one being given for
+/// it. `nodal ls` straight after `nodal init` said the directory was in no project
+/// Nodal knows and told the person to run `nodal new` — while the recipe that command
+/// had just written lay in the directory. The registry was right and the sentence was
+/// not: nothing had been recorded, but the project was there to see.
+pub enum Reading {
+    /// A project the registry holds units of.
+    Listed(Box<Listing>),
+    /// A project declared by a `nodal.toml` and holding no units yet.
+    Declared(ProjectName),
+    /// A directory that is no project of Nodal's.
+    Unknown,
+}
+
 impl Ls {
     /// Print every unit of the project the directory is in.
     ///
@@ -75,30 +98,60 @@ impl Ls {
     /// records, and whatever the registry or Git reported.
     pub fn run(&self, store: &Store) -> nodal_core::Result<ExitCode> {
         let path = self.directory()?;
-        let mut listing = self.read(store)?.ok_or(nodal_core::Error::ProjectNotFound { path })?;
-        listing.settle(store);
-        listing.compile();
-        self.print(&listing.list)
+        match self.read(store)? {
+            Reading::Listed(mut listing) => {
+                listing.settle(store);
+                listing.compile();
+                self.print(&listing.list)
+            }
+            Reading::Declared(project) => self.print(&Self::nothing_yet(project)),
+            Reading::Unknown => Err(nodal_core::Error::ProjectNotFound { path }),
+        }
     }
 
-    /// The reading, or `None` when the directory is in no project Nodal records.
+    /// The list of a project that has no units: the empty list, and the command that
+    /// makes the first one.
     ///
-    /// A bare `nodal` is both the list and the first command a person ever types, so it
-    /// falls back to the help rather than to an error. The fallback is the caller's,
-    /// because the help belongs to the argument parser.
+    /// It is the ordinary empty list and not a special answer, so a tool reading
+    /// `--json` gets the shape it gets everywhere else, with no units in it. The line
+    /// under it is a note for the same reason every other note is one: it is something
+    /// the person should read, and it is not a row.
+    pub(crate) fn nothing_yet(project: ProjectName) -> UnitList {
+        UnitList {
+            project,
+            now: Timestamp::now(),
+            units: Vec::new(),
+            notes: vec![String::from(
+                "nodal.toml is here and no unit has been made yet; run `nodal new \"<what \
+                 the work is>\"` to make the first",
+            )],
+        }
+    }
+
+    /// What the directory is: a recorded project, a declared one, or neither.
+    ///
+    /// The registry is asked first, because a project with units is recorded whatever
+    /// else is on the disk. The disk is asked second, and only about one file.
+    ///
+    /// A bare `nodal` is both the list and the first command a person ever types, so a
+    /// directory that is neither falls back to the help rather than to an error. That
+    /// fallback is the caller's, because the help belongs to the argument parser.
     ///
     /// # Errors
     ///
     /// Whatever the registry or Git reported.
-    pub fn read(&self, store: &Store) -> nodal_core::Result<Option<Listing>> {
+    pub fn read(&self, store: &Store) -> nodal_core::Result<Reading> {
         let path = self.directory()?;
         let Some(project) = entry::project_at(store.conn(), &path)? else {
-            return Ok(None);
+            return Ok(match entry::declared_at(&path) {
+                Some(root) => Reading::Declared(new::name_of(&root)),
+                None => Reading::Unknown,
+            });
         };
         let now = Timestamp::now();
         let surveyed = survey::project(store.conn(), &project)?;
         let list = ls::rows(&surveyed, &processes::Live, &project, now);
-        Ok(Some(Listing { project, surveyed, list }))
+        Ok(Reading::Listed(Box::new(Listing { project, surveyed, list })))
     }
 
     /// Render the list in the format the arguments asked for.
