@@ -70,8 +70,12 @@ impl Doctor {
         let cwd = std::env::current_dir().map_err(nodal_core::Error::io("<cwd>"))?;
         let state_dir = home::directory()?;
         let sessions = doctor::intent::config_directory();
-        let sharing = Sharing::probe(&state_dir);
-        let machine = doctor::Machine::here(&cwd, &state_dir, sessions.as_deref(), &sharing);
+        // Read, never probe: a probe writes a file into the state root, and this
+        // command writes nothing to the machine it reports on. The record is taken when
+        // the state root is made, and again when `nodal init --reprobe` asks.
+        let sharing = Sharing::read(&state_dir);
+        let machine =
+            doctor::Machine::here(&cwd, &state_dir, sessions.as_deref(), sharing.as_ref());
         let mut answer = doctor::survey(&source, &docker::Cli, &machine, Timestamp::now())?;
         answer.branches.expand = self.all;
         output::write(&answer, Format::from_json_flag(self.json), &mut std::io::stdout())?;

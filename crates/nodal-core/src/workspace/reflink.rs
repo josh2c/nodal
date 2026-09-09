@@ -12,9 +12,9 @@
 //!
 //! Whether a filesystem shares blocks is not a property of its name. XFS shares them
 //! only when `mkfs.xfs -m reflink=1` made it, which no mount option and no `statfs`
-//! field reports. So this backend answers [`shares_blocks`] by trying one clone in the
-//! directory it is asked about, and the table below only names filesystems for a
-//! person to read.
+//! field reports. So this backend answers by trying one clone in the directory it is
+//! asked about ([`super::sharing`] is what asks, once), and the table below only names
+//! filesystems for a person to read.
 //!
 //! Where one file still cannot be cloned once the walk has started, the bytes are
 //! copied instead and the report counts it. A home that is partly shared is still a
@@ -37,33 +37,25 @@ impl Materializer for ReflinkCopy {
         "reflink"
     }
 
-    fn supports(&self, path: &Path) -> bool {
-        super::nearest(path).is_some_and(shares_blocks)
+    fn available(&self) -> bool {
+        platform::AVAILABLE
+    }
+
+    fn shares_blocks(&self) -> bool {
+        true
+    }
+
+    fn filesystem(&self, directory: &Path) -> Option<String> {
+        platform::filesystem(directory)
+    }
+
+    fn clone_probe(&self, source: &Path, destination: &Path) -> std::io::Result<()> {
+        platform::clone_probe(source, destination)
     }
 
     fn clone_tree(&self, source: &Path, destination: &Path, exclude: &Excludes) -> Result<Report> {
         materialize(source, destination, exclude, Ops { file: put })
     }
-}
-
-/// What the filesystem holding `directory` is called, and `None` where this platform
-/// cannot say. `directory` must exist; [`super::nearest`] is how a caller gets one.
-///
-/// The name is for a person to read. It decides nothing: a magic number says which
-/// filesystem this is, never whether that filesystem was formatted or mounted so that
-/// it shares blocks. [`shares_blocks`] is the only thing that answers that.
-#[must_use]
-pub fn filesystem(directory: &Path) -> Option<String> {
-    platform::filesystem(directory)
-}
-
-/// Whether `FICLONE` works in `directory`, tried once rather than looked up.
-///
-/// `directory` must exist. Away from Linux there is no `FICLONE` and the answer is no
-/// without a file being written.
-#[must_use]
-pub fn shares_blocks(directory: &Path) -> bool {
-    platform::AVAILABLE && super::probe_sharing(directory, platform::clone_probe)
 }
 
 /// Clone one file, or copy its bytes where the kernel will not clone it.
@@ -177,15 +169,20 @@ mod platform {
 
     /// The one call a probe makes: `FICLONE` and nothing else. It copies no bytes,
     /// because a probe asks whether blocks can be shared and a copy is not an answer.
-    pub(super) fn clone_probe(source: &Path, destination: &Path) -> bool {
-        let Ok(from) = File::open(source) else { return false };
-        let Ok(to) = OpenOptions::new().write(true).create_new(true).mode(0o600).open(destination)
-        else {
-            return false;
-        };
+    ///
+    /// # Errors
+    /// The kernel's own error, unchanged. The caller reads `EOPNOTSUPP`, `EXDEV` and
+    /// `EINVAL` as "this filesystem does not share blocks", and every other errno as
+    /// "the question could not be put".
+    pub(super) fn clone_probe(source: &Path, destination: &Path) -> std::io::Result<()> {
+        let from = File::open(source)?;
+        let to = OpenOptions::new().write(true).create_new(true).mode(0o600).open(destination)?;
         // SAFETY: both descriptors are open for the length of the call, and `FICLONE`
         // reads the second argument as a descriptor and writes nothing back.
-        unsafe { libc::ioctl(to.as_raw_fd(), FICLONE, from.as_raw_fd()) == 0 }
+        if unsafe { libc::ioctl(to.as_raw_fd(), FICLONE, from.as_raw_fd()) } == 0 {
+            return Ok(());
+        }
+        Err(std::io::Error::last_os_error())
     }
 }
 
@@ -208,8 +205,11 @@ mod platform {
     }
 
     /// Never called, because [`AVAILABLE`] is false.
-    pub(super) fn clone_probe(_source: &Path, _destination: &Path) -> bool {
-        false
+    ///
+    /// # Errors
+    /// Always, because this platform has no call that shares blocks.
+    pub(super) fn clone_probe(_source: &Path, _destination: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
     }
 
     /// Refuse, because [`AVAILABLE`] said so.

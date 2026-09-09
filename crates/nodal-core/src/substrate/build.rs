@@ -35,6 +35,7 @@ use crate::model::{Base, BaseId, CommitId, Platform, ProjectId, Timestamp, Works
 use crate::store::bases;
 use crate::substrate::progress::Reporter;
 use crate::workspace::remove::tree as remove_tree;
+use crate::workspace::sharing::Sharing;
 use crate::workspace::{self, Excludes};
 use crate::{Error, Result};
 
@@ -112,6 +113,11 @@ pub struct Params {
     pub commit: CommitId,
     /// Where it goes.
     pub destination: PathBuf,
+    /// The state root the destination is under. It is what the recorded answer about
+    /// sharing file blocks is keyed by, and a build reads that record rather than
+    /// asking a filesystem: a probe here would write into the project's bases
+    /// directory, and a build rebuilt after a crash would write there again.
+    pub state_dir: PathBuf,
     /// Where its content comes from.
     pub origin: Origin,
     /// The checkout that asked for it, read only for objects the remote does not have.
@@ -162,6 +168,7 @@ pub fn plan(params: &Params, progress: &Arc<dyn Reporter>) -> Result<Plan> {
             destination: params.destination.clone(),
             origin: params.origin.clone(),
             excludes: params.excludes.clone(),
+            state_dir: params.state_dir.clone(),
             progress: Arc::clone(progress),
         })
         .then(Checkout {
@@ -229,6 +236,8 @@ struct Materialise {
     origin: Origin,
     /// Paths a copy leaves out.
     excludes: Vec<PathBuf>,
+    /// The state root, which is what the recorded sharing answer is about.
+    state_dir: PathBuf,
     /// Where the step says what it is doing.
     progress: Arc<dyn Reporter>,
 }
@@ -278,8 +287,7 @@ impl Materialise {
     /// is missing a path the commit tracks is dirty before a unit is cloned from it, so
     /// a default row the commit tracks yields and the copy says which one.
     fn copy(&self, source: &Path, into: &Path) -> Result<()> {
-        let parent = self.destination.parent().unwrap_or(Path::new("."));
-        let backend = workspace::select_backend(parent);
+        let backend = workspace::select_backend(&Sharing::ensure(&self.state_dir));
         let mut excludes = Excludes::with_recipe(&self.excludes);
         for kept in workspace::tracked::enforce(source, &mut excludes)? {
             self.progress.line(&kept.to_string());

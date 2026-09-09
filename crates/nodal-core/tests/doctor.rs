@@ -136,8 +136,8 @@ impl Planted {
         cwd: &Path,
         state: &Path,
     ) -> Doctor {
-        let sharing = Sharing::probe(state);
-        let machine = Machine::here(cwd, state, Some(&self.sessions), &sharing);
+        let sharing = Sharing::read(state);
+        let machine = Machine::here(cwd, state, Some(&self.sessions), sharing.as_ref());
         doctor::survey(registry, docker, &machine, Timestamp::now())
             .expect("a machine doctor can read")
     }

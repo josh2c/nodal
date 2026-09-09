@@ -79,6 +79,7 @@ use crate::services::ports;
 use crate::store::{Store, environments, events, units};
 use crate::substrate::{self, Reporter};
 use crate::workspace::relocate::{self, InvalidateCache};
+use crate::workspace::sharing::Sharing;
 use crate::workspace::{Excludes, home, select_backend};
 use crate::{Error, Result};
 
@@ -325,7 +326,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
                 base: base_path.clone(),
                 home: home.clone(),
                 excludes: Excludes::with_recipe(&params.recipe.base.exclude),
-                backend: select_backend(&params.state_dir),
+                backend: select_backend(&Sharing::ensure(&params.state_dir)),
             })
             .then(new::Relocate {
                 home: home.clone(),

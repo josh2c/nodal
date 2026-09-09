@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use nodal_core::recipe;
+use nodal_core::workspace::sharing::Sharing;
 use nodal_core::workspace::{Excludes, select_backend, tracked};
 use nodal_safety::git;
 
@@ -100,7 +101,9 @@ fn the_copy_the_refusal_prevents_is_dirty_at_birth() {
     let list = Excludes::with_recipe(&[PathBuf::from(TRACKED)]);
 
     assert!(status(&root).is_empty(), "the fixture repository is clean before it is copied");
-    select_backend(elsewhere.path()).clone_tree(&root, &home, &list).expect("a copy");
+    select_backend(&Sharing::ensure(elsewhere.path()))
+        .clone_tree(&root, &home, &list)
+        .expect("a copy");
 
     let dirty = status(&home);
     assert!(
@@ -156,7 +159,9 @@ fn the_copy_a_yielded_row_allows_is_clean_at_birth() {
     let mut list = Excludes::default_list();
     tracked::enforce(&root, &mut list).expect("a default row yields");
 
-    select_backend(elsewhere.path()).clone_tree(&root, &home, &list).expect("a copy");
+    select_backend(&Sharing::ensure(elsewhere.path()))
+        .clone_tree(&root, &home, &list)
+        .expect("a copy");
 
     assert!(home.join(TRACKED).is_dir(), "the tracked directory was left out of the copy");
     assert!(!home.join(UNTRACKED).exists(), "an untracked heavy directory was carried in");

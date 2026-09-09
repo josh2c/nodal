@@ -21,8 +21,23 @@ impl Materializer for CopyFallback {
         "copy"
     }
 
-    fn supports(&self, _path: &Path) -> bool {
+    fn available(&self) -> bool {
         true
+    }
+
+    fn shares_blocks(&self) -> bool {
+        false
+    }
+
+    fn filesystem(&self, _directory: &Path) -> Option<String> {
+        None
+    }
+
+    fn clone_probe(&self, _source: &Path, _destination: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "the fallback backend copies bytes and shares no blocks",
+        ))
     }
 
     fn clone_tree(&self, source: &Path, destination: &Path, exclude: &Excludes) -> Result<Report> {

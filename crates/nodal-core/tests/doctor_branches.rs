@@ -188,7 +188,8 @@ fn report(branches: Branches, expand: bool) -> String {
     let doctor = nodal_core::output::view::doctor::Doctor {
         now: Timestamp::now(),
         checkout: None,
-        sharing: Sharing::probe(&std::env::temp_dir()),
+        state_root: std::env::temp_dir(),
+        sharing: Sharing::read(&std::env::temp_dir()),
         here: Vec::new(),
         elsewhere: Vec::new(),
         branches: Branches { expand, ..branches },

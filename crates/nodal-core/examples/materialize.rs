@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use nodal_core::workspace::{Excludes, Report, select_backend};
+use nodal_core::workspace::sharing::Sharing;
+use nodal_core::workspace::{Excludes, Report, home, select_backend};
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -36,8 +37,13 @@ fn main() -> ExitCode {
 }
 
 /// Clone the tree and render what happened as one JSON object.
+///
+/// The backend comes from the answer recorded for the state root, exactly as it does
+/// for `nodal new`. The example asks no filesystem anything: a probe writes a file, and
+/// this example is run over a person's own checkout. `NODAL_HOME` is what points the
+/// state root at the filesystem being measured.
 fn clone(source: &Path, destination: &Path, recipe: &[PathBuf]) -> nodal_core::Result<String> {
-    let backend = select_backend(destination);
+    let backend = select_backend(&Sharing::ensure(&home::directory()?));
     let exclude = Excludes::with_recipe(recipe);
     let started = Instant::now();
     let report = backend.clone_tree(source, destination, &exclude)?;

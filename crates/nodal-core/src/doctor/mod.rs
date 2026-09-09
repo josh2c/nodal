@@ -259,20 +259,24 @@ pub struct Machine<'a> {
     pub state_dir: &'a Path,
     /// Where Claude Code keeps its session records, when this machine has them.
     pub sessions: Option<&'a Path>,
-    /// What the filesystem under the state root can do, probed by the caller
-    /// ([`Sharing::probe`]) so that the report stays a function of its inputs.
-    pub sharing: &'a Sharing,
+    /// What Nodal recorded about sharing file blocks under the state root, and `None`
+    /// where nothing recorded anything.
+    ///
+    /// The caller reads the record ([`Sharing::read`]); it never probes. A probe writes
+    /// a file into the state root, and doctor writes nothing to the machine it reports
+    /// on. A machine with no record is reported as having none.
+    pub sharing: Option<&'a Sharing>,
 }
 
 impl<'a> Machine<'a> {
     /// This machine: the two paths the caller knows, the session records where the
-    /// tool that writes them puts them, and what the state root can do.
+    /// tool that writes them puts them, and the recorded answer about the state root.
     #[must_use]
     pub fn here(
         cwd: &'a Path,
         state_dir: &'a Path,
         sessions: Option<&'a Path>,
-        sharing: &'a Sharing,
+        sharing: Option<&'a Sharing>,
     ) -> Self {
         Self { cwd, state_dir, sessions, sharing }
     }
@@ -322,7 +326,8 @@ pub fn survey(
     Ok(Doctor {
         now,
         checkout: checkout_of(&scope),
-        sharing: machine.sharing.clone(),
+        state_root: machine.state_dir.to_path_buf(),
+        sharing: machine.sharing.cloned(),
         here,
         elsewhere,
         branches,

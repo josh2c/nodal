@@ -38,31 +38,25 @@ impl Materializer for ApfsClonefile {
         "clonefile"
     }
 
-    fn supports(&self, path: &Path) -> bool {
-        super::nearest(path).is_some_and(shares_blocks)
+    fn available(&self) -> bool {
+        platform::AVAILABLE
+    }
+
+    fn shares_blocks(&self) -> bool {
+        true
+    }
+
+    fn filesystem(&self, directory: &Path) -> Option<String> {
+        platform::filesystem(directory)
+    }
+
+    fn clone_probe(&self, source: &Path, destination: &Path) -> std::io::Result<()> {
+        platform::clone_probe(source, destination)
     }
 
     fn clone_tree(&self, source: &Path, destination: &Path, exclude: &Excludes) -> Result<Report> {
         materialize(source, destination, exclude, Ops { file: put })
     }
-}
-
-/// What the filesystem holding `directory` is called, and `None` where this platform
-/// cannot say. `directory` must exist; [`super::nearest`] is how a caller gets one.
-///
-/// The name is for a person to read. It decides nothing; [`shares_blocks`] does.
-#[must_use]
-pub fn filesystem(directory: &Path) -> Option<String> {
-    platform::filesystem(directory)
-}
-
-/// Whether `clonefile` works in `directory`, tried once rather than looked up.
-///
-/// `directory` must exist. Away from macOS there is no `clonefile` and the answer is
-/// no without a file being written.
-#[must_use]
-pub fn shares_blocks(directory: &Path) -> bool {
-    platform::AVAILABLE && super::probe_sharing(directory, platform::clone_probe)
 }
 
 /// Clone one file.
@@ -132,8 +126,17 @@ mod platform {
     }
 
     /// The one call a probe makes: `clonefile` and nothing else.
-    pub(super) fn clone_probe(source: &Path, destination: &Path) -> bool {
-        clone(source, destination).is_ok()
+    ///
+    /// # Errors
+    /// The operating system's own error, unchanged, so that the caller can tell a
+    /// volume that will not clone from one it could not write in.
+    pub(super) fn clone_probe(source: &Path, destination: &Path) -> std::io::Result<()> {
+        let (from, to) = (c_path(source)?, c_path(destination)?);
+        // SAFETY: both paths are NUL-terminated C strings that outlive the call.
+        if unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), CLONE_NOFOLLOW) } == 0 {
+            return Ok(());
+        }
+        Err(std::io::Error::last_os_error())
     }
 
     /// A path as the C string `clonefile` takes.
@@ -162,8 +165,11 @@ mod platform {
     }
 
     /// Never called, because [`AVAILABLE`] is false.
-    pub(super) fn clone_probe(_source: &Path, _destination: &Path) -> bool {
-        false
+    ///
+    /// # Errors
+    /// Always, because this platform has no call that shares blocks.
+    pub(super) fn clone_probe(_source: &Path, _destination: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
     }
 
     /// Refuse, because [`AVAILABLE`] said so.

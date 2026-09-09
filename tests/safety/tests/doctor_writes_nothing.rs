@@ -22,6 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use nodal_core::store::{Store, environments, projects, units};
+use nodal_core::workspace::sharing;
 use nodal_safety::InState as _;
 use nodal_safety::{Machine, Snapshot, git, stdout};
 
@@ -68,6 +69,61 @@ fn rows(machine: &Machine) -> String {
         }
     }
     lines.join("\n")
+}
+
+/// The change time of a directory, which moves when anything is made in it or removed
+/// from it. A file written and removed again leaves no trace a snapshot can see, so this
+/// is the reading that catches a probe.
+fn changed_at(path: &Path) -> i64 {
+    use std::os::unix::fs::MetadataExt as _;
+
+    std::fs::metadata(path).expect("a readable directory").ctime()
+}
+
+/// Doctor asks no filesystem whether it shares blocks. It reads the record that was
+/// written when the state root was made, so nothing is written into any directory it
+/// reports on.
+///
+/// A snapshot cannot see this. A probe writes a file, clones it and removes both, and a
+/// reading taken afterwards finds the directory holding exactly what it held before. The
+/// change time is what the write moved, and the project's bases directory is where the
+/// probe used to go: nothing else writes there while a report is being made.
+#[test]
+fn doctor_asks_no_directory_whether_it_shares_blocks() {
+    let machine = Machine::new();
+    machine.unit("worker-import");
+    let watched =
+        [machine.state.clone(), machine.segment("b").expect("the bases"), machine.source.clone()];
+
+    let before: Vec<i64> = watched.iter().map(|path| changed_at(path)).collect();
+    let report = stdout(&machine.nodal(&["doctor"]));
+    assert!(!report.is_empty(), "doctor reported nothing");
+
+    for (path, was) in watched.iter().zip(before) {
+        assert_eq!(changed_at(path), was, "doctor wrote in {}", path.display());
+    }
+    let left: Vec<_> = std::fs::read_dir(&machine.state)
+        .expect("a readable state root")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".nodal-sharing-"))
+        .collect();
+    assert!(left.is_empty(), "doctor left a probe's files in the state root: {left:?}");
+}
+
+/// A machine whose state root holds no record is told so, and doctor still writes
+/// nothing. Taking the record is a write, and this is the command that may not.
+#[test]
+fn doctor_says_when_nothing_recorded_whether_the_state_root_shares_blocks() {
+    let machine = Machine::new();
+    machine.unit("worker-import");
+    let record = sharing::path_in(&machine.state);
+    assert!(record.is_file(), "making the state root recorded no answer");
+    std::fs::remove_file(&record).expect("a record that can be removed");
+
+    let report = stdout(&machine.nodal(&["doctor"]));
+    assert!(report.contains("has not recorded"), "doctor claimed an answer nobody took:\n{report}");
+    assert!(!record.exists(), "doctor took a record, which is a write");
 }
 
 #[test]
