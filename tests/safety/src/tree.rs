@@ -161,18 +161,18 @@ fn difference(path: &Path, before: &Entry, after: &Entry) -> String {
 /// Copy everything under `from` into `to`, content for content.
 ///
 /// A test that needs a second copy of the fixture project uses this rather than
-/// [`std::fs::copy`], because the fixture plants the shape a real base has: a file at
-/// mode `0444` carrying an extended attribute (`nodal_fixture::read_only`), and Git
-/// writes every loose object read-only besides. macOS copies a file's metadata with its
-/// content — mode, extended attributes and ACL — so the platform refuses a copy of that
-/// crossing, and Linux, which copies the bytes and the mode and nothing else, does not.
-/// A suite that used the standard copy therefore passed on one runner and failed on the
-/// other.
+/// [`std::fs::copy`]. That call carries the source's mode, and the fixture plants the
+/// shape a real base has: a file at mode `0444` (`nodal_fixture::read_only`), and Git
+/// writes every loose object read-only besides. A tree copied that way is one a test
+/// cannot go on writing in.
 ///
 /// What is copied is what a test is asking for: the shape of the tree and the bytes in
 /// it. Directories are made writable, files are written fresh, and a symbolic link is
 /// made again as a link rather than followed. No mode and no attribute of the source
 /// crosses over, which is the whole reason this can be relied on.
+///
+/// A path that goes between the listing and the read is left out rather than raised
+/// ([`gone_or`]). A tree holding a `.git` is a tree something else may be writing.
 ///
 /// # Panics
 ///
@@ -191,19 +191,36 @@ fn copy_into(from: &Path, to: &Path) {
         let entry = entry.unwrap_or_else(|error| panic!("{}: {error}", from.display()));
         let path = entry.path();
         let target = to.join(entry.file_name());
-        let kind = entry.file_type().unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let Some(kind) = gone_or(&path, entry.file_type()) else { continue };
         if kind.is_symlink() {
-            let points_at = std::fs::read_link(&path)
-                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            let Some(points_at) = gone_or(&path, std::fs::read_link(&path)) else { continue };
             link(&points_at, &target);
         } else if kind.is_dir() {
             copy_into(&path, &target);
         } else {
-            let content =
-                std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            let Some(content) = gone_or(&path, std::fs::read(&path)) else { continue };
             std::fs::write(&target, content)
                 .unwrap_or_else(|error| panic!("{}: {error}", target.display()));
         }
+    }
+}
+
+/// What was read, or nothing when the path went between the listing and the read.
+///
+/// A directory is listed before it is read, and a repository is a directory something
+/// else may be writing: Git's own background pass writes a lock file in `.git/objects`
+/// and removes it again, and so does a `nodal` command running in the same tree. A file
+/// that is no longer there is not part of the tree a test asked to copy. Every other
+/// failure is a machine a property cannot be asserted on, and is raised.
+///
+/// # Panics
+///
+/// Naming the path, for any failure but the path having gone.
+fn gone_or<T>(path: &Path, read: std::io::Result<T>) -> Option<T> {
+    match read {
+        Ok(value) => Some(value),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => panic!("{}: {error}", path.display()),
     }
 }
 
@@ -272,6 +289,8 @@ const fn mode_of(_path: &Path) -> u32 {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "a fixture that cannot be built fails the test")]
 
+    use std::path::Path;
+
     use nodal_fixture::read_only;
     use tempfile::TempDir;
 
@@ -298,6 +317,16 @@ mod tests {
             read_only::LOCKED_CONTENTS,
             "the file the platform refuses to copy did not arrive"
         );
+    }
+
+    /// A repository is a directory something else may be writing. What has gone by the
+    /// time the copier reaches it is left out; anything else is the machine failing and
+    /// is raised.
+    #[test]
+    fn a_path_that_went_between_the_listing_and_the_read_is_left_out() {
+        let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        assert!(super::gone_or(Path::new("/nowhere"), Err::<(), _>(missing)).is_none());
+        assert_eq!(super::gone_or(Path::new("/nowhere"), Ok(7)), Some(7));
     }
 
     /// The copy is content and shape, never the source's mode. A tree copied out of a
