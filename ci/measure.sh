@@ -8,7 +8,9 @@
 # have a stated ceiling, and it reports the rest.
 #
 # Every ceiling below states the value measured when the ceiling was written. The
-# baselines were measured on this workspace at commit 2cbbad5 on 2026-09-08. Where an
+# baselines were measured on this workspace at commit 2cbbad5 on 2026-09-08, except the
+# two git-process ceilings, which were measured again at 29d4838 on the same day after
+# the layout of an ordinary checkout stopped costing two invocations per home. Where an
 # earlier measurement of the same quantity used a different definition and read a
 # different number, both are stated and the ceiling follows this script, because this
 # script is what CI runs and its definitions are the ones stated here.
@@ -44,7 +46,7 @@ report() {
     printf '  %-44s %10s %-14s %s\n' "$1" "$2" "$3" "${4:-}"
 }
 
-echo "measure: structural ceilings, baselines measured at 2cbbad5 on 2026-09-08"
+echo "measure: structural ceilings; every row states the baseline its ceiling was set from"
 echo
 
 # ---------------------------------------------------------------------------
@@ -102,16 +104,21 @@ SHIM
 
     per_row=$(awk -v total="$list_total" -v units="$units" 'BEGIN { printf "%.1f", total / units }')
 
-    # Baseline 9.0 per row at 10 units on the shapes fixture, where every unit sits at
-    # the base tip. A project whose units are ahead of the base measured 11.0 per row,
-    # so the ceiling holds both shapes. Ratchet to 10 after the pointer change, then 8.
-    gate "git processes per list row" "$per_row" 12 "per row" \
-        "baseline 9.0 at 10 units; ratchet to 10, then 8"
+    # Baseline 7.0 per row at 10 units on the shapes fixture, where every unit sits at
+    # the base tip. It was 9.0 until the layout of an ordinary checkout was read from the
+    # shape on disk rather than from two `git rev-parse` invocations per home. A project
+    # whose units are ahead of the base pays one more call for the verdict and one for
+    # the tree it compares against, which the ceiling holds. The three history readings
+    # a memory needs are what is left; batching them is the next ratchet.
+    gate "git processes per list row" "$per_row" 8 "per row" \
+        "baseline 7.0 at 10 units; ratchet to 5 when the history readings are batched"
 
-    # Baseline 112 for the tenth create, which is 40 for the create itself and 9 for
-    # each of the nine units already there. Ratchet to 90.
-    gate "git processes, create number $units" "$last_create" 120 "processes" \
-        "baseline 112 at the tenth create; ratchet to 90"
+    # Baseline 86 for the tenth create: 16 for the create itself, and 7 for each of the
+    # ten units the memory is then written for, the new one included. It was 112, and the
+    # 26 that went are the two layout invocations, paid once per home surveyed and three
+    # more times by the create itself. Ratchet to 70 with the list row.
+    gate "git processes, create number $units" "$last_create" 90 "processes" \
+        "baseline 86 at the tenth create; ratchet to 70 with the list row"
 
     report "git processes, list total" "$list_total" "processes" "over $units units"
 fi
