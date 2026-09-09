@@ -337,6 +337,69 @@ fn a_worktree_removal_removes_nothing_and_the_unit_outlives_the_session() {
 }
 
 #[test]
+fn the_home_the_provider_answers_with_carries_the_hooks_the_session_will_run() {
+    let project = initialised_project();
+    let home = PathBuf::from(
+        succeed(&project.hook("worktree-create", &create_payload(&project.source)))
+            .trim()
+            .to_owned(),
+    );
+
+    let carried = home.join(".claude").join("settings.json");
+    assert!(
+        carried.is_file(),
+        "the session moves into {home:?}, and the file that declares the hooks stayed behind"
+    );
+    let installed = std::fs::read_to_string(&carried).unwrap();
+    assert_eq!(
+        installed,
+        std::fs::read_to_string(project.settings()).unwrap(),
+        "the home was given hooks the project does not declare"
+    );
+}
+
+#[test]
+fn the_memory_answers_the_command_the_home_itself_declares() {
+    let project = initialised_project();
+    let home = PathBuf::from(
+        succeed(&project.hook("worktree-create", &create_payload(&project.source)))
+            .trim()
+            .to_owned(),
+    );
+    let installed = std::fs::read_to_string(home.join(".claude").join("settings.json")).unwrap();
+    let command = observer_command(&installed, "session-start");
+
+    let payload = start_payload(&home, "a-session");
+    let answered = run_hook(&project, &command, &home, &payload);
+
+    assert!(answered.status.success(), "{}", stderr(&answered));
+    assert!(
+        String::from_utf8(answered.stdout).unwrap().contains("say-hi-6fac65"),
+        "the command the home declares injected no memory"
+    );
+}
+
+#[test]
+fn a_session_that_took_a_home_is_recorded_as_attached_to_its_unit() {
+    let project = initialised_project();
+    succeed(&project.hook("worktree-create", &create_payload(&project.source)));
+
+    let store = project.store();
+    let unit = project.unit_row();
+    let attached = events::list_for_unit(store.conn(), unit.id)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.kind == EventKind::Attached)
+        .expect("the session that made the unit was not recorded as attached to it");
+    assert_eq!(attached.actor.name.as_str(), "claude-code");
+    assert_eq!(
+        attached.epistemic,
+        Epistemic::Observed,
+        "nodal watched the hook make this home, so the record is not a claim"
+    );
+}
+
+#[test]
 fn the_settings_file_names_no_directory_of_this_machine() {
     let project = initialised_project();
     let installed = std::fs::read_to_string(project.settings()).unwrap();
@@ -387,6 +450,43 @@ fn a_second_install_writes_the_same_file_and_a_removal_takes_the_file_it_made() 
         "a settings file that held nothing but nodal's hooks was left behind"
     );
     assert!(!project.source.join(".claude").exists(), "the directory nodal made was left behind");
+}
+
+/// Run one installed command in `directory`, with `payload` on standard input.
+///
+/// It is the same shell Claude Code runs a hook in, and the command is read out of the
+/// settings file rather than written by the test, so what is exercised is what a
+/// session would really run.
+fn run_hook(project: &Workspace, command: &str, directory: &Path, payload: &str) -> Output {
+    let mut child = Command::new(SHELL)
+        .arg("-c")
+        .arg(command)
+        .current_dir(directory)
+        .env("PATH", on_path(project))
+        .env("NODAL_HOME", &project.state)
+        .env("HOME", project.root().join("home"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// A `PATH` holding one directory, in which the binary under test is called `nodal`.
+///
+/// The installed command is `command -v nodal`, so a test that runs the real command
+/// has to make the real name findable. Nothing else is on the path: what the command
+/// finds is the build being tested and no other Nodal on the machine.
+fn on_path(project: &Workspace) -> PathBuf {
+    let directory = project.root().join("bin");
+    std::fs::create_dir_all(&directory).unwrap();
+    let link = directory.join("nodal");
+    if !link.exists() {
+        std::os::unix::fs::symlink(state::BINARY, &link).unwrap();
+    }
+    directory
 }
 
 /// Run one of the installed commands on a machine that has no `nodal`.

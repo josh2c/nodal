@@ -9,10 +9,27 @@
 //!
 //! | event | what it is | what Nodal does |
 //! |---|---|---|
-//! | `WorktreeCreate` | provider: Claude requires an absolute path on standard output and ends the session without one | makes the unit and prints its home |
+//! | `WorktreeCreate` | provider: Claude requires an absolute path on standard output and ends the session without one | makes the unit, records the attachment, carries the hooks into the home, and prints it |
 //! | `SessionStart` | observer, fires more than once per session | prints the unit's memory, which Claude injects as context |
 //! | `Stop` | observer | records the session's last message as a stated handoff |
 //! | `WorktreeRemove` | observer that was never seen to fire | records a detach if it ever does, and removes nothing |
+//!
+//! # Where the observers are declared, and why the provider carries them
+//!
+//! Claude Code reads `.claude/settings.json` from the directory a session works in.
+//! `nodal init` writes the four hooks into the project, and `WorktreeCreate` then moves
+//! the session out of the project and into a unit home. The file that declared the hook
+//! which made the home is no longer in scope, and `.claude/` is a directory a project
+//! ignores, so no clone carries it either.
+//!
+//! This was measured on 2026-09-08, headless and interactive, and it is the same in
+//! both: with `--worktree`, `WorktreeCreate` fires in the project root and no observer
+//! fires anywhere. Without `--worktree`, all three observers fire. So the provider
+//! writes the same four hooks into the home it answers with ([`carry_hooks`]), and the
+//! observers fire for the rest of the session.
+//!
+//! The attachment is not left to an observer. `WorktreeCreate` is the one hook that is
+//! certain to have run, so it is what records that Claude Code took the home.
 //!
 //! # The provider contract
 //!
@@ -56,7 +73,8 @@ use crate::adapters::settings::{self, Hook};
 use crate::lifecycle::marker;
 use crate::lifecycle::ops::new::{self, Request};
 use crate::model::{
-    Actor, ActorKind, ActorName, Epistemic, Event, EventId, EventKind, Objective, Slug, Timestamp,
+    Actor, ActorKind, ActorName, EnvId, Epistemic, Event, EventId, EventKind, Objective, Slug,
+    Timestamp, UnitId,
 };
 use crate::store::{Store, environments, events};
 use crate::{Error, Result, context, recipe, substrate};
@@ -234,11 +252,12 @@ pub fn worktree_create(store: &mut Store, payload: &Payload) -> Result<PathBuf> 
     };
     let progress: Arc<dyn substrate::Reporter> = substrate::sink(false);
     let report = new::create(store, &request, &progress)?;
-    let home = report
+    let unit = report.unit.id;
+    let environment = report
         .unit
         .environment
-        .map(|environment| environment.home)
         .ok_or_else(|| refusal(String::from("the unit was made without a home")))?;
+    let home = environment.home;
     match context::refresh_at(store.conn(), &home) {
         Ok(report) => context::report_notes(&report),
         Err(error) => eprintln!("nodal: context: {error}"),
@@ -246,7 +265,63 @@ pub fn worktree_create(store: &mut Store, payload: &Payload) -> Result<PathBuf> 
     if !acceptable(&home) {
         return Err(refusal(format!("{} is not a path Claude Code would accept", home.display())));
     }
+    carry_hooks(&home);
+    record(
+        store,
+        (unit, Some(environment.id)),
+        EventKind::Attached,
+        Epistemic::Observed,
+        String::from("claude code took this home for a session"),
+    )?;
     Ok(home)
+}
+
+/// Put the four hooks in the home the session is about to work in.
+///
+/// The hooks are declared in the project's `.claude/settings.json`, and Claude Code
+/// reads that file from the directory a session works in. `WorktreeCreate` moves the
+/// session out of the project and into the home, so the file that declared the hook
+/// which made the home is no longer in scope. Without this the three observers never
+/// fire: no memory is injected and no handoff is recorded. It was measured that way.
+///
+/// The file cannot arrive with the home instead. `.claude/` is a directory a project
+/// ignores, so it is in neither the base nor the clone made from it.
+///
+/// A failure here is a line on standard error and nothing more. The session has a home
+/// and must start; it starts without the memory it would have had.
+fn carry_hooks(home: &Path) {
+    if let Err(error) = install(home) {
+        eprintln!("nodal: the session's own hooks could not be written: {error}");
+    }
+}
+
+/// Append one event about this home, with Claude Code named as the actor.
+///
+/// `subject` is the unit and the environment the event is about, as
+/// [`crate::store::events::note`] takes them.
+fn record(
+    store: &Store,
+    subject: (UnitId, Option<EnvId>),
+    kind: EventKind,
+    epistemic: Epistemic,
+    body: String,
+) -> Result<()> {
+    let (unit, environment) = subject;
+    events::append(
+        store.conn(),
+        &Event {
+            id: EventId::from_ulid(ulid::Ulid::new()),
+            unit,
+            environment,
+            ts: Timestamp::now(),
+            actor: claude()?,
+            kind,
+            epistemic,
+            body,
+            refs: std::collections::BTreeMap::new(),
+            raw_ref: None,
+        },
+    )
 }
 
 /// `SessionStart`: the memory of the unit the session is starting in, when it is in one.
@@ -289,23 +364,12 @@ pub fn session_start(payload: &Payload) -> Result<Option<String>> {
 pub fn stop(store: &Store, payload: &Payload) -> Result<bool> {
     let Some(unit) = marker::read(&payload.cwd)? else { return Ok(false) };
     let Some(message) = last_message(payload) else { return Ok(false) };
-    let environment = environments::latest_for_unit(store.conn(), unit)?
-        .filter(|environment| environment.home == payload.cwd)
-        .map(|environment| environment.id);
-    events::append(
-        store.conn(),
-        &Event {
-            id: EventId::from_ulid(ulid::Ulid::new()),
-            unit,
-            environment,
-            ts: Timestamp::now(),
-            actor: claude()?,
-            kind: EventKind::Handoff,
-            epistemic: Epistemic::Stated,
-            body: message,
-            refs: std::collections::BTreeMap::new(),
-            raw_ref: None,
-        },
+    record(
+        store,
+        (unit, environment_at(store, unit, &payload.cwd)?),
+        EventKind::Handoff,
+        Epistemic::Stated,
+        message,
     )?;
     Ok(true)
 }
@@ -322,25 +386,21 @@ pub fn stop(store: &Store, payload: &Payload) -> Result<bool> {
 /// [`Error::Store`] when the event cannot be written.
 pub fn worktree_remove(store: &Store, payload: &Payload) -> Result<bool> {
     let Some(unit) = marker::read(&payload.cwd)? else { return Ok(false) };
-    let environment = environments::latest_for_unit(store.conn(), unit)?
-        .filter(|environment| environment.home == payload.cwd)
-        .map(|environment| environment.id);
-    events::append(
-        store.conn(),
-        &Event {
-            id: EventId::from_ulid(ulid::Ulid::new()),
-            unit,
-            environment,
-            ts: Timestamp::now(),
-            actor: claude()?,
-            kind: EventKind::Detached,
-            epistemic: Epistemic::Observed,
-            body: String::from("claude code let go of this home; the unit was left as it is"),
-            refs: std::collections::BTreeMap::new(),
-            raw_ref: None,
-        },
+    record(
+        store,
+        (unit, environment_at(store, unit, &payload.cwd)?),
+        EventKind::Detached,
+        Epistemic::Observed,
+        String::from("claude code let go of this home; the unit was left as it is"),
     )?;
     Ok(true)
+}
+
+/// The environment of `unit` whose home is `cwd`, when the two agree.
+fn environment_at(store: &Store, unit: UnitId, cwd: &Path) -> Result<Option<EnvId>> {
+    Ok(environments::latest_for_unit(store.conn(), unit)?
+        .filter(|environment| environment.home == cwd)
+        .map(|environment| environment.id))
 }
 
 /// The project the payload is about. An empty `cwd` means the directory Nodal is in.

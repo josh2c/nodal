@@ -506,7 +506,7 @@ the same either way.** A clone of it on a machine with no Nodal does nothing.
 
 | event | kind | what Nodal does |
 |---|---|---|
-| `WorktreeCreate` | provider | `nodal claude-code worktree-create` makes the unit and prints its home |
+| `WorktreeCreate` | provider | `nodal claude-code worktree-create` makes the unit, records the attachment, and prints its home |
 | `SessionStart` | observer | prints the unit's memory, which Claude injects as context |
 | `Stop` | observer | records the session's last message as a stated handoff |
 | `WorktreeRemove` | observer | records a detach if it ever fires, and removes nothing |
@@ -525,6 +525,17 @@ and a machine with no `nodal`, and the second is handled by the command text its
 `SessionStart` fires more than once for one session, with a different session identifier each time, and the
 create payload carries a third. **Nothing correlates by session identifier.** The `cwd` a payload carries
 is what names the unit, and a unit home says whose it is in `.nodal/id`.
+
+**The provider carries the hooks into the home it answers with.** Claude Code reads `.claude/settings.json`
+from the directory a session works in. `WorktreeCreate` moves the session out of the project and into a
+unit home, so the file that declared the hooks is no longer in scope, and `.claude/` is a directory a
+project ignores, so no clone carries it. Without this step the three observers never fire in a session
+started with `--worktree`: no memory is injected and no handoff is recorded. This was measured on
+2026-09-08, headless and interactive, and it was the same in both.
+
+`WorktreeCreate` also records one `attached` event, `observed`, with `claude-code` as the actor. It is the
+one hook that is certain to have run, so the record of a session taking a home does not depend on an
+observer firing.
 
 `WorktreeRemove` fired in **none** of four measured session lifecycles, and nothing depends on it. Cleanup
 is Nodal's own lifecycle: the unit persists when the session ends, `nodal ls` shows it, and `done`, `merge`,
