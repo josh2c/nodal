@@ -25,6 +25,7 @@ use crate::substrate::build::{self, Origin, Params};
 use crate::substrate::lru;
 use crate::substrate::progress::Reporter;
 use crate::workspace::home;
+use crate::workspace::remove::tree as remove_tree;
 use crate::{Error, Result};
 
 /// What a base is wanted for.
@@ -295,10 +296,9 @@ pub fn gc(
 }
 
 /// Remove a directory if it is there.
+///
+/// A base is a git checkout with its dependencies installed, so it is full of content
+/// written read-only, and evicting one uses the removal that opens what it must.
 fn remove(path: &Path) -> Result<()> {
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(Error::io(path)(error)),
-    }
+    remove_tree(path)
 }

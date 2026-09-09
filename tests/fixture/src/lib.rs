@@ -19,6 +19,10 @@
 //! gets read would drift into a shape no real project has; this one installs, builds,
 //! lints, type-checks and tests, so the commands the recipe names are commands that run.
 //!
+//! It also carries content that denies every write and holds an extended attribute,
+//! because a base is mostly such content and the two together are what a copier gets
+//! wrong. [`read_only`] states why the fixture has to put the attribute there itself.
+//!
 //! It is generated rather than committed so that every file states what it contributes,
 //! and so that a source which starts reading a new file fails here rather than silently
 //! finding nothing. No value in it is a secret: the credential names are declared with
@@ -27,6 +31,7 @@
 #![allow(dead_code, reason = "each caller uses the part of the fixture it needs")]
 
 mod files;
+pub mod read_only;
 pub mod shapes;
 
 use std::path::{Path, PathBuf};
@@ -36,9 +41,10 @@ type File = (&'static str, &'static str);
 
 /// Every file the fixture is made of, in the order they are written.
 ///
-/// This table is the fixture. A file that is not here is not written, so adding one to
-/// [`files`] and forgetting it here fails the tests that read it rather than quietly
-/// changing what is inferred.
+/// This table is the fixture's readable files. A file that is not here is not written,
+/// so adding one to [`files`] and forgetting it here fails the tests that read it rather
+/// than quietly changing what is inferred. [`read_only::plant`] adds the one file that
+/// is not a matter of contents, and [`paths`] names it too.
 const FILES: &[File] = &[
     // The root: what names the package manager, the monorepo, the cache and the pins.
     ("pnpm-lock.yaml", files::LOCKFILE),
@@ -115,8 +121,10 @@ pub fn try_write(root: impl AsRef<Path>) -> Result<PathBuf, Error> {
             std::fs::create_dir_all(parent)
                 .map_err(|source| Error { path: parent.to_path_buf(), source })?;
         }
+        read_only::open(&path);
         std::fs::write(&path, contents).map_err(|source| Error { path, source })?;
     }
+    read_only::plant(&root);
     Ok(root)
 }
 
@@ -134,10 +142,10 @@ pub fn write(root: impl AsRef<Path>) -> PathBuf {
     }
 }
 
-/// Every path the fixture writes, relative to its root.
+/// Every path the fixture writes, relative to its root, the read-only one included.
 #[must_use]
 pub fn paths() -> Vec<&'static str> {
-    FILES.iter().map(|(relative, _)| *relative).collect()
+    FILES.iter().map(|(relative, _)| *relative).chain([read_only::LOCKED]).collect()
 }
 
 #[cfg(test)]
@@ -167,6 +175,31 @@ mod tests {
     #[test]
     fn the_fixture_carries_the_recipe_that_answers_its_one_judgement() {
         assert!(paths().contains(&RECIPE), "the recipe is not in the table");
+    }
+
+    #[test]
+    fn the_fixture_carries_a_read_only_file_that_holds_an_extended_attribute() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let root = try_write(directory.path()).expect("the fixture writes");
+        let locked = root.join(super::read_only::LOCKED);
+
+        let mode = {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::symlink_metadata(&locked).unwrap().permissions().mode() & 0o777
+        };
+        assert_eq!(mode, 0o444, "the planted file grants a write to somebody");
+        assert!(
+            std::fs::OpenOptions::new().write(true).open(&locked).is_err(),
+            "a file nothing may write can be opened for writing"
+        );
+        if super::read_only::mark(&locked) {
+            assert!(
+                super::read_only::marked(&locked),
+                "this filesystem holds extended attributes but the fixture put none on"
+            );
+        } else {
+            eprintln!("this filesystem holds no extended attributes; only the mode is proved");
+        }
     }
 
     #[test]

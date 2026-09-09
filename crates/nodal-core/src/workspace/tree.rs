@@ -17,6 +17,10 @@
 //!   becoming many.
 //! * Directory permissions and times are applied after everything inside them, because
 //!   writing a child changes both.
+//! * A file's mode is the last thing put on it, because most of a base is content its
+//!   own owner may not write and every other piece of metadata is written through the
+//!   mode. A copy given the mode of its source first is a copy the copier cannot
+//!   finish.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry as Slot;
@@ -28,6 +32,10 @@ use super::exclude::Excludes;
 use super::walk::{Entry, Kind, walk};
 use super::{Report, meta, xattr};
 use crate::error::{Error, Result};
+
+/// The permission a mode grants its owner to write the file. A mode without it is
+/// what makes a copy something its own maker cannot finish.
+const OWNER_WRITE: u32 = 0o200;
 
 /// What one call of a backend put across.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,8 +147,8 @@ impl<'a> Copier<'a> {
         let put = (self.ops.file)(from, to, &entry.metadata)?;
         self.count(put);
         self.report.files += 1;
+        self.report.attributes += attributes(entry, from, to)?;
         meta::permissions(to, &entry.metadata)?;
-        self.report.attributes += xattr::copy(from, to)?;
         meta::times(to, &entry.metadata)
     }
 
@@ -180,6 +188,29 @@ impl<'a> Copier<'a> {
         xattr::copy(self.source, self.destination)?;
         meta::permissions(self.destination, &root)
     }
+}
+
+/// Carry the extended attributes of one file onto its copy, and report how many.
+///
+/// Writing an attribute needs the write permission the mode grants, and the owner is
+/// not excused from the rule. A base is full of files that grant it to nobody: git
+/// writes every loose object and every pack file `0444`, and macOS puts an attribute of
+/// its own on each of them. The copy of such a file is read-only as soon as it exists,
+/// because a backend gives it the mode of its source, so an attribute written
+/// afterwards is refused and the whole clone stops.
+///
+/// So the copy is opened for as long as its attributes are written, and
+/// [`Copier::put_file`] gives it the mode of its source afterwards, which is the last
+/// thing done to it. A source that already grants its owner a write needs none of this
+/// and pays nothing for it.
+///
+/// # Errors
+/// [`Error::Io`] when the copy could not be opened, or an attribute not read or written.
+fn attributes(entry: &Entry, from: &Path, to: &Path) -> Result<usize> {
+    if entry.metadata.mode() & OWNER_WRITE == 0 {
+        meta::writable(to, &entry.metadata)?;
+    }
+    xattr::copy(from, to)
 }
 
 /// Refuse a destination a clone cannot be made at.

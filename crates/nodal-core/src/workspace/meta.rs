@@ -24,6 +24,25 @@ pub fn permissions(destination: &Path, metadata: &Metadata) -> Result<()> {
     std::fs::set_permissions(destination, metadata.permissions()).map_err(Error::io(destination))
 }
 
+/// Open `destination` for writing, keeping every other permission `metadata` records.
+///
+/// This is not the mode the copy keeps. It is the mode it needs while the rest of its
+/// metadata is put on it, because a file whose mode denies its owner a write takes no
+/// extended attribute, and [`permissions`] gives it the mode of its source immediately
+/// afterwards.
+///
+/// # Errors
+/// [`Error::Io`] when the mode could not be set.
+pub fn writable(destination: &Path, metadata: &Metadata) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    /// The permission a mode grants its owner to write the file.
+    const OWNER_WRITE: u32 = 0o200;
+
+    let opened = std::fs::Permissions::from_mode(metadata.mode() | OWNER_WRITE);
+    std::fs::set_permissions(destination, opened).map_err(Error::io(destination))
+}
+
 /// Give `destination` the access and modification times `metadata` records, without
 /// following a link.
 ///

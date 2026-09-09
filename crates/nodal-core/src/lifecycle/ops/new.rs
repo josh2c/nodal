@@ -66,7 +66,7 @@ use crate::services::ports;
 use crate::store::{Store, environments, events, projects, units};
 use crate::substrate::{self, Reporter};
 use crate::workspace::relocate::{CacheRelocator, InvalidateCache};
-use crate::workspace::{Excludes, Materializer, home, relocate, select_backend, tracked};
+use crate::workspace::{Excludes, Materializer, home, relocate, remove, select_backend, tracked};
 use crate::{Error, Result};
 
 /// What this operation is called in the journal.
@@ -589,14 +589,15 @@ impl Step for Activate {
     }
 }
 
-/// Remove a directory and everything under it. Removing one that is not there is not a
-/// failure: an undo runs against a world it may never have changed.
+/// Remove a directory and everything under it, whatever it holds.
+///
+/// A home is a copy of a base, so it carries the read-only content the base had, and a
+/// removal that stopped at a read-only directory would leave the very thing this undo
+/// exists to take away. [`remove::tree`] opens what it must; removing a directory that
+/// is not there is not a failure, because an undo runs against a world it may never
+/// have changed.
 pub(super) fn remove_tree(path: &Path) -> Result<()> {
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(Error::io(path)(error)),
-    }
+    remove::tree(path)
 }
 
 // ---------------------------------------------------------------------------
