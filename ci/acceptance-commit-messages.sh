@@ -16,7 +16,10 @@
 #   - `Session:` glued under a prose line fails, for the key that ends in `-session`;
 #   - `Generated with` in prose fails, behind the emoji a harness puts before it;
 #   - a merge a person made locally, with a trailer in its body, fails: this is the case
-#     that pays for reading merges, so the check does not pass `--no-merges`;
+#     that pays for reading merges, which is what a pull request is read without;
+#   - `--no-merges` skips that same merge, and skips a merge of GitHub's shape whose
+#     one-line body is a pull request title git reads as a trailer: this is what a push
+#     to `main` is read with, because every merge that reaches `main` is GitHub's;
 #   - a subject that reads like a trailer passes, because the subject is never read;
 #   - a range whose left side is all zeros exits 0 on a push and says so;
 #   - a range whose left side names no commit exits 2 on a pull request.
@@ -56,9 +59,10 @@ fail() {
     exit 1
 }
 
-# Run the check over the fixture branch and hold both output and exit status.
+# Run the check over the fixture branch and hold both output and exit status. Any flags
+# the check takes stand before the range.
 run() {
-    if output=$("$script" "$base..HEAD" 2>&1); then status=0; else status=$?; fi
+    if output=$("$script" "$@" "$base..HEAD" 2>&1); then status=0; else status=$?; fi
 }
 
 passes() {
@@ -180,7 +184,36 @@ Carry on after the merge
 The merge is inside the range, not at its head.
 MSG
 rejects "a local merge with a trailer body" "$merge" "Co-Authored-By: A Tool"
+
+# The push step reads the same range with `--no-merges`, and the merge goes unread.
+run --no-merges
+[ "$status" -eq 0 ] || fail "--no-merges read a merge" "$output"
+case "$output" in
+    *"merges not read"*) ;;
+    *) fail "--no-merges did not say the merges went unread" "$output" ;;
+esac
+git reset --quiet --hard "$base"
 git branch --quiet -D local-side
+
+# A merge of GitHub's shape is what reaches main: two parents and a body of one line,
+# the pull request title. Git reads that line as a trailer whenever the title holds a
+# colon, and the title is a person's. The push step reads past it; a pull request, where
+# such a merge cannot appear, still fails it.
+git checkout --quiet -b github-side "$base"
+echo four > file
+git commit --quiet -am "Add the commit the pull request holds"
+git checkout --quiet main
+cat > "$work/message" <<'MSG'
+Merge pull request #1 from fixture/github-side
+
+Doctor: names attribute Docker leftovers, and branches join the report
+MSG
+git merge --quiet --no-ff --no-verify -F "$work/message" github-side
+github=$(git rev-parse HEAD)
+run --no-merges
+[ "$status" -eq 0 ] || fail "--no-merges failed a merge of GitHub's shape" "$output"
+rejects "a merge of GitHub's shape read without the flag" "$github" "Doctor: names attribute"
+git branch --quiet -D github-side
 
 # A range whose left side is all zeros is what a first push and a force-push give. On a
 # push that is nothing to fail a person for, so the check says so and exits 0.
@@ -205,4 +238,4 @@ case "$output" in
     *) fail "a base that names no commit did not say what was wrong" "$output" ;;
 esac
 
-echo "acceptance (commit messages): prose passes, what git calls a trailer and what a harness appends both fail and are named, a local merge is read, an unreadable range exits 0 on a push and 2 on a pull request"
+echo "acceptance (commit messages): prose passes, what git calls a trailer and what a harness appends both fail and are named, a merge is read without --no-merges and skipped with it, an unreadable range exits 0 on a push and 2 on a pull request"

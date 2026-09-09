@@ -20,13 +20,19 @@
 # is ignored. The subject is never read, so a subject such as
 # `Sort-by: accept a column list` passes.
 #
-# Usage: ci/commit-messages.sh <range>
+# Usage: ci/commit-messages.sh [--no-merges] <range>
 #
 # The range is given, never inferred from the shape of HEAD. The workflow passes
 # `base..head` on a pull request and `before..after` on a push, so the check reads the
 # commits the event added and nothing else. GitHub's synthetic merge commit is never
-# inside such a range, so there is no merge to exempt: every merge in range is one a
-# person made, its body is theirs, and it is read like any other commit.
+# inside such a range.
+#
+# `--no-merges` hands the flag of that name to `git rev-list`, and the push step uses
+# it. Every merge that reaches `main` is one GitHub made, and its body is the pull
+# request title: one line, which git reads as a trailer whenever the title holds a
+# colon. That is a person's title and no reason to fail a push. A pull request is read
+# without the flag, so a merge a person made on the branch is read like any other
+# commit, which is where a trailer in a merge body is caught.
 #
 # The left side of the range can be unreadable through no fault of a message. A first
 # push and a force-push both leave `github.event.before` all zeros or naming a commit
@@ -35,11 +41,17 @@
 # broken call, and it exits 2.
 set -eu
 
+merges=
+if [ "${1:-}" = --no-merges ]; then
+    merges=--no-merges
+    shift
+fi
+
 range=${1:-}
 case "$range" in
     *..*) ;;
     *)
-        echo "usage: ci/commit-messages.sh <range>" >&2
+        echo "usage: ci/commit-messages.sh [--no-merges] <range>" >&2
         exit 2
         ;;
 esac
@@ -74,7 +86,7 @@ bad_lines() {
 
 count=0
 failures=0
-for sha in $(git rev-list "$range"); do
+for sha in $(git rev-list $merges "$range"); do
     count=$((count + 1))
     lines=$(bad_lines "$sha")
     [ -n "$lines" ] || continue
@@ -94,4 +106,8 @@ if [ "$failures" -ne 0 ]; then
     exit 1
 fi
 
-echo "commit messages: $count commit(s) in $range, no trailer lines"
+if [ -n "$merges" ]; then
+    echo "commit messages: $count commit(s) in $range, merges not read, no trailer lines"
+else
+    echo "commit messages: $count commit(s) in $range, no trailer lines"
+fi
