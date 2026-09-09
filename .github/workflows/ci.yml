@@ -38,6 +38,18 @@ jobs:
       - name: schemas/ is what the model generates
         run: ci/schema-diff.sh
 
+  commit-messages:
+    name: commit messages
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: the check itself, against a fixture repository
+        run: ci/acceptance-commit-messages.sh
+      - name: no commit in this pull request holds a trailer line
+        run: ci/commit-messages.sh ${{ github.event.pull_request.base.sha }}
+
   acceptance-recipe:
     name: acceptance (recipe)
     runs-on: ubuntu-latest
