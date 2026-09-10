@@ -18,6 +18,9 @@
 # hold is refused rather than materialised, because a second home for it would leave
 # whatever is uncommitted in that checkout behind.
 #
+# `--all` adopts every worktree of the project except the main checkout, and a second
+# run skips the ones that are already units.
+#
 # The suite is then run a second time with the temporary directory reached through a
 # symbolic link, as `ci/acceptance-reclaim.sh` does: an adopted checkout's home is
 # recorded and compared against the name the filesystem itself uses, and a host that
@@ -26,6 +29,7 @@ set -eu
 
 cargo test --locked -p nodal-cli --test adopt
 cargo test --locked -p nodal-core --lib lifecycle::ops::adopt
+cargo test --locked -p nodal-core --lib output::view::adopt
 cargo test --locked -p nodal-core --lib lifecycle::guard
 cargo test --locked -p nodal-core --lib env::files
 cargo test --locked -p nodal-core --lib doctor::intent
@@ -37,4 +41,4 @@ mkdir -p "$work/real"
 ln -s "$work/real" "$work/by-another-name"
 TMPDIR="$work/by-another-name" cargo test --locked -p nodal-cli --test adopt
 
-echo "acceptance (adopt): a checkout becomes a unit where it stands and git status does not move, its intent is recovered, and a reclaim gives the directory back untouched"
+echo "acceptance (adopt): a checkout becomes a unit where it stands and git status does not move, its intent is recovered, --all skips the main checkout, and a reclaim gives the directory back untouched"

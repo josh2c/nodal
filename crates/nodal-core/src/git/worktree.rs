@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use super::cmd;
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// How a repository is laid out.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +88,22 @@ impl Registered {
 pub(super) fn list(repo: &Path) -> Result<Vec<Registered>> {
     let output = cmd::run_ok(repo, &["worktree", "list", "--porcelain"])?;
     Ok(parse_list(output.text()?))
+}
+
+/// Remove a linked worktree Git already recorded.
+///
+/// This is the one write against a worktree Nodal did not make. Reclaim calls it after
+/// the uniqueness check is clear and the person has confirmed. It is `git worktree
+/// remove`, never a directory delete of our own.
+///
+/// # Errors
+/// [`Error::Git`] when Git refused, [`Error::GitEncoding`] when the path is not UTF-8.
+pub(super) fn remove(repo: &Path, worktree: &Path) -> Result<()> {
+    let path = worktree.to_str().ok_or_else(|| Error::GitEncoding {
+        args: vec![String::from("worktree"), String::from("remove")],
+    })?;
+    cmd::run_ok(repo, &["worktree", "remove", "--", path])?;
+    Ok(())
 }
 
 /// Parse the blocks `git worktree list --porcelain` writes.

@@ -8,6 +8,7 @@
 //! records. A row of `nodal ls` is a join across three tables plus facts computed at the
 //! moment they matter, and `model/` is the shape of what the registry stores.
 
+pub mod adopt;
 pub mod base;
 pub mod created;
 pub mod doctor;
@@ -25,6 +26,7 @@ pub mod status;
 pub mod unit;
 pub mod verdict;
 
+pub use crate::output::view::adopt::{AdoptOutcome, AdoptedAll, AdoptedRow};
 pub use crate::output::view::base::{BaseBuild, BaseList, BaseRow, BaseSweep};
 pub use crate::output::view::created::{Arrival, Created};
 pub use crate::output::view::doctor::{Checkout, Doctor, Finding, Kind, Note};

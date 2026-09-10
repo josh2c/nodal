@@ -102,12 +102,18 @@
 //! place — a person's own checkout, `managed = false` — is unregistered and never
 //! trashed: its rows are closed, its ports are given back, and the directory is left
 //! exactly as it is, because Nodal did not create it and it is not Nodal's to move.
+//! When that checkout is a linked worktree, the uniqueness check found nothing unique,
+//! and the integration verdict is done, the report carries `git worktree remove <path>`.
+//! Reclaim asks once and runs it only when the person confirms. Unique work refuses the
+//! reclaim and prints nothing runnable. A home Nodal made still goes to the trash; the
+//! offer never appears for one.
 
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
 
+use crate::context::survey::Bases;
 use crate::git::{Git, refs};
 use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Ran, Runner};
 use crate::lifecycle::journal::Operation;
@@ -1008,7 +1014,41 @@ fn report(
         hooks,
         notes,
         leftovers,
+        worktree_remove: offer_remove(params, &prepared.findings),
     })
+}
+
+/// Run `git worktree remove` on an adopted worktree the person confirmed.
+///
+/// The command runs in the project's main checkout, which is the repository that
+/// recorded the worktree. Nodal still never removes a worktree it did not make on its
+/// own: this is the person's `git` command, run once.
+///
+/// # Errors
+/// [`Error::Git`] when Git refused, [`Error::NotARepository`] when `path` is not one.
+pub fn remove_worktree(path: &Path) -> Result<()> {
+    let git = Git::open(path)?;
+    let main =
+        git.worktrees()?.into_iter().next().map_or_else(|| path.to_path_buf(), |row| row.path);
+    Git::open(&main)?.remove_worktree(path)
+}
+
+/// The path of a done, clean, adopted worktree, when reclaim may offer to remove it.
+///
+/// Nothing unique, a linked worktree Nodal did not make, and an integration verdict of
+/// done. A home Nodal made is never a row here. Findings from `--force` are unique work,
+/// so they suppress the offer too.
+fn offer_remove(params: &Params, findings: &[Finding]) -> Option<PathBuf> {
+    if !findings.is_empty() || params.environment.managed {
+        return None;
+    }
+    let home = &params.environment.home;
+    let git = Git::open(home).ok()?;
+    if !git.layout().ok()?.is_linked() {
+        return None;
+    }
+    let standing = Bases::default().standing(&git, &params.unit).ok()?;
+    standing.integration.is_integrated().then(|| home.clone())
 }
 
 /// The directory an adopted checkout was left at, when that is what this was.

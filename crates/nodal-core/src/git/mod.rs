@@ -2,8 +2,9 @@
 //!
 //! Nodal talks to Git through its command line rather than a library, so refs, hooks and
 //! config behave exactly as the user's own tools see them. A unit is an independent
-//! repository, never a worktree, so this facade has no worktree operations — only
-//! detection, for adopting an existing checkout in place.
+//! repository. Nodal never creates a worktree. This facade detects linked worktrees so
+//! operations do not damage the repository they share, and reclaim may run
+//! `git worktree remove` after the person confirms.
 
 pub mod branches;
 pub mod cmd;
@@ -552,6 +553,17 @@ impl Git {
     /// output is not UTF-8.
     pub fn worktrees(&self) -> Result<Vec<worktree::Registered>> {
         worktree::list(&self.root)
+    }
+
+    /// Remove a linked worktree of this repository.
+    ///
+    /// Reclaim is the only caller, and only after the person confirmed. Nodal never
+    /// removes a worktree it did not make on its own.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when Git refused, [`Error::GitEncoding`] when the path is not UTF-8.
+    pub fn remove_worktree(&self, path: &Path) -> Result<()> {
+        worktree::remove(&self.root, path)
     }
 
     /// Which Git operations, if any, are in progress here.

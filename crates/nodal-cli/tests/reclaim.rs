@@ -37,7 +37,7 @@ use nodal_core::store::{environments, projects, trash, units};
 use nodal_safety::git::git_text as git;
 use nodal_safety::project::Layout;
 use nodal_safety::project::resolved;
-use nodal_safety::text::{stderr, stdout};
+use nodal_safety::text::{answer, stderr, stdout};
 use nodal_safety::{InState as _, Workspace};
 
 /// How long a test waits for a killed run to reach the step it is being killed in.
@@ -91,6 +91,9 @@ trait Reclaiming {
     /// suite's second run — and it is the resolved one the registry holds and every
     /// report prints, so it is the one a caller can compare anything against.
     fn adopt_in_place(&self, slug: &str) -> PathBuf;
+
+    /// Add a linked worktree of the project on a new branch and adopt it in place.
+    fn adopt_worktree(&self, slug: &str) -> PathBuf;
 }
 
 impl Reclaiming for Workspace {
@@ -109,6 +112,17 @@ impl Reclaiming for Workspace {
             slug,
         ])));
         resolved(&root)
+    }
+
+    /// Add a linked worktree of the project on a new branch and adopt it in place.
+    fn adopt_worktree(&self, slug: &str) -> PathBuf {
+        let path = self.state.parent().expect("the state directory has a parent").join(slug);
+        drop(git(
+            &self.source,
+            &["worktree", "add", "-q", "-b", &format!("feature/{slug}"), path.to_str().unwrap()],
+        ));
+        drop(stdout(&self.nodal(&["adopt", path.to_str().unwrap(), "--in-place", "--name", slug])));
+        resolved(&path)
     }
 }
 
@@ -182,6 +196,10 @@ fn a_clean_unit_is_reclaimed_and_nothing_of_it_is_left_but_the_trash_entry() {
     assert_eq!(entry.path, trashed[0]);
     assert_eq!(entry.home, home);
     assert!(entry.snapshot.is_none(), "a clean home needed nothing preserved");
+    assert!(
+        !report.contains("git worktree remove"),
+        "a home Nodal made is not a worktree to remove: {report}"
+    );
 }
 
 #[test]
@@ -660,6 +678,10 @@ fn a_checkout_adopted_in_place_is_unregistered_and_never_trashed() {
     let report = stdout(&workspace.nodal(&["reclaim", "in-place"]));
     assert!(report.contains("left in place"), "{report}");
     assert!(report.contains(root.to_str().unwrap()), "{report}");
+    assert!(
+        !report.contains("git worktree remove"),
+        "a clone adopted in place is not a worktree to remove: {report}"
+    );
     assert_nothing_left(&report);
 
     assert!(root.is_dir(), "the person's own directory is where it was");
@@ -700,4 +722,42 @@ fn a_home_somebody_deleted_by_hand_still_closes_its_rows() {
         .pop()
         .unwrap();
     assert_eq!(unit.status, UnitStatus::Archived);
+}
+
+/// A dirty adopted worktree is refused. Nothing runnable is printed, even with `--yes`.
+#[test]
+fn reclaim_of_a_dirty_adopted_worktree_refuses_and_prints_nothing_runnable() {
+    let workspace = workspace();
+    let dirty = workspace.adopt_worktree("dirty");
+    std::fs::write(dirty.join("only-here.txt"), "unique\n").unwrap();
+
+    let refused = workspace.nodal(&["reclaim", "dirty", "--yes"]);
+    assert!(!refused.status.success(), "a dirty worktree was reclaimed");
+    let told = stderr(&refused);
+    assert!(told.contains("untracked files"), "{told}");
+    assert!(!told.contains("git worktree remove"), "{told}");
+    assert!(!answer(&refused).contains("git worktree remove"), "{}", answer(&refused));
+    assert!(dirty.is_dir(), "the dirty worktree was removed");
+    assert!(dirty.join("only-here.txt").is_file(), "the unique work is still there");
+}
+
+/// A done adopted worktree prints `git worktree remove`. `--yes` runs it. Default is no.
+#[test]
+fn reclaim_of_a_done_adopted_worktree_prints_the_removal_line_and_yes_runs_it() {
+    let workspace = workspace();
+    let stays = workspace.adopt_worktree("stays");
+    let gone = workspace.adopt_worktree("gone");
+
+    let printed = stdout(&workspace.nodal(&["reclaim", "stays"]));
+    let stay_cmd = format!("git worktree remove {}", stays.display());
+    assert!(printed.contains(&stay_cmd), "{printed}");
+    assert!(stays.is_dir(), "without --yes the worktree stays");
+
+    let removed = stdout(&workspace.nodal(&["reclaim", "gone", "--yes"]));
+    let gone_cmd = format!("git worktree remove {}", gone.display());
+    assert!(removed.contains(&gone_cmd), "{removed}");
+    assert!(!gone.exists(), "--yes ran git worktree remove");
+    let listed = git(&workspace.source, &["worktree", "list"]);
+    assert!(!listed.contains(gone.to_str().unwrap()), "git no longer names it: {listed}");
+    assert!(listed.contains(stays.to_str().unwrap()), "the unconfirmed worktree remains: {listed}");
 }

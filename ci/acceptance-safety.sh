@@ -15,7 +15,8 @@
 #   - tracked excludes: a project that commits into a directory the exclusion table
 #     names is refused, and the message names the path;
 #   - reclaim refusal: each of the three kinds of work that exists nowhere else refuses
-#     the reclaim, and the home and the work are still there afterwards;
+#     the reclaim, and the home and the work are still there afterwards, including an
+#     adopted worktree with `--yes` or without;
 #   - reclaim scope: a reclaim stops its tether and never a process that carries no unit
 #     identifier, it names that process and refuses to move the home over it, `--force`
 #     moves the home and still leaves the process running, and a sweep makes the same
