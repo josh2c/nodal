@@ -163,6 +163,15 @@ impl Machine {
         self.runner.command(args)
     }
 
+    /// Where this machine's commands keep the settings Claude Code reads.
+    ///
+    /// It is beside the state directory and it is not `$HOME/.claude`
+    /// ([`crate::runner::Runner::config`]).
+    #[must_use]
+    pub fn config_dir(&self) -> &Path {
+        self.runner.config()
+    }
+
     /// Make one unit and answer with its home, with an identity Git will commit under.
     ///
     /// # Panics

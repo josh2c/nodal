@@ -61,7 +61,7 @@ impl Person {
     fn new() -> Self {
         let root = TempDir::new().unwrap();
         let home = root.path().join("home");
-        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
         Self { machine: Machine::new(), root, home }
     }
 
@@ -78,7 +78,18 @@ impl Person {
     }
 
     /// The person's own settings file, the one Claude Code reads in every project.
+    ///
+    /// It is under the directory the kit names ([`Machine::config_dir`]) rather than
+    /// under `HOME`. A test that read `$HOME/.claude` would be asserting where the
+    /// fallback goes, and the point of the kit naming the directory is that no test
+    /// depends on the fallback.
     fn settings(&self) -> PathBuf {
+        self.machine.config_dir().join("settings.json")
+    }
+
+    /// Where the file would go if nothing named the configuration directory: the real
+    /// `$HOME/.claude` of whoever runs the tests, standing in here for a canary.
+    fn fallback_settings(&self) -> PathBuf {
         self.home.join(SETTINGS)
     }
 
@@ -121,6 +132,36 @@ impl Person {
         git::commit(&repository, "the project this person actually works on");
         repository
     }
+}
+
+/// A command from the kit writes the hooks where the kit says, and never under the home
+/// directory it was given.
+///
+/// The kit removes whatever `CLAUDE_CONFIG_DIR` the person running the tests had. That
+/// alone is not enough: with nothing set, the settings path falls back to
+/// `$HOME/.claude`, so a fixture that does not move `HOME` installs hooks into the real
+/// settings of whoever ran `cargo test`. The home directory here stands in for that one.
+#[test]
+fn a_command_from_the_kit_writes_hooks_where_the_kit_says_and_not_under_home() {
+    let person = Person::new();
+
+    let written = person.nodal(&["init", "--force", "--claude-hooks"]);
+
+    assert!(written.status.success(), "{}", stderr(&written));
+    assert!(
+        person.settings().starts_with(person.machine.config_dir()),
+        "the kit did not name the directory the settings went in"
+    );
+    assert!(
+        Person::held(&person.settings()).contains(MARKER),
+        "the hooks did not go where the kit said: {}",
+        person.settings().display()
+    );
+    assert!(
+        !person.fallback_settings().exists(),
+        "the hooks went to $HOME/.claude, which on a real run is the settings of \
+         whoever is running the tests"
+    );
 }
 
 /// `nodal init` asks nothing about hooks and installs none. A person who runs it is
