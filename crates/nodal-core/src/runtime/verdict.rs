@@ -67,7 +67,6 @@ use crate::Result;
 use crate::doctor::{branches, intent, size};
 use crate::git::Git;
 use crate::git::integration::Integration;
-use crate::lifecycle::guard;
 use crate::model::{ProjectName, Timestamp};
 use crate::output::view::verdict::{Behind, RowKind, Verdict, WorktreeRow};
 use crate::{Error, git};
@@ -93,12 +92,17 @@ pub fn read(
     now: Timestamp,
 ) -> Result<Verdict> {
     let git = Git::open(root)?;
-    let resolved = guard::resolve(root);
+    // Every path here is the one Git itself uses. `git worktree list` prints the
+    // resolved path of each worktree, and `--show-toplevel` prints the resolved path of
+    // the checkout, so the one comparison below is between two names of one shape. The
+    // caller's own `root` is not compared with anything: a registry row holds whatever
+    // name was written into it, and on a host whose temporary directory is a link that
+    // is not the name Git answers with.
+    let resolved = git.toplevel().unwrap_or_else(|_| root.to_path_buf());
     let base = branches::base_of(&git).unwrap_or_default();
     let mut rows = Vec::new();
     let mut notes = Vec::new();
-    for mut registered in git.worktrees()? {
-        registered.path = guard::resolve(&registered.path);
+    for registered in git.worktrees()? {
         if registered.path == resolved {
             continue;
         }
