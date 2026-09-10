@@ -33,7 +33,7 @@ pub use crate::output::view::explain::{Exclusion, Explained, Invalidation, Origi
 pub use crate::output::view::init::InitReport;
 pub use crate::output::view::merge::{Conflict, Merged, StageLine};
 pub use crate::output::view::ps::Ps;
-pub use crate::output::view::reclaim::{Idle, Leftover, Reclaimed, Retired, Swept};
+pub use crate::output::view::reclaim::{Idle, Leftover, Pruned, Reclaimed, Retired, Swept};
 pub use crate::output::view::setup::{Installed, Uninstall, Upgrade};
 pub use crate::output::view::status::{SharedResource, Status};
 pub use crate::output::view::unit::{

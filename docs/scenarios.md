@@ -100,7 +100,8 @@ $ nodal start worker-import --agent codex
   codex …    (works, runs tests, commits "fix two-digit year parsing", exits)
   handoff    (codex): parser fixed; import job may double-count on retry — unverified
 $ nodal done worker-import
-  pushed     branch + wip ref to origin · open a PR: https://github.com/…/compare/nodal/worker-import
+  pushed     refs/heads/nodal/worker-import to origin · open a PR: https://github.com/…/compare/nodal/worker-import
+  snapshot   stayed here at refs/nodal/01J…/wip · `--wip` sends it, uncommitted files and all
   runtime    stopped (dev server, api layer) · database kept · home kept
 ```
 

@@ -1,12 +1,17 @@
 //! `nodal done`: send the unit's work to the remote and put it up for review.
 //!
-//! Two refs go: the unit's branch, and the work-in-progress snapshot of everything the
-//! home holds that no commit does. The snapshot is what makes `done` honest about a
-//! home a person walked away from mid-edit — the branch carries the commits, the
-//! snapshot carries the rest — and it is taken here rather than pushed from wherever it
-//! happened to be, so what reaches the remote is the home as it is now.
+//! One ref goes: the unit's branch. `done` sends what a person committed and nothing
+//! else, because a push is the one act here other people can see, and a file they never
+//! committed is not theirs to have published for them.
 //!
-//! **This is the only operation in Nodal that touches a network**, and it does so with
+//! The work-in-progress snapshot is still taken, and it stays here. It is what makes
+//! the unit honest about a home a person walked away from mid-edit — the branch carries
+//! the commits, the snapshot carries the rest — and it is written to a local ref that a
+//! later reclaim, a `nodal explain` and the person's own `git` can all read. `--wip`
+//! adds that ref to the push, and it is the only way anything uncommitted leaves this
+//! machine.
+//!
+//! **This is the only operation in Nodal that sends anything**, and it does so with
 //! exactly one `git push` ([`crate::git::push`]), run as the user's own `git`. There is
 //! no host API here, no token, and no pull request: `done` prints the page a person
 //! opens the change on and stops there. Opening one is the person's, and there is no
@@ -48,11 +53,13 @@ pub struct Request {
     pub target: Option<String>,
     /// The remote to push to, or nothing to let the repository decide.
     pub remote: Option<String>,
+    /// Whether the work-in-progress snapshot goes too. `false` keeps it here.
+    pub wip: bool,
     /// Where the command was run, which decides the unit when no target was given.
     pub cwd: PathBuf,
 }
 
-/// Push the unit's branch and its work-in-progress ref, and put it up for review.
+/// Push the unit's branch, and put it up for review.
 ///
 /// # Errors
 /// [`Error::UnitNotFound`] when no unit has that handle, [`Error::UnitNotMaterialized`]
@@ -65,7 +72,7 @@ pub fn done(store: &mut Store, request: &Request) -> Result<Done> {
     let environment = home_of(store.conn(), &unit)?;
     let git = Git::open(&environment.home)?;
     let remote = chosen(&git, request.remote.as_deref())?;
-    let sent = send(&git, &unit, &remote)?;
+    let sent = send(&git, &unit, &remote, request.wip)?;
     let now = Timestamp::now();
     record(store, &unit, &environment, &sent, now)?;
     Ok(report(&unit, &remote, &sent, git.remote_url(&remote)?.as_deref(), now))
@@ -75,42 +82,54 @@ pub fn done(store: &mut Store, request: &Request) -> Result<Done> {
 struct Sent {
     /// The refs that went, in the order they were given to `git push`.
     names: Vec<String>,
-    /// The work-in-progress ref, when the home had a commit to build one on.
+    /// The work-in-progress ref, when the home had a commit to build one on. Local
+    /// unless `sent` says otherwise.
     snapshot: Option<String>,
+    /// Whether that ref was one of the refs the push carried.
+    carried: bool,
 }
 
-/// Take the snapshot and push both refs, in that order.
+/// Take the snapshot and push, in that order.
 ///
 /// The order matters: a snapshot taken after the push would be of a home nothing had
-/// sent, and the report would name a ref the remote does not have.
-fn send(git: &Git, unit: &Unit, remote: &str) -> Result<Sent> {
+/// sent, and a `--wip` report would name a ref the remote does not have.
+///
+/// The snapshot is taken whether or not it goes. It is a local record of the home at
+/// the moment of the `done`, and taking it costs the person nothing they can see.
+fn send(git: &Git, unit: &Unit, remote: &str, wip: bool) -> Result<Sent> {
     let branch = format!("refs/heads/{}", unit.branch);
     let snapshot = git.snapshot(&refs::wip(&unit.id.to_string()), SNAPSHOT_MESSAGE)?;
     let snapshot = snapshot.map(|taken| taken.reference);
-    git.push(remote, &refspecs(&branch, snapshot.as_deref()))?;
+    let carried = snapshot.as_deref().filter(|_| wip);
+    git.push(remote, &refspecs(&branch, carried))?;
     let mut names = vec![branch];
-    names.extend(snapshot.clone());
-    Ok(Sent { names, snapshot })
+    names.extend(carried.map(str::to_owned));
+    Ok(Sent { names, snapshot, carried: wip })
 }
 
 /// What one `done` asks `git push` to send.
 ///
 /// The branch goes as it is: a push that would not fast-forward is refused by the
-/// remote and reported, never forced. The snapshot ref is Nodal's own and is replaced,
-/// because each snapshot is built from the working tree rather than on the last one.
+/// remote and reported, never forced. The snapshot ref is given only when `--wip` asked
+/// for it, and then it is replaced, because each snapshot is built from the working
+/// tree rather than on the last one.
 fn refspecs(branch: &str, snapshot: Option<&str>) -> Vec<String> {
     let mut specs = vec![push::same_name(branch)];
     specs.extend(snapshot.map(push::forced));
     specs
 }
 
-/// Which remote the push goes to.
+/// Which remote the push goes to, and which one a reclaim prunes on.
+///
+/// Shared with [`super::reclaim`] on purpose: a reclaim that deleted refs on a remote
+/// the `done` had not pushed to would be cleaning up somewhere else entirely, and one
+/// rule for both is what keeps the two commands talking about the same place.
 ///
 /// A name given on the command line is used as it is. Otherwise `origin`, which is what
 /// a clone makes and what almost every repository has; then the only remote, when there
 /// is exactly one under another name. Anything else is a question rather than a guess,
 /// because a push to the wrong remote is not something Nodal can take back.
-fn chosen(git: &Git, asked: Option<&str>) -> Result<String> {
+pub(super) fn chosen(git: &Git, asked: Option<&str>) -> Result<String> {
     if let Some(name) = asked {
         return Ok(name.to_owned());
     }
@@ -150,6 +169,8 @@ fn record(
     let tx = store.transaction()?;
     units::update_status(&tx, unit.id, UnitStatus::Review, now)?;
     let mut refs = std::collections::BTreeMap::new();
+    // The snapshot is recorded whether or not it went. The ref is here either way, and
+    // a later `nodal explain` reading it is reading this machine, not the remote.
     if let (Ok(name), Some(reference)) = (RefName::parse("wip"), &sent.snapshot) {
         refs.insert(name, reference.clone());
     }
@@ -177,8 +198,12 @@ fn report(unit: &Unit, remote: &str, sent: &Sent, url: Option<&str>, now: Timest
     let web = url.and_then(host::web);
     let compare = url.and_then(|url| host::compare(url, unit.branch.as_str()));
     let mut notes = Vec::new();
-    if sent.snapshot.is_none() {
-        notes.push(String::from("the home has no commit yet, so no work-in-progress ref went"));
+    match (&sent.snapshot, sent.carried) {
+        (None, _) => notes.push(String::from("the home has no commit yet, so no snapshot was taken")),
+        (Some(reference), false) => notes.push(format!(
+            "the work-in-progress snapshot stayed here at {reference}; `--wip` sends it, uncommitted files and all"
+        )),
+        (Some(_), true) => {}
     }
     Done {
         now,
@@ -187,7 +212,7 @@ fn report(unit: &Unit, remote: &str, sent: &Sent, url: Option<&str>, now: Timest
         remote: remote.to_owned(),
         host: web.map(|web| web.host),
         pushed: sent.names.clone(),
-        snapshot: sent.snapshot.clone(),
+        snapshot: sent.snapshot.clone().filter(|_| sent.carried),
         compare,
         status: UnitStatus::Review,
         notes,
@@ -209,5 +234,13 @@ mod tests {
     #[test]
     fn a_home_with_no_snapshot_pushes_the_branch_and_nothing_else() {
         assert_eq!(refspecs("refs/heads/topic", None), ["refs/heads/topic:refs/heads/topic"]);
+    }
+
+    /// The default carries no snapshot, so nothing a person did not commit can be in
+    /// the refspecs at all. `--wip` is the only thing that adds one.
+    #[test]
+    fn without_wip_the_branch_is_the_whole_of_what_goes() {
+        assert_eq!(refspecs("refs/heads/topic", None), ["refs/heads/topic:refs/heads/topic"]);
+        assert_eq!(refspecs("refs/heads/topic", Some("refs/nodal/01J/wip")).len(), 2);
     }
 }

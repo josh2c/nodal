@@ -202,13 +202,18 @@ cellar, a system package path, or a binary placed by hand — and print the one 
 Nodal has no self-updater and **makes no network call of its own**: no update check, no telemetry, no version
 comparison. `tests/safety/tests/no_network.rs` asserts that no code path in either crate could make one.
 
-`done <unit>` sends a unit's work for review. It pushes two refs — the unit's branch, and a
-work-in-progress snapshot of everything the home holds that no commit does — with **one** `git push`,
-which is the only thing Nodal does that reaches a network. The push is the user's own `git`, so the
-credentials and the hooks are theirs, and the report says so in the line it prints. The branch goes as
-it is; a push that would not fast-forward is refused by the remote and reported. Only Nodal's own
-`refs/nodal/` ref is replaced, because each snapshot is built from the working tree rather than on the
-last one.
+`done <unit>` sends a unit's work for review. It pushes **one** ref, the unit's branch, with one
+`git push`. Nothing a person did not commit goes. A work-in-progress snapshot of everything the
+home holds that no commit does is still taken, and it stays on this machine at
+`refs/nodal/<unit>/wip`. `--wip` adds that ref to the push and is documented as sending
+uncommitted files; it is the only way one leaves this machine. The push is the user's own `git`, so
+the credentials and the hooks are theirs, and the report says so in the line it prints. The branch
+goes as it is; a push that would not fast-forward is refused by the remote and reported. Only
+Nodal's own `refs/nodal/` ref is ever replaced, because each snapshot is built from the working tree
+rather than on the last one.
+
+`done` pushes the branch. A reclaim deletes Nodal's own refs on the remote. Nothing else Nodal does
+reaches the network.
 
 It then prints the page a person opens the change on, for the host the remote names, and **opens no
 pull request**. There is no host API in Nodal and no client of one; a remote whose host Nodal has no
@@ -676,6 +681,13 @@ cannot read moves the home and reports the unread signal as a note.
 process carrying the `NODAL_ID` of a unit whose materialisations have all been reclaimed. It reports
 a process standing in a reclaimed home, under both the name the home had and the trash path it is
 in now, and it signals none of them.
+
+A reclaim of a unit a `done` pushed for deletes Nodal's own `refs/nodal/<unit>/*` on that remote,
+and never the branch. It asks the remote which of those refs are there and deletes the ones it read.
+A unit no `done` pushed for is decided in the registry, and no network is reached for it at all. The
+remote is the one `done` uses: `origin`, then the only remote there is. A remote that cannot be
+reached, cannot be decided, or refuses the deletion is a note in the report. It is never a refusal:
+a reclaim ends a unit on this machine whatever a remote says.
 
 A reclaim stops the unit's tethered process groups before it stops anything else. It gives back the
 unit's ports and leases in the transaction that records the reclaim. It moves the home to `<state>/<project>/trash/<id>`, under the name the

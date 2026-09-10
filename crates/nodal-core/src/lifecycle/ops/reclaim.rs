@@ -80,6 +80,21 @@
 //! second would be the one lie this operation must not tell. So a note suppresses that
 //! line, and the report says which signal went unread.
 //!
+//! # What a reclaim does on the remote
+//!
+//! A unit that was sent for review left two kinds of ref on the remote: the branch,
+//! which is the person's work and other people's to read, and whatever Nodal wrote
+//! under `refs/nodal/<id>/`, which is Nodal's own bookkeeping about a unit that is
+//! about to stop existing. Reclaiming deletes the second kind and never the first.
+//!
+//! It is the one thing besides `nodal done` that reaches a network, and it is gated
+//! twice so that it reaches one no more often than it must. A unit no `done` ever
+//! pushed for is never asked about — the registry answers that, offline — and the
+//! remote is then asked which of those refs it actually holds, so a reclaim deletes
+//! names it has read rather than names it has guessed. Every failure out there is a
+//! note in the report: a remote that cannot be reached is not a reason to refuse to
+//! end a unit on this machine.
+//!
 //! # Bases and roots
 //!
 //! A base is never reclaimed by this operation at all: it is not a unit's home, it is
@@ -103,7 +118,7 @@ use crate::model::{
     EnvId, EnvState, Environment, EventKind, Project, Recipe, Timestamp, Trashed, Unit, UnitId,
     UnitStatus, expiry,
 };
-use crate::output::view::{Leftover, Reclaimed};
+use crate::output::view::{Leftover, Pruned, Reclaimed};
 use crate::runtime::attribute::{Note, Source, Standing};
 use crate::runtime::processes;
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
@@ -180,9 +195,74 @@ pub fn reclaim(store: &mut Store, request: &Request) -> Result<Reclaimed> {
     let params = &prepared.params;
     let mut hooks_ran = Vec::new();
     hooks_ran.extend(prepared.hook(Phase::PreReclaim, params.environment.home.clone())?);
+    // Before the home moves, because the remote is reached through the repository in
+    // it, and after the hook, because a hook that refuses stops the reclaim and nothing
+    // should have left this machine by then.
+    let pruned = prune(store.conn(), params)?;
     let done = run(store, &plan(params)?)?;
     hooks_ran.extend(prepared.hook(Phase::PostReclaim, prepared.after())?);
-    report(&prepared, &done, hooks_ran, verify(store, params)?)
+    report(&prepared, &done, hooks_ran, pruned, verify(store, params)?)
+}
+
+/// Delete Nodal's own refs for this unit on the remote, and never the branch.
+///
+/// `None` is "no remote was reached", and it is the answer for every unit no `done` has
+/// pushed for: the registry is asked first, and a unit with no push in its history is
+/// one this machine has nothing to clean up out there for. That gate is what keeps a
+/// reclaim offline for the units that never left.
+///
+/// Everything after the gate is reported rather than raised. The branch is never named
+/// here — the prefix is the unit's own namespace, and [`crate::git::push::delete`]
+/// drops anything outside it a second time — so the worst a failure out here can cost
+/// is a ref of Nodal's left on a remote, which is not worth refusing a reclaim over.
+///
+/// # Errors
+/// [`Error::Store`] when the registry could not be read.
+fn prune(conn: &Connection, params: &Params) -> Result<Option<Pruned>> {
+    if !was_pushed(conn, params.unit.id)? {
+        return Ok(None);
+    }
+    let home = params.environment.home.clone();
+    if !home.is_dir() {
+        return Ok(Some(Pruned::nothing(format!(
+            "{} is not there, so nodal's own refs on the remote were left",
+            home.display()
+        ))));
+    }
+    let git = match Git::open(&home) {
+        Ok(git) => git,
+        Err(why) => return Ok(Some(Pruned::nothing(why.to_string()))),
+    };
+    let remote = match super::done::chosen(&git, None) {
+        Ok(remote) => remote,
+        Err(why) => return Ok(Some(Pruned::nothing(why.to_string()))),
+    };
+    let prefix = format!("{}{}/", refs::NAMESPACE, params.unit.id);
+    Ok(Some(pruned_on(&git, &remote, &prefix)))
+}
+
+/// Ask the remote what it holds under the unit's namespace, and delete that.
+fn pruned_on(git: &Git, remote: &str, prefix: &str) -> Pruned {
+    let there = match git.remote_refs(remote, prefix) {
+        Ok(names) => names,
+        Err(why) => return Pruned::on(remote, Vec::new(), vec![why.to_string()]),
+    };
+    if there.is_empty() {
+        return Pruned::on(remote, Vec::new(), Vec::new());
+    }
+    match git.delete_remote_refs(remote, &there) {
+        Ok(deleted) => Pruned::on(remote, deleted, Vec::new()),
+        Err(why) => Pruned::on(remote, Vec::new(), vec![why.to_string()]),
+    }
+}
+
+/// Whether a `done` ever pushed for this unit.
+///
+/// The `done` is the only thing that writes a [`EventKind::Sync`] for a unit, so one in
+/// the history is the registry's record that this unit's branch reached a remote. A
+/// unit with none is one nothing of Nodal's is out there for.
+fn was_pushed(conn: &Connection, unit: UnitId) -> Result<bool> {
+    Ok(!events::list_recent_of_kinds(conn, unit, &[EventKind::Sync], 1)?.is_empty())
 }
 
 /// The plan: tear the runtime down, then move the home. One registry write at the end.
@@ -899,6 +979,7 @@ fn report(
     prepared: &Prepared,
     done: &Done,
     hooks: Vec<Ran>,
+    pruned: Option<Pruned>,
     verified: (Vec<Leftover>, Vec<Note>),
 ) -> Result<Reclaimed> {
     let params = &prepared.params;
@@ -922,6 +1003,7 @@ fn report(
         containers: torn.containers,
         released,
         trashed: params.entry.clone(),
+        pruned,
         root: root_of(params),
         hooks,
         notes,
