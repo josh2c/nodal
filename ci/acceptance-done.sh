@@ -2,10 +2,11 @@
 # Acceptance test for the states a unit passes through after the work is done.
 #
 # The suite pushes to a real repository — a bare one in the same temporary directory —
-# and checks what a person can check for themselves. `nodal done` puts the branch and
-# the work-in-progress ref on that remote, prints the compare page for the host the
-# remote names, and leaves the unit in `review`. A squash merge in the project's own
-# checkout, and a fetch by the person's own git, is what makes the next `nodal ls` say
+# and checks what a person can check for themselves. `nodal done` puts the branch on
+# that remote and nothing else, keeps the work-in-progress snapshot here unless `--wip`
+# asks for it, prints the compare page for the host the remote names, and leaves the
+# unit in `review`. A squash merge in the project's own checkout, and a fetch by the
+# person's own git, is what makes the next `nodal ls` say
 # `merged`; the state is read back out of the registry, because the point of recording
 # the flip is that it is a fact and not a rendering. `nodal gc` waits out the retention
 # before it reclaims that unit's home, and refuses one somebody has since put work in.
@@ -30,4 +31,4 @@ cargo test --locked -p nodal-core --lib lifecycle::idle
 cargo test --locked -p nodal-core --lib lifecycle::ops::done
 cargo test --locked -p nodal-core --lib output::view::done
 
-echo "acceptance (done): both refs are pushed with one git push, no pull request is opened, a squash-merged unit is recorded as merged, and gc waits out its retention"
+echo "acceptance (done): the branch is pushed with one git push and the snapshot stays here, no pull request is opened, a squash-merged unit is recorded as merged, and gc waits out its retention"

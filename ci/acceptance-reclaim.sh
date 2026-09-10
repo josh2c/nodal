@@ -36,6 +36,7 @@ cargo test --locked -p nodal-core --lib lifecycle::uniqueness
 cargo test --locked -p nodal-core --lib lifecycle::hooks
 cargo test --locked -p nodal-core --lib runtime::stop
 cargo test --locked -p nodal-core --lib lifecycle::ops::gc
+cargo test --locked -p nodal-core --lib output::view::reclaim
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

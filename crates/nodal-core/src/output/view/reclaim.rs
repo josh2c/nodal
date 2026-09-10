@@ -25,6 +25,51 @@ use crate::runtime::attribute::Note;
 use crate::runtime::stop::Stopped;
 use crate::services::ports::Released;
 
+/// What a reclaim did on the remote: the refs of Nodal's own it deleted there.
+///
+/// The branch is not in this value and cannot be. A reclaim deletes what Nodal wrote
+/// under `refs/nodal/<id>/` and leaves the person's branch where their colleagues can
+/// still read it, so an empty [`Pruned::refs`] with an empty [`Pruned::notes`] is the
+/// ordinary answer for a unit the remote held nothing of Nodal's for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pruned {
+    /// The remote that was asked, by name, or nothing when none was reached.
+    pub remote: Option<String>,
+    /// The refs that were deleted there, in full.
+    pub refs: Vec<String>,
+    /// What could not be done out there. A note is never a failure.
+    pub notes: Vec<String>,
+}
+
+impl Pruned {
+    /// A remote that was asked, and what came of it.
+    #[must_use]
+    pub fn on(remote: &str, refs: Vec<String>, notes: Vec<String>) -> Self {
+        Self { remote: Some(remote.to_owned()), refs, notes }
+    }
+
+    /// No remote reached, and the sentence saying why.
+    #[must_use]
+    pub fn nothing(why: impl Into<String>) -> Self {
+        Self { remote: None, refs: Vec::new(), notes: vec![why.into()] }
+    }
+
+    /// The line the report prints for it.
+    fn cell(&self) -> String {
+        let mut lines = Vec::new();
+        match (&self.remote, self.refs.len()) {
+            (None, _) => {}
+            (Some(remote), 0) => lines.push(format!("{remote} held no ref of nodal's")),
+            (Some(remote), _) => {
+                lines.push(format!("deleted {} on {remote}", self.refs.join(JOIN)));
+            }
+        }
+        lines.push(String::from("the branch was left"));
+        lines.extend(self.notes.clone());
+        lines.join("\n")
+    }
+}
+
 /// One thing that is still attached to a unit after it was reclaimed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Leftover {
@@ -62,6 +107,8 @@ pub struct Reclaimed {
     pub released: Released,
     /// Where the home went, when it was a home Nodal made.
     pub trashed: Option<Trashed>,
+    /// What was deleted on the remote, when a remote was reached at all.
+    pub pruned: Option<Pruned>,
     /// The directory that was left exactly as it is, when the unit was adopted in
     /// place. A root is unregistered, never trashed.
     pub root: Option<PathBuf>,
@@ -86,6 +133,9 @@ impl Render for Reclaimed {
         ];
         if !self.hooks.is_empty() {
             fields.push(Field::new("hooks", self.hooks_cell()));
+        }
+        if let Some(pruned) = &self.pruned {
+            fields.push(Field::new("remote", pruned.cell()));
         }
         fields.push(Field::new("verify", self.verify_cell()));
         let mut doc = Doc::from_iter([Block::fields(fields)]);
@@ -348,7 +398,7 @@ fn plural(count: usize, one: &str, many: &str) -> String {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
-    use super::{Leftover, Reclaimed, plural};
+    use super::{Leftover, Pruned, Reclaimed, plural};
     use crate::model::Timestamp;
     use crate::output::Render;
 
@@ -362,11 +412,37 @@ mod tests {
             containers: Vec::new(),
             released: crate::services::ports::Released::default(),
             trashed: None,
+            pruned: None,
             root: None,
             hooks: Vec::new(),
             notes: Vec::new(),
             leftovers: Vec::new(),
         }
+    }
+
+    /// The line says which refs went and, in the same breath, that the branch did not.
+    /// A person reading a reclaim has to be able to tell their colleagues that the
+    /// branch they were sent is still there.
+    #[test]
+    fn the_remote_line_names_what_was_deleted_and_says_the_branch_was_left() {
+        let mut report = reclaimed();
+        report.pruned =
+            Some(Pruned::on("origin", vec![String::from("refs/nodal/01J/wip")], Vec::new()));
+        let lines = report.doc().lines().join("\n");
+        assert!(lines.contains("refs/nodal/01J/wip"), "{lines}");
+        assert!(lines.contains("the branch was left"), "{lines}");
+    }
+
+    /// A remote that could not be reached is a note under the line, and the reclaim it
+    /// belongs to still reports as a reclaim.
+    #[test]
+    fn a_remote_that_refused_is_a_note_and_not_a_failure() {
+        let mut report = reclaimed();
+        report.pruned =
+            Some(Pruned::on("origin", Vec::new(), vec![String::from("origin is unreachable")]));
+        let lines = report.doc().lines().join("\n");
+        assert!(lines.contains("origin is unreachable"), "{lines}");
+        assert!(lines.contains("nothing left by id"), "{lines}");
     }
 
     #[test]

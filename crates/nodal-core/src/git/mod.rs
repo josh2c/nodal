@@ -419,12 +419,30 @@ impl Git {
         remote::names(&self.root)
     }
 
-    /// Send refs to a remote. The one call in Nodal that touches a network.
+    /// Send refs to a remote. The call `nodal done` reaches a network with.
     ///
     /// # Errors
     /// [`Error::Git`] when the push was refused or the remote could not be reached.
     pub fn push(&self, remote: &str, refspecs: &[String]) -> Result<()> {
         push::push(&self.root, remote, refspecs)
+    }
+
+    /// Which refs a remote holds under a prefix, in full.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the remote refused or could not be reached.
+    pub fn remote_refs(&self, remote: &str, prefix: &str) -> Result<Vec<String>> {
+        push::list(&self.root, remote, prefix)
+    }
+
+    /// Delete refs on a remote, and answer with the ones that were Nodal's to delete.
+    ///
+    /// A name outside [`refs::NAMESPACE`] is dropped rather than sent.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the remote refused the deletion.
+    pub fn delete_remote_refs(&self, remote: &str, names: &[String]) -> Result<Vec<String>> {
+        push::delete(&self.root, remote, names)
     }
 
     /// Fetch every branch and tag a remote has.

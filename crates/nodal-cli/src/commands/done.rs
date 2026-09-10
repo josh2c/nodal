@@ -20,13 +20,17 @@ pub struct Done {
     #[arg(long, value_name = "REMOTE")]
     pub remote: Option<String>,
 
+    /// Also send the work-in-progress snapshot, which sends uncommitted files.
+    #[arg(long)]
+    pub wip: bool,
+
     /// Print the result as JSON.
     #[arg(long)]
     pub json: bool,
 }
 
 impl Done {
-    /// Push the branch and the work-in-progress ref, and put the unit up for review.
+    /// Push the branch, and put the unit up for review.
     ///
     /// The unit's memory is written again afterwards, because the state in it has
     /// changed: a unit under review is still work off the base, and every sibling's
@@ -41,6 +45,7 @@ impl Done {
         let request = Request {
             target: self.unit.clone(),
             remote: self.remote.clone(),
+            wip: self.wip,
             cwd: std::env::current_dir().map_err(nodal_core::Error::io("."))?,
         };
         let project = context::project_of(store, self.unit.as_deref(), &request.cwd);

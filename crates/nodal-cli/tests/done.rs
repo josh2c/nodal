@@ -130,7 +130,7 @@ fn commit(home: &Path, text: &str) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn done_pushes_the_branch_and_the_wip_ref_and_puts_the_unit_up_for_review() {
+fn done_pushes_the_branch_and_leaves_the_snapshot_here() {
     let workspace = workspace();
     let home = workspace.unit_home("worker-import");
     commit(&home, "fixed\n");
@@ -143,18 +143,40 @@ fn done_pushes_the_branch_and_the_wip_ref_and_puts_the_unit_up_for_review() {
         refs.contains(&String::from("refs/heads/nodal/worker-import")),
         "the branch is on the remote: {refs:?}"
     );
-    let wip = refs.iter().find(|name| name.ends_with("/wip")).expect("the wip ref went too");
-    assert!(wip.starts_with("refs/nodal/"), "and it is in nodal's own namespace: {wip}");
+    assert!(
+        !refs.iter().any(|name| name.starts_with("refs/nodal/")),
+        "no ref of nodal's own went without --wip: {refs:?}"
+    );
     assert_eq!(workspace.status("worker-import"), UnitStatus::Review);
     assert!(report.contains("one `git push`"), "the report says what left the machine: {report}");
     assert!(report.contains("nodal opens none"), "and what it did not do: {report}");
+    assert!(report.contains("--wip"), "and how the snapshot would be sent: {report}");
 
-    // The uncommitted file is on the remote in the snapshot and not on the branch.
-    let carried = git(workspace.remote(), &["ls-tree", "--name-only", wip.as_str()]);
-    assert!(carried.contains("notes.txt"), "the snapshot carries the uncommitted work: {carried}");
+    // The uncommitted file is on neither the branch nor the remote, and the snapshot
+    // that holds it is a ref of this home.
     let branch =
         git(workspace.remote(), &["ls-tree", "--name-only", "refs/heads/nodal/worker-import"]);
-    assert!(!branch.contains("notes.txt"), "and the branch does not: {branch}");
+    assert!(!branch.contains("notes.txt"), "the branch does not carry it: {branch}");
+    let wip = git(&home, &["for-each-ref", "--format=%(refname)", "refs/nodal/"]);
+    let wip = wip.lines().find(|name| name.ends_with("/wip")).expect("the snapshot is here");
+    let kept = git(&home, &["ls-tree", "--name-only", wip]);
+    assert!(kept.contains("notes.txt"), "and the snapshot in the home does: {kept}");
+}
+
+#[test]
+fn done_with_wip_sends_the_snapshot_as_well() {
+    let workspace = workspace();
+    let home = workspace.unit_home("worker-import");
+    commit(&home, "fixed\n");
+    std::fs::write(home.join("notes.txt"), "not committed yet\n").unwrap();
+
+    drop(stdout(&workspace.nodal(&["done", "worker-import", "--wip"])));
+
+    let refs = workspace.remote_refs();
+    let wip = refs.iter().find(|name| name.ends_with("/wip")).expect("the wip ref went too");
+    assert!(wip.starts_with("refs/nodal/"), "and it is in nodal's own namespace: {wip}");
+    let carried = git(workspace.remote(), &["ls-tree", "--name-only", wip.as_str()]);
+    assert!(carried.contains("notes.txt"), "the snapshot carries the uncommitted work: {carried}");
 }
 
 #[test]
@@ -188,10 +210,10 @@ fn done_on_a_second_run_pushes_again_and_leaves_the_unit_in_review() {
     let workspace = workspace();
     let home = workspace.unit_home("worker-import");
     commit(&home, "fixed\n");
-    drop(stdout(&workspace.nodal(&["done", "worker-import"])));
+    drop(stdout(&workspace.nodal(&["done", "worker-import", "--wip"])));
     std::fs::write(home.join("notes.txt"), "more, still uncommitted\n").unwrap();
 
-    drop(stdout(&workspace.nodal(&["done", "worker-import"])));
+    drop(stdout(&workspace.nodal(&["done", "worker-import", "--wip"])));
 
     assert_eq!(workspace.status("worker-import"), UnitStatus::Review);
     let wip = workspace

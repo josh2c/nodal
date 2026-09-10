@@ -4,6 +4,10 @@
 //! makes about what it did and did not do: which refs went, that one `git push` is the
 //! whole of what left this machine, and that no pull request was opened.
 //!
+//! [`Done::snapshot`] is the fourth, and it is a promise by its absence. It is the
+//! work-in-progress ref *the push carried*, so it is empty unless `--wip` asked for one,
+//! and a note underneath says where the snapshot stayed instead.
+//!
 //! The remote's URL is deliberately not a field. An HTTPS remote may carry a token in
 //! front of its host, and a report is written to a terminal, a log and a `--json`
 //! consumer. What is printed is the host and the page, both built by
@@ -37,8 +41,8 @@ pub struct Done {
     pub host: Option<String>,
     /// The refs that were sent, in the order they were given to `git push`.
     pub pushed: Vec<String>,
-    /// The work-in-progress ref the push carried, when the home had a commit to make
-    /// one from.
+    /// The work-in-progress ref the push carried, which is only ever the one `--wip`
+    /// asked to send. A snapshot that stayed here is a note, not this field.
     pub snapshot: Option<String>,
     /// Where the change is opened, when the host is one Nodal knows a page for.
     pub compare: Option<String>,
@@ -105,6 +109,7 @@ mod tests {
     use crate::model::{BranchName, Slug, Timestamp, UnitStatus};
     use crate::output::Render;
 
+    /// A `--wip` report, which is the only kind that names two refs.
     fn done() -> Done {
         Done {
             now: Timestamp::parse("2026-09-07T09:00:00Z").unwrap(),
@@ -124,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn the_report_names_both_refs_and_the_one_command_that_sent_them() {
+    fn the_report_names_every_ref_that_went_and_the_one_command_that_sent_them() {
         let lines = done().doc().lines().join("\n");
         assert!(lines.contains("refs/heads/nodal/worker-import"), "{lines}");
         assert!(lines.contains("refs/nodal/01J/wip"), "{lines}");
