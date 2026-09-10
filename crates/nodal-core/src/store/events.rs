@@ -43,6 +43,46 @@ pub fn note(
     body: String,
     refs: &[(&str, String)],
 ) -> Result<()> {
+    let line = Line {
+        actor: crate::runtime::actor::current()?,
+        kind,
+        epistemic: Epistemic::Observed,
+        body,
+    };
+    note_as(tx, subject, line, refs)
+}
+
+/// Everything one line says about itself: who wrote it, what kind it is, how well it is
+/// known, and what it says.
+///
+/// The unit it is about and what it refers to are the caller's, and stay arguments.
+pub struct Line {
+    /// Whose line it is.
+    pub actor: Actor,
+    /// What kind of line it is.
+    pub kind: EventKind,
+    /// How well what it says is known.
+    pub epistemic: Epistemic,
+    /// What it says.
+    pub body: String,
+}
+
+/// The same line, with the actor and the tier said rather than assumed.
+///
+/// [`note`] is this with both of them filled in: this process, and `observed`. An
+/// adapter has neither to spare. A hook runs as a child of the agent that fired it, so
+/// the one thing certain about the actor is which agent it is rather than which process
+/// this is ([`crate::adapters::claude_code`]); and a closing message an agent wrote is a
+/// claim, which is [`Epistemic::Stated`] and not a thing Nodal watched.
+///
+/// # Errors
+/// As [`append`].
+pub fn note_as(
+    tx: &Connection,
+    subject: (UnitId, Option<EnvId>),
+    line: Line,
+    refs: &[(&str, String)],
+) -> Result<()> {
     let (unit, environment) = subject;
     let named = refs
         .iter()
@@ -55,10 +95,10 @@ pub fn note(
             unit,
             environment,
             ts: crate::model::Timestamp::now(),
-            actor: crate::runtime::actor::current()?,
-            kind,
-            epistemic: Epistemic::Observed,
-            body,
+            actor: line.actor,
+            kind: line.kind,
+            epistemic: line.epistemic,
+            body: line.body,
             refs: named,
             raw_ref: None,
         },

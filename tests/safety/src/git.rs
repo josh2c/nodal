@@ -10,6 +10,14 @@
 //! configuration, and a `git` that stops to ask for a password hangs a CI job rather
 //! than failing it.
 //!
+//! Every call also turns automatic maintenance off. Git decides after a commit that the
+//! repository could be tidied, and it does that in a **background process that outlives
+//! the command**: it writes `.git/objects/maintenance.lock`, works, and removes it. A
+//! test that reads or copies the repository the moment the commit returns therefore
+//! races a process it never started, and lists a file that is gone before it can be
+//! opened. No test in this workspace wants that work done, so no repository here asks
+//! for it.
+//!
 //! One thing follows from that: a repository has no identity until a test gives it one.
 //! [`init`] and [`commit`] write one, and [`identity`] is how a test that commits some
 //! other way asks for one.
@@ -23,6 +31,12 @@ use std::process::{Command, Output, Stdio};
 /// `.invalid`, which is reserved and can reach nobody.
 pub const IDENTITY: [(&str, &str); 2] =
     [("user.email", "unit@example.invalid"), ("user.name", "Test")];
+
+/// What every call sets, so that a test repository does no work a test did not ask for.
+///
+/// Both keys turn off the background pass Git starts on its own after a commit. The
+/// module note says what that pass does and what it races.
+const QUIET: [&str; 2] = ["gc.auto=0", "maintenance.auto=false"];
 
 /// One `git` command in a directory, as trimmed text, with the call insisted upon.
 ///
@@ -118,12 +132,36 @@ pub fn commit(directory: impl AsRef<Path>, message: &str) {
 /// The invocation itself, not yet run.
 fn command(directory: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("git");
+    command.arg("-C").arg(directory);
+    for setting in QUIET {
+        command.arg("-c").arg(setting);
+    }
     command
-        .arg("-C")
-        .arg(directory)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null");
     command
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
+
+    use tempfile::TempDir;
+
+    use super::{QUIET, git, init};
+
+    /// The settings that keep Git from starting work of its own reach the command. A
+    /// repository that runs a background pass writes and removes a lock file under
+    /// `.git/objects`, and every test that reads or copies a repository races it.
+    #[test]
+    fn a_test_repository_runs_no_pass_of_its_own() {
+        let directory = TempDir::new().unwrap();
+        init(directory.path(), "main");
+
+        assert_eq!(git(directory.path(), &["config", "--get", "gc.auto"]), "0");
+        assert_eq!(git(directory.path(), &["config", "--get", "maintenance.auto"]), "false");
+        assert_eq!(QUIET.len(), 2, "a setting was added without a reading for it");
+    }
 }

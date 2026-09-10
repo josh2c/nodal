@@ -10,6 +10,10 @@
 //! So a snapshot holds the content itself. The trees here are the fixture project and a
 //! clone of it, which is under a hundred small files, and holding the bytes is what
 //! makes the comparison mean what it says.
+//!
+//! [`copy`] is the other direction over the same shape: a second copy of a tree, made
+//! from its content rather than from its metadata, for a test that needs two of
+//! something the fixture only writes once.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -154,6 +158,85 @@ fn difference(path: &Path, before: &Entry, after: &Entry) -> String {
     }
 }
 
+/// Copy everything under `from` into `to`, content for content.
+///
+/// A test that needs a second copy of the fixture project uses this rather than
+/// [`std::fs::copy`]. That call carries the source's mode, and the fixture plants the
+/// shape a real base has: a file at mode `0444` (`nodal_fixture::read_only`), and Git
+/// writes every loose object read-only besides. A tree copied that way is one a test
+/// cannot go on writing in.
+///
+/// What is copied is what a test is asking for: the shape of the tree and the bytes in
+/// it. Directories are made writable, files are written fresh, and a symbolic link is
+/// made again as a link rather than followed. No mode and no attribute of the source
+/// crosses over, which is the whole reason this can be relied on.
+///
+/// A path that goes between the listing and the read is left out rather than raised
+/// ([`gone_or`]). A tree holding a `.git` is a tree something else may be writing.
+///
+/// # Panics
+///
+/// Naming the first path that could not be read or written, which is a machine a
+/// property cannot be asserted on rather than a difference.
+pub fn copy(from: impl AsRef<Path>, to: impl AsRef<Path>) {
+    copy_into(from.as_ref(), to.as_ref());
+}
+
+/// Copy one directory into another, and everything under it.
+fn copy_into(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap_or_else(|error| panic!("{}: {error}", to.display()));
+    let read =
+        std::fs::read_dir(from).unwrap_or_else(|error| panic!("{}: {error}", from.display()));
+    for entry in read {
+        let entry = entry.unwrap_or_else(|error| panic!("{}: {error}", from.display()));
+        let path = entry.path();
+        let target = to.join(entry.file_name());
+        let Some(kind) = gone_or(&path, entry.file_type()) else { continue };
+        if kind.is_symlink() {
+            let Some(points_at) = gone_or(&path, std::fs::read_link(&path)) else { continue };
+            link(&points_at, &target);
+        } else if kind.is_dir() {
+            copy_into(&path, &target);
+        } else {
+            let Some(content) = gone_or(&path, std::fs::read(&path)) else { continue };
+            std::fs::write(&target, content)
+                .unwrap_or_else(|error| panic!("{}: {error}", target.display()));
+        }
+    }
+}
+
+/// What was read, or nothing when the path went between the listing and the read.
+///
+/// A directory is listed before it is read, and a repository is a directory something
+/// else may be writing: Git's own background pass writes a lock file in `.git/objects`
+/// and removes it again, and so does a `nodal` command running in the same tree. A file
+/// that is no longer there is not part of the tree a test asked to copy. Every other
+/// failure is a machine a property cannot be asserted on, and is raised.
+///
+/// # Panics
+///
+/// Naming the path, for any failure but the path having gone.
+fn gone_or<T>(path: &Path, read: std::io::Result<T>) -> Option<T> {
+    match read {
+        Ok(value) => Some(value),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => panic!("{}: {error}", path.display()),
+    }
+}
+
+/// Make a symbolic link at `at` pointing where the one it was copied from points.
+#[cfg(unix)]
+fn link(points_at: &Path, at: &Path) {
+    std::os::unix::fs::symlink(points_at, at)
+        .unwrap_or_else(|error| panic!("{}: {error}", at.display()));
+}
+
+/// A host where a test tree holds no links.
+#[cfg(not(unix))]
+fn link(points_at: &Path, at: &Path) {
+    let _ = (points_at, at);
+}
+
 /// Read one directory into `entries`, and everything under it.
 fn walk(
     root: &Path,
@@ -200,4 +283,65 @@ fn mode_of(path: &Path) -> u32 {
 #[cfg(not(unix))]
 const fn mode_of(_path: &Path) -> u32 {
     0
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "a fixture that cannot be built fails the test")]
+
+    use std::path::Path;
+
+    use nodal_fixture::read_only;
+    use tempfile::TempDir;
+
+    use super::{Snapshot, copy};
+
+    /// The crossing a real base has, and the one the standard copy refuses on macOS: a
+    /// file at mode `0444` carrying an extended attribute. A copier a test relies on has
+    /// to take it on every runner, or the suite is asserting a property on one platform
+    /// and a copy failure on the other.
+    #[test]
+    fn a_tree_holding_a_read_only_file_with_an_attribute_is_copied_whole() {
+        let root = TempDir::new().unwrap();
+        let from = root.path().join("project");
+        let from = nodal_fixture::write(&from);
+        assert!(from.join(read_only::LOCKED).is_file(), "the fixture planted no locked file");
+
+        let to = root.path().join("copy");
+        copy(&from, &to);
+
+        let source = Snapshot::of(&from);
+        assert!(source.len() > 1, "the fixture wrote nothing to copy");
+        assert_eq!(
+            std::fs::read_to_string(to.join(read_only::LOCKED)).unwrap(),
+            read_only::LOCKED_CONTENTS,
+            "the file the platform refuses to copy did not arrive"
+        );
+    }
+
+    /// A repository is a directory something else may be writing. What has gone by the
+    /// time the copier reaches it is left out; anything else is the machine failing and
+    /// is raised.
+    #[test]
+    fn a_path_that_went_between_the_listing_and_the_read_is_left_out() {
+        let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        assert!(super::gone_or(Path::new("/nowhere"), Err::<(), _>(missing)).is_none());
+        assert_eq!(super::gone_or(Path::new("/nowhere"), Ok(7)), Some(7));
+    }
+
+    /// The copy is content and shape, never the source's mode. A tree copied out of a
+    /// base has to be one a test can go on writing in.
+    #[test]
+    fn what_is_copied_is_writable_however_locked_the_original_was() {
+        let root = TempDir::new().unwrap();
+        let from = root.path().join("project");
+        let from = nodal_fixture::write(&from);
+
+        let to = root.path().join("copy");
+        copy(&from, &to);
+
+        let copied = to.join(read_only::LOCKED);
+        std::fs::write(&copied, "written again\n")
+            .expect("the copy carried the mode that denies every write");
+    }
 }

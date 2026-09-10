@@ -24,12 +24,13 @@
 //! turns the answer from "every commit in the project" into "the commits this unit
 //! made", which is the question that was being asked.
 //!
-//! One class of path is never work: the files Nodal itself writes into a home — the
-//! activation, the manifest and the marker. They are normally invisible to `git status`
-//! anyway, because a create puts them in the home's `.git/info/exclude`
-//! ([`crate::env::files::hide`]). Leaving them out here as well is what stops a home
-//! whose exclude file somebody edited from refusing every reclaim for ever, over files
-//! Nodal put there and nobody wrote.
+//! One class of path is never work: the files Nodal itself writes into a home. Which
+//! those are is stated once, in [`crate::env::files::WRITTEN`], and read here rather
+//! than listed again. They are normally invisible to `git status` anyway, because a
+//! create puts them in the home's `.git/info/exclude` ([`crate::env::files::hide`]).
+//! Leaving them out here as well is what stops a home whose exclude file somebody
+//! edited from refusing every reclaim for ever, over files Nodal put there and nobody
+//! wrote.
 //!
 //! The check reads and never writes. What is done about a finding — refuse, or take a
 //! snapshot and go on — belongs to the operation.
@@ -179,16 +180,28 @@ fn paths_where(status: &Summary, wanted: impl Fn(&Entry) -> bool) -> Vec<PathBuf
     status
         .entries
         .iter()
-        .filter(|entry| wanted(entry) && !is_nodals_own(&entry.path))
+        .filter(|entry| wanted(entry) && !is_nodals_own(entry))
         .map(|entry| entry.path.clone())
         .collect()
 }
 
-/// Whether a path is one Nodal writes into a home rather than one a person wrote.
-fn is_nodals_own(path: &Path) -> bool {
-    let own =
-        crate::env::files::PATHS.iter().chain(std::iter::once(&crate::lifecycle::marker::FILE));
-    own.map(Path::new).any(|mine| mine == path)
+/// Whether an entry is a file Nodal wrote into the home rather than work a person did.
+///
+/// Two halves, and the second is what keeps this from ever hiding somebody's work.
+///
+/// The name has to be one Nodal owns ([`crate::env::files::is_own`]). And the entry has
+/// to be **untracked**, because every file Nodal writes into a home is untracked there:
+/// it is written after the clone and it is hidden from `git status` through the home's
+/// `.git/info/exclude`. A path of that name which Git tracks is the project's own file,
+/// carried by the clone, and a change to it is a change somebody made. That is the
+/// same rule the table states, read from the other side.
+///
+/// That distinction is the whole of the difference between the two settings files. A
+/// project that commits `.claude/settings.json` gets a home whose copy is tracked and
+/// which the adapter never writes to; a project that does not gets one Nodal wrote
+/// ([`crate::adapters::claude_code`]).
+fn is_nodals_own(entry: &Entry) -> bool {
+    entry.state == State::Untracked && crate::env::files::is_own(&entry.path)
 }
 
 /// A finding over a list of paths, or nothing when the list is empty.
@@ -245,6 +258,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{Finding, SAMPLE, Uniqueness};
+    use crate::git::status::{Change, Entry, State};
 
     fn sample(count: usize) -> Finding {
         Finding::Untracked {
@@ -255,11 +269,31 @@ mod tests {
 
     #[test]
     fn the_files_nodal_writes_into_a_home_are_not_a_persons_work() {
-        for own in [".nodal/id", ".nodal/env", ".nodal/manifest.toml", ".envrc"] {
-            assert!(super::is_nodals_own(std::path::Path::new(own)), "{own}");
+        for own in
+            [".nodal/id", ".nodal/env", ".nodal/manifest.toml", ".envrc", ".claude/settings.json"]
+        {
+            assert!(super::is_nodals_own(&untracked(own)), "{own}");
         }
-        assert!(!super::is_nodals_own(std::path::Path::new("app/main.txt")));
-        assert!(!super::is_nodals_own(std::path::Path::new(".nodal-notes")));
+        assert!(!super::is_nodals_own(&untracked("app/main.txt")));
+        assert!(!super::is_nodals_own(&untracked(".nodal-notes")));
+    }
+
+    /// The one case where the name is Nodal's and the file is not: a project that
+    /// commits its own settings gets a home whose copy Git tracks, and an edit to it is
+    /// work nowhere else has.
+    #[test]
+    fn a_settings_file_the_project_commits_is_the_projects_and_not_nodals() {
+        let tracked = Entry {
+            path: PathBuf::from(".claude/settings.json"),
+            state: State::Tracked { index: Change::Unmodified, worktree: Change::Modified },
+            origin: None,
+        };
+        assert!(!super::is_nodals_own(&tracked));
+    }
+
+    /// An entry as `git status` reports an untracked path.
+    fn untracked(path: &str) -> Entry {
+        Entry { path: PathBuf::from(path), state: State::Untracked, origin: None }
     }
 
     #[test]
