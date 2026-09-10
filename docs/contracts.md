@@ -357,6 +357,15 @@ is what a person runs when something is wrong, so it reports what needs no regis
 caches of the checkout — and states the mismatch as a note: both schema versions, the fact that nothing in
 the registry was read, and the one command that upgrades this copy of Nodal. Nothing is fetched to say it.
 
+`--machine [ROOT ...]` walks for `.git` under each root. With no path, it walks the home directory.
+Add roots with `--machine <path>`. The default depth is 6. `--depth` changes it. The walk skips Nodal's
+state directory, any registered unit home, and a mount that is not a local filesystem. It reports each
+skip and the reason. It groups clones by the URL of `origin`. SSH and HTTPS forms of one host path are
+one group. A clone with no remote is its own group, named by its path. Each group states the clone count,
+unpushed commits, dirty clones, logical size, the largest ignored directories, and last commit age.
+"nothing unique" means every clone is clean and every commit exists on a remote. `--json` carries every
+clone. The walk writes nothing.
+
 `--json` and the default output are two renderings of one value, so a field a person sees is a field a
 tool can read. A read type carries the instant it was taken as `now`, and every relative time it prints
 is measured from that, so a rendering is a function of its inputs.
