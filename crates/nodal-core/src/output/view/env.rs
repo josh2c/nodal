@@ -65,6 +65,10 @@ impl Render for EnvReport {
         ])]);
         doc.push(Block::blank());
         doc.push(Block::table(vars_table(&self.vars)));
+        if let Some(line) = self.stand_in_line() {
+            doc.push(Block::blank());
+            doc.push(Block::line(line));
+        }
         if self.missing.is_empty() {
             return doc;
         }
@@ -72,6 +76,33 @@ impl Render for EnvReport {
         doc.push(Block::line("missing"));
         doc.push(Block::table(missing_table(&self.missing)).at(2));
         doc
+    }
+}
+
+impl EnvReport {
+    /// Every name that holds a stand-in, in the order the file lists them.
+    #[must_use]
+    pub fn stand_ins(&self) -> Vec<&EnvName> {
+        self.vars.iter().filter(|var| var.origin == Origin::StandIn).map(|var| &var.name).collect()
+    }
+
+    /// The one line that says which names hold a stand-in, and nothing when none do.
+    ///
+    /// A stand-in is never silent ([`crate::env::stand_in`]). The table above already
+    /// says `a stand-in` in the origin column; this line is what a person reads without
+    /// looking down the column, and it says what a stand-in is.
+    fn stand_in_line(&self) -> Option<String> {
+        let names = self.stand_ins();
+        if names.is_empty() {
+            return None;
+        }
+        let list: Vec<String> = names.iter().map(ToString::to_string).collect();
+        Some(format!(
+            "{list} {holds} a stand-in: nodal made the value so a generate step can run, \
+             and no service answers on it",
+            list = list.join(", "),
+            holds = if list.len() == 1 { "holds" } else { "hold" },
+        ))
     }
 }
 
@@ -99,6 +130,7 @@ const fn origin(origin: Origin) -> &'static str {
         Origin::Identity => "nodal",
         Origin::Generated => "this unit",
         Origin::Machine => "this machine",
+        Origin::StandIn => "a stand-in",
     }
 }
 

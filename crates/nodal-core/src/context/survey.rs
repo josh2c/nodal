@@ -28,7 +28,10 @@ use rusqlite::Connection;
 use crate::git::history::{Commit, FileChange};
 use crate::git::status::{Change, Head, State, Summary};
 use crate::git::{Divergence, Git, Integration, Oid, Standing};
-use crate::model::{EnvState, Environment, Epistemic, Event, EventKind, Project, Unit, UnitStatus};
+use crate::model::manifest::Origin;
+use crate::model::{
+    EnvName, EnvState, Environment, Epistemic, Event, EventKind, Project, Unit, UnitStatus,
+};
 use crate::output::view::Remote;
 use crate::store::{environments, events, units};
 use crate::{Error, Result};
@@ -102,6 +105,13 @@ pub struct Snapshot {
     /// snapshot names the unit, and a reader that groups by cause needs the cause on
     /// its own ([`crate::output::notice`]).
     pub notes: Vec<String>,
+    /// The generated names whose value Nodal made rather than an adapter, as the home's
+    /// manifest marks them ([`crate::env::stand_in`]).
+    ///
+    /// The memory says these because the reader of the memory is an agent about to run
+    /// the project's own commands in the home. A value that parses and answers nothing
+    /// is the one fact about the environment such a reader cannot work out.
+    pub stand_ins: Vec<EnvName>,
 }
 
 impl Snapshot {
@@ -167,11 +177,30 @@ fn one(
         commands: events::list_recent_of_kinds(conn, unit.id, &[EventKind::Command], COMMANDS)?,
         tests: events::list_recent_of_kinds(conn, unit.id, &[EventKind::TestResult], TESTS)?,
         stated: stated.into_iter().filter(|event| event.epistemic == Epistemic::Stated).collect(),
+        stand_ins: stand_ins(home.as_ref()),
         unit,
         home,
         work,
         notes,
     })
+}
+
+/// The names the home's manifest marks as stand-ins.
+///
+/// A home this machine does not have, or one whose manifest cannot be read, gives none.
+/// The memory is written for every unit of a project on every command, so a manifest
+/// that is briefly absent is a memory with one fewer line rather than a failed compile.
+fn stand_ins(home: Option<&Environment>) -> Vec<EnvName> {
+    let Some(environment) = home else { return Vec::new() };
+    let Ok(manifest) = crate::env::files::read_manifest(&environment.home) else {
+        return Vec::new();
+    };
+    manifest
+        .env
+        .into_iter()
+        .filter(|(_, origin)| *origin == Origin::StandIn)
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// What Git says about one home.

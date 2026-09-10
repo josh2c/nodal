@@ -48,9 +48,10 @@ pub(crate) const PACKAGE_JSON: &str = r#"{
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
-    "lint": "node --check scripts/db.mjs && node --check tests/thing.test.mjs",
+    "lint": "node --check scripts/db.mjs && node --check scripts/generate.mjs && node --check tests/thing.test.mjs",
     "typecheck": "turbo run typecheck",
     "test": "node --test tests/*.test.mjs",
+    "generate": "node scripts/generate.mjs",
     "db:migrate": "node scripts/db.mjs migrate",
     "db:seed": "node scripts/db.mjs seed",
     "db:reset": "node scripts/db.mjs reset"
@@ -70,6 +71,7 @@ node_modules/
 dist/
 coverage/
 test-results/
+packages/config/src/generated/
 .env
 ";
 
@@ -179,6 +181,45 @@ on conflict do nothing;
 
 /// What `db:migrate`, `db:seed` and `db:reset` actually run. Dependency-free, so the
 /// fixture installs and builds with no database anywhere near it.
+pub(crate) const GENERATE_SCRIPT: &str = r#"// Generate the typed database client, the way a Prisma or a Drizzle project does.
+//
+// Dependency-free, because the fixture must run this without a database and without a
+// network. What it takes from a real generate step is the one property this project
+// exists to assert: the step reads DATABASE_URL, parses it, and refuses to run when it
+// is unset. It never connects.
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const ROOT = new URL("..", import.meta.url).pathname;
+
+const url = process.env.DATABASE_URL;
+if (!url) {
+  console.error("generate: DATABASE_URL is unset");
+  process.exit(1);
+}
+
+let parsed;
+try {
+  parsed = new URL(url);
+} catch {
+  console.error(`generate: DATABASE_URL is not a URL: ${url}`);
+  process.exit(1);
+}
+if (!parsed.port) {
+  console.error(`generate: DATABASE_URL names no port: ${url}`);
+  process.exit(1);
+}
+
+const out = join(ROOT, "packages/config/src/generated");
+mkdirSync(out, { recursive: true });
+writeFileSync(
+  join(out, "client.ts"),
+  `export const database = { host: ${JSON.stringify(parsed.hostname)}, port: ${parsed.port} };\n`,
+);
+console.log(`generate: wrote the client for ${parsed.hostname}:${parsed.port}`);
+"#;
+
+/// The database script the recipe names for migrate, seed and reset.
 pub(crate) const DB_SCRIPT: &str = r#"// Apply the project's migrations and seed with psql, in file-name order.
 //
 // Dependency-free on purpose: the fixture must install and build without a database,

@@ -29,8 +29,8 @@ use nodal_core::model::{
 use nodal_core::output::view::verdict::{Behind, RowKind, Verdict, WorktreeRow};
 use nodal_core::output::view::{
     Arrival, BaseList, BaseRow, Created, Done, EnvLine, EventLog, Exclusion, Explained, Freshness,
-    InitReport, Invalidation, Origin, PortLine, Ps, Remote, Running, SharedResource, Status,
-    ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
+    InitReport, Invalidation, Origin, PortLine, Ps, Remote, Running, SharedResource, StandInLine,
+    Status, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
 };
 use nodal_core::output::{Format, Render, render, watch};
 use nodal_core::recipe::gap::{Gap, GapKey};
@@ -516,6 +516,10 @@ fn a_created_unit_renders_both_ways() {
             path: PathBuf::from("test-results"),
             reason: String::from("test output"),
         }],
+        stand_ins: vec![
+            EnvName::parse("REDIS_URL").expect("an env name"),
+            EnvName::parse("SUPABASE_URL").expect("an env name"),
+        ],
     };
     both("created", &created);
 }
@@ -538,6 +542,7 @@ fn an_adopted_unit_closes_with_a_summary_of_what_happened() {
         unit,
         missing: missing(),
         kept: Vec::new(),
+        stand_ins: Vec::new(),
     };
     both("created_adopted", &adopted);
 }
@@ -552,6 +557,7 @@ fn an_adoption_with_nothing_missing_still_says_what_it_did() {
         unit,
         missing: Vec::new(),
         kept: Vec::new(),
+        stand_ins: Vec::new(),
     };
     both("created_adopted_complete", &adopted);
 }
@@ -611,6 +617,13 @@ fn an_explanation_of_a_cloned_home_renders_both_ways() {
             from: String::from("/home/j/.nodal/project/b/01J9W000"),
             body: String::from("Removed 2 caches from the new home."),
         }],
+        stand_ins: Some(vec![StandInLine {
+            name: String::from("REDIS_URL"),
+            source: String::from(
+                "nodal, at create: no adapter produced it, so the value is derived from \
+                 the unit's handle and a port of the block 41230\u{2013}41329",
+            ),
+        }]),
         ports: vec![PortLine {
             name: String::from("app"),
             port: 41_230,
@@ -632,6 +645,7 @@ fn an_explanation_of_an_adopted_checkout_renders_both_ways() {
         origin: Origin::Adopted { root: true },
         excluded: Vec::new(),
         invalidated: Vec::new(),
+        stand_ins: Some(Vec::new()),
         ports: vec![PortLine {
             name: String::from("app"),
             port: 41_231,

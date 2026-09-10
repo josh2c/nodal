@@ -33,7 +33,9 @@ pub use crate::output::view::doctor::{Checkout, Doctor, Finding, Kind, Note};
 pub use crate::output::view::done::Done;
 pub use crate::output::view::env::{EnvReport, VarLine};
 pub use crate::output::view::event::EventLog;
-pub use crate::output::view::explain::{Exclusion, Explained, Invalidation, Origin, PortLine};
+pub use crate::output::view::explain::{
+    Exclusion, Explained, Invalidation, Origin, PortLine, StandInLine,
+};
 pub use crate::output::view::init::InitReport;
 pub use crate::output::view::machine::MachineReport;
 pub use crate::output::view::merge::{Conflict, Merged, StageLine};

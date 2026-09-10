@@ -413,6 +413,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
             unit: params.unit.clone(),
             environment: params.environment.clone(),
             recipe: params.recipe.clone(),
+            block: params.block,
             state_dir: params.state_dir.clone(),
         }))
 }

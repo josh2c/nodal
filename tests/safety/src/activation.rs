@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use nodal_core::env::secrets::{MachineSecrets, SecretSource, UnitGenerated};
-use nodal_core::env::{self, Produced, files};
+use nodal_core::env::{self, Produced, StandIns, files};
 use nodal_core::model::{EnvName, Environment, Project, Recipe, Unit};
 
 /// One environment name.
@@ -39,6 +39,20 @@ pub fn write_secrets(path: &Path, secrets: &str) {
     owner_only(path);
 }
 
+/// What a generated name is resolved from: what the adapters produced, and what mints a
+/// stand-in for the names none of them answered.
+///
+/// The two travel together because they answer one question between them, and because
+/// a writer with each as its own argument is a writer with six.
+#[derive(Debug, Default)]
+pub struct Generated<'a> {
+    /// The values the adapters produced, by name.
+    pub produced: BTreeMap<EnvName, String>,
+    /// What mints a stand-in for the rest. `None` leaves such a name on the missing
+    /// list, which is what a test about missing names wants.
+    pub stand_ins: Option<&'a StandIns>,
+}
+
 /// Resolve one unit's environment and write the three activation files into its home.
 ///
 /// # Panics
@@ -49,15 +63,21 @@ pub fn write(
     home: &Path,
     secrets_file: &Path,
     recipe: &Recipe,
-    produced: BTreeMap<EnvName, String>,
+    generated: Generated<'_>,
     subject: (&Unit, &Environment, &Project),
 ) {
     let machine = MachineSecrets::open(secrets_file).expect("the secrets file is readable");
-    let generated = UnitGenerated::default();
-    let sources: [&dyn SecretSource; 2] = [&generated, &machine];
+    let unit_generated = UnitGenerated::default();
+    let sources: [&dyn SecretSource; 2] = [&unit_generated, &machine];
 
-    let activation = env::resolve(subject, recipe, &Produced::new(produced), &sources)
-        .expect("the environment resolves");
+    let activation = env::resolve(
+        subject,
+        recipe,
+        &Produced::new(generated.produced),
+        generated.stand_ins,
+        &sources,
+    )
+    .expect("the environment resolves");
     let (unit, environment, project) = subject;
     let manifest = activation.manifest(unit, environment, project);
     files::write(home, &activation, &manifest).expect("the activation files are written");

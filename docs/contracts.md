@@ -41,6 +41,23 @@ block into the repository the project shares. The names are Nodal's own.
 origin of each name, and every declared name that no source answered. It holds no value. Its shape
 is published as `schemas/v1/manifest.json`.
 
+## Stand-in values
+A name under `env.generated` that no adapter answers gets a stand-in at create. Nodal derives the
+value from the unit's handle and a port of the project's block. The value has the shape the name
+asks for. A generate step that reads the name and parses the value runs. No service answers on the
+value.
+
+The manifest marks such a name with the origin `stand_in`. `nodal env` marks it in the origin column
+and in one line under the table. `nodal explain` states where the value came from. The unit's memory
+states the same. The create names every stand-in it made.
+
+A name whose shape asks for a bare port takes no stand-in. A port a process binds is granted, never
+derived. Such a name stays on the missing list.
+
+`env.stand_in` pins the template for one name. Nodal fills `{slug}` with the unit's handle. Nodal
+fills `{port}` with the derived port. An adapter that produces the name replaces the stand-in at the
+next activation.
+
 ## The unit's memory
 `WORKUNIT.md` in a unit's home states what the unit is and what changed around it. The next agent,
 terminal or person reads it to continue the work. Every nodal command that touches a unit writes the
@@ -139,7 +156,7 @@ would make the next clone copy a copy.
 
 ## `nodal.toml`
 `backend`, `package_manager`, `commands.{dev,build,test,migrate,seed}`, `toolchain`, `db.{kind,url_var}`,
-`services.{shared,per_unit}`, `env.{required_local,generated,secrets}`, `base.{exclude,invalidate}`,
+`services.{shared,per_unit}`, `env.{required_local,generated,secrets,stand_in}`, `base.{exclude,invalidate}`,
 `hooks.{pre_new,post_new,pre_reclaim,post_reclaim}`, `sync.auto_irreversible`, `reclaim.trash_retention`
 (in days). Alongside those, and additive to them: `package_manager_pin`, `monorepo`, `task_cache`,
 `dockerfile`, `compose`, `commands.{lint,typecheck,reset}`, `db.{tool,migrations_dir,fixed_ports}`.

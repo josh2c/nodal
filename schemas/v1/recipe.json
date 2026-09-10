@@ -255,6 +255,17 @@
             "$ref": "#/$defs/EnvName"
           },
           "type": "array"
+        },
+        "stand_in": {
+          "additionalProperties": false,
+          "default": {},
+          "description": "The stand-in a generated name takes when no adapter answers it.\n\nThe value is a template. Nodal fills `{slug}` with the unit's handle and\n`{port}` with a port derived from the project's block and that handle. A name\nwith no entry here takes the stand-in its own shape asks for\n([`crate::env::stand_in`]). A name outside `generated` is ignored.",
+          "patternProperties": {
+            "^[A-Z_][A-Z0-9_]*$": {
+              "type": "string"
+            }
+          },
+          "type": "object"
         }
       },
       "type": "object"
@@ -568,7 +579,8 @@
       "default": {
         "generated": [],
         "required_local": [],
-        "secrets": []
+        "secrets": [],
+        "stand_in": {}
       },
       "description": "Environment variables."
     },

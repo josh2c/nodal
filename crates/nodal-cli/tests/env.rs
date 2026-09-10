@@ -59,7 +59,13 @@ fn write_home(root: &Path) -> std::path::PathBuf {
             .into();
     let secrets_file = root.join("secrets.env");
     activation::write_secrets(&secrets_file, &format!("SESSION_SECRET={SECRET}\n"));
-    activation::write(&home, &secrets_file, &recipe(), produced, (&unit, &environment, &project));
+    activation::write(
+        &home,
+        &secrets_file,
+        &recipe(),
+        activation::Generated { produced, stand_ins: None },
+        (&unit, &environment, &project),
+    );
     home
 }
 

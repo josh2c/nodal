@@ -15,9 +15,15 @@
 //! ([`crate::model::Missing`]). A working copy whose mail credential is absent still
 //! runs everything that does not send mail, and refusing to create it would be the
 //! wrong trade every time.
+//!
+//! One class of name is the exception, and it is the exception because leaving it empty
+//! breaks a step rather than one feature. A name under `env.generated` that no adapter
+//! answered takes a stand-in ([`stand_in`]), so a project's generate step runs in a unit
+//! whose services are not up yet. A stand-in is reported everywhere the name appears.
 
 pub mod files;
 pub mod secrets;
+pub mod stand_in;
 pub mod vars;
 
 use std::collections::BTreeMap;
@@ -27,6 +33,7 @@ use crate::model::manifest::{Manifest, Missing, Origin, Want};
 use crate::model::{EnvName, Environment, Project, Recipe, Timestamp, Unit};
 
 pub use crate::env::secrets::{MachineSecrets, SecretSource, UnitGenerated};
+pub use crate::env::stand_in::StandIns;
 
 /// One variable of an activated home.
 ///
@@ -82,6 +89,19 @@ pub struct Activation {
 }
 
 impl Activation {
+    /// Every name that holds a stand-in rather than a produced value, in file order.
+    ///
+    /// This is what the create reports and what every other surface reads back out of
+    /// the manifest. A stand-in is never silent ([`crate::env::stand_in`]).
+    #[must_use]
+    pub fn stand_ins(&self) -> Vec<EnvName> {
+        self.vars
+            .iter()
+            .filter(|var| var.origin == Origin::StandIn)
+            .map(|var| var.name.clone())
+            .collect()
+    }
+
     /// The variable with this name, if the home has one.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&EnvVar> {
@@ -114,9 +134,10 @@ impl Activation {
 /// What activation is assembled from, besides the recipe and the registry rows.
 ///
 /// `generated` is what the service adapters produced for this unit — ports, URLs, a
-/// connection string. Names the recipe lists under `env.generated` are filled from it;
-/// a name it does not carry is reported missing rather than invented here, because what
-/// a generated value has to be is the adapter's knowledge (`ServiceAdapter`).
+/// connection string. Names the recipe lists under `env.generated` are filled from it
+/// first, because what a real generated value has to be is the adapter's knowledge
+/// (`ServiceAdapter`). A name it does not carry falls to a stand-in ([`stand_in`]), and
+/// to the missing list when the caller passes no minter.
 #[derive(Debug, Clone, Default)]
 pub struct Produced(BTreeMap<EnvName, String>);
 
@@ -148,6 +169,7 @@ pub fn resolve(
     subject: (&Unit, &Environment, &Project),
     recipe: &Recipe,
     produced: &Produced,
+    stand_ins: Option<&StandIns>,
     sources: &[&dyn SecretSource],
 ) -> Result<Activation> {
     let (unit, environment, project) = subject;
@@ -158,9 +180,13 @@ pub fn resolve(
     let mut missing = Vec::new();
 
     for name in &recipe.env.generated {
-        match produced.0.get(name) {
+        if let Some(value) = produced.0.get(name) {
+            vars.push(EnvVar::new(name.clone(), Origin::Generated, secrets::Value::new(value)));
+            continue;
+        }
+        match stand_ins.map(|minter| minter.mint(name)).transpose()?.flatten() {
             Some(value) => {
-                vars.push(EnvVar::new(name.clone(), Origin::Generated, secrets::Value::new(value)));
+                vars.push(EnvVar::new(name.clone(), Origin::StandIn, secrets::Value::new(value)));
             }
             None => missing.push(Missing { name: name.clone(), want: Want::Generated }),
         }

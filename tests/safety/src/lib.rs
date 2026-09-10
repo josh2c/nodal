@@ -49,6 +49,7 @@
 //! | a session's home | a file nodal wrote for an agent shows as the agent's work, and is merged as it | `tests/hook_home.rs` |
 //! | hook scope | an install nobody asked for leaves a file in a repository, or the provider ends a session in a project that is not Nodal's | `tests/claude_scope.rs` |
 //! | doctor reads only | a read command changes the machine it is reporting on | `tests/doctor_writes_nothing.rs` |
+//! | stand-in values | a create calls a unit ready with a generated value its own generate step needs | `tests/stand_in_values.rs` |
 //!
 //! ## How the properties are asserted
 //!

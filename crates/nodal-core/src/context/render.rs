@@ -79,6 +79,9 @@ fn facts(subject: &Snapshot, test_command: Option<&str>) -> Vec<String> {
     lines.push(field("branch", subject.unit.branch.as_str()));
     lines.push(field("home", &home(subject)));
     lines.extend(standing(subject));
+    if let Some(line) = stand_ins(subject) {
+        lines.push(line);
+    }
     lines.extend(commands(subject));
     if let Some(line) = tests(subject, test_command) {
         lines.push(line);
@@ -107,6 +110,27 @@ fn home(subject: &Snapshot) -> String {
         || String::from("none on this machine"),
         |environment| environment.home.display().to_string(),
     )
+}
+
+/// Which names hold a value Nodal made rather than a service, in one line.
+///
+/// Nothing is written when every generated name has a real value. The line exists for
+/// the reader who is about to run the project's own commands: a stand-in parses and
+/// answers nothing, and a connection refused against one reads exactly like a service
+/// that is down.
+fn stand_ins(subject: &Snapshot) -> Option<String> {
+    if subject.stand_ins.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = subject.stand_ins.iter().map(ToString::to_string).collect();
+    Some(field(
+        "stand-in env",
+        &format!(
+            "{names} — nodal made these values so a generate step can run; no service \
+             answers on them",
+            names = names.join(", ")
+        ),
+    ))
 }
 
 /// Where the branch stands, and what the tree holds.

@@ -67,5 +67,9 @@
       "path": "test-results",
       "reason": "test output"
     }
+  ],
+  "stand_ins": [
+    "REDIS_URL",
+    "SUPABASE_URL"
   ]
 }

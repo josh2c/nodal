@@ -16,3 +16,7 @@
   where the ports came from
     NAME  PORT   FROM
     app   41230  the block 41230-41329 this project was granted
+
+  where the stand-in values came from
+    NAME       WHERE THE VALUE CAME FROM
+    REDIS_URL  nodal, at create: no adapter produced it, so the value is derived from the unit's handle and a port of the block 41230–41329

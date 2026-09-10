@@ -55,4 +55,14 @@ cd "$root"
 pnpm run test
 pnpm run lint
 pnpm run typecheck
+
+# The generate step, which stands for every project whose client is generated from a
+# connection string. It must refuse without DATABASE_URL and run with one, because that
+# refusal is what stand-in values exist to answer (`crates/nodal-core/src/env/stand_in.rs`).
+if DATABASE_URL= pnpm run generate > /dev/null 2>&1; then
+  echo "acceptance (fixture): the generate step ran without DATABASE_URL" >&2
+  exit 1
+fi
+DATABASE_URL="postgresql://nodal:nodal@localhost:20043/fixture" pnpm run generate
+echo "acceptance (fixture): the generate step needs DATABASE_URL and runs with one"
 echo "acceptance (fixture): the project the recipe describes is one that runs"
