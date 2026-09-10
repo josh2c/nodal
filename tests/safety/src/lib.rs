@@ -53,6 +53,7 @@
 //! | a kept clone | a failed install throws away the clone it was installing into | `tests/base_retry.rs` |
 //! | a reason with every error | a tool fails and the message does not say what it wrote | `tests/base_retry.rs` |
 //! | a pin acted on | a host installs at a version the project did not ask for | `tests/base_pin.rs` |
+//! | one clone at any worker count | the threads a copy runs on change the tree it makes | `tests/clone_identity.rs` |
 //!
 //! ## How the properties are asserted
 //!
@@ -61,10 +62,12 @@
 //! suite types it. Nothing here reads or writes the state directory, the per-machine
 //! secrets file or the hook approvals of whoever is running the tests.
 //!
-//! Two properties are also asserted below the binary, because the binary cannot state
+//! Three properties are also asserted below the binary, because the binary cannot state
 //! them. Concurrency needs many callers at one instant, so the port suite opens one
-//! registry connection per thread, as `crates/nodal-core/tests/ports.rs` does; and
-//! "nothing changed" needs the bytes on both sides, so [`Snapshot`] holds them.
+//! registry connection per thread, as `crates/nodal-core/tests/ports.rs` does; "nothing
+//! changed" needs the bytes on both sides, so [`Snapshot`] holds them; and a worker
+//! count is not something `nodal new` takes, so the clone-identity suite calls the
+//! copier with one.
 //!
 //! ## The linked temporary directory
 //!

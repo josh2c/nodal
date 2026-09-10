@@ -28,7 +28,10 @@
 #   - a reason with every error: a failed install's message carries what the tool wrote
 #     on standard output as well as on standard error;
 #   - a pin acted on: a package-manager version the host cannot run is refused before
-#     the clone, with the tool and both versions named.
+#     the clone, with the tool and both versions named;
+#   - one clone at any worker count: a copy made on one, four, eight and sixteen workers
+#     is the same tree byte for byte and reports the same clone, on both backends, and a
+#     file nothing may read stops it with the same reason at every count.
 #
 # The suite is then run a second time with the temporary directory reached through a
 # symbolic link, as `ci/acceptance-list.sh` and `ci/acceptance-doctor.sh` do and for the

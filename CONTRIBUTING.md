@@ -18,6 +18,11 @@ The hot paths have a 5 ms cold-start budget. `ci/startup-budget.sh` measures the
 release binary and fails above a threshold calibrated for the CI runner. Read the top of that
 script before you change the threshold. The harness is `benches/startup`.
 
+A clone is the other measured path. `ci/measure-materialize.sh` clones a large tree at
+each worker count. It prints the curve and checks that every clone is the same tree. CI
+does not run it. Run it yourself when you change `workspace/tree.rs`. Record the new
+numbers in its header.
+
 ## Code rules
 
 See `docs/code-structure.md`. The short version:

@@ -13,6 +13,9 @@ name = "nodal_safety"
 path = "src/lib.rs"
 
 [dependencies]
+# The one call that sets a modification time without following a link, which the
+# clone-identity suite needs to give a fixture tree times of its own.
+libc.workspace = true
 nodal-core.workspace = true
 nodal-fixture.workspace = true
 serde_json.workspace = true

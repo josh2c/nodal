@@ -447,6 +447,7 @@ dependencies = [
 name = "nodal-safety"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "nodal-core",
  "nodal-fixture",
  "serde_json",
