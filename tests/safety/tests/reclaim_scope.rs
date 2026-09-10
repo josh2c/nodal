@@ -14,10 +14,10 @@
 //! Both levels are real processes, started against a real unit, because the property is
 //! about what a signal reaches and a table a test wrote reaches nothing.
 //!
-//! The scan reads `/proc`, which macOS does not have, so the three tests that need it
-//! say which claim they are not making rather than passing quietly. The fourth needs no
-//! scan: what it asserts is that a tether is stopped, and `kill` answers for a process
-//! on every host.
+//! The scan reads `/proc`, which macOS does not have, so the four tests that need it say
+//! which claim they are not making rather than passing quietly. The one that does not is
+//! the control: what it asserts is that a tether is stopped, and `kill` answers for a
+//! process on every host.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
