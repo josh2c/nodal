@@ -11,11 +11,16 @@
 //! Nodal's whole state directory with every home, base and trashed home in it. The
 //! worktree outside the checkout is a tree of its own here for the same reason it is a
 //! row of its own in the report: doctor reads it because the repository names it, so a
-//! snapshot of the checkout would not be watching the directory doctor opened. The registry file is the one thing left out, and it is left out for a stated
-//! reason rather than to make the test pass: every command that opens the registry first
-//! finishes or rolls back an operation an earlier run was killed in the middle of, and
-//! that preamble writes. It is not doctor. So the registry's *rows* are read before and
-//! after instead, and they have to be the same rows.
+//! snapshot of the checkout would not be watching the directory doctor opened.
+//!
+//! The registry is the one thing left out, and it is left out for a stated reason rather
+//! than to make a test pass. Two things about it are not doctor. Every command that opens
+//! it first finishes or rolls back an operation an earlier run was killed in the middle
+//! of, and that preamble writes. And SQLite makes `registry.db-wal` and `registry.db-shm`
+//! beside it on every open and removes them on every close, which moves the state root's
+//! change time whatever the command was. Both were measured, and both happen to a command
+//! that only reads. So the registry's *rows* are read before and after instead, and they
+//! have to be the same rows.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
@@ -71,13 +76,40 @@ fn rows(machine: &Machine) -> String {
     lines.join("\n")
 }
 
-/// The change time of a directory, which moves when anything is made in it or removed
-/// from it. A file written and removed again leaves no trace a snapshot can see, so this
-/// is the reading that catches a probe.
-fn changed_at(path: &Path) -> i64 {
+/// The change time of a directory, in whole nanoseconds, which moves when anything is
+/// made in it or removed from it. A file written and removed again leaves no trace a
+/// snapshot can see, so this is the reading that catches a probe.
+///
+/// Seconds are not enough. The change this catches happens in a few tens of
+/// milliseconds, so a reading in seconds answers "unchanged" for every run that fits
+/// inside one second and "changed" for the ones that straddle a boundary. That is a
+/// coin, not an instrument.
+fn changed_at(path: &Path) -> (i64, i64) {
     use std::os::unix::fs::MetadataExt as _;
 
-    std::fs::metadata(path).expect("a readable directory").ctime()
+    let held = std::fs::metadata(path).expect("a readable directory");
+    (held.ctime(), held.ctime_nsec())
+}
+
+/// What a probe leaves behind, anywhere under `root`.
+///
+/// The whole tree and not the top of it. A probe goes in the directory it is asking
+/// about, and doctor reports on every base, home and trashed home under the state root.
+fn probe_leftovers(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if entry.file_name().to_string_lossy().starts_with(".nodal-sharing-") {
+                found.push(path.clone());
+            }
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                pending.push(path);
+            }
+        }
+    }
+    found
 }
 
 /// Doctor asks no filesystem whether it shares blocks. It reads the record that was
@@ -87,28 +119,57 @@ fn changed_at(path: &Path) -> i64 {
 /// A snapshot cannot see this. A probe writes a file, clones it and removes both, and a
 /// reading taken afterwards finds the directory holding exactly what it held before. The
 /// change time is what the write moved, and the project's bases directory is where the
-/// probe used to go: nothing else writes there while a report is being made.
+/// probe goes: nothing else writes there while a report is being made.
+///
+/// **The state root itself is not watched this way, and the reason is measured.** Every
+/// command that opens the registry makes `registry.db-wal` and `registry.db-shm` beside
+/// it and removes them again when the connection closes. Four directory entries come and
+/// go, so the state root's change time moves on every run of every command, doctor
+/// included. That is SQLite keeping its own book, not doctor writing, and it is the same
+/// thing [`is_registry`] leaves out of the snapshots below for the same stated reason. A
+/// reading that cannot tell a probe from a write-ahead log is not evidence about a
+/// probe. What is evidence about the state root is
+/// [`doctor_says_when_nothing_recorded_whether_the_state_root_shares_blocks`], which
+/// removes the record and proves doctor does not take it again.
 #[test]
 fn doctor_asks_no_directory_whether_it_shares_blocks() {
     let machine = Machine::new();
     machine.unit("worker-import");
-    let watched =
-        [machine.state.clone(), machine.segment("b").expect("the bases"), machine.source.clone()];
+    let watched = [machine.segment("b").expect("the bases"), machine.source.clone()];
 
-    let before: Vec<i64> = watched.iter().map(|path| changed_at(path)).collect();
+    let before: Vec<(i64, i64)> = watched.iter().map(|path| changed_at(path)).collect();
     let report = stdout(&machine.nodal(&["doctor"]));
     assert!(!report.is_empty(), "doctor reported nothing");
 
     for (path, was) in watched.iter().zip(before) {
         assert_eq!(changed_at(path), was, "doctor wrote in {}", path.display());
     }
-    let left: Vec<_> = std::fs::read_dir(&machine.state)
-        .expect("a readable state root")
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.starts_with(".nodal-sharing-"))
-        .collect();
-    assert!(left.is_empty(), "doctor left a probe's files in the state root: {left:?}");
+    let left = probe_leftovers(&machine.state);
+    assert!(left.is_empty(), "doctor left a probe's files under the state root: {left:?}");
+}
+
+/// The instrument the test above depends on. A change time read in whole seconds calls a
+/// directory unchanged whenever the write it is watching for lands in the same second,
+/// which is most of them, so the reading has to carry nanoseconds.
+///
+/// This is not hypothetical. It is why `doctor_asks_no_directory_whether_it_shares_blocks`
+/// passed on every developer machine and failed on every CI runner while the state root's
+/// change time was moving on both.
+#[test]
+fn the_change_time_reading_notices_a_write_that_lands_in_the_same_second() {
+    let directory = tempfile::TempDir::new().expect("a temporary directory");
+    let before = changed_at(directory.path());
+
+    let planted = directory.path().join("a-probe-would-write-this");
+    std::fs::write(&planted, "x").expect("a writable directory");
+    std::fs::remove_file(&planted).expect("a removable file");
+
+    assert_ne!(
+        changed_at(directory.path()),
+        before,
+        "a file written and removed inside one second was not noticed, so the reading \
+         above cannot catch a probe"
+    );
 }
 
 /// A machine whose state root holds no record is told so, and doctor still writes

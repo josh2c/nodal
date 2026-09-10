@@ -117,6 +117,15 @@ impl Workspace {
         drop(crate::text::stdout(&self.nodal(&["init", "--force"])));
     }
 
+    /// Where this workspace's commands keep the settings Claude Code reads.
+    ///
+    /// It is beside the state directory and it is not `$HOME/.claude`
+    /// ([`crate::runner::Runner::config`]).
+    #[must_use]
+    pub fn config_dir(&self) -> &Path {
+        self.runner.config()
+    }
+
     /// The temporary root, which is where a test writes anything beside the project.
     #[must_use]
     pub fn root(&self) -> &Path {
