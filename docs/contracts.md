@@ -456,6 +456,9 @@ carrying `NODAL_ID`, a container carrying the `nodal.unit` label. `probable` mea
 the unit. Three readings are probable: a process whose working directory is inside a home, a
 container that mounts a home, and a granted port that has a listener. A row carries no other level.
 
+The level decides what a teardown does. `nodal reclaim` and `nodal gc` signal the certain level.
+They report the probable one and signal none of it.
+
 Nodal labels every container it starts with `nodal.unit` (the unit identifier) and
 `nodal.environment` (the materialisation). These are the container half of the environment-variable
 contract above.
