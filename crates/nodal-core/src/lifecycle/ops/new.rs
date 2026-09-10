@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::env::files;
 use crate::env::secrets::MachineSecrets;
-use crate::env::{Produced, resolve as resolve_env};
+use crate::env::{Produced, StandIns, resolve as resolve_env};
 use crate::fingerprint;
 use crate::git::{Git, scrub};
 use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Runner};
@@ -374,6 +374,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
             unit: params.unit.clone(),
             environment: params.environment.clone(),
             recipe: params.recipe.clone(),
+            block: params.block,
             state_dir: params.state_dir.clone(),
         }))
 }
@@ -620,6 +621,8 @@ pub(super) struct Activate {
     pub(super) environment: Environment,
     /// What the project declares it needs.
     pub(super) recipe: Recipe,
+    /// The block this project's ports come from. A stand-in takes a port of it.
+    pub(super) block: PortBlock,
     /// Where the per-machine secrets file lives.
     pub(super) state_dir: PathBuf,
 }
@@ -632,13 +635,21 @@ impl Step for Activate {
     /// The sources are asked here rather than while the plan is built, so that no
     /// resolved value is ever part of a plan or of what the journal keeps.
     ///
-    /// A declared name nothing answers is a line of the report, never a failure, and a
-    /// name the recipe expects a service to generate is one of those until the task
-    /// that starts the services fills it in.
+    /// A declared name nothing answers is a line of the report, never a failure. A name
+    /// the recipe expects a service to generate is the one exception: it takes a
+    /// stand-in here ([`crate::env::stand_in`]), so the project's generate step runs
+    /// before the task that starts the services has filled the real value in.
     fn apply(&self) -> Result<Output> {
         let machine = MachineSecrets::open(MachineSecrets::path_in(&self.state_dir))?;
         let subject = (&self.unit, &self.environment, &self.project);
-        let activation = resolve_env(subject, &self.recipe, &Produced::default(), &[&machine])?;
+        let stand_ins = StandIns::new(self.unit.slug.clone(), self.block, &self.recipe);
+        let activation = resolve_env(
+            subject,
+            &self.recipe,
+            &Produced::default(),
+            Some(&stand_ins),
+            &[&machine],
+        )?;
         let manifest = activation.manifest(&self.unit, &self.environment, &self.project);
         for note in files::write(&self.environment.home, &activation, &manifest)? {
             eprintln!("nodal: activation: {note}");

@@ -12,3 +12,6 @@
   where the ports came from
     NAME  PORT   FROM
     app   41231  the block 41230-41329 this project was granted
+
+  where the stand-in values came from
+    no name holds a stand-in: every generated name has a real value

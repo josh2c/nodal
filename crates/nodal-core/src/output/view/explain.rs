@@ -89,6 +89,15 @@ pub struct PortLine {
     pub source: String,
 }
 
+/// One generated name that holds a stand-in, and where the value came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StandInLine {
+    /// The name.
+    pub name: String,
+    /// Where the value came from, in words.
+    pub source: String,
+}
+
 /// Why one unit is as it is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Explained {
@@ -107,6 +116,13 @@ pub struct Explained {
     pub invalidated: Vec<Invalidation>,
     /// The ports the unit holds.
     pub ports: Vec<PortLine>,
+    /// The generated names that hold a stand-in rather than a produced value.
+    ///
+    /// `None` when the home's manifest could not be read, which is what a unit whose
+    /// home has been reclaimed or is on another host gives. An empty list is the
+    /// stronger claim that the manifest was read and marks no name.
+    #[serde(default)]
+    pub stand_ins: Option<Vec<StandInLine>>,
 }
 
 impl Render for Explained {
@@ -123,6 +139,12 @@ impl Render for Explained {
         doc.push(Block::blank());
         doc.push(Block::line("where the ports came from").at(1));
         doc.push(section(port_table(&self.ports), NOTHING_GRANTED));
+        doc.push(Block::blank());
+        doc.push(Block::line("where the stand-in values came from").at(1));
+        match &self.stand_ins {
+            Some(lines) => doc.push(section(stand_in_table(lines), NO_STAND_IN)),
+            None => doc.push(Block::line(MANIFEST_UNREAD).at(2)),
+        }
         doc
     }
 }
@@ -163,6 +185,25 @@ const NOTHING_INVALIDATED: &str = "no cache was removed: nothing in the home rec
 
 /// The same, for a unit that holds no port.
 const NOTHING_GRANTED: &str = "no port is granted to this unit";
+
+/// The same, for a unit whose every generated name was answered by an adapter.
+const NO_STAND_IN: &str = "no name holds a stand-in: every generated name has a real value";
+
+/// The same, for a home whose manifest this host cannot read.
+const MANIFEST_UNREAD: &str = "not read: the home's manifest is not on this machine, so which names hold a \
+     stand-in is unknown here";
+
+/// The columns of the stand-in table.
+const STAND_IN_COLUMNS: [&str; 2] = ["name", "where the value came from"];
+
+/// Which names hold a stand-in, and what made each value.
+fn stand_in_table(lines: &[StandInLine]) -> Table {
+    let mut table = Table::new(&STAND_IN_COLUMNS);
+    for line in lines {
+        table.push(vec![line.name.clone(), line.source.clone()]);
+    }
+    table
+}
 
 /// A table, or one line saying why there is none.
 fn section(table: Table, empty: &str) -> Block {

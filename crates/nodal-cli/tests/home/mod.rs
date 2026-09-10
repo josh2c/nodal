@@ -143,5 +143,11 @@ fn write_activation(root: &Path, home: &Path, subject: (&Unit, &Environment, &Pr
 
     let secrets_file = root.join("secrets.env");
     activation::write_secrets(&secrets_file, &format!("SESSION_SECRET={SECRET}\n"));
-    activation::write(home, &secrets_file, &recipe, produced, subject);
+    activation::write(
+        home,
+        &secrets_file,
+        &recipe,
+        activation::Generated { produced, stand_ins: None },
+        subject,
+    );
 }

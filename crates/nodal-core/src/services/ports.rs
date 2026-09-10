@@ -85,6 +85,29 @@ pub fn hashed(name: &str) -> Result<u16> {
     Ok(HASH_FIRST + offset)
 }
 
+/// The port inside `block` that `key` derives to, which is the same port every run.
+///
+/// A stand-in needs a port before the create's commit has granted one, so it takes a
+/// port of the project's own block by derivation rather than by grant
+/// ([`crate::env::stand_in`]). Nothing records it and nothing listens on it. Two keys
+/// may derive to one port and nothing here prevents that, for the reason
+/// [`hashed`] gives: a derived port is not a granted one.
+///
+/// Keeping it inside the project's block is what stops it from pointing at another
+/// project's service.
+///
+/// # Errors
+/// [`Error::InvalidValue`] when the digest could not be produced.
+pub fn derived(block: PortBlock, key: &str) -> Result<u16> {
+    let digest = crate::fingerprint::compute_port(key)?;
+    let span = u32::from(block.last - block.first) + 1;
+    let read = u32::from_str_radix(&digest.as_str()[..8], 16)
+        .map_err(|_| Error::InvalidValue { kind: "port digest", value: digest.to_string() })?;
+    let offset = u16::try_from(read % span)
+        .map_err(|_| Error::InvalidValue { kind: "port offset", value: read.to_string() })?;
+    Ok(block.first + offset)
+}
+
 /// One port a recipe pins, under the name the recipe gives it.
 #[derive(Debug, Clone, Copy)]
 struct Fixed<'a> {

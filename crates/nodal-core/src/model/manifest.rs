@@ -38,6 +38,12 @@ pub enum Origin {
     Generated,
     /// The per-machine file, `~/.nodal/secrets.env`.
     Machine,
+    /// Nodal itself, for a name under `env.generated` that no adapter answered.
+    ///
+    /// A stand-in is a value of the shape the name asks for, derived from the unit's
+    /// handle and the project's port block. It lets a step that only reads the name
+    /// run. It points at no service. An adapter that produces the name replaces it.
+    StandIn,
 }
 
 /// Why a declared name has no value.

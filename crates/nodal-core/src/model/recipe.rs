@@ -202,6 +202,13 @@ pub struct Env {
     pub generated: Vec<EnvName>,
     /// Names whose values come from a secret source.
     pub secrets: Vec<EnvName>,
+    /// The stand-in a generated name takes when no adapter answers it.
+    ///
+    /// The value is a template. Nodal fills `{slug}` with the unit's handle and
+    /// `{port}` with a port derived from the project's block and that handle. A name
+    /// with no entry here takes the stand-in its own shape asks for
+    /// ([`crate::env::stand_in`]). A name outside `generated` is ignored.
+    pub stand_in: BTreeMap<EnvName, String>,
 }
 
 /// What a base clone leaves out.

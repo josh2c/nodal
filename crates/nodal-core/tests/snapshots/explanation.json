@@ -37,5 +37,11 @@
       "port": 41230,
       "source": "the block 41230-41329 this project was granted"
     }
+  ],
+  "stand_ins": [
+    {
+      "name": "REDIS_URL",
+      "source": "nodal, at create: no adapter produced it, so the value is derived from the unit's handle and a port of the block 41230–41329"
+    }
   ]
 }

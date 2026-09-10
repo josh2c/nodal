@@ -4,4 +4,8 @@
   for       worker import: handle missing supervisor_id
   no value  DATABASE_URL
             STRIPE_KEY
+  stand-in  REDIS_URL
+            SUPABASE_URL
+            nodal made these values so a generate step can run
+            no service answers on them; an adapter replaces them
   kept      test-results is excluded by default (test output), but the commit tracks it, so the copy keeps it

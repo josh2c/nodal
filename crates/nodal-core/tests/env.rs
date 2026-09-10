@@ -131,6 +131,7 @@ fn activate(machine: &[(&str, &str)], generated: &[(&str, &str)]) -> Activated {
         (&unit, &environment, &project),
         &recipe,
         &Produced::new(values(PRODUCED)),
+        None,
         &sources,
     )
     .expect("activation reads its sources");

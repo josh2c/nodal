@@ -1,6 +1,6 @@
 //! Why a unit is as it is: the decisions behind one home, read back out of the record.
 //!
-//! Four questions, and each is answered from what was written down at the time rather
+//! Five questions, and each is answered from what was written down at the time rather
 //! than from what the same code would decide now. Which tree the home came from is the
 //! environment's `base_id`. What the clone left out is the exclusion table
 //! ([`crate::workspace::exclude`]) with the project's own `base.exclude` added, which is
@@ -13,8 +13,12 @@
 
 use rusqlite::Connection;
 
+use crate::env::files;
+use crate::model::manifest::Origin as EnvOrigin;
 use crate::model::{Environment, Project, RefName, Timestamp, Unit};
-use crate::output::view::explain::{Exclusion, Explained, Invalidation, Origin, PortLine};
+use crate::output::view::explain::{
+    Exclusion, Explained, Invalidation, Origin, PortLine, StandInLine,
+};
 use crate::recipe;
 use crate::store::{bases, environments, events, port_blocks};
 use crate::workspace::exclude;
@@ -54,6 +58,7 @@ pub fn explain(
         excluded: excluded(project, &origin)?,
         invalidated: invalidated(conn, unit)?,
         ports: ports(conn, project, &environment)?,
+        stand_ins: stand_ins(conn, project, &environment),
         origin,
     })
 }
@@ -148,4 +153,37 @@ fn ports(conn: &Connection, project: &Project, environment: &Environment) -> Res
             source: source.clone(),
         })
         .collect())
+}
+
+/// Which of the unit's names hold a stand-in, and where each value came from.
+///
+/// `None` says the manifest was not read. A home on another host, or one that has been
+/// reclaimed, gives that rather than an empty list, because an empty list is the claim
+/// that every generated name has a real value.
+fn stand_ins(
+    conn: &Connection,
+    project: &Project,
+    environment: &Environment,
+) -> Option<Vec<StandInLine>> {
+    let manifest = files::read_manifest(&environment.home).ok()?;
+    let source = match port_blocks::get(conn, project.id) {
+        Ok(Some(block)) => format!(
+            "nodal, at create: no adapter produced it, so the value is derived from the \
+             unit's handle and a port of the block {first}\u{2013}{last}",
+            first = block.first,
+            last = block.last
+        ),
+        Ok(None) | Err(_) => String::from(
+            "nodal, at create: no adapter produced it, so the value is derived from the \
+             unit's handle and a port of the project's block",
+        ),
+    };
+    Some(
+        manifest
+            .env
+            .iter()
+            .filter(|(_, origin)| **origin == EnvOrigin::StandIn)
+            .map(|(name, _)| StandInLine { name: name.to_string(), source: source.clone() })
+            .collect(),
+    )
 }

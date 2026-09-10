@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Result;
 use crate::env::files;
-use crate::model::{Environment, Manifest, Missing, Timestamp, Unit};
+use crate::model::{EnvName, Environment, Manifest, Missing, Origin, Timestamp, Unit};
 use crate::output::Render;
 use crate::output::human::{Block, Doc, Field, NONE};
 use crate::output::view::unit::{self, EnvLine, UnitRow};
@@ -51,6 +51,13 @@ pub struct Created {
     /// one line each when it does, because the home is then larger than the table says.
     #[serde(default)]
     pub kept: Vec<Kept>,
+    /// Every generated name Nodal gave a stand-in, because no adapter answered it.
+    ///
+    /// The create names every one. A value that looks real and is not is worse than no
+    /// value, so a person is told at the moment the unit is made
+    /// ([`crate::env::stand_in`]).
+    #[serde(default)]
+    pub stand_ins: Vec<EnvName>,
 }
 
 impl Created {
@@ -83,7 +90,14 @@ impl Created {
     ) -> Self {
         let mut row = UnitRow::from_unit(unit);
         row.environment = Some(EnvLine::from_environment(environment));
-        Self { now, arrival, unit: row, missing: manifest.missing.clone(), kept: Vec::new() }
+        Self {
+            now,
+            arrival,
+            unit: row,
+            missing: manifest.missing.clone(),
+            kept: Vec::new(),
+            stand_ins: stand_ins_of(manifest),
+        }
     }
 
     /// The same report, with the default exclusion rows the copy kept named on it.
@@ -113,6 +127,9 @@ impl Render for Created {
         }
         if !self.missing.is_empty() && self.arrival == Arrival::Created {
             fields.push(Field::new("no value", missing_cell(&self.missing)));
+        }
+        if !self.stand_ins.is_empty() {
+            fields.push(Field::new("stand-in", stand_in_cell(&self.stand_ins)));
         }
         if !self.kept.is_empty() {
             fields.push(Field::new("kept", kept_cell(&self.kept)));
@@ -185,6 +202,28 @@ fn ports_cell(unit: &UnitRow) -> String {
 /// One declared name per line, so a person can see what to fill in.
 fn missing_cell(missing: &[Missing]) -> String {
     missing.iter().map(|line| line.name.to_string()).collect::<Vec<String>>().join("\n")
+}
+
+/// Every name the manifest marks as a stand-in, in the order the manifest holds them.
+fn stand_ins_of(manifest: &Manifest) -> Vec<EnvName> {
+    manifest
+        .env
+        .iter()
+        .filter(|(_, origin)| **origin == Origin::StandIn)
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// One name per line, and the sentence that says what a stand-in is.
+///
+/// The sentence is on the report rather than in the documentation because the person
+/// reading it has just made the unit and is about to run something in it. What they
+/// need to know is that the value parses and that nothing answers on it.
+fn stand_in_cell(names: &[EnvName]) -> String {
+    let mut lines: Vec<String> = names.iter().map(ToString::to_string).collect();
+    lines.push(String::from("nodal made these values so a generate step can run"));
+    lines.push(String::from("no service answers on them; an adapter replaces them"));
+    lines.join("\n")
 }
 
 /// One line per default exclusion row that yielded, saying which and why.

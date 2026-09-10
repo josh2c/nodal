@@ -65,6 +65,7 @@ const FILES: &[File] = &[
     ("migrations/0002_add_thing_created_at.sql", files::MIGRATION_0002),
     ("seed.sql", files::SEED),
     ("scripts/db.mjs", files::DB_SCRIPT),
+    ("scripts/generate.mjs", files::GENERATE_SCRIPT),
     ("tests/thing.test.mjs", files::SMOKE_TEST),
     // The Next application.
     ("apps/web/package.json", files::WEB_PACKAGE_JSON),
