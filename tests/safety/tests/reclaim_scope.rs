@@ -139,10 +139,24 @@ fn a_bystander_standing_in_the_home_survives_a_reclaim_and_is_named() {
     assert!(machine.trashed().is_empty(), "the refusal put something in the trash");
 
     wait_for("the tether to go", || !alive(tethered));
+}
 
-    // The refusal is recoverable by the route it names. A rolled-back reclaim leaves the
-    // unit live, so the second one is an ordinary reclaim of a unit that still exists.
+/// The refusal is recoverable by the route it names, and by that route alone.
+///
+/// A reclaim that refuses over a bystander rolls back, so the unit is still live and
+/// `--force` is an ordinary reclaim of it. That is the one thing a person does next.
+#[test]
+fn a_refused_reclaim_is_recoverable_by_the_route_the_refusal_names() {
+    if !platform::reads_process_table("a refusal over a bystander is recoverable") {
+        return;
+    }
+    let machine = Machine::new();
+    let home = machine.unit(UNIT);
+    let bystander = process::standing_in(&home);
+    assert!(!machine.nodal(&["reclaim", UNIT]).status.success(), "it refuses first");
+
     let forced = machine.nodal(&["reclaim", UNIT, "--force"]);
+
     assert!(answer(&forced).contains("standing in the home"), "{}", stderr(&forced));
     assert!(!home.exists(), "the route the refusal names did not move the home");
     assert!(alive(bystander.pid()), "the forced reclaim signalled the bystander");

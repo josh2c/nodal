@@ -17,8 +17,9 @@
 #   - reclaim refusal: each of the three kinds of work that exists nowhere else refuses
 #     the reclaim, and the home and the work are still there afterwards;
 #   - reclaim scope: a reclaim stops its tether and never a process that carries no unit
-#     identifier, it names that process and refuses to move the home over it, and
-#     `--force` moves the home and still leaves the process running;
+#     identifier, it names that process and refuses to move the home over it, `--force`
+#     moves the home and still leaves the process running, and a sweep makes the same
+#     split;
 #   - doctor: the checkout, a worktree of that checkout that lives beside it rather than
 #     inside it, and the whole state directory are the same bytes afterwards.
 #
