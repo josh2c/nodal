@@ -38,6 +38,21 @@ jobs:
       - name: schemas/ is what the model generates
         run: ci/schema-diff.sh
 
+  commit-messages:
+    name: commit messages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: the check itself, against a fixture repository
+        run: ci/acceptance-commit-messages.sh
+      - name: no commit in this pull request holds a trailer line
+        if: github.event_name == 'pull_request'
+        run: ci/commit-messages.sh ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+      - name: no commit pushed to main holds a trailer line
+        if: github.event_name == 'push'
+        run: ci/commit-messages.sh --no-merges ${{ github.event.before }}..${{ github.sha }}
+
   acceptance-recipe:
     name: acceptance (recipe)
     runs-on: ubuntu-latest

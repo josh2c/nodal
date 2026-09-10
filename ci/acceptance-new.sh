@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.3 and T1.11a: creating a unit from a golden base.
+# Acceptance test for creating a unit from a golden base.
 #
 # The suite makes units in a real repository and checks the things a person can check
 # for themselves: `git status` in a unit says nothing, `git worktree list` names one
@@ -9,9 +9,9 @@
 # SIGKILL twice — once while it makes a home, once while it builds its base — and runs
 # the next `nodal`, which has to take the first back to nothing and finish the second.
 #
-# It also covers T1.4, which added a step to the same operation: a unit made from a base
-# that holds build caches carries the ones that move and none of the ones that record
-# the path they were made at, and the removal is one line of the unit's own log.
+# It also covers the cache step of the same operation: a unit made from a base that
+# holds build caches carries the ones that move and none of the ones that record the
+# path they were made at, and the removal is one line of the unit's own log.
 #
 # It runs under `cargo test --workspace` too. It has its own job because a kill part-way
 # through a clone is the sort of thing that behaves differently on one platform, and a

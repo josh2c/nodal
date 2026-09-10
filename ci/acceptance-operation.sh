@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T0.11: the operation framework.
+# Acceptance test for the operation framework.
 #
 # The suite runs a real operation in a second process, kills it with SIGKILL while it
 # is parked between two steps, and then does what the next `nodal` would do: report the
@@ -17,7 +17,7 @@
 #
 # The suite is then run again with the temporary directory reached through a symbolic
 # link, as the other acceptance scripts do: a home is recorded by the name the filesystem
-# uses (DL-037), and every path a resolved run compares against goes through that.
+# uses, and every path a resolved run compares against goes through that.
 set -eu
 
 cargo test --locked -p nodal-core --test lifecycle

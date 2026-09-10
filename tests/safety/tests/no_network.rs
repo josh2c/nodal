@@ -9,12 +9,12 @@
 //!
 //! The only network activity Nodal ever causes is the `git` the user configured talking
 //! to the remotes the user configured, with the user's own credentials, and it is
-//! visible in progress output (DL-034). Nodal has no update check, no telemetry and no
-//! client of any host's API. So the scan looks for the two ways a network call is
-//! reached in a Rust program — the standard library's sockets, and an HTTP client
-//! crate — over the whole of both crates and over the manifests that could pull one in.
-//! A future change that adds one fails here and has to argue with the decision rather
-//! than with a test that happened not to notice.
+//! visible in progress output. Nodal has no update check, no telemetry and no client of
+//! any host's API. So the scan looks for the two ways a network call is reached in a
+//! Rust program — the standard library's sockets, and an HTTP client crate — over the
+//! whole of both crates and over the manifests that could pull one in. A future change
+//! that adds one fails here and has to argue with the rule that Nodal makes no network
+//! call of its own, rather than with a test that happened not to notice.
 //!
 //! # The shell hook
 //!
@@ -122,7 +122,7 @@ fn no_code_path_in_nodal_can_reach_a_network() {
             assert!(
                 !text.contains(token),
                 "{}: nodal makes no network call of its own, and {token:?} is how one would be \
-                 made (DL-034)",
+                 made",
                 file.display()
             );
         }

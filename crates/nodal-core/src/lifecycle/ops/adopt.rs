@@ -47,9 +47,9 @@
 //!
 //! # What an adoption does not do
 //!
-//! Adoption **in place** runs no recipe hook at all (DL-042). The directory it is given
-//! is one Nodal did not make, and a hook that installs into a person's working checkout
-//! is not something a command that promises to change nothing may run.
+//! Adoption **in place** runs no recipe hook at all. The directory it is given is one
+//! Nodal did not make, and a hook that installs into a person's working checkout is not
+//! something a command that promises to change nothing may run.
 //!
 //! The **materialised** form runs `post_new`, exactly as `nodal new` does. It made a
 //! home from a base, and that is the home a recipe's `post_new` is declared about.
@@ -197,7 +197,7 @@ pub fn adopt(
     Ok(created.keeping(done.outputs.read(new::MATERIALIZE)?.unwrap_or_default()))
 }
 
-/// Run `post_new` in the home, for the form of adoption that made one (DL-042).
+/// Run `post_new` in the home, for the form of adoption that made one.
 ///
 /// The two forms did different things, so they run different hooks. Adoption in place
 /// created nothing: the directory was the person's before the command and is byte for

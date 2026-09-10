@@ -1,5 +1,5 @@
-//! Acceptance test for T1.7: the port allocator, the fixed-port lease, and the scan
-//! that says which granted ports are really bound.
+//! Acceptance test for the port allocator, the fixed-port lease, and the scan that says
+//! which granted ports are really bound.
 //!
 //! What this suite defends is that a port is granted rather than found. Two units of
 //! one project take ports from one block and never the same one, whether they ask one

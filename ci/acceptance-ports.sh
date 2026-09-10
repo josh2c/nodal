@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.7: the port allocator.
+# Acceptance test for the port allocator.
 #
 # Two units of one project take different ports from the project's block; sixteen
 # callers in sixteen threads, each with its own registry connection, come away with

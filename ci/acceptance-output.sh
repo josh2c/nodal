@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T0.7: the output layer.
+# Acceptance test for the output layer.
 #
 # Every read type is rendered twice — aligned text for a person, JSON for a tool — from
 # fixed values, and both renderings are compared against committed snapshots. The status

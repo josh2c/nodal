@@ -1,5 +1,5 @@
-//! Acceptance test for T0.11: an operation killed between two steps is reported and
-//! resolved by the next invocation, and nothing it made is left behind.
+//! Acceptance test for the operation framework: an operation killed between two steps
+//! is reported and resolved by the next invocation, and nothing it made is left behind.
 //!
 //! The kill has to be a real one. A test that drops a value or returns an error is
 //! testing the error path, not the interruption: what makes an interruption different
@@ -9,7 +9,7 @@
 //! test's name — waits until it is parked between two steps, sends it `SIGKILL`, and
 //! then does what the next `nodal` would do.
 //!
-//! The operation is a stand-in for `nodal new`, which is not built yet (T1.3): it
+//! The operation is a stand-in for `nodal new`, which is not built yet: it
 //! creates a home directory, writes the marker file into it, and registers a service —
 //! a file under a shared directory, standing in for the container a real run would
 //! start, so that "nothing left in services" is something this test can actually check.

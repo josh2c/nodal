@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.2: substrate bases.
+# Acceptance test for substrate bases.
 #
 # The suite builds real bases from a real remote. It asserts that two workspaces which
 # key differently get two bases, that no base holds a file only the checkout has, that

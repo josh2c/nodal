@@ -49,11 +49,11 @@ impl Doctor {
     /// unbacked-up needs the 22 read, and 284 safe rows above them is how a person
     /// stops reading.
     ///
-    /// `registry` is a `Result` on purpose. A registry a later Nodal wrote is refused by
-    /// the store, and this is the one command where that must not end the answer:
+    /// `registry` is a `Result` on purpose. A registry a later Nodal wrote is refused
+    /// by the store, and this is the one command where that must not end the answer:
     /// doctor is what a person runs when something is wrong. The refusal becomes a note
-    /// naming both schema versions and the one command that upgrades this copy
-    /// (DL-034), and the worktrees and caches of the checkout are reported as usual.
+    /// naming both schema versions and the one command that upgrades this copy, and the
+    /// worktrees and caches of the checkout are reported as usual.
     ///
     /// # Errors
     ///

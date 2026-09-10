@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.10: attribution.
+# Acceptance test for attribution.
 #
 # Five claims, against this machine rather than against a table a test wrote:
 #   - a process started with a home's environment is attributed to its unit as certain;

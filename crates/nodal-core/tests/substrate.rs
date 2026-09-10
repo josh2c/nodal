@@ -1,4 +1,4 @@
-//! Acceptance test for T1.2: substrate bases.
+//! Acceptance test for substrate bases.
 //!
 //! Four claims, one file.
 //!

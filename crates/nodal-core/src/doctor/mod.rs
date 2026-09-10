@@ -6,14 +6,13 @@
 //! refers to, and directories named like databases that no registry row knows. Doctor
 //! finds each of them, says how big it is, and stops there.
 //!
-//! **It removes nothing** (`decisions/DL-015`). Not as a default, and not with a flag
-//! this module has. Every function here reads: a directory walk, `git worktree list`
-//! and `git status`, `docker ps` and `docker system df`, and a SQL select. Git is run
-//! with `GIT_OPTIONAL_LOCKS=0` (`git::cmd`), so not even the index is refreshed. The
-//! report ends with a line that says so, the renderer is tested against the words it
-//! must not use ([`crate::output::view::doctor`]), and the acceptance test compares the
-//! name, size and modification time of every path of a machine before and after a
-//! report.
+//! **It removes nothing**. Not as a default, and not with a flag this module has. Every
+//! function here reads: a directory walk, `git worktree list` and `git status`,
+//! `docker ps` and `docker system df`, and a SQL select. Git is run with
+//! `GIT_OPTIONAL_LOCKS=0` (`git::cmd`), so not even the index is refreshed. The report
+//! ends with a line that says so, the renderer is tested against the words it must not
+//! use ([`crate::output::view::doctor`]), and the acceptance test compares the name,
+//! size and modification time of every path of a machine before and after a report.
 //!
 //! ## Two sections
 //!
@@ -68,9 +67,10 @@
 //!
 //! ## A tool that is not there
 //!
-//! Docker absent, or a daemon this account may not reach, is a note and not a failure
-//! (`services::docker`, T1.10's pattern). A machine with no Docker still gets an answer
-//! about its worktrees, its caches and its databases.
+//! Docker absent, or a daemon this account may not reach, is a note and not a failure.
+//! [`crate::services::docker`] answers with the reason instead of an error, and the
+//! caller turns that reason into one note. A machine with no Docker still gets an
+//! answer about its worktrees, its caches and its databases.
 //!
 //! ## A registry a later Nodal wrote
 //!
@@ -80,7 +80,7 @@
 //! registry is a parameter with two shapes ([`Registry`]). A registry that is too new
 //! reads as no registry at all — the worktrees and the caches of the checkout are still
 //! reported — and the mismatch becomes a note that names both schema versions and the
-//! one command that upgrades this copy of Nodal (DL-034). Nothing is fetched to say it.
+//! one command that upgrades this copy of Nodal. Nothing is fetched to say it.
 
 pub mod attribution;
 pub mod branches;

@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T0.1: a release artifact reports the workspace version.
+# Acceptance test: a release artifact reports the workspace version.
 # Usage: ci/acceptance-version.sh <path-to-nodal> [expected-version]
 set -eu
 

@@ -1,4 +1,4 @@
-//! Acceptance test for T0.3: concurrent writers to one registry lose nothing.
+//! Acceptance test: concurrent writers to one registry lose nothing.
 //!
 //! The claim this suite defends is the whole reason the registry is a database rather
 //! than a file: a shell hook, an agent's note and a command wrapper append to the same

@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.13: the safety suite.
+# Acceptance test for the safety suite.
 #
 # The properties that make two units of one project independent, each one named test a
 # reviewer can cite, each on the fixture project, driven through the binary:

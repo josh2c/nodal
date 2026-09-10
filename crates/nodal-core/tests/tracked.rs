@@ -1,4 +1,4 @@
-//! Acceptance for T1.4b and T1.4c: an exclusion list against what the project tracks.
+//! Acceptance test: an exclusion list is read against what the project tracks.
 //!
 //! The fixture project ([`nodal_fixture`]) has two heavy directories the exclusion
 //! table names, `test-results` and `coverage`, and a `.gitignore` that ignores both.
@@ -15,7 +15,7 @@
 //!     the path, so a recipe a person wrote by hand is caught;
 //!   - a **default** row of Nodal's own table yields instead: no recipe key can override
 //!     such a row, so a refusal would leave the project unable to make any unit at all.
-//!     The copy keeps the directory and answers with one note naming the row (T1.4c).
+//!     The copy keeps the directory and answers with one note naming the row.
 //!
 //! The cost of the hole is what the fourth check measures: a copy made with the bad
 //! list is missing every tracked file under the directory, and `git status` in it
@@ -124,7 +124,7 @@ fn a_list_that_drops_nothing_tracked_is_allowed() {
 /// `coverage` is a row of [`nodal_core::workspace::exclude::ROWS`], which no recipe key
 /// can take off the list. On a project that tracks that directory the row yields: the
 /// copy keeps the directory, and one note names the row and why it was kept. Refusing
-/// here would leave such a project unable to make a unit at all (T1.4c).
+/// here would leave such a project unable to make a unit at all.
 #[test]
 fn a_default_row_the_project_tracks_yields_and_the_copy_says_which() {
     let (_directory, root) = fixture_repository();

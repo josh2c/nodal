@@ -14,9 +14,8 @@
 //!   prompt hook runs in every shell a person opens, so the line that loads it is the
 //!   most security-sensitive line Nodal writes anywhere.
 //! - [`channel`] answers `nodal upgrade`. Nodal has no self-updater and makes no
-//!   network call of its own (DL-034). It reads where its own binary is, names the
-//!   channel that put it there, and prints the one command that upgrades it. It
-//!   fetches nothing.
+//!   network call of its own. It reads where its own binary is, names the channel that
+//!   put it there, and prints the one command that upgrades it. It fetches nothing.
 //!
 //! Nothing here is a lifecycle operation with an undo, because nothing here writes into
 //! a unit. The one destructive path — removing the state directory — asks

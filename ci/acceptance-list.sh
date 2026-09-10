@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.11b: the list.
+# Acceptance test for the list.
 #
 # The list is what `nodal ls`, and a bare `nodal`, print. Four things are checked:
 #

@@ -1,4 +1,4 @@
-//! Acceptance for activation and entry (T1.9), against real shells.
+//! Acceptance for activation and entry, against real shells.
 //!
 //! Four claims:
 //!

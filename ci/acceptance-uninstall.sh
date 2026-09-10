@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T0.10: uninstall and upgrade.
+# Acceptance test for uninstall and upgrade.
 #
 # Four claims:
 #   - install then uninstall leaves a shell start-up file byte-identical. Five start-up

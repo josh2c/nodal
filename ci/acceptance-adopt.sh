@@ -20,8 +20,8 @@
 #
 # The suite is then run a second time with the temporary directory reached through a
 # symbolic link, as `ci/acceptance-reclaim.sh` does: an adopted checkout's home is
-# recorded and compared against the name the filesystem itself uses (DL-037), and a host
-# that hands a process another name for the same directory is the one that finds it.
+# recorded and compared against the name the filesystem itself uses, and a host that
+# hands a process another name for the same directory is the one that finds it.
 set -eu
 
 cargo test --locked -p nodal-cli --test adopt

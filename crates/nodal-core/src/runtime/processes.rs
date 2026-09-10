@@ -19,9 +19,9 @@
 //! and attribution are both built on: shipping a version that has never run on the
 //! hardware would put a guess under two features. So a scan on macOS returns
 //! [`Error::ProcessScanUnsupported`](crate::Error::ProcessScanUnsupported), the typed
-//! error T1.9 established, and `nodal ps` prints it as a note. The machine reports "I
-//! cannot see", which is a different answer from "nobody is attached", and the other
-//! signals still answer. The implementation lands with the Mac.
+//! error, and `nodal ps` prints it as a note. The machine reports "I cannot see", which
+//! is a different answer from "nobody is attached", and the other signals still answer.
+//! The implementation lands with the Mac.
 //!
 //! A scan keeps three things about a process, and each answers one question:
 //!

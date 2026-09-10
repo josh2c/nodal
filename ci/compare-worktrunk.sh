@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.11b: the integration verdict, against a second implementation.
+# Acceptance test for the integration verdict, against a second implementation.
 #
 # Worktrunk (`wt`) answers the same question on the same repository, so its answer is a
 # check on ours that no test of ours can be. This script builds the shape fixture, asks

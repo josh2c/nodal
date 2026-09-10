@@ -1,4 +1,4 @@
-//! Acceptance test for T1.3 and T1.11a: `nodal new`, end to end, against a real
+//! Acceptance test for `nodal new`, end to end, against a real
 //! repository.
 //!
 //! Every assertion here is about a property a person can check for themselves in a unit

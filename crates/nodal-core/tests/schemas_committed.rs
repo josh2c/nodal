@@ -1,5 +1,5 @@
-//! Acceptance test for T0.2, second half: `schemas/` on disk is what the model
-//! generates.
+//! Acceptance test, second of the two schema halves: `schemas/` on disk is what the
+//! model generates.
 //!
 //! CI runs `ci/schema-diff.sh`, which regenerates the directory and fails on a diff.
 //! This test is the same check without writing anything, so a model change that was

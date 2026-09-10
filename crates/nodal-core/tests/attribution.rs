@@ -1,4 +1,4 @@
-//! Acceptance for attribution (T1.10): what is running, and whose it is.
+//! Acceptance for attribution: what is running, and whose it is.
 //!
 //! Five claims, against this machine rather than against a table a test wrote:
 //!

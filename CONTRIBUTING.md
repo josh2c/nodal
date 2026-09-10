@@ -27,6 +27,14 @@ See `docs/code-structure.md`. The short version:
 - One module spawns each external process. No other module calls that tool directly.
 - Clippy thresholds in `clippy.toml` are hard limits.
 
+## Commit messages
+
+A commit message is prose. Write what the change does and why. The commit author is the
+author, and the author field says so. Do not add trailer lines: no `Co-Authored-By`, no
+`Signed-off-by`, no tool or session links. `ci/commit-messages.sh` fails a pull request,
+and a push to `main`, whose commits hold one. Its header comment states the exact rule,
+including what git itself counts as a trailer.
+
 ## What belongs in the repository
 
 Commit only what the project needs to build, test, and document itself. Do not commit:

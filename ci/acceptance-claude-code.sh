@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T2.7: the Claude Code integration.
+# Acceptance test for the Claude Code integration.
 #
 # The suite feeds the payloads Claude Code was measured sending — a `WorktreeCreate`
 # with an empty transcript path and a prompt-derived slug, and a `SessionStart` whose

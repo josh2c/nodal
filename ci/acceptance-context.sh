@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T2.6: the context compiler.
+# Acceptance test for the context compiler.
 #
 # `WORKUNIT.md` is a unit's memory, and the whole claim about it is that it is computed
 # rather than accumulated. The suite drives real commands against real repositories: a

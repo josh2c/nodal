@@ -202,7 +202,7 @@ impl Render for Installed {
 /// What `nodal upgrade` and `nodal update` answer with.
 ///
 /// One value, no clock and no network: where this binary is, what put it there, and the
-/// command that replaces it. Nodal fetches nothing and compares no version (DL-034).
+/// command that replaces it. Nodal fetches nothing and compares no version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Upgrade {
     /// The version that is running.

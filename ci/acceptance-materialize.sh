@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.1 and T1.1b: making a unit home out of a base.
+# Acceptance test for making a unit home out of a base.
 #
 # Three claims, checked on whatever filesystem the checkout is on.
 #

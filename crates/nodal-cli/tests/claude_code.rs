@@ -1,4 +1,4 @@
-//! Acceptance test for T2.7: the Claude Code integration, exercised the way Claude Code
+//! Acceptance test for the Claude Code integration, exercised the way Claude Code
 //! exercises it.
 //!
 //! Every test here feeds a payload on standard input and reads standard output, because

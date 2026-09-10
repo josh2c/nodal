@@ -5,9 +5,9 @@
 //! names variables without printing one, and a shell that really does carry the
 //! generated variables.
 //!
-//! Both activation routes are exercised, because the entry task (T1.9) chooses between
-//! them and this task ships what each one reads. The direnv route needs direnv, so it
-//! reports itself as skipped on a machine that has none rather than failing there.
+//! Both activation routes are exercised, because entry chooses between them and `nodal
+//! env` ships what each one reads. The direnv route needs direnv, so it reports itself
+//! as skipped on a machine that has none rather than failing there.
 
 #![allow(clippy::unwrap_used)]
 

@@ -44,8 +44,7 @@
 //! read first ([`super::containers`]).
 //!
 //! It never attributes on no match. "I cannot say whose this is" stays in the first
-//! section, which is the rule the whole second section is built on
-//! (`decisions/DL-046`).
+//! section, which is the rule the whole second section is built on.
 
 use std::path::Path;
 

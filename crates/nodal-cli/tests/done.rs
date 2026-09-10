@@ -1,4 +1,4 @@
-//! Acceptance test for T2.8: the states a unit passes through after the work is done.
+//! Acceptance test for the states a unit passes through after the work is done.
 //!
 //! Every assertion here is about something a person can check for themselves. The refs
 //! are read out of a real remote repository. The unit's state is read out of the

@@ -1,4 +1,4 @@
-//! Acceptance for the context compiler (T2.6), driven through the binary.
+//! Acceptance for the context compiler, driven through the binary.
 //!
 //! `WORKUNIT.md` is a unit's memory. Every claim here is one a person can check in a
 //! home Nodal made, and every fact in the file has to have been computed rather than

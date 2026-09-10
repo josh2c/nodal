@@ -2,9 +2,9 @@
 //!
 //! Doctor is the command a person runs when a disk is full and they are already
 //! worried. It reports the checkout's other worktrees, stale caches, orphan databases
-//! and units, each with a size, and it removes nothing (`decisions/DL-015`). A read
-//! command that wrote would be worse than one that refused: the person ran it to find
-//! out what is there, not to change it.
+//! and units, each with a size, and it removes nothing. A read command that wrote
+//! would be worse than one that refused: the person ran it to find out what is there,
+//! not to change it.
 //!
 //! "Nothing changed" is asserted byte for byte, on every tree doctor reads: the person's
 //! checkout, a worktree of that checkout that lives beside it rather than inside it, and

@@ -12,7 +12,8 @@ use crate::stats::Sorted;
 ///
 /// The timer starts before the fork and stops after the child exits, so the number
 /// includes the parent's fork and exec cost. It is therefore an upper bound on process
-/// startup, and it is the same method the T0.1 measurement used, so the two compare.
+/// startup, and it is the same method the earlier startup measurement used, so the two
+/// compare.
 fn once(binary: &Path, arguments: &[OsString]) -> io::Result<Duration> {
     let started = Instant::now();
     let status = Command::new(binary)

@@ -1,4 +1,4 @@
-//! Acceptance for `nodal ps` (T1.10): the rows a person sees, and the same answer as
+//! Acceptance for `nodal ps`: the rows a person sees, and the same answer as
 //! JSON.
 //!
 //! Three claims, driven through the binary rather than through the library:

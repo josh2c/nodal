@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.9: activation and entry.
+# Acceptance test for activation and entry.
 #
 # Four claims, against real shells:
 #   - a process started in an activated directory carries NODAL_ID, by either route:

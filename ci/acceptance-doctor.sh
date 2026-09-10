@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Acceptance test for T1.0: nodal doctor.
+# Acceptance test for nodal doctor.
 #
 # The machine is planted rather than found: a checkout with three worktrees inside it,
 # one of them locked, two more worktrees of that same checkout that live outside it, a
@@ -25,7 +25,7 @@
 #   - Docker that is not installed is a note, and the rest of the report is unaffected;
 #   - a registry a later Nodal wrote does not end the answer. Every other command refuses
 #     that file; doctor reports what needs no registry and states the mismatch as a note
-#     carrying both schema versions and the one command that upgrades this copy (DL-034);
+#     carrying both schema versions and the one command that upgrades this copy;
 #   - the report writes nothing anywhere: every path of the machine has the same name,
 #     size and modification time after the report as before it, the worktrees outside the
 #     checkout included, because they are directories doctor now opens.
