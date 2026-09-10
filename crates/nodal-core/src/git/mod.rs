@@ -9,6 +9,7 @@ pub mod branches;
 pub mod cmd;
 pub mod history;
 pub mod host;
+pub mod ignored;
 pub mod integration;
 pub mod merge;
 pub mod oid;
@@ -409,6 +410,25 @@ impl Git {
     /// when the URL is not UTF-8.
     pub fn remote_url(&self, name: &str) -> Result<Option<String>> {
         remote::url(&self.root, name)
+    }
+
+    /// Directories Git's ignore rules cover, relative to this checkout.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git ls-files` failed, [`Error::GitEncoding`] when a path is
+    /// not UTF-8.
+    pub fn ignored_directories(&self) -> Result<Vec<PathBuf>> {
+        ignored::directories(&self.root)
+    }
+
+    /// When HEAD was committed, as seconds since the epoch. `None` when there is no
+    /// commit.
+    ///
+    /// # Errors
+    /// [`Error::GitSpawn`] when `git` could not be started, [`Error::GitEncoding`] when
+    /// the output is not UTF-8, [`Error::GitParse`] when the timestamp could not be read.
+    pub fn head_committed(&self) -> Result<Option<i64>> {
+        history::head_committed(&self.root)
     }
 
     /// Every remote this repository names, in the order `git remote` lists them.

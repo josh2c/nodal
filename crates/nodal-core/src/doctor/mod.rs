@@ -14,6 +14,12 @@
 //! use ([`crate::output::view::doctor`]), and the acceptance test compares the name,
 //! size and modification time of every path of a machine before and after a report.
 //!
+//! ## The machine scan
+//!
+//! `--machine` is a second survey. It walks for `.git` under each root, default the home
+//! directory, and groups clones by the URL of `origin`. A unit home is skipped. A mount
+//! that is not local is skipped. The report says so. It writes nothing.
+//!
 //! ## Two sections
 //!
 //! What belongs to the project the command was run in is one section. What belongs to
@@ -88,9 +94,14 @@ pub mod caches;
 pub mod containers;
 pub mod databases;
 pub mod intent;
+pub mod machine;
 pub mod size;
 pub mod units;
 pub mod worktrees;
+
+mod inspect;
+mod origin;
+mod scan;
 
 use std::path::{Path, PathBuf};
 

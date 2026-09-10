@@ -9,12 +9,31 @@
 //! is free text: a reader that split on whitespace would break on the first file with a
 //! space in its name, which is the kind of failure that appears once a project is real.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use super::cmd::Output;
+use super::cmd::{self, Output};
 use super::oid::Oid;
 use super::status::Change;
 use crate::error::{Error, Result};
+
+/// When HEAD was committed, as seconds since the epoch. `None` when there is no commit.
+///
+/// # Errors
+/// [`Error::GitSpawn`] when `git` could not be started, [`Error::GitEncoding`] when the
+/// output is not UTF-8, [`Error::GitParse`] when the timestamp could not be read.
+pub(super) fn head_committed(repo: &Path) -> Result<Option<i64>> {
+    let output = cmd::run(repo, &["log", "-1", "--format=%ct"])?;
+    if !output.ok() {
+        return Ok(None);
+    }
+    let text = output.text()?;
+    if text.is_empty() {
+        return Ok(None);
+    }
+    text.parse()
+        .map(Some)
+        .map_err(|_| Error::GitParse { args: output.args.clone(), record: text.to_owned() })
+}
 
 /// One commit of a range, as a ledger names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
