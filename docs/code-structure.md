@@ -92,9 +92,10 @@ git/
 substrate/
   mod.rs               Layout (bases and homes are separate roots) + the project row
   bases.rs             ensure(fp) -> Base; neighbour selection; pins; evict and gc
-  build.rs             build a base as a Plan: clone, checkout, install, warm
+  build.rs             build a base as a Plan: clone, checkout, install, warm, promote
   lru.rs               eviction policy (pure)
-  progress.rs          Reporter: where a build says what it is doing
+  pin.rs               act on the package-manager pin: corepack, mise, or refuse (pure)
+  progress.rs          Reporter: where a build says what it is doing, and asks its one question
   templates.rs         ensure(schema_fp) -> Template; incremental from parent
 
 workspace/

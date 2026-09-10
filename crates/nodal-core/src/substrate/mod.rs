@@ -27,9 +27,11 @@
 pub mod bases;
 pub mod build;
 pub mod lru;
+pub mod pin;
 pub mod progress;
 
 pub use crate::substrate::bases::{Outcome, Request, ensure, evict, gc, list, pins, resolve};
 pub use crate::substrate::build::{BaseBuild, Origin, Params};
 pub use crate::substrate::lru::DEFAULT_KEEP;
+pub use crate::substrate::pin::Install;
 pub use crate::substrate::progress::{Collector, Reporter, Silent, Stderr, sink};

@@ -430,8 +430,9 @@ fn a_build_killed_between_steps_is_finished_by_the_next_invocation() {
     assert_eq!(resolutions[0].kind, BaseBuild.kind());
     assert_eq!(
         resolutions[0].action,
-        Action::Resumed { applied: vec![String::from("warm")] },
-        "the clone and the checkout stand; only the step it died in is done again"
+        Action::Resumed { applied: vec![String::from("warm"), String::from("promote")] },
+        "the clone and the checkout stand; the step it died in is done again, and the \
+         promotion that follows it puts the base at its name"
     );
 
     let bases = substrate::list(&store, project.id).unwrap();

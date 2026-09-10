@@ -57,6 +57,20 @@ pub fn bases(state: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Every directory a build was assembling a base in, in name order.
+///
+/// What a build that failed leaves. A base is assembled beside its own name and
+/// renamed into it by the last step, so one of these is a clone and an install that
+/// have been paid for and not yet promoted. A test reads it to say that a failure kept
+/// them, and that the attempt after it used the same one.
+#[must_use]
+pub fn partials(state: &Path) -> Vec<PathBuf> {
+    entries(segment(state, "b"))
+        .into_iter()
+        .filter(|path| path.to_string_lossy().ends_with(".partial"))
+        .collect()
+}
+
 /// Everything the project's trash holds, in name order.
 #[must_use]
 pub fn trashed(state: &Path) -> Vec<PathBuf> {
@@ -117,6 +131,12 @@ pub trait InState {
     #[must_use]
     fn bases(&self) -> Vec<PathBuf> {
         bases(self.state_dir())
+    }
+
+    /// Every directory a build was assembling a base in, in name order.
+    #[must_use]
+    fn partials(&self) -> Vec<PathBuf> {
+        partials(self.state_dir())
     }
 
     /// Everything this project's trash holds, in name order.

@@ -87,6 +87,13 @@ const FILES: &[File] = &[
 /// what the project states about itself with nothing written down.
 pub const RECIPE: &str = "nodal.toml";
 
+/// The package-manager version the fixture's manifest pins.
+///
+/// Stated here because a test that stubs the package manager has to make the stub agree
+/// with the pin. A stub that reported another version would be refused before it ran,
+/// and the test would be asserting the refusal rather than what it meant to assert.
+pub const PACKAGE_MANAGER_PIN: &str = "9.12.3";
+
 /// What a caller got wrong, or what the filesystem refused.
 #[derive(Debug)]
 pub struct Error {

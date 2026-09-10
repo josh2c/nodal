@@ -17,12 +17,16 @@ use std::sync::Arc;
 use crate::fingerprint::{self, GitTreeAtCommit, TreeSource, current_platform};
 use crate::git::Git;
 use crate::lifecycle;
+use crate::lifecycle::journal;
 use crate::model::recipe::Recipe;
-use crate::model::{Base, BaseId, CommitId, Platform, Project, ProjectId, Timestamp, WorkspaceFp};
+use crate::model::{
+    Base, BaseId, CommitId, OperationId, Platform, Project, ProjectId, Timestamp, WorkspaceFp,
+};
 use crate::output::view::BaseRow;
 use crate::store::{Store, bases, environments};
-use crate::substrate::build::{self, Origin, Params};
+use crate::substrate::build::{self, Origin, Params, ThisHost};
 use crate::substrate::lru;
+use crate::substrate::pin;
 use crate::substrate::progress::Reporter;
 use crate::workspace::home;
 use crate::workspace::remove::tree as remove_tree;
@@ -66,8 +70,15 @@ impl Outcome {
 
 /// The base a unit of this workspace is cloned from, built if there is not one yet.
 ///
+/// The order here is the whole of the promise this module makes about a failed build.
+/// The pin is acted on first, before a directory exists, so a host that cannot run the
+/// project's package manager is told so rather than told so twenty thousand files
+/// later. Then the failed attempts are looked at, so a clone that has already been paid
+/// for is offered back instead of being made twice.
+///
 /// # Errors
-/// [`Error::NotARepository`] when the source is not a checkout,
+/// [`Error::NotARepository`] when the source is not a checkout, [`Error::ToolPin`] when
+/// the project pins a package-manager version this host cannot run,
 /// [`Error::OperationStep`] when a build step failed, and whatever the registry
 /// reports.
 pub fn ensure(
@@ -83,7 +94,96 @@ pub fn ensure(
         progress.line(&format!("base {id} is warm for this workspace", id = base.id));
         return Ok(Outcome { base, fingerprint, origin: None });
     }
-    build_one(store, request, &Key { fingerprint, platform, commit }, progress)
+    let install = pin::install(&request.recipe, &ThisHost)?;
+    let key = Key { fingerprint, platform, commit };
+    if let Some(outcome) = carried_on(store, &key, progress)? {
+        return Ok(outcome);
+    }
+    build_one(store, request, &key, &install, progress)
+}
+
+/// Offer the person what a failed attempt at this base left, and use it if they agree.
+///
+/// `None` when there is nothing to carry on with, or when the person would rather start
+/// again. Nothing is removed in either case: the clone a failed attempt made is still
+/// on disk, and a person who declined this offer has not asked for it to go.
+fn carried_on(
+    store: &mut Store,
+    key: &Key,
+    progress: &Arc<dyn Reporter>,
+) -> Result<Option<Outcome>> {
+    let Some(stopped) = stopped_at(store, key)? else { return Ok(None) };
+    progress.line(&format!(
+        "an earlier build of this base stopped at the {step} step: {why}",
+        step = stopped.step,
+        why = stopped.why
+    ));
+    if !progress.agrees(&format!("retry from the {step} step?", step = stopped.step)) {
+        progress.line(&format!(
+            "starting again; what the earlier build made is still at {partial}",
+            partial = build::partial_of(&stopped.params.destination).display()
+        ));
+        return Ok(None);
+    }
+    let id = stopped.params.base;
+    lifecycle::retry(store, stopped.operation, &build::plan(&stopped.params, progress)?)?;
+    let base = bases::get(store.conn(), id)?
+        .ok_or(Error::StoreMissingRow { table: "base", id: id.to_string() })?;
+    Ok(Some(Outcome {
+        base,
+        fingerprint: key.fingerprint.clone(),
+        origin: Some(stopped.params.origin),
+    }))
+}
+
+/// A failed build of the base this workspace wants, and where it got to.
+struct Stopped {
+    /// The run, as the journal names it.
+    operation: OperationId,
+    /// What that run was building.
+    params: Params,
+    /// The step that failed, by its journal key.
+    step: String,
+    /// What the step reported, which for a tool holds the tail of both its streams.
+    why: String,
+}
+
+/// The newest failed build for this workspace key whose work is still on the disk.
+///
+/// Still on the disk is half of the question. A person who removed the partial by hand
+/// has answered it, and being asked about a directory that is not there would be a
+/// question with no good answer.
+fn stopped_at(store: &Store, key: &Key) -> Result<Option<Stopped>> {
+    for record in journal::failed(store.conn(), build::KIND)? {
+        let Ok(params) = serde_json::from_value::<Params>(record.params.clone()) else { continue };
+        if params.fingerprint != key.fingerprint || params.platform != key.platform {
+            continue;
+        }
+        if !build::partial_of(&params.destination).is_dir() {
+            continue;
+        }
+        let Some((step, why)) = failing_step(store, record.id)? else { continue };
+        return Ok(Some(Stopped { operation: record.id, params, step, why }));
+    }
+    Ok(None)
+}
+
+/// The step a failed run stopped at, and what it reported.
+fn failing_step(store: &Store, id: OperationId) -> Result<Option<(String, String)>> {
+    for step in journal::steps(store.conn(), id)? {
+        if step.state != journal::StepState::Applying {
+            continue;
+        }
+        let why = step
+            .output
+            .as_ref()
+            .and_then(|output| output.get("failed"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("no reason was recorded")
+            .to_owned();
+        return Ok(Some((step.key, why)));
+    }
+    Ok(None)
 }
 
 /// The workspace key of a checkout's HEAD, on this platform.
@@ -130,6 +230,7 @@ fn build_one(
     store: &mut Store,
     request: &Request,
     key: &Key,
+    install: &pin::Install,
     progress: &Arc<dyn Reporter>,
 ) -> Result<Outcome> {
     let id = BaseId::from_ulid(ulid::Ulid::new());
@@ -145,7 +246,8 @@ fn build_one(
         origin: origin.clone(),
         objects: request.source.clone(),
         excludes: request.recipe.base.exclude.clone(),
-        install: build::install_argv(&request.recipe),
+        install: install.argv.clone(),
+        install_env: install.env.clone(),
         warm: build::warm_argv(&request.recipe, request.warm),
         planned_at: Timestamp::now(),
     };

@@ -243,7 +243,13 @@ fn one(line: &str) -> Result<Container> {
         args: vec![String::from("inspect")],
         dir: PathBuf::from("."),
         code: Some(0),
-        stderr: format!("a container document could not be read at column {}", error.column()),
+        // The standard output stays empty, and deliberately so: `docker inspect` writes
+        // every container's environment there, and the reason below is the whole of
+        // what may be said about this document.
+        output: Box::new(crate::error::Streams {
+            stdout: String::new(),
+            stderr: format!("a container document could not be read at column {}", error.column()),
+        }),
     })?;
     Ok(Container {
         name: inspected.name.trim_start_matches('/').to_owned(),
@@ -390,7 +396,13 @@ fn one_exited(line: &str) -> Result<Exited> {
         args: vec![String::from("inspect")],
         dir: PathBuf::from("."),
         code: Some(0),
-        stderr: format!("a container document could not be read at column {}", error.column()),
+        // The standard output stays empty, and deliberately so: `docker inspect` writes
+        // every container's environment there, and the reason below is the whole of
+        // what may be said about this document.
+        output: Box::new(crate::error::Streams {
+            stdout: String::new(),
+            stderr: format!("a container document could not be read at column {}", error.column()),
+        }),
     })?;
     Ok(Exited {
         name: inspected.name.trim_start_matches('/').to_owned(),

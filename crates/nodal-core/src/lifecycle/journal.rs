@@ -209,6 +209,21 @@ pub fn unfinished(conn: &Connection) -> Result<Vec<Operation>> {
     row::many(conn, &sql, [], decode)
 }
 
+/// Every run of one kind that a failed step stopped, newest first.
+///
+/// The read that lets a build offer to carry on. A `failed` row is not `running`, so
+/// [`unfinished`] does not see it and no resolver will touch it: it waits for a person
+/// to ask for it, and this is how the command that asks finds it.
+///
+/// # Errors
+/// As [`get`].
+pub fn failed(conn: &Connection, kind: &str) -> Result<Vec<Operation>> {
+    let sql = format!(
+        "SELECT {COLUMNS} FROM operation WHERE kind = ? AND state = 'failed' ORDER BY id DESC"
+    );
+    row::many(conn, &sql, params![kind], decode)
+}
+
 /// Every run in a terminal state, newest first, at most `limit` of them.
 ///
 /// # Errors
