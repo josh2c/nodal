@@ -38,6 +38,7 @@ use std::time::{Duration, Instant};
 use rusqlite::Connection;
 
 pub use crate::store::migrations::SCHEMA_VERSION;
+use crate::workspace::sharing;
 use crate::{Error, Result};
 
 /// The file the registry lives in, inside Nodal's home directory. `--store` overrides
@@ -87,6 +88,13 @@ impl Store {
     /// Opening is idempotent and safe to do concurrently: two processes that both find
     /// an out-of-date database will not both migrate it.
     ///
+    /// The open that *makes* the state root also records whether Nodal shares file
+    /// blocks there ([`crate::workspace::sharing`]). That is the one moment the
+    /// question can be asked without writing into a directory somebody is already
+    /// using: the directory is this process's own, one instant old. Every later open
+    /// finds the directory there and asks nothing, which is what lets `nodal doctor`
+    /// read the answer and write nothing.
+    ///
     /// # Errors
     /// [`Error::Io`] when the parent directory could not be created, [`Error::Store`]
     /// when the file could not be opened or configured, [`Error::StoreJournalMode`]
@@ -95,7 +103,11 @@ impl Store {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            let made = !parent.is_dir();
             std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
+            if made {
+                drop(sharing::Sharing::ensure(parent));
+            }
         }
         let conn = Connection::open(&path)
             .map_err(|source| Error::Store { path: path.clone(), source: Box::new(source) })?;

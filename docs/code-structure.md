@@ -98,12 +98,13 @@ substrate/
   templates.rs         ensure(schema_fp) -> Template; incremental from parent
 
 workspace/
-  mod.rs               Materializer trait + select_backend()
+  mod.rs               Materializer trait, backends() (the only list), select_backend(record)
   exclude.rs           default list + recipe excludes (data)
   apfs.rs              clonefile FFI, filtered walk
   reflink.rs           Linux FICLONE walk
   btrfs.rs             subvolume snapshot
   copy.rs              fallback
+  sharing.rs           the recorded answer about sharing blocks at the state root: probe once, then read
   relocate.rs          CacheRelocator trait + InvalidateCache (rewrite reserved, not built)
   home.rs              where Nodal keeps its state, and where a home goes inside it (pure paths)
 
@@ -241,7 +242,8 @@ commands/              one file per command, each ≤ 40 lines: parse args → c
   in as a table) and either resumes or rolls it back as the plan declared.
 - Plan/apply split in every lifecycle op: `plan()` returns a `Plan` value (pure, unit-testable),
   `apply(plan)` performs IO step by step and records each step's outcome. Branching lives in `plan()`.
-- Backend choice happens once (`select_backend`), never inside operations.
+- Backend choice happens once (`select_backend`), never inside operations, and it reads a record rather than
+  asking a filesystem.
 - Data over code: exclusion lists, fingerprint inputs, state transitions, migration tracking rows are tables.
 - One process-spawning function per external tool (`git::cmd::run`, `services::docker`), so mocking is one seam.
 - Tests: unit tests beside code for pure functions; integration tests in `tests/` against the fixture;

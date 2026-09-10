@@ -142,6 +142,30 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 handoff, sync, done, merge, prune, reclaim, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
 `--json`; `status --watch` emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
+Nodal asks whether it shares file blocks under the state root **once**, when the state root is made. The
+command that makes that directory is the one that asks: the first registry open creates it, and `nodal init`
+creates it too. Nodal asks the way the materializer asks. It writes one small file in the nearest directory
+that exists, puts that file on the disk, tries one clone with the backend's own call, and removes both files.
+It does not read the name of the filesystem to decide.
+
+The answer is written beside the registry as `sharing.json`. The record holds the state root, the filesystem's
+name or `null`, the answer, when it was taken, and the device the state root was on. Every command that needs
+the answer reads that record and asks no filesystem anything: the backend a home is made with, `nodal init`,
+`nodal doctor`, and the `materialize` example. Nodal asks again only when there is no record, when the state
+root's device is not the recorded one, or when `nodal init --reprobe` asks.
+
+The answer has three values: `yes`, `no`, and `could-not-ask`. A state root the probe could not write in — a
+full disk, a read-only mount, an exhausted quota, a directory owned by somebody else — is `could-not-ask`.
+Nodal prints it as "could not ask" with the errno, and never as a filesystem that cannot share blocks.
+
+Where Nodal does not share blocks, every unit home is a full copy, and `init` prints one line for that case on
+standard error: the state root, the filesystem where Nodal can name it, that each home is a full copy, and the
+fix. The fix names the filesystems this build shares blocks on. On Linux those are btrfs, XFS formatted with
+reflink (`mkfs.xfs -m reflink=1`), and bcachefs. On macOS it is a volume in an APFS container. Where the
+filesystem is named `9p` or `drvfs`, the line says instead that this is a Windows disk mounted into Linux and
+that the state root belongs on a Linux disk. The name says that, not the machine. A state root Nodal could not
+ask about reads the fix `nodal init --reprobe`. A state root where Nodal shares blocks prints nothing.
+
 `nodal shell-init <shell> --install` writes the script into `<state directory>/shims/` and adds one marked block
 to that shell's start-up file. The block sources the file. It evaluates nothing and starts no process, because it
 runs in every shell a person opens. `nodal shell-init <shell>` on its own still prints the same script, and
@@ -258,6 +282,15 @@ unreferenced volumes, orphan databases and a project over the open-unit threshol
 sections: this project, and a separate section for another project's leftovers that carries names and sizes
 only. A worktree another tool holds a lock on is reported as locked and read no further. Removal of
 unmanaged state is a later command.
+
+The report opens with one line about the state root, in every case. Doctor reads the record and writes
+nothing: it never takes one, because taking one writes a file into the directory the report is about. Where
+there is a record, the line says whether Nodal shares blocks between files there, does not share them, or
+could not be asked, and it names the filesystem where it can. A filesystem this build cannot name is reported
+as unnamed, and `--json` carries the name as `null`. Where there is no record, the line says that nothing has
+recorded an answer and names `nodal init --reprobe`; doctor does not go and find out. `--json` carries the
+whole record as the `sharing` field, and `null` where there is none. Doctor states the fact and prints no
+fix; `nodal init` prints the fix at the moment a person chooses the state root.
 
 The worktrees are every worktree the repository names, read from `git worktree list`. Where the directory
 sits is not part of the question: a worktree under the checkout, beside it, or anywhere else on the machine

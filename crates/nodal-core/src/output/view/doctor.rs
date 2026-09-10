@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::Timestamp;
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, Table};
+use crate::workspace::sharing::{self, Sharing};
 
 /// The columns of the section for this project.
 const HERE: [&str; 5] = ["what", "kind", "size", "state", "intent"];
@@ -246,6 +247,16 @@ pub struct Doctor {
     pub now: Timestamp,
     /// The checkout the command was run in, `None` when it was run outside one.
     pub checkout: Option<Checkout>,
+    /// The state root this machine keeps its homes under.
+    pub state_root: PathBuf,
+    /// What Nodal recorded about sharing file blocks there, and `None` where nothing
+    /// has recorded it yet. A state root that cannot share blocks between files makes
+    /// every unit home a full copy, and a person who is on one has no other way to
+    /// learn it before the first home is made.
+    ///
+    /// Doctor reads the record and never takes one. A record is taken when the state
+    /// root is made, and again when `nodal init --reprobe` asks.
+    pub sharing: Option<Sharing>,
     /// What belongs to this project, largest first.
     pub here: Vec<Finding>,
     /// What belongs to another project, largest first. Names and sizes only.
@@ -257,11 +268,22 @@ pub struct Doctor {
     pub notes: Vec<Note>,
 }
 
+impl Doctor {
+    /// The one line about the state root: the recorded fact, or that nothing recorded
+    /// one. Doctor prints it in every case, so that a person who fixed a state root can
+    /// see that they did.
+    fn state_root_line(&self) -> String {
+        self.sharing.as_ref().map_or_else(|| sharing::unrecorded(&self.state_root), Sharing::fact)
+    }
+}
+
 impl Render for Doctor {
     const KIND: &'static str = "doctor";
 
     fn doc(&self) -> Doc {
         let mut doc = Doc::new();
+        doc.push(Block::fields(vec![Field::new("state root", self.state_root_line())]).at(0));
+        doc.push(Block::blank());
         doc.push(Block::fields(vec![Field::new("this project", self.subject())]).at(0));
         doc.push(section(&self.here, &HERE, "nothing of this project is left behind"));
         doc.push(Block::blank());
@@ -423,11 +445,14 @@ fn shorten(intent: Option<&str>) -> String {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests fail by panicking")]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{
         BranchRow, Branches, CLOSING, Checkout, Doctor, Finding, Kind, Note, Standing, shorten,
     };
     use crate::model::Timestamp;
     use crate::output::Render;
+    use crate::workspace::sharing::{Shares, Sharing};
 
     fn at(text: &str) -> Timestamp {
         Timestamp::parse(text).expect("a fixed instant")
@@ -451,10 +476,24 @@ mod tests {
                 Finding::new(Kind::StaleCache, "/home/j/other/.next").sized(3_330_000_000, true),
             ],
             branches: branches(),
+            state_root: PathBuf::from("/home/j/.nodal"),
+            sharing: Some(sharing(Shares::Yes)),
             notes: vec![Note {
                 source: String::from("docker"),
                 why: String::from("docker is not installed"),
             }],
+        }
+    }
+
+    /// The record a test forces about the state root, for each of the three answers.
+    fn sharing(shares: Shares) -> Sharing {
+        let filesystem = if shares == Shares::Yes { "btrfs" } else { "ext4" };
+        Sharing {
+            root: PathBuf::from("/home/j/.nodal"),
+            filesystem: Some(String::from(filesystem)),
+            shares,
+            probed_at: at("2026-03-02T09:00:00Z"),
+            device: Some(66),
         }
     }
 
@@ -481,6 +520,70 @@ mod tests {
             committed: at("2026-09-01T12:00:00Z"),
             upstream_gone: gone,
         }
+    }
+
+    /// The header says which case this machine is in, and it says it either way. A
+    /// report that spoke up only about the bad case would leave a person who fixed it
+    /// with no way to see that they had.
+    #[test]
+    fn doctor_says_the_state_root_shares_blocks() {
+        let text = report().doc().to_string();
+        let line = header(&text);
+        assert!(line.contains("/home/j/.nodal"), "{line}");
+        assert!(line.contains("btrfs"), "{line}");
+        assert!(line.contains("nodal shares blocks here"), "{line}");
+        assert!(!line.contains("full copy"), "{line}");
+    }
+
+    #[test]
+    fn doctor_says_when_nodal_does_not_share_blocks_at_the_state_root() {
+        let line = header(&with(sharing(Shares::No)).doc().to_string());
+        assert!(line.contains("ext4"), "{line}");
+        assert!(line.contains("nodal does not share blocks here"), "{line}");
+        assert!(line.contains("full copy"), "{line}");
+    }
+
+    /// A state root nobody could ask is reported as one. "Could not ask" and "cannot
+    /// share" are different machines and different fixes, and only one of them is
+    /// about a filesystem.
+    #[test]
+    fn doctor_says_when_the_question_could_not_be_put() {
+        let refused = Shares::could_not_ask(&std::io::Error::from_raw_os_error(libc::EROFS));
+        let line = header(&with(sharing(refused)).doc().to_string());
+        assert!(line.contains("could not ask"), "{line}");
+        assert!(line.contains(&format!("errno {}", libc::EROFS)), "{line}");
+        assert!(!line.contains("does not share blocks"), "{line}");
+    }
+
+    /// A machine nothing has recorded an answer for is said to have no record. Doctor
+    /// does not take one: a probe writes, and this command writes nothing.
+    #[test]
+    fn doctor_says_when_there_is_no_record() {
+        let mut unrecorded = report();
+        unrecorded.sharing = None;
+        let line = header(&unrecorded.doc().to_string());
+        assert!(line.contains("/home/j/.nodal"), "{line}");
+        assert!(line.contains("has not recorded"), "{line}");
+        assert!(line.contains("--reprobe"), "{line}");
+        assert!(!line.contains("full copy"), "{line}");
+    }
+
+    /// Doctor states the fact and prints no fix. `nodal init` prints the fix, at the
+    /// moment a person chooses the state root and can still choose another.
+    #[test]
+    fn doctor_prints_no_fix() {
+        let line = header(&with(sharing(Shares::No)).doc().to_string());
+        assert!(!line.contains("move the state root"), "{line}");
+    }
+
+    /// The report of a machine whose state root answered this way.
+    fn with(record: Sharing) -> Doctor {
+        Doctor { sharing: Some(record), ..report() }
+    }
+
+    /// The one line of the header that is about the state root.
+    fn header(text: &str) -> String {
+        text.lines().find(|line| line.contains("state root")).expect("the state root line").into()
     }
 
     /// The branch section, and the loud bucket printed in full.

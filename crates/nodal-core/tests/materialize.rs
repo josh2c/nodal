@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use nodal_fixture::read_only::{read_attribute, set_attribute};
 
+use nodal_core::workspace::sharing::Sharing;
 use nodal_core::workspace::{
     Excludes, Materializer, Report, copy::CopyFallback, remove, select_backend,
 };
@@ -30,7 +31,8 @@ use nodal_core::workspace::{
 /// destinations after the backend would then make the second run collide with the
 /// first, and every test would fail for a reason that is not about a clone.
 fn backends() -> Vec<(&'static str, Box<dyn Materializer>)> {
-    vec![("selected", select_backend(&target_tmp())), ("fallback", Box::new(CopyFallback))]
+    let recorded = Sharing::ensure(&target_tmp());
+    vec![("selected", select_backend(&recorded)), ("fallback", Box::new(CopyFallback))]
 }
 
 /// The directory temporary trees are made in, on the filesystem of the checkout.

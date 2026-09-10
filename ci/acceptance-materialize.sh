@@ -53,7 +53,10 @@ dd if=/dev/urandom of="$base/.claude/worktrees/other/checkout.bin" bs=1M count=8
 # section, so what is measured is the clone.
 sync
 
-report=$(cargo run --locked -q -p nodal-core --example materialize -- "$base" "$home")
+# The backend comes from the answer recorded for the state root, not from a probe taken
+# where the clone lands. So the state root is put on the filesystem being measured, and
+# the example records the answer there on its first run.
+report=$(NODAL_HOME="$root/state" cargo run --locked -q -p nodal-core --example materialize -- "$base" "$home")
 echo "acceptance (materialize): $report"
 backend=$(echo "$report" | sed 's/.*"backend":"\([^"]*\)".*/\1/')
 seconds=$(echo "$report" | sed 's/.*"seconds":\([0-9.]*\).*/\1/')

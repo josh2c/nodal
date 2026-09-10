@@ -31,6 +31,7 @@ use nodal_core::model::Timestamp;
 use nodal_core::output::view::doctor::{Doctor, Finding, Kind};
 use nodal_core::services::docker::{Docker, Output};
 use nodal_core::store::Store;
+use nodal_core::workspace::sharing::Sharing;
 use nodal_safety::git::{self, git_ok as git};
 
 /// The container the fake daemon reports as exited, with a writable layer of 120 MB.
@@ -135,7 +136,8 @@ impl Planted {
         cwd: &Path,
         state: &Path,
     ) -> Doctor {
-        let machine = Machine::here(cwd, state, Some(&self.sessions));
+        let sharing = Sharing::read(state);
+        let machine = Machine::here(cwd, state, Some(&self.sessions), sharing.as_ref());
         doctor::survey(registry, docker, &machine, Timestamp::now())
             .expect("a machine doctor can read")
     }

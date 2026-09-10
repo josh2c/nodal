@@ -141,6 +141,7 @@ fn build_one(
         platform: key.platform.clone(),
         commit: key.commit.clone(),
         destination: home::for_base(&request.state_dir, &request.project.name, id),
+        state_dir: request.state_dir.clone(),
         origin: origin.clone(),
         objects: request.source.clone(),
         excludes: request.recipe.base.exclude.clone(),

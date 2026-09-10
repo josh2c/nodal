@@ -38,8 +38,20 @@ impl Materializer for ApfsClonefile {
         "clonefile"
     }
 
-    fn supports(&self, path: &Path) -> bool {
-        platform::supports(path)
+    fn available(&self) -> bool {
+        platform::AVAILABLE
+    }
+
+    fn shares_blocks(&self) -> bool {
+        true
+    }
+
+    fn filesystem(&self, directory: &Path) -> Option<String> {
+        platform::filesystem(directory)
+    }
+
+    fn clone_probe(&self, source: &Path, destination: &Path) -> std::io::Result<()> {
+        platform::clone_probe(source, destination)
     }
 
     fn clone_tree(&self, source: &Path, destination: &Path, exclude: &Excludes) -> Result<Report> {
@@ -59,13 +71,14 @@ fn put(source: &Path, destination: &Path, metadata: &Metadata) -> Result<Put> {
 /// Everything that is one call on macOS and nothing anywhere else.
 #[cfg(target_os = "macos")]
 mod platform {
+    use std::ffi::{CStr, CString};
     use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
     use crate::error::{Error, Result};
 
-    /// What APFS calls itself in `statfs`.
-    const APFS: &str = "apfs";
+    /// This platform has `clonefile`, so a probe here is worth the file it writes.
+    pub(super) const AVAILABLE: bool = true;
 
     /// `CLONE_NOFOLLOW` from `<sys/clonefile.h>`: do not resolve a source that is a
     /// symbolic link. The `libc` crate does not publish this constant, so it is stated
@@ -73,22 +86,10 @@ mod platform {
     /// constant that happens to have the same value.
     const CLONE_NOFOLLOW: u32 = 0x0001;
 
-    /// Whether the filesystem holding `path` is APFS. The path need not exist yet: the
-    /// answer is about the nearest directory that does.
-    pub(super) fn supports(path: &Path) -> bool {
-        nearest(path).and_then(name).is_some_and(|found| found == APFS)
-    }
-
-    /// The nearest ancestor of `path`, itself included, that exists.
-    fn nearest(path: &Path) -> Option<&Path> {
-        let mut candidate = Some(path);
-        while let Some(path) = candidate {
-            if path.symlink_metadata().is_ok() {
-                return Some(path);
-            }
-            candidate = path.parent();
-        }
-        None
+    /// What the filesystem holding `directory` is called, as `statfs` names it. APFS
+    /// says `apfs`. The name is reported and never selected on; a clone is tried.
+    pub(super) fn filesystem(directory: &Path) -> Option<String> {
+        name(directory)
     }
 
     /// The name `statfs` gives the filesystem holding `path`.
@@ -116,21 +117,48 @@ mod platform {
     /// the one call that could break it. Without the flag `clonefile` resolves a
     /// source that is a link and copies what it points at, so a link the walk had
     /// already classified would become a file if it were replaced between the two.
+    ///
+    /// This is the boundary between the two error types. Everything below it answers
+    /// with the operating system's own error, and this function is where that error
+    /// becomes [`Error::Io`] naming the path it is about.
+    ///
+    /// # Errors
+    /// [`Error::Io`] naming the file that could not be cloned.
     pub(super) fn clone(source: &Path, destination: &Path) -> Result<()> {
-        let (from, to) = (c_path(source)?, c_path(destination)?);
+        let from = c_path(source).map_err(Error::io(source))?;
+        let to = c_path(destination).map_err(Error::io(destination))?;
+        call(&from, &to).map_err(Error::io(destination))
+    }
+
+    /// The one call a probe makes: `clonefile` and nothing else.
+    ///
+    /// # Errors
+    /// The operating system's own error, unchanged, so that the caller can tell a
+    /// volume that will not clone from one it could not write in.
+    pub(super) fn clone_probe(source: &Path, destination: &Path) -> std::io::Result<()> {
+        call(&c_path(source)?, &c_path(destination)?)
+    }
+
+    /// The call itself, which both callers make and neither repeats.
+    ///
+    /// # Errors
+    /// The operating system's own error. A caller that owes its own kind of error maps
+    /// this one; a caller that does not hands it on.
+    fn call(from: &CStr, to: &CStr) -> std::io::Result<()> {
         // SAFETY: both paths are NUL-terminated C strings that outlive the call.
         if unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), CLONE_NOFOLLOW) } == 0 {
             return Ok(());
         }
-        Err(Error::Io { path: destination.to_path_buf(), source: std::io::Error::last_os_error() })
+        Err(std::io::Error::last_os_error())
     }
 
     /// A path as the C string `clonefile` takes.
-    fn c_path(path: &Path) -> Result<std::ffi::CString> {
-        std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| Error::Io {
-            path: path.to_path_buf(),
-            source: std::io::Error::from(std::io::ErrorKind::InvalidInput),
-        })
+    ///
+    /// # Errors
+    /// `InvalidInput`, for the one path a C string cannot hold: one with a NUL in it.
+    fn c_path(path: &Path) -> std::io::Result<CString> {
+        CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
     }
 }
 
@@ -141,12 +169,24 @@ mod platform {
 
     use crate::error::{Error, Result};
 
-    /// No filesystem here has `clonefile`, so this backend is never selected.
-    pub(super) fn supports(_path: &Path) -> bool {
-        false
+    /// No filesystem here has `clonefile`, so this backend is never selected and a
+    /// probe never writes a file to find that out.
+    pub(super) const AVAILABLE: bool = false;
+
+    /// This backend names no filesystem away from macOS.
+    pub(super) fn filesystem(_directory: &Path) -> Option<String> {
+        None
     }
 
-    /// Refuse, because [`supports`] said so.
+    /// Never called, because [`AVAILABLE`] is false.
+    ///
+    /// # Errors
+    /// Always, because this platform has no call that shares blocks.
+    pub(super) fn clone_probe(_source: &Path, _destination: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+    }
+
+    /// Refuse, because [`AVAILABLE`] said so.
     pub(super) fn clone(source: &Path, _destination: &Path) -> Result<()> {
         Err(Error::MaterializeUnsupported { backend: "clonefile", path: source.to_path_buf() })
     }

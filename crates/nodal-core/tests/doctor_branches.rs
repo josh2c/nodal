@@ -34,6 +34,7 @@ use nodal_core::doctor::branches;
 use nodal_core::model::Timestamp;
 use nodal_core::output::Render;
 use nodal_core::output::view::doctor::{BranchRow, Branches, Standing};
+use nodal_core::workspace::sharing::Sharing;
 use nodal_safety::git::{self, git as text, git_ok as git};
 
 /// A checkout, its remote, and the branches of both.
@@ -187,6 +188,8 @@ fn report(branches: Branches, expand: bool) -> String {
     let doctor = nodal_core::output::view::doctor::Doctor {
         now: Timestamp::now(),
         checkout: None,
+        state_root: std::env::temp_dir(),
+        sharing: Sharing::read(&std::env::temp_dir()),
         here: Vec::new(),
         elsewhere: Vec::new(),
         branches: Branches { expand, ..branches },
