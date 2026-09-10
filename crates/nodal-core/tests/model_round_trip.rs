@@ -58,6 +58,7 @@ fn project() -> Project {
         name: ProjectName::parse("example").expect("sample project name is a line"),
         recipe_hash: digest("9f2c"),
         created_at: at("2026-09-06T09:00:00Z"),
+        remote_url: None,
     }
 }
 

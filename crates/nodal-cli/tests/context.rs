@@ -154,6 +154,7 @@ impl Crowd {
             name: ProjectName::parse("fixture").unwrap(),
             recipe_hash: Digest::parse("0".repeat(64)).unwrap(),
             created_at: now,
+            remote_url: None,
         };
         projects::insert(store.conn(), &project).unwrap();
         let mut homes = BTreeMap::new();
@@ -238,6 +239,7 @@ impl Tracking {
             name: ProjectName::parse("fixture").unwrap(),
             recipe_hash: Digest::parse("0".repeat(64)).unwrap(),
             created_at: Timestamp::now(),
+            remote_url: None,
         };
         projects::insert(store.conn(), &project).unwrap();
         for index in 0..units {

@@ -248,6 +248,7 @@ impl World {
             name: ProjectName::parse("project").unwrap(),
             recipe_hash: Digest::parse("abc123").unwrap(),
             created_at: at(),
+            remote_url: None,
         }
     }
 

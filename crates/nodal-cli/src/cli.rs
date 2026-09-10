@@ -234,6 +234,7 @@ impl Cli {
             return Ok(None);
         }
         let mut store = Store::open(path)?;
+        backfill(&mut store)?;
         report(&lifecycle::resolve(&mut store, &ops::rebuilders())?);
         Ok(Some(store))
     }
@@ -244,9 +245,27 @@ impl Cli {
             None => home::registry()?,
         };
         let mut store = Store::open(path)?;
+        backfill(&mut store)?;
         report(&lifecycle::resolve(&mut store, &ops::rebuilders())?);
         Ok(store)
     }
+}
+
+/// Run the half of a migration that is not SQL, on the open that crossed it.
+///
+/// Migration 9 gives each project row the repository it is a clone of, and that is read
+/// from the checkout's `origin` rather than from the registry
+/// (`ops::new::backfill_remotes`). It runs once per machine and says nothing when there
+/// was nothing to fill in.
+fn backfill(store: &mut Store) -> nodal_core::Result<()> {
+    if !store.upgraded_past(ops::new::REMOTE_VERSION) {
+        return Ok(());
+    }
+    let filled = ops::new::backfill_remotes(store)?;
+    if filled > 0 {
+        eprintln!("nodal: recorded the remote of {filled} project(s)");
+    }
+    Ok(())
 }
 
 /// Say what became of every operation an earlier run did not finish.

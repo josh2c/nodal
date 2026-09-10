@@ -44,7 +44,7 @@ impl Env {
                 Some(name) => Shell::parse(name)?,
                 None => Shell::default(),
             };
-            print!("{}", shells::assignments(shell, &files::read_dotenv(&home)?));
+            print!("{}", shells::assignments(shell, &nodal_core::env::entering(&home)?));
             return Ok(ExitCode::SUCCESS);
         }
         let report = EnvReport::from_manifest(&files::read_manifest(&home)?, Timestamp::now());

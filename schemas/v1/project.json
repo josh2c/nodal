@@ -18,6 +18,12 @@
       "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
       "type": "string"
     },
+    "RemoteUrl": {
+      "description": "What repository a project is, in the one spelling every clone of it agrees on.\n\nIt is the normalised form of a remote URL and never the URL as somebody typed\nit: `git@github.com:josh2c/nodal.git` and `https://github.com/josh2c/nodal`\nare one repository, so they are one of these\n([`crate::git::remote::identity`]).",
+      "maxLength": 255,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
+      "type": "string"
+    },
     "Timestamp": {
       "description": "A UTC instant, serialised as an RFC 3339 string.",
       "format": "date-time",
@@ -44,8 +50,19 @@
       "$ref": "#/$defs/Digest",
       "description": "Digest of the effective recipe, so a changed `nodal.toml` is visible without\nre-reading the file."
     },
+    "remote_url": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RemoteUrl"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Which repository this is, when it has a remote called `origin`.\n\nThis is the project's identity where it has one, and the checkout path is the\nidentity where it has none. A repository that has never been pushed is an\nordinary project and carries `None`."
+    },
     "root": {
-      "description": "Absolute path of the repository root on this host.",
+      "description": "Absolute path of the repository root on this host.\n\nIt is where the project was first seen. On a host two people share, each of them\nhas a clone of their own, and the row records the first: identity comes from\n[`Project::remote_url`], so a second clone joins the project rather than making\none. Every operation acts on the checkout the person is actually in\n(`lifecycle::ops::new::ensure_project`).",
       "type": "string"
     }
   },

@@ -54,6 +54,8 @@
 //! | a reason with every error | a tool fails and the message does not say what it wrote | `tests/base_retry.rs` |
 //! | a pin acted on | a host installs at a version the project did not ask for | `tests/base_pin.rs` |
 //! | one clone at any worker count | the threads a copy runs on change the tree it makes | `tests/clone_identity.rs` |
+//! | one registry per host | a second account cannot open the list, or two clones of one remote make two projects | `tests/shared_host.rs` |
+//! | secrets stay their owner's | a second account entering a home reads the first's credentials | `tests/shared_host.rs` |
 //!
 //! ## How the properties are asserted
 //!

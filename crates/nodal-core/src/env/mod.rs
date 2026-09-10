@@ -1,11 +1,14 @@
 //! Activation: the environment a unit's home carries, and the files that deliver it.
 //!
 //! A home is activated when a shell that enters it has the unit's variables. Nodal
-//! spawns no subshell for that: it writes two files and lets the tools a
-//! person already has read them. `.nodal/env` is a dotenv file with the resolved set,
-//! and `.envrc` is one line, `dotenv .nodal/env`, which direnv acts on. A shell with no
-//! direnv gets the same set from `nodal env --export`, which is the fallback the rc
-//! hook uses. Both consume what this module writes.
+//! spawns no subshell for that: it writes two files and lets the tools a person already
+//! has read them. `.nodal/env` is a dotenv file with the unit's identity and the values
+//! its own services generated, and `.envrc` reads it and then evaluates `nodal env
+//! --export`. A shell with no direnv runs the same command through the rc hook.
+//!
+//! The person's own secrets are in neither file. They are resolved when somebody enters
+//! the home ([`entering`]), from that person's own secrets file, so two accounts on one
+//! host entering one home get two answers and neither reads the other's.
 //!
 //! [`resolve`] is the assembly and it is nearly pure: it takes the registry rows, the
 //! recipe and the sources, and returns an [`Activation`]. [`files::write`] is the only
@@ -27,10 +30,12 @@ pub mod stand_in;
 pub mod vars;
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::Result;
 use crate::model::manifest::{Manifest, Missing, Origin, Want};
 use crate::model::{EnvName, Environment, Project, Recipe, Timestamp, Unit};
+use crate::workspace::home;
 
 pub use crate::env::secrets::{MachineSecrets, SecretSource, UnitGenerated};
 pub use crate::env::stand_in::StandIns;
@@ -213,4 +218,60 @@ pub fn resolve(
 fn dedupe(vars: &mut Vec<EnvVar>) {
     let mut seen = std::collections::BTreeSet::new();
     vars.retain(|var| seen.insert(var.name.clone()));
+}
+
+/// Every variable a shell entering `home` should carry, for the person running this.
+///
+/// Two halves. The first is `.nodal/env`, which says what the unit is and what its own
+/// services generated; it is the same for everybody who enters. The second is this
+/// person's secrets, resolved now from their own file, for each name the home was
+/// activated with that a person supplies.
+///
+/// The names come from the manifest, which records an origin per name and the names
+/// nothing answered. A name that was missing when the home was made is asked for again:
+/// the person entering may hold a value the person who created it did not, and the
+/// alternative is a home that stays half-activated until it is rebuilt.
+///
+/// A value already in `.nodal/env` is never replaced. Identity is Nodal's and a
+/// generated value is the unit's, and neither is a person's to override.
+///
+/// # Errors
+/// [`crate::Error::Io`] when `.nodal/env` cannot be read, [`crate::Error::Recipe`] when
+/// the manifest is not one, [`crate::Error::SecretsPermissions`] when this person's
+/// secrets file is readable by anybody else, and [`crate::Error::NoHomeDirectory`] when
+/// nothing says where the state directory is.
+pub fn entering(home: &Path) -> Result<Vec<(EnvName, String)>> {
+    let mut pairs = files::read_dotenv(home)?;
+    let manifest = files::read_manifest(home)?;
+    let source = MachineSecrets::open(MachineSecrets::path_in(&home::directory()?))?;
+    for name in wanted(&manifest) {
+        if pairs.iter().any(|(held, _)| *held == name) {
+            continue;
+        }
+        if let Some(value) = source.lookup(&name)? {
+            pairs.push((name, value.expose().to_owned()));
+        }
+    }
+    Ok(pairs)
+}
+
+/// The names a person's own secrets file is asked for, in one order every run repeats.
+///
+/// The manifest's own order: the names it recorded as coming from a secrets file, then
+/// the names it recorded as answered by nothing. Both are sorted collections, so the
+/// answer is the same bytes on every run and a diff of an export means something moved.
+fn wanted(manifest: &Manifest) -> Vec<EnvName> {
+    let held = manifest
+        .env
+        .iter()
+        .filter(|(_, origin)| **origin == Origin::Machine)
+        .map(|(name, _)| name.clone());
+    let unanswered = manifest
+        .missing
+        .iter()
+        .filter(|missing| matches!(missing.want, Want::Secret | Want::RequiredLocal))
+        .map(|missing| missing.name.clone());
+    let mut names: Vec<EnvName> = held.chain(unanswered).collect();
+    names.dedup();
+    names
 }

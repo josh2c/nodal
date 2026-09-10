@@ -281,6 +281,28 @@ pub enum Error {
         mode: u32,
     },
 
+    /// A group was named that this host does not have. Nothing was changed: a state
+    /// root handed to a group that does not exist would be a root nobody but its owner
+    /// could reach, which is the arrangement `--shared` exists to end.
+    #[error("this host has no group called {group}")]
+    UnknownGroup {
+        /// The group as it was typed.
+        group: String,
+    },
+
+    /// A path could not be given to a group. The reason the operating system gave is
+    /// carried, because the two ordinary causes need different answers: an owner who is
+    /// not a member of the group, and a filesystem mounted without group ownership.
+    #[error("{path} could not be given to group {group}: {why}", path = path.display())]
+    GroupChange {
+        /// The path that kept the group it had.
+        path: PathBuf,
+        /// The group it was to be given to.
+        group: String,
+        /// What the operating system said.
+        why: String,
+    },
+
     /// A manifest could not be rendered as TOML. It holds no secret, so the underlying
     /// error is safe to carry.
     #[error("a manifest could not be written: {source}")]

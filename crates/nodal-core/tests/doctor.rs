@@ -450,6 +450,7 @@ fn project_row(root: &Path) -> nodal_core::model::Project {
         name: nodal_core::model::ProjectName::parse("other").expect("a name"),
         recipe_hash: nodal_core::model::Digest::parse("0".repeat(64)).expect("a digest"),
         created_at: Timestamp::now(),
+        remote_url: None,
     }
 }
 

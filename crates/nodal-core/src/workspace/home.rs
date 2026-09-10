@@ -77,6 +77,31 @@ pub fn user() -> Result<PathBuf> {
     user_directory().ok_or(Error::NoHomeDirectory { variable: DIRECTORY_VAR })
 }
 
+/// The variable that moves the person's own configuration directory.
+pub const CONFIG_VAR: &str = "XDG_CONFIG_HOME";
+
+/// The configuration directory's name under the person's own directory.
+const CONFIG_NAME: &str = ".config";
+
+/// Nodal's directory inside the person's own configuration directory.
+const CONFIG_SUBDIR: &str = "nodal";
+
+/// Where this person keeps their own Nodal configuration: `~/.config/nodal`.
+///
+/// It is under the person's own directory and never under the state directory, and that
+/// is the whole reason it exists. `NODAL_HOME` may point at a directory a whole group
+/// owns, which is what makes one list on a host two people log in to; a file of secrets
+/// in there would be one person's values in a directory the group can read.
+///
+/// # Errors
+/// [`Error::NoHomeDirectory`] when nothing says where the person's own directory is.
+pub fn config() -> Result<PathBuf> {
+    if let Some(moved) = std::env::var_os(CONFIG_VAR).filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(moved).join(CONFIG_SUBDIR));
+    }
+    Ok(user()?.join(CONFIG_NAME).join(CONFIG_SUBDIR))
+}
+
 /// The registry's default path: `registry.db` in the state directory.
 ///
 /// # Errors

@@ -59,6 +59,7 @@ impl Fixture {
             name: ProjectName::parse("fixture").unwrap(),
             recipe_hash: Digest::parse("0".repeat(64)).unwrap(),
             created_at: now,
+            remote_url: None,
         };
         projects::insert(opened.conn(), &project).unwrap();
         for index in 0..UNITS {

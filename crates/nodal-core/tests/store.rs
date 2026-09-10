@@ -66,6 +66,7 @@ fn project() -> Project {
         name: ProjectName::parse("acme").unwrap(),
         recipe_hash: Digest::parse("0f1e2d").unwrap(),
         created_at: at("2026-09-06T10:00:00Z"),
+        remote_url: None,
     }
 }
 

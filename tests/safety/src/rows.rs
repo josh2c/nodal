@@ -25,7 +25,10 @@ pub fn host() -> HostName {
     nodal_core::lifecycle::owner::current_host()
 }
 
-/// A project row whose recipe nothing has hashed.
+/// A project row whose recipe nothing has hashed and whose checkout has no remote.
+///
+/// A test that writes its own rows is naming the project by its path, which is what a
+/// repository with no `origin` is keyed by.
 ///
 /// # Panics
 ///
@@ -38,6 +41,7 @@ pub fn project(id: ProjectId, root: PathBuf, name: &str, at: Timestamp) -> Proje
         name: ProjectName::parse(name).expect("a project name"),
         recipe_hash: Digest::parse("0".repeat(64)).expect("a digest"),
         created_at: at,
+        remote_url: None,
     }
 }
 

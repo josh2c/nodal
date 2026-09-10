@@ -122,11 +122,14 @@ fn a_shell_that_evaluates_the_export_carries_every_generated_variable() {
         home = home.display(),
     );
     // The shell spawns the binary itself, so the shell is what has to carry the state
-    // directory. A command built by the harness carries it already.
+    // directory and the secrets file. A command built by the harness carries both
+    // already; this one is built here, so it names both here. The secrets file is the
+    // point of the test: the export resolves it for whoever runs the command.
     let output = Command::new("sh")
         .arg("-c")
         .arg(script)
         .env(nodal_core::workspace::home::DIRECTORY_VAR, machine.path())
+        .env(nodal_core::env::secrets::PATH_VAR, directory.path().join("secrets.env"))
         .output()
         .unwrap();
     assert!(output.status.success(), "{:?}", String::from_utf8_lossy(&output.stderr));
@@ -136,8 +139,14 @@ fn a_shell_that_evaluates_the_export_carries_every_generated_variable() {
     );
 }
 
+/// The dotenv file is what the home is, and it holds nobody's credential.
+///
+/// A home under a shared state root is a directory two accounts may enter. If the
+/// credential were in the file, the second account would read the first's. So the file
+/// carries the unit's identity and the values its own services generated, and the
+/// credential is not in it at all.
 #[test]
-fn a_shell_that_reads_the_dotenv_file_carries_the_same_set() {
+fn the_dotenv_file_carries_the_unit_and_no_credential() {
     let directory = tempfile::tempdir().unwrap();
     let home = write_home(directory.path());
 
@@ -146,6 +155,37 @@ fn a_shell_that_reads_the_dotenv_file_carries_the_same_set() {
         home = home.display(),
     );
     let output = Command::new("sh").arg("-c").arg(script).output().unwrap();
+    assert!(output.status.success(), "{:?}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), format!("{PORT}|fix-worker-import|"));
+
+    let written = std::fs::read_to_string(home.join(".nodal/env")).unwrap();
+    assert!(!written.contains(SECRET), "the dotenv file holds a credential: {written}");
+}
+
+/// The two lines of `.envrc`, run in order, are the whole activation.
+///
+/// This is what direnv does and what the rc hook does. The first line says what the
+/// home is; the second resolves what the person entering it has. Together they deliver
+/// the same set the file used to hold on its own.
+#[test]
+fn the_two_lines_of_the_envrc_together_carry_the_whole_set() {
+    let directory = tempfile::tempdir().unwrap();
+    let machine = Machine::new();
+    let home = write_home(directory.path());
+
+    let script = format!(
+        "set -a; . '{home}/.nodal/env'; eval \"$({binary} env --export {home})\"; set +a; \
+         printf '%s|%s|%s' \"$PORT\" \"$NODAL_UNIT\" \"$SESSION_SECRET\"",
+        binary = state::BINARY,
+        home = home.display(),
+    );
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .env(nodal_core::workspace::home::DIRECTORY_VAR, machine.path())
+        .env(nodal_core::env::secrets::PATH_VAR, directory.path().join("secrets.env"))
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{:?}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),

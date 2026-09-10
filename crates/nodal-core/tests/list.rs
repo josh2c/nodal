@@ -87,6 +87,7 @@ impl Fixture {
             name: ProjectName::parse("fixture").unwrap(),
             recipe_hash: Digest::parse("0".repeat(64)).unwrap(),
             created_at: now,
+            remote_url: None,
         };
         let store = Store::open(directory.path().join("registry.db")).unwrap();
         projects::insert(store.conn(), &project).unwrap();
@@ -170,6 +171,7 @@ fn project_at_root(root: &Path, tag: char) -> Project {
         name: ProjectName::parse("fixture").unwrap(),
         recipe_hash: Digest::parse("0".repeat(64)).unwrap(),
         created_at: Timestamp::now(),
+        remote_url: None,
     }
 }
 

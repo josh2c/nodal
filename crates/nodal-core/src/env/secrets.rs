@@ -2,8 +2,8 @@
 //!
 //! A recipe declares the *names* a working copy needs and never a value ([`crate::model::Env`]).
 //! The values come from a [`SecretSource`], and there are two of those in V1: the
-//! per-machine file at `~/.nodal/secrets.env`, and the values a unit minted for its own
-//! services. A source is asked in the order of [`Origin`], so a unit-generated value
+//! person's own file at `~/.config/nodal/secrets.env`, and the values a unit minted for
+//! its own services. A source is asked in the order of [`Origin`], so a unit-generated value
 //! wins over a machine-wide one of the same name: the generated value is bound to
 //! resources only this unit has, and the machine-wide one cannot be.
 //!
@@ -26,8 +26,11 @@ use crate::model::EnvName;
 use crate::model::manifest::Origin;
 use crate::{Error, Result};
 
-/// The file a machine keeps its own values in, under the Nodal home.
+/// The file a person keeps their own values in.
 pub const FILE_NAME: &str = "secrets.env";
+
+/// Where that file is, in the words a report and a message use: `~/.config/nodal/secrets.env`.
+pub const DISPLAY_PATH: &str = "~/.config/nodal/secrets.env";
 
 /// The variable that moves the per-machine file, for tests and for a second profile.
 pub const PATH_VAR: &str = "NODAL_SECRETS_FILE";
@@ -105,10 +108,33 @@ pub struct MachineSecrets {
 }
 
 impl MachineSecrets {
-    /// Where the file is: `NODAL_SECRETS_FILE` if it is set, else `<nodal_home>/secrets.env`.
+    /// Where this person's secrets file is.
+    ///
+    /// Three answers, in order:
+    ///
+    /// 1. [`PATH_VAR`], when it is set. It is the override, and it is what a second
+    ///    profile and every test in the workspace uses.
+    /// 2. `~/.config/nodal/secrets.env`, when it is there. This is the default, and it
+    ///    is under the person's own directory rather than under the state root.
+    /// 3. `<nodal_home>/secrets.env`, when *that* is there. This is where the file used
+    ///    to live, and a machine set up before the move still keeps its values in it.
+    ///
+    /// A machine with neither file gets the second path, which is where
+    /// [`MachineSecrets::open_or_create`] makes one.
+    ///
+    /// The default moved out of the state root because the state root moved out of one
+    /// person's ownership. `NODAL_HOME` may name a directory a whole group owns
+    /// ([`crate::workspace::shared`]), and one registry for a host is the point of that
+    /// while one secrets file for a host is the opposite of it.
     #[must_use]
     pub fn path_in(nodal_home: &Path) -> PathBuf {
-        std::env::var_os(PATH_VAR).map_or_else(|| nodal_home.join(FILE_NAME), PathBuf::from)
+        if let Some(named) = std::env::var_os(PATH_VAR).filter(|value| !value.is_empty()) {
+            return PathBuf::from(named);
+        }
+        let own = crate::workspace::home::config().map(|config| config.join(FILE_NAME));
+        let Ok(own) = own else { return nodal_home.join(FILE_NAME) };
+        let legacy = nodal_home.join(FILE_NAME);
+        if !own.exists() && legacy.exists() { legacy } else { own }
     }
 
     /// Read the file. An absent file is an empty source, not a failure: a machine that
@@ -137,6 +163,11 @@ impl MachineSecrets {
     /// machine leaves a file with the right mode to fill in. Activation calls
     /// [`MachineSecrets::open`] instead: writing a unit's home never touches a file
     /// every other unit shares.
+    ///
+    /// The file and its directory are the person's own, at [`OWNER_ONLY`]. That holds
+    /// on a shared host too, whatever umask the state root put this process under
+    /// ([`crate::workspace::shared`]): the mode is named on the open, not left to the
+    /// mask.
     ///
     /// # Errors
     /// Whatever [`MachineSecrets::open`] reports, and [`Error::Io`] when the file or
@@ -242,13 +273,27 @@ fn check_permissions(_path: &Path, _metadata: &std::fs::Metadata) -> Result<()> 
     Ok(())
 }
 
+/// The mode the directory holding the secrets file is created at: the owner alone.
+///
+/// It is named rather than left to the umask. A shared host runs Nodal under a umask
+/// that keeps the group's write bit ([`crate::workspace::shared::UMASK`]), and on a
+/// distribution that gives every account one primary group that would leave the
+/// directory writable by everybody — which is the one account's own directory, holding
+/// the one thing a person cannot re-derive.
+pub const DIR_OWNER_ONLY: u32 = 0o700;
+
 /// Create an empty file at [`OWNER_ONLY`], and its parent directory, if it is not there.
 #[cfg(unix)]
 fn create_owner_only(path: &Path) -> Result<()> {
-    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
     if let Some(parent) = path.parent() {
+        let made = !parent.is_dir();
         std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
+        if made {
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(DIR_OWNER_ONLY))
+                .map_err(Error::io(parent))?;
+        }
     }
     match std::fs::OpenOptions::new().write(true).create_new(true).mode(OWNER_ONLY).open(path) {
         Ok(_) => Ok(()),

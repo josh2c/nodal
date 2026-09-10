@@ -6,8 +6,8 @@ Machine-readable form: the types behind these surfaces are published as JSON Sch
 `schemas/v1/`, generated from the model and diffed in CI (`schemas/README.md`).
 
 ## Directory contract
-A unit's home contains `.nodal/id` (marker, verified against the registry), `.nodal/env` (dotenv),
-`.nodal/manifest.toml`, `WORKUNIT.md` (facts about the unit and its siblings), `.envrc` (`dotenv .nodal/env`),
+A unit's home contains `.nodal/id` (marker, verified against the registry), `.nodal/env` (dotenv, no secret),
+`.nodal/manifest.toml`, `WORKUNIT.md` (facts about the unit and its siblings), `.envrc` (`dotenv .nodal/env`, then `nodal env --export`),
 and a normal `.git` directory. Nothing else is required for a terminal, IDE or agent to integrate.
 
 ### What Nodal writes into a home, and the one rule for all of it
@@ -103,9 +103,9 @@ control.
 generated variables (`PORT`, `APP_URL`, service URLs). Every process started in an activated home
 carries them, which is what makes attribution and session state readable.
 
-A shell reads them by one of two routes. direnv reads `.envrc`, which reads `.nodal/env`. A shell
-with no direnv evaluates `nodal env --export`, which is what the hook `nodal shell-init` installs
-does. That one evaluation is the only one in the hook, and what it evaluates is Nodal's own output,
+A shell reads them by one of two routes. direnv reads `.envrc`. `.envrc` holds two lines: it reads
+`.nodal/env`, then it evaluates `nodal env --export`. A shell with no direnv evaluates the same
+command, which is what the hook `nodal shell-init` installs does. That one evaluation is the only one in the hook, and what it evaluates is Nodal's own output,
 quoted so that no character of a value is interpreted. Nodal spawns no subshell for either route.
 
 The rc hook is the default route, because it needs no second program and no per-directory approval.
@@ -126,20 +126,44 @@ A recipe declares names. It never holds a value. Three tiers supply the values, 
 in this order:
 
 1. the unit itself, for a value it minted for its own services;
-2. the per-machine file `~/.nodal/secrets.env`;
+2. the person's own file `~/.config/nodal/secrets.env`;
 3. nothing, in which case the name is a line of the report.
 
-A unit-generated value wins over a machine-wide value of the same name, because only the unit-
-generated value is bound to the unit's own resources. `NODAL_SECRETS_FILE` moves the per-machine
-file, as `NODAL_STORE` moves the registry.
+A unit-generated value wins over a value of the same name in a person's file, because only the
+unit-generated value is bound to the unit's own resources. `NODAL_SECRETS_FILE` moves the file, as
+`NODAL_STORE` moves the registry. A machine that still holds `<state root>/secrets.env` and has no
+file under `~/.config` reads the old path, so nothing breaks on an upgrade.
 
-Nodal creates `~/.nodal/secrets.env` with mode `0600`. Nodal refuses to read the file when its mode
-gives any access to group or other, and reports the mode alone.
+The file is the person's own and not the machine's. `NODAL_HOME` may name a directory a whole group
+owns (see Shared hosts), and one secrets file for such a host would hand every account the same
+credentials.
+
+Nodal creates `~/.config/nodal/secrets.env` with mode `0600`, in a directory with mode `0700`.
+Nodal refuses to read the file when its mode gives any access to group or other, and reports the
+mode alone.
 
 A name that no tier answers is a line of the report. It never stops a unit from being created.
 
-A secret value goes into `.nodal/env` and into the output of `nodal env --export`. It goes nowhere
-else: not into a manifest, a bundle, a log line, an error message or `--json` output.
+A secret value goes into the output of `nodal env --export` and nowhere else: not into `.nodal/env`,
+not into a manifest, a bundle, a log line, an error message or `--json` output. `.nodal/env` holds
+the unit's identity and the values its own services generated, so two accounts entering one home
+read the same file and resolve their own credentials.
+
+## Shared hosts
+Two people with accounts on one box see one list. The state root's own mode says so: a directory
+with the setgid bit set is a shared root, and Nodal reads that rather than a setting of its own.
+
+In a shared root, Nodal writes the registry and its `-wal` and `-shm` files with mode `0660`, runs
+under umask `002`, and writes each home's `.nodal/env` group-readable. A root without the setgid bit
+is one person's own and nothing above applies to it.
+
+`nodal init --shared <group>` makes a root like that: it creates the directory, gives it to the
+group, sets mode `2775`, and prints each thing it did. Run it once per host. Every command after it
+reads the mode.
+
+A project is keyed by its `origin` remote, normalised, and by its checkout path where it has no
+remote. Two clones of one repository are therefore one project with one base and one block of
+ports. Each command acts on the checkout the person is standing in, never on another person's.
 
 ## Home path policy
 `~/.nodal/<project>/e/<id>/`, equal length for every unit of a project. `<id>` is the last
