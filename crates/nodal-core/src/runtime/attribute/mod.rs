@@ -23,6 +23,12 @@
 //! and a person reading a row needs to know which of the two they are looking at before
 //! they act on it. So the level is a column, not a footnote.
 //!
+//! The level is also what a teardown acts on. `nodal reclaim` and `nodal gc` signal the
+//! certain level and report the probable one ([`Standing`]). A process carrying
+//! `NODAL_ID` was started from the home. A process that only stands in the home may be
+//! a tmux pane, an editor server over SSH, or a teammate's shell, and Nodal never
+//! signals one of those.
+//!
 //! A signal that cannot run returns a note instead of an error ([`Reading`]). A machine
 //! with no Docker daemon, and a macOS host whose process table Nodal cannot read yet,
 //! both still answer with everything the other signals see. `nodal ps` prints the notes
@@ -168,6 +174,53 @@ impl Confidence {
             Self::Certain => "certain",
             Self::Probable => "probable",
         }
+    }
+}
+
+/// The sentence a report uses for a process at the probable level.
+///
+/// One string, because a reclaim's report and a sweep's report make the same claim
+/// about the same kind of process, and a person who has read one has read the other.
+pub const NOT_SIGNALLED: &str = "standing in the home; not signalled";
+
+/// A process that only stands in a home, which is the probable level of one signal.
+///
+/// This is the level nothing is ever signalled at. A tmux pane, an editor server over
+/// SSH and a teammate's shell all reach a home the same way — they stand in it — and
+/// none of the three says which unit it is working on. So a teardown reports one of
+/// these by name and process, and leaves it running.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Standing {
+    /// Its process identifier, which is what a person acts on.
+    pub pid: u32,
+    /// A short form of its command, when the process table had one.
+    pub command: Option<String>,
+}
+
+impl Standing {
+    /// The process a scan saw, at the probable level.
+    #[must_use]
+    pub const fn new(pid: u32, command: Option<String>) -> Self {
+        Self { pid, command }
+    }
+
+    /// What it is and which process it is, which is all a person needs to find it.
+    #[must_use]
+    pub fn label(&self) -> String {
+        let what = self.command.as_deref().unwrap_or("unnamed command");
+        format!("{what} (pid {})", self.pid)
+    }
+
+    /// The line a report prints: the process, and what was not done to it.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!("{}; {NOT_SIGNALLED}", self.label())
+    }
+
+    /// Every one of them on one line, for a message that has no room for a table.
+    #[must_use]
+    pub fn summarise(standing: &[Self]) -> String {
+        standing.iter().map(Self::label).collect::<Vec<String>>().join(", ")
     }
 }
 

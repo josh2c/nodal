@@ -256,15 +256,21 @@ fn a_forced_reclaim_commits_the_work_before_it_moves_the_home() {
     assert_eq!(entry.snapshot.as_deref(), Some(reference.as_str()));
 }
 
+/// A caller standing in the home it is reclaiming is never a target of its own stop.
+///
+/// The command stands in the home it is about, which is where a person runs it from,
+/// and it carries no `NODAL_ID` because nothing activated the directory for it. That is
+/// the probable level, so it is not signalled and it is not a leftover either: the two
+/// processes a stop spares are left out of the probable list at the scan.
+///
+/// The home still goes. A caller is not the bystander the move refuses over, because a
+/// person whose own command is what stands in the home can see the directory move.
 #[test]
 fn reclaiming_from_inside_the_home_does_not_stop_the_shell_that_asked() {
     let workspace = workspace();
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (_, home) = workspace.one_unit_and_home();
 
-    // The command stands in the home it is about, which is where a person runs it from.
-    // Its own process is attributed to the unit by the directory it is in, and stopping
-    // it would be stopping the reclaim.
     let mut command = workspace.command(&["reclaim", "worker-import", "--json"]);
     let report: serde_json::Value =
         serde_json::from_str(&stdout(&command.current_dir(&home).output().unwrap())).unwrap();
@@ -272,6 +278,31 @@ fn reclaiming_from_inside_the_home_does_not_stop_the_shell_that_asked() {
     assert_process_signal(&report);
     assert!(report["leftovers"].as_array().unwrap().is_empty(), "{report}");
     assert!(report["stopped"]["killed"].as_array().unwrap().is_empty(), "{report}");
+    assert!(
+        report["stopped"]["asked"].as_array().unwrap().is_empty(),
+        "the caller became a target of its own stop: {report}"
+    );
+    assert!(!home.exists(), "and the home still went");
+}
+
+/// A caller in an *activated* home carries the unit's identifier, which is the certain
+/// level, so it does become a target — and the stop spares it.
+///
+/// This is the half of the rule the scan cannot make: a process that says it belongs to
+/// the unit is signalled, and the one exception is the process that asked. Killing the
+/// shell somebody typed the command into, in the middle of the command, is not a thing
+/// to do.
+#[test]
+fn a_caller_carrying_the_units_identifier_is_a_target_and_is_spared() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (id, home) = workspace.one_unit_and_home();
+
+    let mut command = workspace.command(&["reclaim", "worker-import", "--json"]);
+    command.current_dir(&home).env("NODAL_ID", &id);
+    let report: serde_json::Value =
+        serde_json::from_str(&stdout(&command.output().unwrap())).unwrap();
+
     let spared = report["stopped"]["spared"].as_array().unwrap().len();
     if can_see_processes() {
         assert_eq!(spared, 1, "the command's own process was left alone: {report}");
@@ -281,6 +312,8 @@ fn reclaiming_from_inside_the_home_does_not_stop_the_shell_that_asked() {
         // command that asked is still running when the reclaim answers.
         assert_eq!(spared, 0, "{report}");
     }
+    assert!(report["stopped"]["killed"].as_array().unwrap().is_empty(), "{report}");
+    assert!(report["leftovers"].as_array().unwrap().is_empty(), "{report}");
     assert!(!home.exists(), "and the home still went");
 }
 

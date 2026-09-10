@@ -44,6 +44,7 @@
 //! | base immutability | a unit writes into the tree every other unit is cloned from | `tests/base_immutability.rs` |
 //! | tracked excludes | a copy leaves out a path the project tracks and is dirty at birth | `tests/tracked_exclude.rs` |
 //! | reclaim refusal | a reclaim removes a home holding work that exists nowhere else | `tests/reclaim_refusal.rs` |
+//! | reclaim scope | a reclaim signals a process that carries no unit identifier | `tests/reclaim_scope.rs` |
 //! | a session's home | a file nodal wrote for an agent shows as the agent's work, and is merged as it | `tests/hook_home.rs` |
 //! | doctor reads only | a read command changes the machine it is reporting on | `tests/doctor_writes_nothing.rs` |
 //!

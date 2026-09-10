@@ -11,6 +11,7 @@ use crate::git::preflight;
 use crate::lifecycle::hooks::Phase;
 use crate::lifecycle::uniqueness::Finding;
 use crate::model::{BaseId, BranchName, EnvId, OperationId, Slug, UnitId};
+use crate::runtime::attribute::Standing;
 
 /// Every failure `nodal-core` can return.
 #[derive(Debug, ThisError)]
@@ -616,6 +617,25 @@ pub enum Error {
         slug: Slug,
         /// What was found, in the order the check makes it.
         findings: Vec<Finding>,
+    },
+
+    /// A home was to be moved while a process that carries no unit identifier was
+    /// still standing in it.
+    ///
+    /// The teardown ran and stopped everything that carries the unit's identifier. What
+    /// is named here is what it left alone, because Nodal cannot tell a build it
+    /// started from a teammate's shell by a working directory.
+    #[error(
+        "{slug} still has work standing in its home: {found}; \
+         reclaim stopped what carries the unit's id and left these alone; \
+         --force moves the home under them",
+        found = Standing::summarise(standing)
+    )]
+    HomeInUse {
+        /// The unit whose home was not moved.
+        slug: Slug,
+        /// What is standing in it, in the order the scan found them.
+        standing: Vec<Standing>,
     },
 
     /// A unit was asked for that has already been reclaimed.

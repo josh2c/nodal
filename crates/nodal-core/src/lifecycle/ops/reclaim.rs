@@ -19,6 +19,16 @@
 //! what makes a killed reclaim recoverable — and the report says which of the two it
 //! means.
 //!
+//! **Reclaim stops what carries the unit's id; it reports what only stands in the
+//! home.** The teardown signals two things: the process groups the registry recorded
+//! when `nodal run --tether` started them, and the processes carrying the home's own
+//! `NODAL_ID`. Both are records. A process matched by its working directory alone is
+//! not: a tmux pane, an editor server over SSH and a teammate's shell all stand in the
+//! home and none of them says which unit it is working on
+//! ([`crate::runtime::attribute`]). So a reclaim names those by command and process and
+//! leaves them running, and it refuses to move the home out from under one of them
+//! unless `--force` is given.
+//!
 //! **The end of the operation is a verification, not an assertion.** Everything the
 //! unit had is read back by identifier — its ports, its leases, its sessions, its
 //! processes, its containers, its directory — and whatever answers is reported as a
@@ -94,7 +104,7 @@ use crate::model::{
     UnitStatus, expiry,
 };
 use crate::output::view::{Leftover, Reclaimed};
-use crate::runtime::attribute::{Note, Source};
+use crate::runtime::attribute::{Note, Source, Standing};
 use crate::runtime::processes;
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
 use crate::services::docker;
@@ -150,6 +160,11 @@ pub struct Params {
     /// such field and still has to be rebuilt and finished rather than refused.
     #[serde(default)]
     pub tethers: Vec<u32>,
+    /// Whether the home is moved although something Nodal did not start is standing in
+    /// it. Journalled, because the step that refuses the move is the one a rebuilt plan
+    /// runs again, and it has to refuse the same way.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Reclaim a unit: check, tear down, trash the home, and verify by identifier.
@@ -193,7 +208,13 @@ pub fn plan(params: &Params) -> Result<Plan> {
         }
         return Ok(plan.then(Unadopt { home: params.environment.home.clone() }));
     };
-    Ok(plan.then(TrashHome { home: entry.home.clone(), path: entry.path.clone() }))
+    Ok(plan.then(TrashHome {
+        slug: params.unit.slug.clone(),
+        unit: params.unit.id,
+        home: entry.home.clone(),
+        path: entry.path.clone(),
+        force: params.force,
+    }))
 }
 
 /// The registry write that finishes a reclaim.
@@ -331,7 +352,7 @@ impl Step for StopRuntime {
 
     /// Repeatable: a second run finds nothing attributed and stops nothing.
     fn apply(&self) -> Result<Output> {
-        let mut seen = attributed(self.unit, &self.environment.home);
+        let mut seen = attributed(self.unit, std::slice::from_ref(&self.environment.home));
         let stopped = stop::processes(&stop::Live, &self.targets(&seen), stop::GRACE);
         let containers = match docker::remove(&docker::Cli, &seen.containers) {
             Ok(removed) => {
@@ -357,14 +378,19 @@ impl Step for StopRuntime {
 
 impl StopRuntime {
     /// What this step signals, in the order it signals them: the recorded groups first,
-    /// then the processes a scan attributed.
+    /// then the processes that carry the unit's identifier.
     ///
     /// The order is the point. A group takes its whole tree with it, so a process the
     /// scan named is usually gone before its turn comes, and the stop reports what it
     /// actually did rather than counting the same server twice.
+    ///
+    /// Nothing at the probable level is here. [`Seen::standing`] holds the processes a
+    /// scan matched by working directory alone, and this step never signals one: the
+    /// same match is made by a tmux pane, an editor server over SSH and a teammate's
+    /// shell, and none of the three is the unit's to stop.
     fn targets(&self, seen: &Seen) -> Vec<Target> {
         let groups = self.tethers.iter().map(|pgid| Target::Group(*pgid));
-        groups.chain(seen.pids.iter().map(|pid| Target::Process(*pid))).collect()
+        groups.chain(seen.certain.iter().map(|pid| Target::Process(*pid))).collect()
     }
 }
 
@@ -372,8 +398,12 @@ impl StopRuntime {
 /// could not look at.
 #[derive(Debug, Clone, Default)]
 struct Seen {
-    /// The processes standing in the home or carrying the unit's identifier.
-    pids: Vec<u32>,
+    /// The processes that carry the unit's identifier. These are the certain level, and
+    /// they are the only processes a teardown signals.
+    certain: Vec<u32>,
+    /// The processes a scan matched by working directory alone. These are the probable
+    /// level, and they are reported and never signalled.
+    standing: Vec<Standing>,
     /// The containers the unit labelled as its own.
     containers: Vec<String>,
     /// The signals that could not be read.
@@ -390,16 +420,12 @@ struct Seen {
 /// making one of them not live. A verification built on it would go quiet at exactly
 /// the moment it is supposed to speak: after the registry write, `ps` would attribute
 /// nothing to the unit whether or not anything was still running.
-fn attributed(unit: UnitId, home: &Path) -> Seen {
+fn attributed(unit: UnitId, homes: &[PathBuf]) -> Seen {
     let mut seen = Seen::default();
-    let placed = guard::resolve(home);
-    match processes::Processes::scan(&processes::Live) {
-        Ok(running) => {
-            seen.pids = running
-                .iter()
-                .filter(|process| in_unit(process, unit, &placed))
-                .map(|process| process.pid)
-                .collect();
+    match scan(unit, homes) {
+        Ok((certain, standing)) => {
+            seen.certain = certain;
+            seen.standing = standing;
         }
         Err(error) => seen.notes.push(Note::new(Source::Environment, error.to_string())),
     }
@@ -423,26 +449,62 @@ fn labelled(containers: Vec<docker::Container>, unit: UnitId) -> Vec<String> {
         .collect()
 }
 
-/// Whether a process belongs to this unit: it says so, or it is standing in the home.
+/// Read the process table once and sort what it says about this unit into the two
+/// levels attribution has ([`crate::runtime::attribute::Confidence`]).
 ///
-/// `home` is the resolved form ([`guard::resolve`]), because the working directory the
-/// kernel reports has every symbolic link on the way to it already taken out. A home
-/// reached through a link — macOS reaches everything under `/var` that way, and so does
-/// anyone whose state directory is a link — would otherwise match no process at all, and
-/// a reclaim would quietly stop nothing and then quietly verify nothing.
-fn in_unit(process: &processes::Running, unit: UnitId, home: &Path) -> bool {
-    if process.var(crate::env::vars::ID) == Some(&unit.to_string()) {
-        return true;
+/// The first list is certain: each process carries `NODAL_ID`, which Nodal wrote into
+/// the home's environment and nothing else writes. The second is probable: each process
+/// stands in the home and says nothing about which unit it is working on.
+///
+/// `home` is resolved ([`guard::resolve`]), because the working directory the kernel
+/// reports has every symbolic link on the way to it already taken out. A home reached
+/// through a link — macOS reaches everything under `/var` that way, and so does anyone
+/// whose state directory is a link — would otherwise match no process at all, and a
+/// reclaim would quietly stop nothing and then quietly verify nothing.
+///
+/// The two processes a stop spares ([`stop::spared`]) are left out of the probable list
+/// altogether. A person who typed `nodal reclaim` inside the home is standing in it,
+/// and their own command must not be the reason their reclaim refuses.
+///
+/// # Errors
+/// Whatever the process table reported, which on a host that has none is
+/// [`Error::ProcessScanUnsupported`].
+fn scan(unit: UnitId, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)> {
+    let placed: Vec<PathBuf> = homes.iter().map(|home| guard::resolve(home)).collect();
+    let id = unit.to_string();
+    let spared = stop::spared();
+    let mut certain = Vec::new();
+    let mut standing = Vec::new();
+    for process in processes::Processes::scan(&processes::Live)? {
+        if process.var(crate::env::vars::ID) == Some(id.as_str()) {
+            certain.push(process.pid);
+        } else if in_one_of(&process, &placed) && !spared.contains(&process.pid) {
+            standing.push(Standing::new(process.pid, process.command.clone()));
+        }
     }
-    process.cwd.as_deref().is_some_and(|cwd| cwd.starts_with(home))
+    Ok((certain, standing))
 }
 
-/// Move the home into the project's trash directory.
+/// Whether a process stands in one of these directories, which is the whole of the
+/// probable signal.
+fn in_one_of(process: &processes::Running, homes: &[PathBuf]) -> bool {
+    let Some(cwd) = process.cwd.as_deref() else { return false };
+    homes.iter().any(|home| cwd.starts_with(home))
+}
+
+/// Move the home into the project's trash directory, unless something Nodal did not
+/// start is standing in it.
 struct TrashHome {
+    /// The unit's handle, which is what the refusal names.
+    slug: crate::model::Slug,
+    /// The unit whose home this is.
+    unit: UnitId,
     /// Where the home is.
     home: PathBuf,
     /// Where it goes.
     path: PathBuf,
+    /// Whether the move goes ahead over a process standing in the home.
+    force: bool,
 }
 
 impl Step for TrashHome {
@@ -452,7 +514,22 @@ impl Step for TrashHome {
 
     /// Repeatable in each of the three states a killed run can leave: the home where it
     /// was, the home already in the trash, and neither of the two there at all.
+    ///
+    /// The check comes first, and it is made here rather than in [`prepare`] because
+    /// this is the last instant before the directory goes. The teardown has already
+    /// stopped everything that carries the unit's identifier, so what a scan still
+    /// finds standing in the home is something Nodal did not start: a tmux pane, an
+    /// editor server over SSH, a teammate's shell. Moving the directory out from under
+    /// one of those is the surprise this refusal exists to prevent.
+    ///
+    /// A host whose process table cannot be read moves the home. The reading is a note
+    /// in the report, as every unread signal is, and refusing every reclaim on a
+    /// machine Nodal cannot look at would be a worse answer than the note.
     fn apply(&self) -> Result<Output> {
+        let standing = self.bystanders();
+        if !standing.is_empty() && !self.force {
+            return Err(Error::HomeInUse { slug: self.slug.clone(), standing });
+        }
         move_tree(&self.home, &self.path)?;
         Ok(nothing())
     }
@@ -461,6 +538,16 @@ impl Step for TrashHome {
     /// own recovery needs the directory to still exist.
     fn undo(&self) -> Result<()> {
         move_tree(&self.path, &self.home)
+    }
+}
+
+impl TrashHome {
+    /// What is standing in the home at the probable level, and nothing when the process
+    /// table could not be read.
+    fn bystanders(&self) -> Vec<Standing> {
+        scan(self.unit, std::slice::from_ref(&self.home))
+            .map(|(_, standing)| standing)
+            .unwrap_or_default()
     }
 }
 
@@ -585,7 +672,7 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
         enabled: request.hooks,
     };
     let tethers = tethers(store.conn(), environment.id)?;
-    let params = Params { project, unit, environment, entry, tethers };
+    let params = Params { project, unit, environment, entry, tethers, force: request.force };
     Ok(Prepared { params, findings, runner })
 }
 
@@ -767,15 +854,31 @@ fn running(params: &Params, leftovers: &mut Vec<Leftover>) -> Vec<Note> {
             leftovers.push(Leftover::new("tether", pgid.to_string()));
         }
     }
-    let seen = attributed(params.unit.id, &params.environment.home);
+    let seen = attributed(params.unit.id, &watched(params));
     let spared = stop::spared();
-    for pid in seen.pids.iter().filter(|pid| !spared.contains(pid)) {
+    for pid in seen.certain.iter().filter(|pid| !spared.contains(pid)) {
         leftovers.push(Leftover::new("process", pid.to_string()));
+    }
+    for process in &seen.standing {
+        leftovers.push(Leftover::new("standing", process.describe()));
     }
     for name in seen.containers {
         leftovers.push(Leftover::new("container", name));
     }
     seen.notes
+}
+
+/// The directories the verification looks for a standing process in: the name the home
+/// had, and the name it has now.
+///
+/// Both, because a home is moved rather than deleted. The kernel reports a working
+/// directory by following the inode, so a process that stood in the home before the
+/// move now stands in the trash path. Watching only the old name would report nothing at
+/// all, which is the one answer this operation must not give.
+fn watched(params: &Params) -> Vec<PathBuf> {
+    let mut homes = vec![params.environment.home.clone()];
+    homes.extend(params.entry.as_ref().map(|entry| entry.path.clone()));
+    homes
 }
 
 /// The directory that should have moved, and the one that should now hold it.
