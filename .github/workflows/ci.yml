@@ -121,7 +121,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: every branch shape gets its verdict, and the ten-unit list is timed
+      - name: every branch shape gets its verdict, the worktree table prints in an unknown checkout, and both are timed
         run: ci/acceptance-list.sh
       - name: the verdicts agree with the reference tool, where it is installed
         run: ci/compare-worktrunk.sh

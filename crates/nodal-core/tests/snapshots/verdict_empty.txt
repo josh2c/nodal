@@ -1,0 +1,5 @@
+  /home/j/code/project  (no project of nodal's; nothing was written)
+
+  this checkout has no other worktrees.
+
+  no worktree here is done and empty. nodal removed nothing.

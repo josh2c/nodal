@@ -113,6 +113,67 @@
       "last_active": "2026-09-06T14:21:40Z"
     }
   ],
-  "worktrees": [],
+  "worktrees": [
+    {
+      "kind": "worktree",
+      "name": "../oauth-login",
+      "path": "/home/j/code/oauth-login",
+      "branch": "oauth-login",
+      "intent": "Add oauth login to the account page and keep the old form working for the                  accounts that already use it",
+      "done": {
+        "state": "open"
+      },
+      "unpushed": 3,
+      "uncommitted": 2,
+      "behind": {
+        "commits": 12,
+        "reference": "origin/main",
+        "upstream": true
+      },
+      "bytes": 7850000000,
+      "partial": false,
+      "made_at": "2026-08-14T09:00:00Z",
+      "note": null
+    },
+    {
+      "kind": "worktree",
+      "name": ".claude/worktrees/finished",
+      "path": "/home/j/code/project/.claude/worktrees/finished",
+      "branch": "finished",
+      "intent": null,
+      "done": {
+        "state": "integrated",
+        "reason": "absorbed"
+      },
+      "unpushed": 0,
+      "uncommitted": 0,
+      "behind": {
+        "commits": 40,
+        "reference": "origin/main",
+        "upstream": true
+      },
+      "bytes": 1200000000,
+      "partial": true,
+      "made_at": "2026-07-02T11:30:00Z",
+      "note": null
+    },
+    {
+      "kind": "worktree",
+      "name": "/var/tmp/agent-held",
+      "path": "/var/tmp/agent-held",
+      "branch": null,
+      "intent": null,
+      "done": {
+        "state": "unknown"
+      },
+      "unpushed": 0,
+      "uncommitted": 0,
+      "behind": null,
+      "bytes": null,
+      "partial": false,
+      "made_at": null,
+      "note": "locked (an agent is working here)"
+    }
+  ],
   "notes": []
 }

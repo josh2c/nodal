@@ -26,6 +26,7 @@ use nodal_core::model::{
     Platform, PortName, Ports, ProjectId, ProjectName, Slug, Timestamp, UnitId, UnitStatus, Want,
     WorkspaceFp,
 };
+use nodal_core::output::view::verdict::{Behind, RowKind, Verdict, WorktreeRow};
 use nodal_core::output::view::{
     Arrival, BaseList, BaseRow, Created, Done, EnvLine, EventLog, Exclusion, Explained, Freshness,
     InitReport, Invalidation, Origin, PortLine, Ps, Remote, Running, SharedResource, Status,
@@ -344,6 +345,7 @@ fn unit_list_renders_both_ways() {
         project: ProjectName::parse("project").expect("one line"),
         now: now(),
         units: units(),
+        worktrees: Vec::new(),
         notes: Vec::new(),
     };
     both("unit_list", &list);
@@ -355,6 +357,7 @@ fn every_integration_verdict_renders_both_ways() {
         project: ProjectName::parse("project").expect("one line"),
         now: now(),
         units: integration_units(),
+        worktrees: Vec::new(),
         notes: vec![String::from("who: a process scan reads /proc, which mac does not have")],
     };
     both("unit_list_integration", &list);
@@ -366,9 +369,113 @@ fn a_unit_nothing_has_been_measured_about_still_renders_a_whole_row() {
         project: ProjectName::parse("project").expect("one line"),
         now: now(),
         units: vec![unmeasured_unit()],
+        worktrees: Vec::new(),
         notes: Vec::new(),
     };
     both("unit_list_unmeasured", &list);
+}
+
+/// The worktrees of a checkout, one of each shape the table has a column for.
+fn found() -> Vec<WorktreeRow> {
+    vec![
+        WorktreeRow {
+            kind: RowKind::Worktree,
+            name: String::from("../oauth-login"),
+            path: PathBuf::from("/home/j/code/oauth-login"),
+            branch: Some(String::from("oauth-login")),
+            intent: Some(String::from(
+                "Add oauth login to the account page and keep the old form working for the                  accounts that already use it",
+            )),
+            done: Integration::Open,
+            unpushed: 3,
+            uncommitted: 2,
+            behind: Some(Behind {
+                commits: 12,
+                reference: String::from("origin/main"),
+                upstream: true,
+            }),
+            bytes: Some(7_850_000_000),
+            partial: false,
+            made_at: Some(Timestamp::parse("2026-08-14T09:00:00Z").expect("a fixed instant")),
+            note: None,
+        },
+        WorktreeRow {
+            kind: RowKind::Worktree,
+            name: String::from(".claude/worktrees/finished"),
+            path: PathBuf::from("/home/j/code/project/.claude/worktrees/finished"),
+            branch: Some(String::from("finished")),
+            intent: None,
+            done: Integration::Integrated(Reason::Absorbed),
+            unpushed: 0,
+            uncommitted: 0,
+            behind: Some(Behind {
+                commits: 40,
+                reference: String::from("origin/main"),
+                upstream: true,
+            }),
+            bytes: Some(1_200_000_000),
+            partial: true,
+            made_at: Some(Timestamp::parse("2026-07-02T11:30:00Z").expect("a fixed instant")),
+            note: None,
+        },
+        WorktreeRow {
+            kind: RowKind::Worktree,
+            name: String::from("/var/tmp/agent-held"),
+            path: PathBuf::from("/var/tmp/agent-held"),
+            branch: None,
+            intent: None,
+            done: Integration::Unknown,
+            unpushed: 0,
+            uncommitted: 0,
+            behind: None,
+            bytes: None,
+            partial: false,
+            made_at: None,
+            note: Some(String::from("locked (an agent is working here)")),
+        },
+    ]
+}
+
+#[test]
+fn the_verdict_on_a_checkout_renders_both_ways() {
+    let seen = Verdict {
+        checkout: PathBuf::from("/home/j/code/project"),
+        project: None,
+        now: now(),
+        base: Some(String::from("origin/main")),
+        rows: found(),
+        notes: Vec::new(),
+    };
+    both("verdict", &seen);
+}
+
+#[test]
+fn a_checkout_with_no_other_worktrees_says_so_and_still_makes_the_promise() {
+    let seen = Verdict {
+        checkout: PathBuf::from("/home/j/code/project"),
+        project: None,
+        now: now(),
+        base: Some(String::from("main")),
+        rows: Vec::new(),
+        notes: Vec::new(),
+    };
+    both("verdict_empty", &seen);
+}
+
+/// A registered project whose repository also names worktrees Nodal did not make.
+///
+/// The leading column is the whole point of the snapshot: every row says which kind it
+/// is, and no folder Nodal did not make appears under the word `unit`.
+#[test]
+fn a_project_holding_both_units_and_worktrees_prints_one_table() {
+    let list = UnitList {
+        project: ProjectName::parse("project").expect("one line"),
+        now: now(),
+        units: units(),
+        worktrees: found(),
+        notes: Vec::new(),
+    };
+    both("unit_list_with_worktrees", &list);
 }
 
 #[test]
@@ -377,6 +484,7 @@ fn an_empty_list_says_so_rather_than_printing_a_bare_heading() {
         project: ProjectName::parse("project").expect("one line"),
         now: now(),
         units: Vec::new(),
+        worktrees: Vec::new(),
         notes: Vec::new(),
     };
     both("unit_list_empty", &list);
@@ -690,6 +798,12 @@ fn every_snapshot_file_is_claimed_by_a_test() {
         "unit_list_integration.txt",
         "unit_list_unmeasured.json",
         "unit_list_unmeasured.txt",
+        "unit_list_with_worktrees.json",
+        "unit_list_with_worktrees.txt",
+        "verdict.json",
+        "verdict.txt",
+        "verdict_empty.json",
+        "verdict_empty.txt",
     ];
     let directory = snapshot_dir();
     let mut found: Vec<String> = std::fs::read_dir(&directory)

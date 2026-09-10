@@ -1,0 +1,8 @@
+  /home/j/code/project  (no project of nodal's; nothing was written)
+
+  WORKTREE                    FOR                                               DONE                               ONLY HERE  BEHIND             SIZE     AGE
+  ../oauth-login              Add oauth login to the account page and keep th…  open                               ^3 *2      -12 (origin/main)  7.8 GB   23 d
+  .claude/worktrees/finished  —                                                 done (absorbed)                    —          -40 (origin/main)  1.2 GB+  66 d
+  /var/tmp/agent-held         —                                                 locked (an agent is working here)  —          unknown            —        —
+
+  1 worktree is done and holds nothing unique: 1.2 GB. nodal removed nothing.

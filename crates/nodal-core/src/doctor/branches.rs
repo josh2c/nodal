@@ -121,13 +121,20 @@ fn checked_out(git: &Git) -> Result<BTreeSet<String>> {
     Ok(git.worktrees()?.into_iter().filter_map(|registered| registered.branch).collect())
 }
 
-/// The branch the merged bucket is measured against, `None` when this repository has
-/// none.
+/// The branch this checkout treats as its default, `None` when it has none.
 ///
 /// `origin/HEAD` first, because a clone recorded what the remote said its default
 /// branch was. Then the two conventional names, and only where the repository really
 /// has one: a name that is not a ref would make every branch unmerged.
-fn base_of(git: &Git) -> Result<Option<String>> {
+///
+/// Public because the verdict measures against the same revision this audit does
+/// ([`crate::runtime::verdict`]). Two readings of one checkout that disagreed about
+/// which branch is the default would disagree about which work is finished, and a
+/// person would have no way to tell which of the two was right.
+///
+/// # Errors
+/// [`crate::Error::Git`] when a ref of this repository could not be read.
+pub fn base_of(git: &Git) -> Result<Option<String>> {
     if let Some(short) = git.symbolic_ref(ORIGIN_HEAD)?.and_then(|reference| short_name(&reference))
     {
         return Ok(Some(short));

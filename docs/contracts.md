@@ -313,12 +313,41 @@ unchanged rather than gone.
 `nodal ls`, and `nodal` with no subcommand, answer with one row per unit of the project the
 working directory is in.
 
-A directory is in one of three states, and each gets a different answer. A project the registry
-holds units of gets the table. A project that holds a `nodal.toml` and no units gets the empty list,
-with a note that says which command makes the first unit; `nodal init` writes the recipe and opens
-no registry, so this is the state of every project between `init` and the first `new`. A directory
-that has neither a recipe nor a row is in no project, and `nodal ls` refuses. A bare `nodal` prints
-the help for the third state only.
+A directory is in one of four states. Each state gets a different answer.
+
+A project the registry holds units of gets the table. A project that holds a `nodal.toml` and no
+units gets the empty list. A note says which command makes the first unit. `nodal init` writes the
+recipe and opens no registry. This is the state of every project between `init` and the first `new`.
+
+A checkout with neither a recipe nor a registry row gets the verdict on its worktrees (see The
+verdict). A directory that is not a checkout either is in no project, and `nodal ls` refuses. A bare
+`nodal` prints the help for that fourth state only.
+
+## The verdict
+`nodal`, in a checkout Nodal holds no row for, prints one row for each other worktree of the
+repository. It writes nothing to do so. It does not create the state directory. It does not create
+the registry. This is the first command most people run, so it asks for nothing first.
+
+The row names the worktree, what it is for, whether the work is done, what it holds that exists
+nowhere else, how far it is behind, what it occupies, and how old it is. Read the columns as
+`WORKTREE`, `FOR`, `DONE`, `ONLY HERE`, `BEHIND`, `SIZE`, `AGE`.
+
+`DONE` is the same merge-tree verdict the list computes. Nodal measures it against the checkout's
+default branch. Nodal resolves that branch from `origin/HEAD` first, then `main`, then `master`.
+
+`BEHIND` is measured against that same branch. The row names the branch it used. A checkout with no
+default branch says `unknown`. It never says `0`.
+
+`ONLY HERE` counts commits that exist on no remote and paths that no commit holds. This is the
+column that governs the order. A worktree that holds either is printed first. The finished ones are
+printed last.
+
+The last line counts the worktrees that are done and hold nothing unique, gives their total size,
+and says that Nodal removed nothing.
+
+A registered project prints the same worktrees in its own table. A leading column says whether each
+row is a `unit` or a `worktree`. A home Nodal made is a unit. A folder another tool made is a
+worktree. Nodal never prints one under the word for the other.
 
 The list's reading is pure. After reading, the command layer records at most two things it learned
 or derived: a unit's flip to merged, and each touched unit's recomputed `WORKUNIT.md`. It records no

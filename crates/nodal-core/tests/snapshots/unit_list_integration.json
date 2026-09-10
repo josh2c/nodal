@@ -125,6 +125,7 @@
       "last_active": null
     }
   ],
+  "worktrees": [],
   "notes": [
     "who: a process scan reads /proc, which mac does not have"
   ]

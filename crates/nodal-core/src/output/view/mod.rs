@@ -22,6 +22,7 @@ pub mod reclaim;
 pub mod setup;
 pub mod status;
 pub mod unit;
+pub mod verdict;
 
 pub use crate::output::view::base::{BaseBuild, BaseList, BaseRow, BaseSweep};
 pub use crate::output::view::created::{Arrival, Created};
@@ -39,3 +40,4 @@ pub use crate::output::view::status::{SharedResource, Status};
 pub use crate::output::view::unit::{
     EnvLine, Freshness, Remote, Running, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
 };
+pub use crate::output::view::verdict::{Behind, RowKind, Verdict, WorktreeRow};
