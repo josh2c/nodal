@@ -27,6 +27,12 @@
 //! signalling a group identifier the system has since given to something else: a row is
 //! acted on only while it is open, and it stays open only while the group is there.
 //!
+//! A process that only stands in the directory is reported and never signalled. The
+//! sweep signals a recorded tether and a process that carries a gone unit's `NODAL_ID`.
+//! A working directory is not a statement of ownership: a tmux pane, an editor server
+//! over SSH and a teammate's shell all match it, and the sweep cannot tell one of those
+//! from a build somebody forgot. So it names them and leaves them running.
+//!
 //! **A merged unit's home is given back before any of that.** A unit the list found
 //! merged keeps its home, because the day after a merge is exactly when somebody wants
 //! to look at what they did. It keeps it for the retention the project asked for
@@ -64,7 +70,7 @@
 //! a [`Note`] in the answer and never a failure, which is the contract every attribution
 //! signal already has, and it keeps "nothing was running" apart from "I could not look".
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
@@ -74,7 +80,7 @@ use crate::model::{
     EnvState, Project, SessionId, Timestamp, Trashed, Unit, UnitId, UnitStatus, trash as retention,
 };
 use crate::output::view::{Idle, Leftover, Retired, Swept};
-use crate::runtime::attribute::{Note, Source};
+use crate::runtime::attribute::{Note, Source, Standing};
 use crate::runtime::processes::{Processes, Running};
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
 use crate::services::docker;
@@ -114,6 +120,9 @@ pub fn collect(store: &mut Store, now: Timestamp, options: &Options) -> Result<S
     let (removed, freed, mut swept_leftovers) = sweep(store, &expired)?;
     leftovers.append(&mut swept_leftovers);
     let released = release_lapsed(store.conn(), now, &mut leftovers)?;
+    for process in &stopped.standing {
+        leftovers.push(Leftover::new("standing", process.describe()));
+    }
     Ok(Swept {
         now,
         removed,
@@ -248,10 +257,12 @@ fn quiet(conn: &Connection, now: Timestamp, days: u32) -> Result<Vec<Idle>> {
 /// the word "idle", which in this command means the live units that are only reported.
 #[derive(Debug, Default)]
 struct Outlived {
-    /// What became of the processes.
+    /// What became of the processes that carry a gone unit's identifier.
     stopped: Stopped,
     /// The containers that went.
     containers: Vec<String>,
+    /// The processes standing in a home that is gone. Reported, never signalled.
+    standing: Vec<Standing>,
     /// The signals that could not be read.
     notes: Vec<Note>,
 }
@@ -286,14 +297,22 @@ fn sweep(store: &Store, expired: &[Trashed]) -> Result<(Vec<Trashed>, u64, Vec<L
 /// reclaimed: nothing of it should be running, and anything that is, is left over from
 /// before the reclaim rather than work somebody is doing. Every other environment is
 /// left alone, however long it has been since anybody touched it.
+///
+/// Narrow in the other direction too. A signal goes to a recorded tether and to a
+/// process that carries a gone unit's identifier, and to nothing else. A process that
+/// only stands in the directory a reclaimed home was, or is now, is reported as
+/// [`Standing`] and left running: the sweep cannot tell a build somebody forgot from a
+/// tmux pane, an editor server over SSH, or a teammate's shell.
 fn stop_absent(conn: &Connection) -> Result<Outlived> {
     let tethers = absent_tethers(conn)?;
     let gone = absent_units(conn)?;
+    let vacated = vacated(conn)?;
     if gone.is_empty() && tethers.is_empty() {
         return Ok(Outlived::default());
     }
     let mut outlived = Outlived::default();
-    let (pids, containers) = seen(&gone, &mut outlived.notes);
+    let (pids, standing, containers) = seen(&gone, &vacated, &mut outlived.notes);
+    outlived.standing = standing;
     let mut targets: Vec<Target> = tethers.iter().map(|(_, pgid)| Target::Group(*pgid)).collect();
     targets.extend(pids.into_iter().map(Target::Process));
     outlived.stopped = stop::processes(&stop::Live, &targets, stop::GRACE);
@@ -341,18 +360,31 @@ fn close_empty(conn: &Connection, tethers: &[(SessionId, u32)]) -> Result<()> {
 }
 
 /// What this machine can see of the units that are gone, noting what it cannot look at.
-fn seen(gone: &[UnitId], notes: &mut Vec<Note>) -> (Vec<u32>, Vec<String>) {
-    let pids = match Processes::scan(&crate::runtime::processes::Live) {
-        Ok(running) => running
-            .iter()
-            .filter(|process| names_a_gone_unit(process, gone))
-            .map(|p| p.pid)
-            .collect(),
-        Err(error) => {
-            notes.push(Note::new(Source::Environment, error.to_string()));
-            Vec::new()
+///
+/// Two lists come back from the one scan, and they are the two levels attribution has
+/// ([`crate::runtime::attribute::Confidence`]). The first names a gone unit outright and
+/// is signalled. The second only stands in a directory a gone home used, and is
+/// reported.
+fn seen(
+    gone: &[UnitId],
+    vacated: &[PathBuf],
+    notes: &mut Vec<Note>,
+) -> (Vec<u32>, Vec<Standing>, Vec<String>) {
+    let mut pids = Vec::new();
+    let mut standing = Vec::new();
+    match Processes::scan(&crate::runtime::processes::Live) {
+        Ok(running) => {
+            let spared = stop::spared();
+            for process in running {
+                if names_a_gone_unit(&process, gone) {
+                    pids.push(process.pid);
+                } else if stands_in(&process, vacated) && !spared.contains(&process.pid) {
+                    standing.push(Standing::new(process.pid, process.command.clone()));
+                }
+            }
         }
-    };
+        Err(error) => notes.push(Note::new(Source::Environment, error.to_string())),
+    }
     let containers = match docker::survey(&docker::Cli) {
         Ok(docker::Survey::Ran(containers)) => labelled(containers, gone),
         Ok(docker::Survey::Unavailable { why }) => {
@@ -364,7 +396,30 @@ fn seen(gone: &[UnitId], notes: &mut Vec<Note>) -> (Vec<u32>, Vec<String>) {
             Vec::new()
         }
     };
-    (pids, containers)
+    (pids, standing, containers)
+}
+
+/// Every directory a reclaimed home was in, and every directory one is in now.
+///
+/// Both names, because a home is moved rather than deleted. The kernel reports a
+/// working directory by following the inode, so a process that stood in the home before
+/// the reclaim now stands in the trash path, and a process that entered the directory
+/// after the reclaim stands in the old one. Watching one name and not the other would
+/// report half of them.
+fn vacated(conn: &Connection) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for environment in environments::list_by_state(conn, EnvState::Absent)? {
+        paths.push(crate::lifecycle::guard::resolve(&environment.home));
+    }
+    for entry in trash::list(conn)? {
+        paths.push(crate::lifecycle::guard::resolve(&entry.path));
+    }
+    Ok(paths)
+}
+
+/// Whether a process stands in one of these directories.
+fn stands_in(process: &Running, vacated: &[PathBuf]) -> bool {
+    process.cwd.as_deref().is_some_and(|cwd| vacated.iter().any(|vacated| cwd.starts_with(vacated)))
 }
 
 /// The units every one of whose materialisations has been reclaimed.

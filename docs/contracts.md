@@ -456,6 +456,9 @@ carrying `NODAL_ID`, a container carrying the `nodal.unit` label. `probable` mea
 the unit. Three readings are probable: a process whose working directory is inside a home, a
 container that mounts a home, and a granted port that has a listener. A row carries no other level.
 
+The level decides what a teardown does. `nodal reclaim` and `nodal gc` signal the certain level.
+They report the probable one and signal none of it.
+
 Nodal labels every container it starts with `nodal.unit` (the unit identifier) and
 `nodal.environment` (the materialisation). These are the container half of the environment-variable
 contract above.
@@ -482,7 +485,8 @@ A tethered command reads no terminal input. A process in a group of its own is n
 foreground group, so a read from the terminal would stop the command instead of answering it.
 
 `nodal reclaim` stops the unit's tethers first, before anything a scan attributed. A group is a
-record; a scan is an inference. `nodal gc` stops a tether whose materialisation has been reclaimed,
+record; a scan by `NODAL_ID` is a record too. A scan by working directory is an inference, and
+neither command signals one. `nodal gc` stops a tether whose materialisation has been reclaimed,
 and never one of a unit that is live. Both close the row once the group is empty.
 
 A group is addressed with `kill`, which every host answers. A tether is therefore stopped, and its
@@ -654,6 +658,24 @@ A reclaim stops what the unit runs. It sends three signals in order, with a grac
 each pair: `SIGINT`, then `SIGTERM`, then `SIGKILL`. A process that stops on one signal never gets
 the next. It never signals its own process, the process that started it, or the process group
 either of them is in.
+
+Reclaim stops what carries the unit's id; it reports what only stands in the home. It signals two
+kinds of target. The first is a process group the registry recorded for `nodal run --tether`. The
+second is a process that carries the home's own `NODAL_ID`. Both are records that name the unit.
+
+A reclaim never signals a process it matched by working directory alone. That match is also made by
+a tmux pane, an editor server over SSH, and a teammate's shell. The verification lists each one by
+command and process, with the sentence `standing in the home; not signalled`.
+
+A reclaim refuses to move the home while such a process stands in it. The refusal names the command
+and the process. `--force` moves the home anyway. The teardown has already run at that point, so a
+refused reclaim leaves the unit live with its runtime stopped. A host whose process table Nodal
+cannot read moves the home and reports the unread signal as a note.
+
+`nodal gc` makes the same split. It signals a recorded tether of a reclaimed materialisation, and a
+process carrying the `NODAL_ID` of a unit whose materialisations have all been reclaimed. It reports
+a process standing in a reclaimed home, under both the name the home had and the trash path it is
+in now, and it signals none of them.
 
 A reclaim stops the unit's tethered process groups before it stops anything else. It gives back the
 unit's ports and leases in the transaction that records the reclaim. It moves the home to `<state>/<project>/trash/<id>`, under the name the

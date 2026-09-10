@@ -17,9 +17,10 @@ pub struct Reclaim {
     #[arg(value_name = "UNIT")]
     pub unit: Option<String>,
 
-    /// Reclaim a unit whose home holds work that exists nowhere else. The work is
-    /// committed to a snapshot ref inside the home first, and the home goes to the
-    /// trash rather than being deleted, so nothing here is a way to lose a commit.
+    /// Reclaim a unit whose home holds work that exists nowhere else, or whose home
+    /// something Nodal did not start is standing in. The work is committed to a
+    /// snapshot ref inside the home first, and the home goes to the trash rather than
+    /// being deleted, so nothing here is a way to lose a commit.
     #[arg(long)]
     pub force: bool,
 
@@ -38,9 +39,10 @@ impl Reclaim {
     ///
     /// # Errors
     ///
-    /// Propagates a home that holds work that is only there, a unit that was reclaimed
-    /// already, a hook this machine has not approved, and whatever Git, the filesystem
-    /// or the registry reported.
+    /// Propagates a home that holds work that is only there, a home something Nodal
+    /// did not start is standing in, a unit that was reclaimed already, a hook this
+    /// machine has not approved, and whatever Git, the filesystem or the registry
+    /// reported.
     pub fn run(&self, store: &mut Store, hooks: bool) -> nodal_core::Result<ExitCode> {
         let request = Request {
             target: self.unit.clone(),
