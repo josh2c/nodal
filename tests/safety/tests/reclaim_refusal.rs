@@ -15,7 +15,7 @@
 use std::path::Path;
 
 use nodal_safety::InState as _;
-use nodal_safety::{Machine, git, stderr, stdout};
+use nodal_safety::{Machine, answer, git, stderr, stdout};
 
 /// A tracked file of the fixture, changed to make uncommitted work.
 const TRACKED: &str = "apps/web/app/page.tsx";
@@ -93,4 +93,35 @@ fn a_clean_unit_is_reclaimed_so_the_refusals_are_about_the_work_and_not_the_comm
     assert!(!home.exists(), "the home is not where it was");
     assert!(machine.homes().is_empty(), "a live home was left: {:?}", machine.homes());
     assert_eq!(machine.trashed().len(), 1, "the trash holds it, and only it");
+}
+
+/// An adopted worktree holding unique work is never removed, with `--yes` or without.
+///
+/// `--force --yes` unregisters the unit. It still must not run `git worktree remove`:
+/// unique work is still in that directory, and Nodal does not delete it.
+#[test]
+fn nothing_unique_is_removed_from_an_adopted_worktree_with_yes_or_without() {
+    let machine = Machine::new();
+    let dirty = machine.source.parent().unwrap().join("wt-dirty");
+    git(
+        &machine.source,
+        &["worktree", "add", "--quiet", "-b", "feature/dirty", dirty.to_str().unwrap()],
+    );
+    let adopted = machine.nodal(&["adopt", "--all", "--in-place"]);
+    assert!(adopted.status.success(), "{}", stderr(&adopted));
+    std::fs::write(dirty.join("only-here.txt"), "unique\n").unwrap();
+
+    let refused = machine.nodal(&["reclaim", "dirty"]);
+    assert!(!refused.status.success(), "unique work was reclaimed without --force");
+    assert!(!stderr(&refused).contains("git worktree remove"), "{}", stderr(&refused));
+    assert!(!answer(&refused).contains("git worktree remove"), "{}", answer(&refused));
+    assert!(dirty.is_dir(), "the refusal removed the worktree");
+    assert_eq!(std::fs::read_to_string(dirty.join("only-here.txt")).unwrap(), "unique\n");
+
+    let forced = machine.nodal(&["reclaim", "dirty", "--force", "--yes"]);
+    assert!(forced.status.success(), "{}", stderr(&forced));
+    assert!(!stdout(&forced).contains("git worktree remove"), "{}", stdout(&forced));
+    assert!(!stderr(&forced).contains("git worktree remove"), "{}", stderr(&forced));
+    assert!(dirty.is_dir(), "--force --yes removed unique work");
+    assert_eq!(std::fs::read_to_string(dirty.join("only-here.txt")).unwrap(), "unique\n");
 }

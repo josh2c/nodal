@@ -109,6 +109,23 @@ fn layout_distinguishes_main_linked_and_bare_checkouts() {
     assert_eq!(Git::open(&bare_path).unwrap().layout().unwrap().kind, worktree::Kind::Bare);
 }
 
+/// `git worktree remove` is the one write this facade makes against a worktree Nodal
+/// did not create. It deletes the linked checkout and leaves the main one standing.
+#[test]
+fn remove_worktree_deletes_the_linked_checkout_and_leaves_the_main_one() {
+    let repo = Repo::seeded();
+    let linked = repo.path().join("linked");
+    repo.git(&["worktree", "add", "-b", "side", linked.to_str().unwrap()]);
+    assert!(linked.is_dir());
+
+    repo.git_facade().remove_worktree(&linked).unwrap();
+
+    assert!(!linked.exists(), "the linked worktree is gone");
+    assert!(repo.path().join("README.md").is_file(), "the main checkout is still there");
+    let listed = repo.git(&["worktree", "list"]);
+    assert!(!listed.contains(linked.to_str().unwrap()), "{listed}");
+}
+
 /// The layout of an ordinary checkout is the one Git reports, path for path.
 ///
 /// `Git::layout` answers an ordinary checkout from the shape on disk and starts no

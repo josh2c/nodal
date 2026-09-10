@@ -8,8 +8,10 @@
 # name it had, its ports are free, and the verification finds nothing left by id; a
 # process planted in the home is stopped; the four recipe hooks run in order and a
 # command that changed since `nodal init` approved it refuses to run; a checkout adopted
-# in place is unregistered and never moved; and `nodal gc` removes a trashed home once
-# its retention has run out and leaves the one whose has not.
+# in place is unregistered and never moved; a done adopted worktree prints
+# `git worktree remove` and `--yes` runs it; a dirty one refuses and prints nothing
+# runnable; and `nodal gc` removes a trashed home once its retention has run out and
+# leaves the one whose has not.
 #
 # It also kills a reclaim with SIGKILL while it is stopping a process that ignores being
 # asked, and runs the next `nodal`, which has to take the run back and leave the unit
@@ -44,4 +46,4 @@ mkdir -p "$work/real"
 ln -s "$work/real" "$work/by-another-name"
 TMPDIR="$work/by-another-name" cargo test --locked -p nodal-cli --test reclaim
 
-echo "acceptance (reclaim): dirty is refused, a clean unit leaves only a trash entry, hooks are approved by text and told one name per directory, and gc removes it"
+echo "acceptance (reclaim): dirty is refused, a clean unit leaves only a trash entry, a done adopted worktree offers git worktree remove, hooks are approved by text and told one name per directory, and gc removes it"

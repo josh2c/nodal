@@ -1,14 +1,19 @@
 //! `nodal reclaim`: end a unit, move its home to the trash, and say what is left.
 
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Args;
 use nodal_core::lifecycle::ops::reclaim::{self, Request};
+use nodal_core::output::view::Reclaimed;
 use nodal_core::output::{self, Format};
 use nodal_core::store::Store;
 
 use crate::commands::context;
+
+/// What a person types to agree to `git worktree remove`.
+const AGREED: [&str; 2] = ["y", "yes"];
 
 /// Arguments of `nodal reclaim`.
 #[derive(Debug, Args)]
@@ -23,6 +28,10 @@ pub struct Reclaim {
     /// being deleted, so nothing here is a way to lose a commit.
     #[arg(long)]
     pub force: bool,
+
+    /// Run `git worktree remove` for a done adopted worktree without being asked.
+    #[arg(short = 'y', long)]
+    pub yes: bool,
 
     /// Print the result as JSON.
     #[arg(long)]
@@ -57,6 +66,36 @@ impl Reclaim {
         }
         let left = !report.leftovers.is_empty();
         output::write(&report, Format::from_json_flag(self.json), &mut std::io::stdout())?;
+        self.remove_if_agreed(&report)?;
         Ok(if left { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+    }
+
+    /// Run `git worktree remove` when the report offered it and the person agreed.
+    ///
+    /// Default is no. A terminal that is not watched is not waited on: the command is
+    /// already in the report, and they can run it themselves.
+    fn remove_if_agreed(&self, report: &Reclaimed) -> nodal_core::Result<()> {
+        let Some(path) = &report.worktree_remove else {
+            return Ok(());
+        };
+        if !self.agreed()? {
+            return Ok(());
+        }
+        reclaim::remove_worktree(path)
+    }
+
+    /// Whether the person agreed to remove the worktree.
+    fn agreed(&self) -> nodal_core::Result<bool> {
+        if self.yes {
+            return Ok(true);
+        }
+        if !std::io::stdin().is_terminal() {
+            return Ok(false);
+        }
+        eprint!("remove this worktree? [y/N] ");
+        std::io::stderr().flush().map_err(nodal_core::Error::io("<stderr>"))?;
+        let mut answer = String::new();
+        std::io::stdin().lock().read_line(&mut answer).map_err(nodal_core::Error::io("<stdin>"))?;
+        Ok(AGREED.contains(&answer.trim().to_lowercase().as_str()))
     }
 }

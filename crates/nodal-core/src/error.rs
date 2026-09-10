@@ -498,6 +498,13 @@ pub enum Error {
         checkout: std::path::PathBuf,
     },
 
+    /// `--all` was asked without `--in-place`. Every target is a worktree that is already
+    /// there, and Nodal does not move one.
+    #[error(
+        "adopting every worktree needs --in-place; Nodal does not move a checkout somebody is working in"
+    )]
+    AdoptAllNeedsInPlace,
+
     /// A shell was named that Nodal does not write an integration for.
     #[error("{name:?} is not a shell nodal speaks; it speaks {shells}", shells = crate::runtime::Shell::names().join(", "))]
     UnknownShell {

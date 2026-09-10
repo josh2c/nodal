@@ -219,7 +219,8 @@ It then prints the page a person opens the change on, for the host the remote na
 pull request**. There is no host API in Nodal and no client of one; a remote whose host Nodal has no
 compare page for is told so rather than guessed at. The unit moves to `review`.
 
-`adopt <branch-or-path>` makes a unit of work that is already here, in one of two forms.
+`adopt <branch-or-path>` makes a unit of work that is already here, in one of two forms. `adopt --all
+--in-place` does the same for every worktree of the project except the main checkout.
 
 `--in-place` makes a checkout or a linked worktree a unit **where it stands**. The only writes are
 `.nodal/` and `.envrc`, and both are excluded from Git before either is written, so `git status` in
@@ -227,6 +228,10 @@ that directory is byte for byte what it was. Nothing is cloned, no branch is cre
 the person's is touched. The environment row carries `managed = false`, which makes the directory a
 root: a reclaim unregisters it and never moves it. A directory can be adopted no other way, so
 `--in-place` is stated rather than inferred.
+
+`--all` adopts every worktree `git worktree list` names for the project, one at a time. It skips the
+main checkout and any worktree that is already a unit, and it says so. It needs `--in-place`. Each
+row is one line. A summary counts what it did.
 
 Without `--in-place` the target is a branch nothing has checked out, and it gets a home of its own
 from a base, made exactly as `nodal new` makes one except that the branch already exists and is
@@ -736,6 +741,12 @@ Nodal never trashes two things. A checkout adopted in place is unregistered, and
 stays where it is: its rows are closed, its ports come back, and Nodal's own files — the marker, the
 activation files, the memory and the lines in `info/exclude` — are taken back out, so the directory is
 left as adoption found it. A base is not a home; `nodal base gc` collects it.
+
+When that checkout is a linked worktree and the work is done and unique nowhere else, reclaim prints
+`git worktree remove <path>`. It asks once, `[y/N]`, default no. `--yes` runs that command. When the
+worktree holds anything unique, reclaim refuses as today and prints nothing runnable. The offer never
+appears for a home Nodal made. Those go to trash as today. Nodal never removes a worktree it did not
+make unless the person confirmed.
 
 A reclaim reads the two signals `nodal ps` reads: the process table and the container daemon. A
 signal Nodal cannot read becomes a note, never silence. A host with no readable process table

@@ -119,6 +119,11 @@ pub struct Reclaimed {
     pub notes: Vec<Note>,
     /// What the verification still found. Empty means nothing it could read is left.
     pub leftovers: Vec<Leftover>,
+    /// The path of a done adopted worktree, when reclaim may print
+    /// `git worktree remove` for it. Never set for a home Nodal made, or when the
+    /// uniqueness check found anything unique.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_remove: Option<PathBuf>,
 }
 
 impl Render for Reclaimed {
@@ -138,6 +143,9 @@ impl Render for Reclaimed {
             fields.push(Field::new("remote", pruned.cell()));
         }
         fields.push(Field::new("verify", self.verify_cell()));
+        if let Some(path) = &self.worktree_remove {
+            fields.push(Field::new("remove", crate::output::view::adopt::removal_command(path)));
+        }
         let mut doc = Doc::from_iter([Block::fields(fields)]);
         for note in &self.notes {
             doc.push(Block::line(format!("{}: {}", note.signal.label(), note.why)));
@@ -417,6 +425,7 @@ mod tests {
             hooks: Vec::new(),
             notes: Vec::new(),
             leftovers: Vec::new(),
+            worktree_remove: None,
         }
     }
 

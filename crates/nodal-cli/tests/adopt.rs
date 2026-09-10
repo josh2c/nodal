@@ -140,6 +140,25 @@ impl Workspace {
             .unwrap()
             .expect("the unit has a materialisation")
     }
+
+    /// The same project with two more worktrees, so the repository has four in all.
+    fn with_four_worktrees() -> Self {
+        let workspace = Self::new();
+        drop(git(
+            &workspace.source,
+            &["worktree", "add", "-q", "-b", "feature/clean", ".claude/worktrees/clean"],
+        ));
+        drop(git(
+            &workspace.source,
+            &["worktree", "add", "-q", "-b", "feature/dirty", ".claude/worktrees/dirty"],
+        ));
+        workspace
+    }
+
+    /// A nested worktree of this project, resolved the way a registry row records it.
+    fn worktree(&self, name: &str) -> PathBuf {
+        resolved(&self.source.join(".claude/worktrees").join(name))
+    }
 }
 
 #[test]
@@ -471,4 +490,29 @@ fn a_checkout_named_by_path_is_adopted_from_outside_any_repository() {
         resolved(&workspace.source),
         "the project is the one the checkout is of"
     );
+}
+
+/// Four worktrees: the main checkout and three linked ones. `--all` registers the three
+/// and skips the main checkout. A second run skips the three that are already units.
+#[test]
+fn adopt_all_registers_every_worktree_but_the_main_checkout() {
+    let workspace = Workspace::with_four_worktrees();
+
+    let refused = workspace.nodal(&["adopt", "--all"]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("--in-place"), "{}", stderr(&refused));
+
+    let report = stdout(&workspace.nodal(&["adopt", "--all", "--in-place"]));
+    assert!(report.contains("adopted 3 worktrees; skipped 1"), "{report}");
+    assert!(report.contains("skipped the main checkout"), "{report}");
+    for slug in ["token-refresh", "clean", "dirty"] {
+        assert!(!workspace.environment(slug).managed, "{slug} is a worktree Nodal did not make");
+    }
+    assert_eq!(workspace.environment("token-refresh").home, workspace.nested());
+    assert_eq!(workspace.environment("clean").home, workspace.worktree("clean"));
+    assert_eq!(workspace.environment("dirty").home, workspace.worktree("dirty"));
+
+    let again = stdout(&workspace.nodal(&["adopt", "--all", "--in-place"]));
+    assert!(again.contains("adopted 0 worktrees; skipped 4"), "{again}");
+    assert!(again.contains("already a unit"), "{again}");
 }

@@ -15,7 +15,8 @@
 //! no file of the person's is touched. The environment row is written with
 //! `managed = false`, which is what makes the directory a **root**: a reclaim
 //! unregisters it and never moves it ([`super::reclaim`]), because Nodal did not create
-//! it and it is not Nodal's to trash.
+//! it and it is not Nodal's to trash. `--all` runs this form for every worktree of the
+//! project except the main checkout and any worktree that is already a unit.
 //!
 //! **Materialised.** A branch nothing has checked out gets a home of its own, made the
 //! way [`super::new`] makes one: a clone of a warm base, the caches that record their
@@ -74,7 +75,7 @@ use crate::model::{
     BranchName, EnvId, Environment, Epistemic, EventKind, Objective, PortBlock, PortName, Project,
     Recipe, Slug, Timestamp, Unit, UnitId, UnitStatus,
 };
-use crate::output::view::{Arrival, Created};
+use crate::output::view::{AdoptedAll, AdoptedRow, Arrival, Created};
 use crate::services::ports;
 use crate::store::{Store, environments, events, units};
 use crate::substrate::{self, Reporter};
@@ -196,6 +197,65 @@ pub fn adopt(
     let created =
         Created::of(&params.unit, &new::read_back(store, environment)?, arrival, Timestamp::now())?;
     Ok(created.keeping(done.outputs.read(new::MATERIALIZE)?.unwrap_or_default()))
+}
+
+/// Adopt every worktree of the project, one at a time, through the ordinary adopt path.
+///
+/// The main checkout and a worktree that is already a unit are skipped, and the report
+/// says so. Every other row is the existing adopt of that directory. `--in-place` is
+/// required: these are checkouts somebody is already working in.
+///
+/// # Errors
+/// [`Error::AdoptAllNeedsInPlace`] when `--in-place` was not given, and whatever Git,
+/// the filesystem or the registry reported before any row could be considered.
+pub fn adopt_all(
+    store: &mut Store,
+    request: &Request,
+    progress: &Arc<dyn Reporter>,
+) -> Result<AdoptedAll> {
+    if !request.in_place {
+        return Err(Error::AdoptAllNeedsInPlace);
+    }
+    let git = Git::open(&request.cwd)?;
+    git.ensure_no_operation_in_progress()?;
+    let root = main_checkout(&git)?;
+    let listed = git.worktrees()?;
+    let mut rows = Vec::with_capacity(listed.len());
+    for (index, registered) in listed.into_iter().enumerate() {
+        let main = index == 0 || same_tree(&registered.path, &root);
+        rows.push(adopt_one(store, request, progress, registered.path, main));
+    }
+    Ok(AdoptedAll { now: Timestamp::now(), rows })
+}
+
+/// Adopt one worktree, or record why it was skipped or refused.
+fn adopt_one(
+    store: &mut Store,
+    request: &Request,
+    progress: &Arc<dyn Reporter>,
+    path: PathBuf,
+    main: bool,
+) -> AdoptedRow {
+    if main {
+        return AdoptedRow::skipped(path, "the main checkout");
+    }
+    let per = Request {
+        target: path.display().to_string(),
+        name: None,
+        objective: None,
+        ..request.clone()
+    };
+    match adopt(store, &per, progress) {
+        Ok(created) => AdoptedRow::adopted(path, created.unit.slug.to_string()),
+        Err(Error::AdoptAlreadyAUnit { .. }) => AdoptedRow::skipped(path, "already a unit"),
+        Err(Error::AdoptProjectRoot { .. }) => AdoptedRow::skipped(path, "the main checkout"),
+        Err(error) => AdoptedRow::failed(path, error.to_string()),
+    }
+}
+
+/// Whether two checkouts are the same directory on this machine.
+fn same_tree(left: &Path, right: &Path) -> bool {
+    guard::resolve(left) == guard::resolve(right)
 }
 
 /// Run `post_new` in the home, for the form of adoption that made one.

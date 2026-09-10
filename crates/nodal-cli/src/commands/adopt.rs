@@ -17,8 +17,13 @@ use nodal_core::substrate::{self, Reporter};
 #[derive(Debug, Args)]
 pub struct Adopt {
     /// A branch of the project, or the directory of a checkout.
-    #[arg(value_name = "BRANCH-OR-PATH")]
-    pub target: String,
+    #[arg(value_name = "BRANCH-OR-PATH", required_unless_present = "all")]
+    pub target: Option<String>,
+
+    /// Adopt every worktree of the project. Skip the main checkout and any already a
+    /// unit, and say so.
+    #[arg(long, conflicts_with_all = ["target", "name", "objective"])]
+    pub all: bool,
 
     /// Make the checkout a unit where it stands, writing only `.nodal/` and `.envrc`
     /// and hiding both from Git. Required for a directory: Nodal does not move a
@@ -53,8 +58,15 @@ impl Adopt {
     /// and whatever Git, the filesystem or the registry reported.
     pub fn run(&self, store: &mut Store, hooks: bool) -> nodal_core::Result<ExitCode> {
         let progress: Arc<dyn Reporter> = substrate::sink(self.json);
-        let report = adopt::adopt(store, &self.request(hooks)?, &progress)?;
-        output::write(&report, Format::from_json_flag(self.json), &mut std::io::stdout())?;
+        let request = self.request(hooks)?;
+        let format = Format::from_json_flag(self.json);
+        if self.all {
+            let report = adopt::adopt_all(store, &request, &progress)?;
+            output::write(&report, format, &mut std::io::stdout())?;
+            return Ok(if report.failed() { ExitCode::FAILURE } else { ExitCode::SUCCESS });
+        }
+        let report = adopt::adopt(store, &request, &progress)?;
+        output::write(&report, format, &mut std::io::stdout())?;
         if let Some(environment) = &report.unit.environment {
             entry::ask_to_enter(&environment.home)?;
         }
@@ -69,7 +81,7 @@ impl Adopt {
     /// needs the operation to take the answer rather than find it.
     fn request(&self, hooks: bool) -> nodal_core::Result<Request> {
         Ok(Request {
-            target: self.target.clone(),
+            target: self.target.clone().unwrap_or_default(),
             cwd: self.path.clone().unwrap_or_else(|| PathBuf::from(".")),
             in_place: self.in_place,
             objective: self.objective.as_deref().map(Objective::parse).transpose()?,
