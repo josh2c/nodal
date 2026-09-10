@@ -225,8 +225,12 @@ pub enum Error {
         source: serde_json::Error,
     },
 
-    /// A step of an operation failed. The steps before it were undone, so nothing the
-    /// operation did is left; the failure that stopped it is the source.
+    /// A step of an operation failed. The failure that stopped it is the source.
+    ///
+    /// What is left behind depends on the plan's [`recovery`](crate::lifecycle::Recovery).
+    /// A plan that rolls back has had its applied steps undone and left nothing. A plan
+    /// that resumes has kept what it built, so the next attempt can carry on from the
+    /// step that failed rather than pay for the clone again.
     #[error("{kind} failed at step {key:?}: {source}")]
     OperationStep {
         /// The run, as the journal records it.
@@ -755,7 +759,12 @@ pub enum Error {
     },
 
     /// A tool a base build ran exited non-zero.
-    #[error("{program} {args} in {dir}: {stderr}", args = args.join(" "), dir = dir.display())]
+    ///
+    /// The message carries the tail of both streams, because which of the two a tool
+    /// writes its reason to is the tool's choice and not ours. A package manager that
+    /// reports a lockfile mismatch on standard output and nothing on standard error
+    /// produced, until both were kept, an error with no reason in it at all.
+    #[error("{program} {args} in {dir}{output}", args = args.join(" "), dir = dir.display())]
     Tool {
         /// The program that was run.
         program: String,
@@ -765,9 +774,55 @@ pub enum Error {
         dir: PathBuf,
         /// Its exit code, or `None` when a signal ended it.
         code: Option<i32>,
-        /// What it wrote to standard error.
-        stderr: String,
+        /// The tail of what it wrote, on both streams.
+        ///
+        /// Boxed, and both streams in the one value. Every fallible function in the
+        /// crate pays for the largest variant of this enum, so two more strings here
+        /// would be two more words on the stack of code that never runs a tool.
+        output: Box<Streams>,
     },
+
+    /// A project pins a package-manager version this host cannot run, and nothing on
+    /// the path can fetch it.
+    ///
+    /// Refused before a base is cloned. Installing with the wrong major version of a
+    /// package manager does not fail; it writes a tree that is subtly not the one the
+    /// lockfile describes, which is the failure a person cannot diagnose.
+    #[error("needs {tool} {wanted}; host has {found}; install it or run `corepack enable`")]
+    ToolPin {
+        /// The package manager the project pins.
+        tool: String,
+        /// The version it pins, as the manifest writes it.
+        wanted: String,
+        /// What the host answers, as a major series such as `10.x`, or `nothing` when
+        /// the tool is not on the path at all.
+        found: String,
+    },
+}
+
+/// The tail of a finished process's two streams.
+///
+/// Both, because which one a tool writes its reason to is the tool's choice. A stream
+/// that is empty is left out of the message whole: an error ending in a blank labelled
+/// section reads as though the tool said nothing, which is the opposite of what an
+/// empty stream means when the other one is full.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Streams {
+    /// The tail of standard output.
+    pub stdout: String,
+    /// The tail of standard error.
+    pub stderr: String,
+}
+
+impl core::fmt::Display for Streams {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for (label, text) in [("stdout", &self.stdout), ("stderr", &self.stderr)] {
+            if !text.trim().is_empty() {
+                write!(f, "\n--- {label} ---\n{text}")?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Error {

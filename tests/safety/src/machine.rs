@@ -40,7 +40,86 @@ pub const BINARY_VAR: &str = "NODAL_TEST_BINARY";
 const INSTALLED: &str = "node_modules/installed.txt";
 
 /// The stub package manager itself. It writes one file and succeeds.
-const STUB: &str = "#!/bin/sh\nmkdir -p node_modules || exit 1\necho 'the safety suite installs nothing' > node_modules/installed.txt\n";
+///
+/// It answers `--version` as well, with the version the fixture's manifest pins. Nodal
+/// compares the two before it builds, and a stub that answered nothing would be a host
+/// without a package manager at all.
+const STUB: &str = concat!(
+    "#!/bin/sh\n",
+    "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
+    "mkdir -p node_modules || exit 1\n",
+    "echo 'the safety suite installs nothing' > node_modules/installed.txt\n",
+);
+
+/// The path in a stub script that the fixture replaces with a real one.
+const WITNESS: &str = "@WITNESS@";
+
+/// The version in a stub script that the fixture replaces with the one to report.
+const VERSION: &str = "@VERSION@";
+
+/// A stub that fails the first time it is asked to install and succeeds after that.
+///
+/// It writes its reason to standard output and a note to standard error, because that
+/// is how a package manager behaves and because an error that kept only the second
+/// stream would carry the note and not the reason.
+const STUB_FAILS_ONCE: &str = concat!(
+    "#!/bin/sh\n",
+    "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
+    "if [ ! -f '@WITNESS@' ]; then\n",
+    "  : > '@WITNESS@'\n",
+    "  echo 'ERR_PNPM_OUTDATED_LOCKFILE  the lockfile does not match package.json'\n",
+    "  echo 'a note that is not the reason' >&2\n",
+    "  exit 1\n",
+    "fi\n",
+    "mkdir -p node_modules || exit 1\n",
+    "echo 'the safety suite installs nothing' > node_modules/installed.txt\n",
+);
+
+/// A stub that installs, and answers `--version` with a version the test chooses.
+const STUB_VERSIONED: &str = concat!(
+    "#!/bin/sh\n",
+    "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
+    "mkdir -p node_modules || exit 1\n",
+    "echo 'the safety suite installs nothing' > node_modules/installed.txt\n",
+);
+
+/// The programs a sealed machine keeps, beyond the stub package manager.
+///
+/// A machine that asserts what Nodal does when the host cannot satisfy a pin has to be
+/// one where `corepack` and `mise` are certainly absent, and trimming the path to a
+/// single directory is the only way to say that on a laptop where either may be
+/// installed. Only the pin suite asks for this: a sealed machine cannot start a
+/// tethered command, which most of the suite does.
+///
+/// `git` is linked in because Nodal is not a tool without it, and `mkdir` because the
+/// stub package manager makes a directory.
+const SEALED_TOOLS: [&str; 2] = ["git", "mkdir"];
+
+/// A stub `corepack`, which every unsealed machine has in place of the real one.
+///
+/// The fixture pins its package manager and Nodal acts on the pin, so a build looks for
+/// `corepack` before it looks at the host's own `pnpm`. The real one would fetch the
+/// pinned version over the network and run the project's install for real, which is
+/// what this suite exists not to do — and it would do it only on the machines that have
+/// it, so the suite would behave one way on a laptop and another in CI. This one runs
+/// the stub package manager instead, which is what the pin resolves to here.
+///
+/// It is invoked as `corepack <tool>@<version> <args>`, so it drops the first word.
+const STUB_COREPACK: &str = concat!("#!/bin/sh\n", "shift\n", "exec pnpm \"$@\"\n");
+
+/// A stub `mise`, in place of the real one, for the same reason.
+///
+/// It is invoked as `mise exec <tool>@<version> -- <argv>`, so it drops everything up
+/// to the separator. A build reaches it only when there is no `corepack`.
+const STUB_MISE: &str = concat!(
+    "#!/bin/sh\n",
+    "while [ \"$1\" != \"--\" ]; do shift || exit 1; done\n",
+    "shift\n",
+    "exec \"$@\"\n",
+);
+
+/// The stubs an unsealed machine puts in front of the host's own tools.
+const SHADOWED: [(&str, &str); 2] = [("corepack", STUB_COREPACK), ("mise", STUB_MISE)];
 
 /// The identity commits in this machine are made with. A home is a clone and carries no
 /// identity of its own, as a person's checkout would from their global configuration.
@@ -88,7 +167,40 @@ impl Machine {
     /// made, which is a machine no property can be asserted on.
     #[must_use]
     pub fn tracking(forced: &[&str]) -> Self {
-        Self::built(forced, &[])
+        Self::built(&Setup { forced, ..Setup::default() })
+    }
+
+    /// A machine whose package manager fails the first time it installs.
+    ///
+    /// The second `nodal new` finds the failed attempt and carries on with it, which is
+    /// the behaviour `tests/base_retry.rs` is about.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    pub fn failing_once() -> Self {
+        Self::built(&Setup { stub: Some(STUB_FAILS_ONCE), sealed: true, ..Setup::default() })
+    }
+
+    /// A machine whose project pins `pin` and whose package manager reports `reports`.
+    ///
+    /// Sealed: nothing but the stub, `git` and `mkdir` is on its path, so `corepack`
+    /// and `mise` are certainly not there and the pin is settled by comparing the two
+    /// versions.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    pub fn pinning(pin: &str, reports: &str) -> Self {
+        Self::built(&Setup {
+            stub: Some(STUB_VERSIONED),
+            reports: Some(reports.to_owned()),
+            pin: Some(pin.to_owned()),
+            sealed: true,
+            ..Setup::default()
+        })
     }
 
     /// The same again, with `exclude` written into the project's own `nodal.toml`.
@@ -102,24 +214,34 @@ impl Machine {
     /// As [`Machine::tracking`], and if the recipe could not be written.
     #[must_use]
     pub fn excluding(forced: &[&str], exclude: &[&str]) -> Self {
-        Self::built(forced, exclude)
+        Self::built(&Setup { forced, exclude, ..Setup::default() })
     }
 
-    /// The fixture project as a repository, with what it tracks and what it excludes.
+    /// The fixture project as a repository, set up as `setup` asks.
     ///
     /// # Panics
     ///
     /// As [`Machine::tracking`].
     #[must_use]
-    fn built(forced: &[&str], exclude: &[&str]) -> Self {
+    fn built(setup: &Setup<'_>) -> Self {
         let root = TempDir::new().expect("a temporary directory");
         let source = nodal_fixture::write(root.path().join("project"));
         let state = root.path().join("state");
         let tools = root.path().join("tools");
-        write_stub(&tools);
+        let witness = tools.join("attempted").to_str().expect("a printable path").to_owned();
+        let reports = setup.reports.as_deref().unwrap_or(nodal_fixture::PACKAGE_MANAGER_PIN);
+        write_stub(&tools, setup.stub.unwrap_or(STUB), &witness, reports);
+        if setup.sealed {
+            link_tools(&tools);
+        } else {
+            shadow_tools(&tools);
+        }
 
-        if !exclude.is_empty() {
-            write_exclude(&source, exclude);
+        if !setup.exclude.is_empty() {
+            write_exclude(&source, setup.exclude);
+        }
+        if let Some(pin) = setup.pin.as_deref() {
+            write_pin(&source, pin);
         }
 
         git(&source, &["init", "--quiet", "--initial-branch", "main"]);
@@ -127,12 +249,13 @@ impl Machine {
             git(&source, &["config", "--local", key, value]);
         }
         git(&source, &["add", "--all"]);
-        for path in forced {
+        for path in setup.forced {
             git(&source, &["add", "--force", "--", path]);
         }
         git(&source, &["commit", "--quiet", "--message", "the fixture project"]);
 
-        let runner = Runner::new(binary(), &state, &source).with_env("PATH", path(&tools));
+        let search = if setup.sealed { tools.clone().into_os_string() } else { path(&tools) };
+        let runner = Runner::new(binary(), &state, &source).with_env("PATH", search);
         Self { _root: root, runner, source, state }
     }
 
@@ -262,14 +385,26 @@ impl Machine {
     }
 }
 
-/// The search path a command gets: the stub package manager, then the real one.
-fn path(tools: &Path) -> std::ffi::OsString {
-    let mut value = tools.to_path_buf().into_os_string();
-    if let Some(inherited) = std::env::var_os("PATH") {
-        value.push(":");
-        value.push(inherited);
-    }
-    value
+/// How one fixture machine differs from the plain one.
+///
+/// Every constructor above states only the field it needs another value for, so a
+/// machine reads as the one thing the test is about.
+#[derive(Default)]
+struct Setup<'a> {
+    /// Paths added to the first commit although the project ignores them.
+    forced: &'a [&'a str],
+    /// Paths written into the project's own `base.exclude`.
+    exclude: &'a [&'a str],
+    /// The stub package manager's script, when it is not the plain one.
+    stub: Option<&'a str>,
+    /// The version the stub answers `--version` with. The fixture's own pin unless the
+    /// test is about a host that does not satisfy it.
+    reports: Option<String>,
+    /// Whether the path holds the stub package manager, `git` and `mkdir` and nothing
+    /// else. Only the pin suite wants this; see [`SEALED_TOOLS`].
+    sealed: bool,
+    /// A package-manager pin written into the project's recipe.
+    pin: Option<String>,
 }
 
 impl Default for Machine {
@@ -287,16 +422,63 @@ fn write_exclude(source: &Path, exclude: &[&str]) {
     std::fs::write(&path, written).expect("the recipe is written");
 }
 
+/// Add a package-manager pin to the fixture's own recipe, as a manifest would carry it.
+fn write_pin(source: &Path, pin: &str) {
+    let path = source.join(nodal_fixture::RECIPE);
+    let recipe = std::fs::read_to_string(&path).expect("the fixture has a recipe");
+    let written = format!("package_manager = \"pnpm\"\npackage_manager_pin = \"{pin}\"\n{recipe}");
+    std::fs::write(&path, written).expect("the recipe is written");
+}
+
+/// The search path a command gets: this machine's tools, then the real ones.
+fn path(tools: &Path) -> std::ffi::OsString {
+    let mut value = tools.to_path_buf().into_os_string();
+    if let Some(inherited) = std::env::var_os("PATH") {
+        value.push(":");
+        value.push(inherited);
+    }
+    value
+}
+
+/// Put this suite's `corepack` and `mise` in front of whatever the host has.
+fn shadow_tools(tools: &Path) {
+    for (program, script) in SHADOWED {
+        write_runnable(&tools.join(program), script);
+    }
+}
+
+/// Link the programs a sealed machine still needs into its one tools directory.
+fn link_tools(tools: &Path) {
+    for program in SEALED_TOOLS {
+        let Some(found) = which(program) else { continue };
+        drop(std::fs::remove_file(tools.join(program)));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&found, tools.join(program))
+            .unwrap_or_else(|_| panic!("{program} is linked into the sealed path"));
+    }
+}
+
+/// Where a program is on the path of whoever is running the tests.
+fn which(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|directory| directory.join(program)).find(|p| p.is_file())
+}
+
 /// Write the stub package manager into `directory` and make it runnable.
-fn write_stub(directory: &Path) {
+fn write_stub(directory: &Path, script: &str, witness: &str, reports: &str) {
     std::fs::create_dir_all(directory).expect("the tools directory is created");
-    let path = directory.join("pnpm");
-    std::fs::write(&path, STUB).expect("the stub package manager is written");
+    let written = script.replace(WITNESS, witness).replace(VERSION, reports);
+    write_runnable(&directory.join("pnpm"), &written);
+}
+
+/// Write one script and make it runnable.
+fn write_runnable(path: &Path, script: &str) {
+    std::fs::write(path, script).expect("the stub is written");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("the stub package manager is runnable");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .expect("the stub is runnable");
     }
 }
 

@@ -48,6 +48,37 @@ pub const ORIGIN: &str = "origin";
 /// What the end of a directory's name says, while a base is being assembled in it.
 const PARTIAL_SUFFIX: &str = ".partial";
 
+/// How many lines of a failed tool's output an error carries, from each stream.
+///
+/// Enough to hold the part a package manager puts its reason in, and short enough that
+/// an error is still something a person reads rather than scrolls.
+const TAIL_LINES: usize = 40;
+
+/// Where a base is assembled, until every step of its build has passed.
+///
+/// A base is built beside its own name and renamed into it once, by [`Promote`], after
+/// the last step. Nothing between the clone and that rename sits at the path a base is
+/// looked for at, so a build that fails leaves a directory that cannot be mistaken for
+/// a base — by a person, by `nodal doctor`, or by the next build.
+///
+/// The name is stable, which is what makes a failed build retryable: the attempt that
+/// resumes it looks here and finds the clone and the half-finished install waiting.
+#[must_use]
+pub fn partial_of(destination: &Path) -> PathBuf {
+    let mut name = destination.as_os_str().to_os_string();
+    name.push(PARTIAL_SUFFIX);
+    PathBuf::from(name)
+}
+
+/// The directory a build's steps after the clone work in.
+///
+/// The partial, until the promotion has happened; the base itself afterwards. A
+/// resumed run may find either, because it is applying the steps of a plan that got
+/// part of the way through on another day.
+fn work_of(destination: &Path) -> PathBuf {
+    if destination.is_dir() { destination.to_path_buf() } else { partial_of(destination) }
+}
+
 /// Where a base's content comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "from")]
@@ -125,8 +156,15 @@ pub struct Params {
     /// Paths the recipe keeps out of a copy.
     pub excludes: Vec<PathBuf>,
     /// The package manager's install, as an argument list. Empty when the project has
-    /// no package manager.
+    /// no package manager, and written through `corepack` or `mise` when the project
+    /// pins a version and one of those is on the path ([`super::pin`]).
     pub install: Vec<String>,
+    /// Variables the install needs on top of the ones it inherits.
+    ///
+    /// Defaulted when it is absent, because a journal row an older build wrote has no
+    /// such key and an interrupted build must still be finishable by a newer one.
+    #[serde(default)]
+    pub install_env: Vec<(String, String)>,
     /// The project's build command, as an argument list. Empty unless a warm build was
     /// asked for and the command can run without a shell.
     pub warm: Vec<String>,
@@ -179,16 +217,19 @@ pub fn plan(params: &Params, progress: &Arc<dyn Reporter>) -> Result<Plan> {
         });
     for (name, argv, note) in tools(params) {
         if !argv.is_empty() {
+            let env = if name == "install" { params.install_env.clone() } else { Vec::new() };
             plan = plan.then(Tool {
                 destination: params.destination.clone(),
                 name,
                 argv,
+                env,
                 note,
                 progress: Arc::clone(progress),
             });
         }
     }
-    Ok(plan)
+    Ok(plan
+        .then(Promote { destination: params.destination.clone(), progress: Arc::clone(progress) }))
 }
 
 /// The tool steps a build has, in order: install first, then the warm build that needs
@@ -252,7 +293,7 @@ impl Materialise {
     /// against it: a directory being written to cannot be removed. So each attempt
     /// takes a name no other attempt has, and what an orphan is still writing to is
     /// simply not in the way.
-    fn partial(&self) -> PathBuf {
+    fn scratch(&self) -> PathBuf {
         self.beside(&format!(".{id}{PARTIAL_SUFFIX}", id = ulid::Ulid::new()))
     }
 
@@ -263,18 +304,27 @@ impl Materialise {
         PathBuf::from(name)
     }
 
-    /// Remove what earlier attempts left beside the destination, and say nothing when
-    /// one will not go: an orphan may still hold it, and the attempt after this one
-    /// will find it free.
+    /// Remove the scratch directories earlier attempts left beside the destination,
+    /// and say nothing when one will not go: an orphan may still hold it, and the
+    /// attempt after this one will find it free.
+    ///
+    /// The base's own partial is never swept. It holds a clone that a failed build
+    /// paid for, and the next attempt resumes into it; removing it here would be the
+    /// discarded clone this module exists to prevent, done by the tidying rather than
+    /// by the failure.
     fn sweep(&self) {
         let Some(parent) = self.destination.parent() else { return };
         let Some(name) = self.destination.file_name().and_then(std::ffi::OsStr::to_str) else {
             return;
         };
+        let kept = format!("{name}{PARTIAL_SUFFIX}");
         let Ok(entries) = std::fs::read_dir(parent) else { return };
         for entry in entries.flatten() {
             let found = entry.file_name();
             let Some(found) = found.to_str() else { continue };
+            if found == kept {
+                continue;
+            }
             if found.starts_with(&format!("{name}.")) && found.ends_with(PARTIAL_SUFFIX) {
                 drop(std::fs::remove_dir_all(entry.path()));
             }
@@ -307,41 +357,52 @@ impl Step for Materialise {
         String::from("clone")
     }
 
-    /// Assemble the content beside the destination, then rename it into place.
+    /// Assemble the content in a scratch directory, then rename it to the partial.
     ///
-    /// The rename is why the destination existing is enough to say the step is done.
-    /// A clone or a copy that a kill stops half-way leaves a directory with a `.git`
-    /// in it and most of a repository under that, and a resumed build that accepted
-    /// one would install into a tree that is missing files. A rename is one step in
-    /// the filesystem, so a base either has its name or has nothing.
+    /// The rename is why the partial existing is enough to say the step is done. A
+    /// clone or a copy that a kill stops half-way leaves a directory with a `.git` in
+    /// it and most of a repository under that, and a resumed build that accepted one
+    /// would install into a tree that is missing files. A rename is one step in the
+    /// filesystem, so the partial either holds a whole clone or does not exist.
+    ///
+    /// The scratch name is this attempt's own, and the partial's is not. A `nodal` a
+    /// kill stops does not take its `git` with it, so an attempt that assembled
+    /// directly into the shared name would be racing a live writer. It assembles
+    /// somewhere nobody else can be and takes the shared name in one move.
     fn apply(&self) -> Result<Output> {
-        if self.destination.exists() {
+        if self.destination.is_dir() {
             self.progress.line("the base directory is already there");
+            return Ok(nothing());
+        }
+        let partial = partial_of(&self.destination);
+        if partial.is_dir() {
+            self.progress.line("carrying on with the clone the last attempt made");
             return Ok(nothing());
         }
         let parent = self.destination.parent().unwrap_or(Path::new("."));
         std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
         self.sweep();
-        let partial = self.partial();
+        let scratch = self.scratch();
         self.progress.line(&format!("building from {}", self.origin.describe()));
         match &self.origin {
             Origin::Remote { url } => {
-                git::clone(url, &partial)?;
+                git::clone(url, &scratch)?;
             }
             Origin::Checkout { path } => {
-                git::clone(path, &partial)?;
+                git::clone(path, &scratch)?;
             }
-            Origin::Neighbour { path, .. } => self.copy(path, &partial)?,
+            Origin::Neighbour { path, .. } => self.copy(path, &scratch)?,
         }
         // A copy inherits the source's worktree registrations, hooks path and HEAD; a
         // fresh clone inherits none of that and the scrub is a no-op on it.
-        Git::open(&partial)?.scrub(&scrub::Options::default())?;
-        std::fs::rename(&partial, &self.destination).map_err(Error::io(&partial))?;
+        Git::open(&scratch)?.scrub(&scrub::Options::default())?;
+        std::fs::rename(&scratch, &partial).map_err(Error::io(&scratch))?;
         Ok(nothing())
     }
 
     fn undo(&self) -> Result<()> {
         self.sweep();
+        remove(&partial_of(&self.destination))?;
         remove(&self.destination)
     }
 }
@@ -389,7 +450,7 @@ impl Step for Checkout {
     }
 
     fn apply(&self) -> Result<Output> {
-        let git = Git::open(&self.destination)?;
+        let git = Git::open(work_of(&self.destination))?;
         self.reach(&git)?;
         self.progress.line(&format!("checking out {}", self.commit));
         git.checkout_detached(self.commit.as_str())?;
@@ -411,6 +472,8 @@ struct Tool {
     name: &'static str,
     /// The program and its arguments.
     argv: Vec<String>,
+    /// Variables it needs on top of the ones it inherits.
+    env: Vec<(String, String)>,
     /// The progress line it writes before it runs.
     note: String,
     /// Where the step says what it is doing.
@@ -424,7 +487,7 @@ impl Step for Tool {
 
     fn apply(&self) -> Result<Output> {
         self.progress.line(&self.note);
-        run(&self.destination, &self.argv)?;
+        run(&work_of(&self.destination), &self.argv, &self.env)?;
         Ok(nothing())
     }
 
@@ -435,20 +498,63 @@ impl Step for Tool {
     }
 }
 
+/// Rename the finished base into the name a base is looked for at.
+///
+/// The last step, and the only one that writes at the destination. Everything before
+/// it has worked in the partial, so this is the moment a base begins to exist — and,
+/// because the registry write comes after it in the same operation, the moment is one
+/// rename away from the row that announces it.
+struct Promote {
+    /// Where the base goes.
+    destination: PathBuf,
+    /// Where the step says what it is doing.
+    progress: Arc<dyn Reporter>,
+}
+
+impl Step for Promote {
+    fn key(&self) -> String {
+        String::from("promote")
+    }
+
+    fn apply(&self) -> Result<Output> {
+        if self.destination.is_dir() {
+            return Ok(nothing());
+        }
+        let partial = partial_of(&self.destination);
+        std::fs::rename(&partial, &self.destination).map_err(Error::io(&partial))?;
+        self.progress.line("the base is built");
+        Ok(nothing())
+    }
+
+    fn undo(&self) -> Result<()> {
+        // Back to the partial rather than to nothing. The clone and the install under
+        // it cost minutes and are still exactly what the next attempt wants.
+        if !self.destination.is_dir() {
+            return Ok(());
+        }
+        let partial = partial_of(&self.destination);
+        if partial.exists() {
+            return Ok(());
+        }
+        std::fs::rename(&self.destination, &partial).map_err(Error::io(&self.destination))
+    }
+}
+
 /// The one place `substrate` starts a process that is not `git`.
 ///
 /// Output is captured rather than inherited, so an install's thousands of lines do not
 /// bury the progress the build is writing; what a failure wrote is carried in the
 /// error instead.
-fn run(dir: &Path, argv: &[String]) -> Result<()> {
+///
+/// Both streams are carried, not standard error alone. Which stream a tool writes its
+/// reason to is the tool's choice: pnpm reports a lockfile mismatch on standard output
+/// and exits non-zero with an empty standard error, and a build that kept only the
+/// second reported a failure with no reason in it.
+fn run(dir: &Path, argv: &[String], env: &[(String, String)]) -> Result<()> {
     let Some((program, rest)) = argv.split_first() else {
         return Ok(());
     };
-    let output = Command::new(program)
-        .args(rest)
-        .current_dir(dir)
-        .output()
-        .map_err(|source| Error::ToolSpawn { program: program.clone(), source })?;
+    let output = capture(Some(dir), program, rest, env)?;
     if output.status.success() {
         return Ok(());
     }
@@ -457,8 +563,70 @@ fn run(dir: &Path, argv: &[String]) -> Result<()> {
         args: rest.to_vec(),
         dir: dir.to_path_buf(),
         code: output.status.code(),
-        stderr: String::from_utf8_lossy(&output.stderr).trim_end().to_owned(),
+        output: Box::new(crate::error::Streams {
+            stdout: tail(&output.stdout),
+            stderr: tail(&output.stderr),
+        }),
     })
+}
+
+/// The one spawn seam for every tool that is not `git`.
+///
+/// Both the install and the version probe that decides how to run it come through
+/// here, because they start the same tool. One seam per tool is the rule the structure
+/// ceilings in `ci/measure.sh` hold to.
+///
+/// # Errors
+/// [`Error::ToolSpawn`] when the program could not be started at all.
+fn capture(
+    dir: Option<&Path>,
+    program: &str,
+    args: &[String],
+    env: &[(String, String)],
+) -> Result<std::process::Output> {
+    let mut command = Command::new(program);
+    command.args(args);
+    if let Some(dir) = dir {
+        command.current_dir(dir);
+    }
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    command.output().map_err(|source| Error::ToolSpawn { program: program.to_owned(), source })
+}
+
+/// The last [`TAIL_LINES`] lines of what a process wrote to one stream.
+///
+/// A tail and not the whole, because an install writes tens of thousands of lines and
+/// an error nobody can read is an error without its reason. The end and not the start,
+/// because a tool says what went wrong last.
+fn tail(stream: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stream);
+    let text = text.trim_end();
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n")
+}
+
+/// This host, as [`pin`](super::pin) asks about it.
+///
+/// The version probe spawns a process, so it lives here: this module is the only one
+/// in `substrate` that starts anything that is not `git`.
+pub struct ThisHost;
+
+impl super::pin::Host for ThisHost {
+    fn on_path(&self, program: &str) -> bool {
+        super::pin::on_path(program)
+    }
+
+    fn version(&self, program: &str) -> Option<String> {
+        let asked = [String::from("--version")];
+        let output = capture(None, program, &asked, &[]).ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        text.lines().next().map(|line| line.trim().to_owned()).filter(|line| !line.is_empty())
+    }
 }
 
 /// Remove a directory if it is there. Idempotent, which is what every undo has to be.

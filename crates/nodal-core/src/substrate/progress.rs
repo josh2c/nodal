@@ -11,12 +11,33 @@
 //! here is written to standard output: progress is standard error, and the answer is
 //! standard output.
 
+use std::io::{BufRead as _, IsTerminal as _, Write as _};
 use std::sync::{Arc, Mutex};
 
-/// Where the lines a build writes about itself go.
+/// Words a person types to mean yes.
+const AGREED: [&str; 2] = ["y", "yes"];
+
+/// Where the lines a build writes about itself go, and the one question it may ask.
 pub trait Reporter: Send + Sync {
     /// One line about what is happening now, without a trailing newline.
     fn line(&self, message: &str);
+
+    /// Ask the person a yes-or-no question, and say what they answered.
+    ///
+    /// A build has exactly one of these to ask: whether to carry on with what a
+    /// failed attempt left, or to start again. It goes through this trait because
+    /// every caller already hands a build one of these and none of them would
+    /// otherwise have a way to answer.
+    ///
+    /// Yes by default, and that is the deliberate answer for a sink with nobody
+    /// behind it. Carrying on with a clone that is already on disk changes nothing a
+    /// person would want changed: the workspace fingerprint is the same, so the clone
+    /// is the same clone the fresh build would make. Refusing here instead would stop
+    /// every build after a failure until somebody typed at it, which on a build server
+    /// is a build that never runs again.
+    fn agrees(&self, _question: &str) -> bool {
+        true
+    }
 }
 
 /// Says nothing. What a caller that only wants the answer passes.
@@ -35,6 +56,28 @@ pub struct Stderr;
 impl Reporter for Stderr {
     fn line(&self, message: &str) {
         eprintln!("{message}");
+    }
+
+    /// Ask, when there is a terminal to ask. A question is printed to standard error
+    /// beside the progress it belongs with, and standard output stays the answer.
+    ///
+    /// Nothing watching means yes, as the trait says, and no question is printed: a
+    /// prompt on a build server's log that nobody could have answered reads as though
+    /// the build waited for something.
+    fn agrees(&self, question: &str) -> bool {
+        let input = std::io::stdin();
+        if !input.is_terminal() {
+            return true;
+        }
+        eprint!("{question} [y/N] ");
+        if std::io::stderr().flush().is_err() {
+            return false;
+        }
+        let mut answer = String::new();
+        if input.lock().read_line(&mut answer).is_err() {
+            return false;
+        }
+        AGREED.contains(&answer.trim().to_lowercase().as_str())
     }
 }
 
@@ -88,5 +131,11 @@ mod tests {
     #[test]
     fn silence_accepts_a_line_and_keeps_nothing() {
         Silent.line("ignored");
+    }
+
+    #[test]
+    fn a_sink_with_nobody_behind_it_agrees() {
+        assert!(Silent.agrees("retry from the install step?"));
+        assert!(Collector::default().agrees("retry from the install step?"));
     }
 }

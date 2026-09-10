@@ -50,6 +50,9 @@
 //! | hook scope | an install nobody asked for leaves a file in a repository, or the provider ends a session in a project that is not Nodal's | `tests/claude_scope.rs` |
 //! | doctor reads only | a read command changes the machine it is reporting on | `tests/doctor_writes_nothing.rs` |
 //! | stand-in values | a create calls a unit ready with a generated value its own generate step needs | `tests/stand_in_values.rs` |
+//! | a kept clone | a failed install throws away the clone it was installing into | `tests/base_retry.rs` |
+//! | a reason with every error | a tool fails and the message does not say what it wrote | `tests/base_retry.rs` |
+//! | a pin acted on | a host installs at a version the project did not ask for | `tests/base_pin.rs` |
 //!
 //! ## How the properties are asserted
 //!

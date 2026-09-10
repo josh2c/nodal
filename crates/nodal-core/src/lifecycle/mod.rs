@@ -173,14 +173,22 @@ impl core::fmt::Display for Resolution {
 
 /// Run a plan: apply every step, then write the registry rows in one transaction.
 ///
-/// A step that fails takes the operation with it: the steps already applied are undone,
-/// in reverse, and the failure is returned. The registry is untouched in that case,
-/// because the only write to it is the last thing that happens.
+/// A step that fails takes the operation with it, and what happens to the work already
+/// done is the plan's [`Recovery`] to say. A [`Recovery::RollBack`] plan has its
+/// applied steps undone, in reverse, and leaves nothing. A [`Recovery::Resume`] plan
+/// keeps them: it declares that its half-done state is harmless where it stands and
+/// expensive to make again, and undoing a base build's clone because the install after
+/// it failed is exactly the cost that declaration is about. The run is left in the
+/// journal as `failed`, with the failing step's own row holding what the step reported,
+/// so the attempt that comes next knows where to start and why.
+///
+/// The registry is untouched either way, because the only write to it is the last thing
+/// that happens.
 ///
 /// # Errors
-/// [`Error::OperationStep`] when a step failed and the earlier steps were undone,
-/// [`Error::OperationUndo`] when that undo also failed, and [`Error::Store`] when the
-/// journal or the final write could not be made.
+/// [`Error::OperationStep`] when a step failed, [`Error::OperationUndo`] when the undo
+/// that followed it also failed, and [`Error::Store`] when the journal or the final
+/// write could not be made.
 pub fn run(store: &mut Store, plan: &Plan) -> Result<Done> {
     let id = OperationId::from_ulid(ulid::Ulid::new());
     let owner = Owner::current();
@@ -195,13 +203,18 @@ pub fn run(store: &mut Store, plan: &Plan) -> Result<Done> {
                 outputs.record(step.key(), output);
             }
             Err(source) => {
-                undo_applied(store, id, plan)?;
-                return Err(Error::OperationStep {
+                let failure = Error::OperationStep {
                     operation: id,
                     kind: plan.kind,
                     key: step.key(),
                     source: Box::new(source),
-                });
+                };
+                if plan.recovery == Recovery::Resume {
+                    keep(store, id, (position, &step.key()), &failure)?;
+                    return Err(failure);
+                }
+                undo_applied(store, id, plan)?;
+                return Err(failure);
             }
         }
     }
@@ -212,6 +225,84 @@ pub fn run(store: &mut Store, plan: &Plan) -> Result<Done> {
             Err(source)
         }
     }
+}
+
+/// Write down what a failed step reported, and close the run as `failed`.
+///
+/// The step's row keeps its `applying` state, which is honest: the step was attempted
+/// and did not finish. What is added is its output — the rendered failure, which for a
+/// tool carries the tail of both of its streams. That is what a person is shown when
+/// the next attempt offers to carry on, and it is the only account of the failure that
+/// survives the process that saw it.
+fn keep(store: &mut Store, id: OperationId, step: (u32, &str), why: &Error) -> Result<()> {
+    let reported = serde_json::json!({ "failed": why.to_string() });
+    mark(store, id, step, StepState::Applying, Some(&reported))?;
+    close(store.conn(), id, KEPT_KIND, State::Failed)
+}
+
+/// What [`close`] is told an operation is when it is being kept rather than undone.
+/// The kind is only used to name an operation that has vanished from under us.
+const KEPT_KIND: &str = "operation";
+
+/// Carry on with a run that a failed step left behind.
+///
+/// The counterpart of [`resolve`] for a failure rather than a death. [`resolve`] acts
+/// on runs still marked `running`, whose process is gone; this acts on a run marked
+/// `failed`, whose process handled the failure and stopped. A person asked for this
+/// one: the step that failed is applied again, the steps after it follow, and the
+/// registry write ends it, exactly as a first run would have.
+///
+/// # Errors
+/// [`Error::OperationVanished`] when the run is no longer there to be reopened, and
+/// whatever the steps and the commit report.
+pub fn retry(store: &mut Store, id: OperationId, plan: &Plan) -> Result<Done> {
+    reopen(store.conn(), id, plan.kind)?;
+    let done = applied_keys(store, id)?;
+    let mut outputs = journal::outputs(store.conn(), id)?;
+    for (position, step) in plan.steps.iter().enumerate() {
+        let position = position_of(position)?;
+        if done.contains(&(position, step.key())) {
+            continue;
+        }
+        mark(store, id, (position, &step.key()), StepState::Applying, None)?;
+        match step.apply() {
+            Ok(output) => {
+                mark(store, id, (position, &step.key()), StepState::Applied, Some(&output))?;
+                outputs.record(step.key(), output);
+            }
+            Err(source) => {
+                let failure = Error::OperationStep {
+                    operation: id,
+                    kind: plan.kind,
+                    key: step.key(),
+                    source: Box::new(source),
+                };
+                keep(store, id, (position, &step.key()), &failure)?;
+                return Err(failure);
+            }
+        }
+    }
+    let committed = commit(store, id, plan, &outputs)?;
+    Ok(Done { id, outputs, committed })
+}
+
+/// Put a `failed` run back into `running`, under this process.
+///
+/// The owner is rewritten as well as the state. A run this process is now applying
+/// steps of must not read as one whose owner is gone, or [`resolve`] in a second
+/// `nodal` would take it over while the first is inside a step of it.
+fn reopen(conn: &rusqlite::Connection, id: OperationId, kind: &'static str) -> Result<()> {
+    let owner = Owner::current();
+    let changed = crate::store::row::write(
+        conn,
+        "UPDATE operation SET state = 'running', ended_at = NULL, host = ?, pid = ? \
+         WHERE id = ? AND state = 'failed'",
+        rusqlite::params![owner.host.as_str(), owner.pid, id.to_string()],
+    )?;
+    if changed == 1 {
+        return Ok(());
+    }
+    Err(Error::OperationVanished { operation: id, kind })
 }
 
 /// The registry rows and the record that the operation finished, written together.

@@ -22,7 +22,13 @@
 #     moves the home and still leaves the process running, and a sweep makes the same
 #     split;
 #   - doctor: the checkout, a worktree of that checkout that lives beside it rather than
-#     inside it, and the whole state directory are the same bytes afterwards.
+#     inside it, and the whole state directory are the same bytes afterwards;
+#   - a kept clone: an install that fails leaves the clone and the half-built base, and
+#     the attempt after it carries on with that one rather than cloning again;
+#   - a reason with every error: a failed install's message carries what the tool wrote
+#     on standard output as well as on standard error;
+#   - a pin acted on: a package-manager version the host cannot run is refused before
+#     the clone, with the tool and both versions named.
 #
 # The suite is then run a second time with the temporary directory reached through a
 # symbolic link, as `ci/acceptance-list.sh` and `ci/acceptance-doctor.sh` do and for the
@@ -45,4 +51,5 @@ mkdir -p "$work/real"
 ln -s "$work/real" "$work/by-another-name"
 TMPDIR="$work/by-another-name" cargo test --locked -p nodal-safety -- --nocapture
 
-echo "acceptance (safety): two units of one project cannot reach each other, under a linked path too"
+echo "acceptance (safety): two units of one project cannot reach each other, under a linked path too;"
+echo "acceptance (safety): a failed base build keeps its clone and says why it failed"
