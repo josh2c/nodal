@@ -15,8 +15,8 @@ use crate::store::row;
 const TABLE: &str = "trash";
 
 /// Every column [`decode`] reads.
-const COLUMNS: &str =
-    "environment_id, unit_id, project_id, slug, home, path, snapshot, trashed_at, expires_at";
+const COLUMNS: &str = "environment_id, unit_id, project_id, slug, home, path, snapshot, \
+                       pruned_bytes, trashed_at, expires_at";
 
 /// Record a reclaimed home.
 ///
@@ -30,10 +30,10 @@ pub fn insert(conn: &Connection, entry: &Trashed) -> Result<()> {
     row::write(
         conn,
         "INSERT INTO trash (environment_id, unit_id, project_id, slug, home, path, snapshot, \
-         trashed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         pruned_bytes, trashed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT (environment_id) DO UPDATE SET path = excluded.path, \
-         snapshot = excluded.snapshot, trashed_at = excluded.trashed_at, \
-         expires_at = excluded.expires_at",
+         snapshot = excluded.snapshot, pruned_bytes = excluded.pruned_bytes, \
+         trashed_at = excluded.trashed_at, expires_at = excluded.expires_at",
         params![
             entry.environment_id.to_string(),
             entry.unit_id.to_string(),
@@ -42,6 +42,7 @@ pub fn insert(conn: &Connection, entry: &Trashed) -> Result<()> {
             row::path_of(&entry.home)?,
             row::path_of(&entry.path)?,
             entry.snapshot.as_deref(),
+            stored(entry.pruned_bytes),
             entry.trashed_at.unix_seconds(),
             entry.expires_at.unix_seconds(),
         ],
@@ -103,6 +104,17 @@ pub fn remove(conn: &Connection, environment_id: EnvId) -> Result<bool> {
     Ok(removed == 1)
 }
 
+/// A byte count as SQLite holds whole numbers, which is a signed sixty-four bit
+/// integer.
+///
+/// A figure past that is eight exabytes of build output, which no home has and no
+/// filesystem Nodal runs on would report. It is written as the largest number the
+/// column holds rather than refused, because the size of what a prune dropped is not a
+/// reason to fail the transaction that records where a person's home went.
+fn stored(bytes: u64) -> i64 {
+    i64::try_from(bytes).unwrap_or(i64::MAX)
+}
+
 /// Turn a row into an entry.
 fn decode(row: &Row<'_>) -> Result<Trashed> {
     Ok(Trashed {
@@ -113,6 +125,7 @@ fn decode(row: &Row<'_>) -> Result<Trashed> {
         home: row::path(row, TABLE, "home")?,
         path: row::path(row, TABLE, "path")?,
         snapshot: row::plain::<Option<String>>(row, TABLE, "snapshot")?,
+        pruned_bytes: row::number::<u64>(row, TABLE, "pruned_bytes")?,
         trashed_at: row::stamp(row, TABLE, "trashed_at")?,
         expires_at: row::stamp(row, TABLE, "expires_at")?,
     })

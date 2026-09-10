@@ -240,6 +240,51 @@ pub struct Note {
     pub why: String,
 }
 
+/// What the trash under the state root holds: homes a reclaim took away and `gc` has
+/// not removed yet.
+///
+/// A reclaimed home is the one thing in a doctor report that is there because somebody
+/// asked for it, so it is a fact in the header and never a finding. The figure is what
+/// the trash holds now, after reclaim dropped the build output and the installed
+/// dependencies from each home on its way in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Trash {
+    /// How many reclaimed homes are in it.
+    pub homes: usize,
+    /// What they hold, as the sum of the files under them.
+    pub bytes: u64,
+    /// Whether every entry was read. `false` means the figure is a floor.
+    pub complete: bool,
+}
+
+impl Default for Trash {
+    /// An empty trash that was read in full, which is what a machine with no reclaimed
+    /// home has.
+    fn default() -> Self {
+        Self { homes: 0, bytes: 0, complete: true }
+    }
+}
+
+impl Trash {
+    /// The header line: how many homes and how much disk, or that there are none.
+    #[must_use]
+    pub fn line(&self) -> String {
+        if self.homes == 0 {
+            return String::from("no reclaimed home is waiting for gc");
+        }
+        let size = if self.complete {
+            human::bytes(self.bytes)
+        } else {
+            format!("{}+", human::bytes(self.bytes))
+        };
+        format!(
+            "{} reclaimed {} holding {size}",
+            self.homes,
+            if self.homes == 1 { "home" } else { "homes" }
+        )
+    }
+}
+
 /// What a machine has left behind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Doctor {
@@ -261,6 +306,9 @@ pub struct Doctor {
     pub here: Vec<Finding>,
     /// What belongs to another project, largest first. Names and sizes only.
     pub elsewhere: Vec<Finding>,
+    /// What the trash under the state root holds.
+    #[serde(default)]
+    pub trash: Trash,
     /// The local branches of this checkout that no worktree has checked out.
     #[serde(default)]
     pub branches: Branches,
@@ -282,7 +330,13 @@ impl Render for Doctor {
 
     fn doc(&self) -> Doc {
         let mut doc = Doc::new();
-        doc.push(Block::fields(vec![Field::new("state root", self.state_root_line())]).at(0));
+        doc.push(
+            Block::fields(vec![
+                Field::new("state root", self.state_root_line()),
+                Field::new("trash", self.trash.line()),
+            ])
+            .at(0),
+        );
         doc.push(Block::blank());
         doc.push(Block::fields(vec![Field::new("this project", self.subject())]).at(0));
         doc.push(section(&self.here, &HERE, "nothing of this project is left behind"));
@@ -448,7 +502,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        BranchRow, Branches, CLOSING, Checkout, Doctor, Finding, Kind, Note, Standing, shorten,
+        BranchRow, Branches, CLOSING, Checkout, Doctor, Finding, Kind, Note, Standing, Trash,
+        shorten,
     };
     use crate::model::Timestamp;
     use crate::output::Render;
@@ -478,6 +533,7 @@ mod tests {
             branches: branches(),
             state_root: PathBuf::from("/home/j/.nodal"),
             sharing: Some(sharing(Shares::Yes)),
+            trash: Trash { homes: 2, bytes: 1_400_000_000, complete: true },
             notes: vec![Note {
                 source: String::from("docker"),
                 why: String::from("docker is not installed"),

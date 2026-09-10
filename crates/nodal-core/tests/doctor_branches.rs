@@ -192,6 +192,7 @@ fn report(branches: Branches, expand: bool) -> String {
         sharing: Sharing::read(&std::env::temp_dir()),
         here: Vec::new(),
         elsewhere: Vec::new(),
+        trash: nodal_core::output::view::doctor::Trash::default(),
         branches: Branches { expand, ..branches },
         notes: Vec::new(),
     };

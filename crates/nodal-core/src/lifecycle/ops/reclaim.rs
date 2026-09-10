@@ -131,7 +131,7 @@ use crate::runtime::stop::{self, Signals as _, Stopped, Target};
 use crate::services::docker;
 use crate::services::ports::{self, Released};
 use crate::store::{Store, environments, events, sessions, trash, units};
-use crate::workspace::home;
+use crate::workspace::{home, prune};
 use crate::{Error, Result};
 
 /// What this operation is called in the journal.
@@ -141,6 +141,10 @@ pub const KIND: &str = "reclaim";
 /// teardown could not stop decides which session rows stay open, so the step that finds
 /// out and the write that acts on it name the same string.
 const TEARDOWN: &str = "runtime.stop";
+
+/// The key of the step that takes the build output out of the trashed copy. The
+/// registry write reads it: what the prune dropped is recorded on the trash row.
+const PRUNE: &str = "home.prune";
 
 /// The message a forced reclaim's snapshot commit carries.
 const SNAPSHOT_MESSAGE: &str = "nodal: work in progress at reclaim";
@@ -204,7 +208,7 @@ pub fn reclaim(store: &mut Store, request: &Request) -> Result<Reclaimed> {
     // Before the home moves, because the remote is reached through the repository in
     // it, and after the hook, because a hook that refuses stops the reclaim and nothing
     // should have left this machine by then.
-    let pruned = prune(store.conn(), params)?;
+    let pruned = prune_refs(store.conn(), params)?;
     let done = run(store, &plan(params)?)?;
     hooks_ran.extend(prepared.hook(Phase::PostReclaim, prepared.after())?);
     report(&prepared, &done, hooks_ran, pruned, verify(store, params)?)
@@ -224,7 +228,7 @@ pub fn reclaim(store: &mut Store, request: &Request) -> Result<Reclaimed> {
 ///
 /// # Errors
 /// [`Error::Store`] when the registry could not be read.
-fn prune(conn: &Connection, params: &Params) -> Result<Option<Pruned>> {
+fn prune_refs(conn: &Connection, params: &Params) -> Result<Option<Pruned>> {
     if !was_pushed(conn, params.unit.id)? {
         return Ok(None);
     }
@@ -294,13 +298,15 @@ pub fn plan(params: &Params) -> Result<Plan> {
         }
         return Ok(plan.then(Unadopt { home: params.environment.home.clone() }));
     };
-    Ok(plan.then(TrashHome {
-        slug: params.unit.slug.clone(),
-        unit: params.unit.id,
-        home: entry.home.clone(),
-        path: entry.path.clone(),
-        force: params.force,
-    }))
+    Ok(plan
+        .then(TrashHome {
+            slug: params.unit.slug.clone(),
+            unit: params.unit.id,
+            home: entry.home.clone(),
+            path: entry.path.clone(),
+            force: params.force,
+        })
+        .then(TrashPrune { path: entry.path.clone() }))
 }
 
 /// The registry write that finishes a reclaim.
@@ -316,6 +322,7 @@ fn commit_of(params: &Params) -> Commit {
     Box::new(move |tx: &Transaction<'_>, outputs: &Outputs| -> Result<Output> {
         let now = Timestamp::now();
         let given = ports::release(tx, environment.id)?;
+        let pruned: prune::Report = outputs.read(PRUNE)?.unwrap_or_default();
         let standing = still_standing(outputs.read::<Teardown>(TEARDOWN)?.as_ref());
         for session in sessions::list_open(tx, environment.id)? {
             if session.pgid.is_some_and(|pgid| standing.contains(&pgid)) {
@@ -325,6 +332,7 @@ fn commit_of(params: &Params) -> Commit {
         }
         environments::update_state(tx, environment.id, EnvState::Absent, now)?;
         units::update_status(tx, unit.id, UnitStatus::Archived, now)?;
+        let entry = entry.clone().map(|entry| Trashed { pruned_bytes: pruned.bytes, ..entry });
         if let Some(entry) = &entry {
             trash::insert(tx, entry)?;
         }
@@ -637,6 +645,53 @@ impl TrashHome {
     }
 }
 
+/// Take the build output and the installed dependencies out of the trashed copy.
+///
+/// The step is after the move and not before it, and that is the whole design. Before
+/// the move, this directory is the home a person is working in and its warm build is
+/// theirs; after it, the same directory is a copy nothing will ever build in again and
+/// the same content is thirteen gigabytes held for a fortnight. So the prune acts on
+/// the trash path, and a reclaim that was refused at the move leaves a home with
+/// everything in it.
+///
+/// What it may remove is settled twice over ([`prune`]): an ignore rule has to cover
+/// the directory, which is what keeps every tracked path out of reach, and the
+/// exclusion table has to call it regenerable, which is what keeps a person's local
+/// state in the trash.
+struct TrashPrune {
+    /// The trashed home, which is where the copy is now.
+    path: PathBuf,
+}
+
+impl Step for TrashPrune {
+    fn key(&self) -> String {
+        String::from(PRUNE)
+    }
+
+    /// Repeatable: a second run finds nothing an ignore rule covers that the table
+    /// calls regenerable, and removes nothing.
+    ///
+    /// It never fails. A trashed home that is not a repository, a listing that could
+    /// not be made and a removal that was refused are each a note on the report, for
+    /// the reason a failure here would be worse than the state it complains about: the
+    /// home has already moved, and the operation's only other answer would be to undo
+    /// that move and leave the unit live because a build directory would not go.
+    fn apply(&self) -> Result<Output> {
+        let report = prune::sweep(&self.path);
+        serde_json::to_value(report).map_err(|source| Error::Render { kind: "trash prune", source })
+    }
+
+    /// Nothing, and the reason is worth stating because this step is destructive.
+    ///
+    /// Everything it removed is state a tool writes again from the tree that is still
+    /// there, so a reclaim rolled back after this one leaves the person their home with
+    /// a cold build in it. Nothing that was only in this home is gone: the uniqueness
+    /// check ran before any of it, and an ignore rule covered every path this touched.
+    fn undo(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
 /// Take an adopted checkout back out of Nodal: the files it wrote there, and the rules
 /// it added to the repository's own exclude file.
 ///
@@ -852,6 +907,7 @@ fn trashed(
         home: home.clone(),
         path: home::trashed(&home::directory()?, &project.name, environment.id),
         snapshot,
+        pruned_bytes: 0,
         trashed_at: at,
         expires_at: expiry(at, recipe.trash_retention_days()),
     }))
@@ -990,6 +1046,7 @@ fn report(
 ) -> Result<Reclaimed> {
     let params = &prepared.params;
     let torn: Teardown = done.outputs.read(TEARDOWN)?.unwrap_or_default();
+    let trimmed: prune::Report = done.outputs.read(PRUNE)?.unwrap_or_default();
     let released: Released = serde_json::from_value(done.committed.clone())
         .map_err(|_| Error::InvalidValue { kind: "released ports", value: KIND.to_owned() })?;
     let (leftovers, mut notes) = verified;
@@ -1008,7 +1065,11 @@ fn report(
         stopped: torn.stopped,
         containers: torn.containers,
         released,
-        trashed: params.entry.clone(),
+        trashed: params
+            .entry
+            .as_ref()
+            .map(|entry| Trashed { pruned_bytes: trimmed.bytes, ..entry.clone() }),
+        trimmed,
         pruned,
         root: root_of(params),
         hooks,

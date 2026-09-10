@@ -20,6 +20,12 @@
 //! the content that recorded the path it was made at, and it runs once the copy is
 //! there.
 //!
+//! A copy stops being worth its disk. [`prune`] is what a reclaimed home loses on its
+//! way to the trash: the build output and the installed dependencies it was keeping
+//! warm, which nothing will ever read again and which a tool writes again in minutes.
+//! It removes only what an ignore rule covers and only what the exclusion table calls
+//! regenerable, so the trash keeps every file that holds work.
+//!
 //! A copy also has to be taken away again. [`remove`] is how, and it is one function
 //! for every tree Nodal owns: a base holds content written read-only, so a home cloned
 //! from one holds it too, and a removal that cannot open a read-only directory leaves a
@@ -34,6 +40,7 @@ pub mod copy;
 pub mod exclude;
 pub mod home;
 pub mod meta;
+pub mod prune;
 pub mod reflink;
 pub mod relocate;
 pub mod remove;

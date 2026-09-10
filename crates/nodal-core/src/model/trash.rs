@@ -38,6 +38,15 @@ pub struct Trashed {
     /// The ref a `--force` reclaim committed the work to, inside the trashed
     /// repository. `None` when the home was clean and nothing had to be preserved.
     pub snapshot: Option<String>,
+    /// What the prune dropped from the copy on its way in: the build output and the
+    /// installed dependencies the home was keeping warm, in bytes.
+    ///
+    /// Zero is the honest answer for a home that held none, for one an ignore rule
+    /// covered none of, and for a row written before Nodal pruned anything at all.
+    /// Defaulted on the way in for that last case: a journalled reclaim from an older
+    /// Nodal has no such field and still has to be rebuilt and finished.
+    #[serde(default)]
+    pub pruned_bytes: u64,
     /// When it was moved.
     pub trashed_at: Timestamp,
     /// The first instant `nodal gc` may remove it.

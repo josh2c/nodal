@@ -424,6 +424,16 @@ impl Git {
         ignored::directories(&self.root)
     }
 
+    /// Everything Git's ignore rules cover, relative to this checkout, files as well as
+    /// directories.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git ls-files` failed, [`Error::GitEncoding`] when a path is
+    /// not UTF-8.
+    pub fn ignored_entries(&self) -> Result<Vec<ignored::Entry>> {
+        ignored::entries(&self.root)
+    }
+
     /// When HEAD was committed, as seconds since the epoch. `None` when there is no
     /// commit.
     ///

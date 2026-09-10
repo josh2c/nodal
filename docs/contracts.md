@@ -749,7 +749,26 @@ a reclaim ends a unit on this machine whatever a remote says.
 
 A reclaim stops the unit's tethered process groups before it stops anything else. It gives back the
 unit's ports and leases in the transaction that records the reclaim. It moves the home to `<state>/<project>/trash/<id>`, under the name the
-home had. It then reads back everything the unit had, by identifier, and reports what is still
+home had.
+
+**The trash holds the home without its build output and dependencies.** Once the home is in the
+trash, reclaim removes the generated state from the copy. A directory goes only when both things
+are true of it: an ignore rule covers it, and Nodal's exclusion table calls it regenerable. The
+first is read from `git ls-files --others`, so a path any commit holds is never a candidate, and a
+project that commits a `dist` directory keeps it. The second is the same table that decides what a
+clone carries: `target`, `node_modules`, `.venv`, `.next`, `dist`, `build`, `.turbo` and the rest of
+the rows a tool writes again.
+
+Everything else stays. An ignore rule covers a `.env.local` and a local database file too, and no
+tool writes those again, so the trash keeps them and the reclaim report names them under **local
+state kept in the trash**. The report says how many bytes were dropped, and the trash row records
+the same figure. A trashed home that is not a repository, a listing that could not be made and a
+removal that was refused are each a note in the report. None of them fails the reclaim: the home has
+already moved, and a build directory that would not go is not a reason to put a person's home back.
+
+`nodal doctor` counts the trash in its header: how many reclaimed homes are waiting for `gc`, and
+what they hold. It reads the directories and not the registry, so a machine whose registry this
+Nodal will not open still gets the figure. It then reads back everything the unit had, by identifier, and reports what is still
 there. It does not claim that the machine is clean.
 
 Nodal never trashes two things. A checkout adopted in place is unregistered, and the directory
