@@ -9,7 +9,6 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use crate::lifecycle::guard;
 use crate::output::view::machine::Skip;
 
 /// How many directory levels the walk descends from a root when the caller does not say.
@@ -56,7 +55,7 @@ pub fn walk(roots: &[PathBuf], depth: usize, avoid: &[Avoid]) -> Found {
     let mounts = Mounts::load();
     let mut found = Found::default();
     for root in roots {
-        let root = guard::resolve(root);
+        let root = resolve(root);
         let mut walker = Walker { depth, avoid, mounts: &mounts, found: &mut found };
         walker.root(&root);
     }
@@ -103,7 +102,7 @@ impl Walker<'_> {
             children.push(entry.path());
         }
         if git {
-            self.found.repositories.push(guard::resolve(path));
+            self.found.repositories.push(resolve(path));
             return;
         }
         if depth >= self.depth {
@@ -137,7 +136,7 @@ impl Walker<'_> {
 
     /// Whether `path` is an avoided directory, and record it when it is.
     fn skip(&mut self, path: &Path) -> bool {
-        let resolved = guard::resolve(path);
+        let resolved = resolve(path);
         let Some(avoid) = self.avoid.iter().find(|avoid| is_under(&resolved, &avoid.path)) else {
             return false;
         };
@@ -149,6 +148,11 @@ impl Walker<'_> {
 /// Whether `path` is `parent` or a directory under it.
 fn is_under(path: &Path, parent: &Path) -> bool {
     path == parent || path.starts_with(parent)
+}
+
+/// The path the filesystem uses, when it can be read.
+pub(super) fn resolve(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// The device number of a path, when metadata can be read.

@@ -12,7 +12,6 @@ use crate::Result;
 use crate::doctor::origin::normalize;
 use crate::doctor::scan::{self, Avoid};
 use crate::doctor::{Registry, inspect};
-use crate::lifecycle::guard;
 use crate::model::Timestamp;
 use crate::output::view::doctor::Note;
 use crate::output::view::machine::{CloneRow, Group, IgnoredDir, MachineReport, Skip, Walked};
@@ -44,7 +43,7 @@ pub fn survey(
     let started = Instant::now();
     let (avoid, mut skipped) = avoid_of(registry, request)?;
     skipped.extend(registry.note().into_iter().map(note_as_skip));
-    let roots: Vec<PathBuf> = request.roots.iter().map(|root| guard::resolve(root)).collect();
+    let roots: Vec<PathBuf> = request.roots.iter().map(|root| scan::resolve(root)).collect();
     let found = scan::walk(&roots, request.depth, &avoid);
     skipped.extend(found.skipped);
     let mut entries = found.entries;
@@ -72,13 +71,13 @@ pub fn survey(
 /// The directories the walk must not enter, and skips that are known before the walk.
 fn avoid_of(registry: &Registry<'_>, request: &Request<'_>) -> Result<(Vec<Avoid>, Vec<Skip>)> {
     let mut avoid = vec![Avoid {
-        path: guard::resolve(request.state_dir),
+        path: scan::resolve(request.state_dir),
         why: String::from("nodal's state directory"),
     }];
     if let Some(conn) = registry.connection() {
         for environment in environments::list_all(conn)? {
             avoid.push(Avoid {
-                path: guard::resolve(&environment.home),
+                path: scan::resolve(&environment.home),
                 why: String::from("a unit's home"),
             });
         }

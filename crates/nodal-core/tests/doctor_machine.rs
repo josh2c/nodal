@@ -88,6 +88,10 @@ fn clone(root: &Path, remote: &Path, name: &str) -> PathBuf {
 }
 
 /// Name, size and modification time of every path under `root`.
+fn real(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap()
+}
+
 fn is_registry(relative: &Path) -> bool {
     relative
         .file_name()
@@ -129,9 +133,14 @@ fn three_clones_of_one_remote_are_one_group() {
     assert_eq!(group.dirty, 1, "{group:?}");
     assert_eq!(group.unpushed, 1, "{group:?}");
     assert!(!group.nothing_unique, "{group:?}");
-    assert!(group.repositories.iter().any(|row| row.path == planted.clean));
-    assert!(group.repositories.iter().any(|row| row.path == planted.unpushed && row.unpushed == 1));
-    assert!(group.repositories.iter().any(|row| row.path == planted.dirty && row.dirty > 0));
+    assert!(group.repositories.iter().any(|row| row.path == real(&planted.clean)));
+    assert!(
+        group
+            .repositories
+            .iter()
+            .any(|row| row.path == real(&planted.unpushed) && row.unpushed == 1)
+    );
+    assert!(group.repositories.iter().any(|row| row.path == real(&planted.dirty) && row.dirty > 0));
     assert!(
         group.ignored.iter().any(|dir| dir.path == "build" && dir.bytes >= 4096),
         "ignored directories: {:?}",
@@ -146,10 +155,10 @@ fn a_clone_with_no_remote_is_its_own_group_named_by_path() {
     let lone = report
         .groups
         .iter()
-        .find(|group| group.repositories.iter().any(|row| row.path == planted.lone))
+        .find(|group| group.repositories.iter().any(|row| row.path == real(&planted.lone)))
         .expect("the clone with no remote");
     assert_eq!(lone.clones, 1, "{lone:?}");
-    assert_eq!(lone.name, planted.lone.display().to_string());
+    assert_eq!(lone.name, real(&planted.lone).display().to_string());
 }
 
 #[test]
@@ -163,7 +172,10 @@ fn the_state_directory_is_skipped_even_when_it_holds_a_repository() {
 
     let report = planted.report();
     assert!(
-        !report.groups.iter().any(|group| group.repositories.iter().any(|row| row.path == hidden)),
+        !report
+            .groups
+            .iter()
+            .any(|group| group.repositories.iter().any(|row| row.path == real(&hidden))),
         "{report:?}"
     );
     assert!(
