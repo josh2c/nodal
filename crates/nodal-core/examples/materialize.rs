@@ -4,7 +4,11 @@
 //!
 //! The clone applies the default exclusion list. Every path after the destination is
 //! added to it, which is what a recipe's `base.exclude` does. The example prints one
-//! JSON object: which backend ran, how long the clone took, and what it holds.
+//! JSON object: which backend ran, how many workers it ran on, how long the clone took,
+//! and what it holds.
+//!
+//! `NODAL_MATERIALIZE_WORKERS` sets the worker count, as it does for `nodal new`. That
+//! is how `ci/measure-materialize.sh` reads the curve.
 //!
 //! `nodal new` will do this as one step of an operation. Until that command exists,
 //! this is how the backends are run outside a test, and it is what
@@ -15,7 +19,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use nodal_core::workspace::sharing::Sharing;
-use nodal_core::workspace::{Excludes, Report, home, select_backend};
+use nodal_core::workspace::{Excludes, Report, home, select_backend, tree};
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -45,14 +49,18 @@ fn main() -> ExitCode {
 fn clone(source: &Path, destination: &Path, recipe: &[PathBuf]) -> nodal_core::Result<String> {
     let backend = select_backend(&Sharing::ensure(&home::directory()?));
     let exclude = Excludes::with_recipe(recipe);
+    let workers = tree::workers();
     let started = Instant::now();
-    let report = backend.clone_tree(source, destination, &exclude)?;
+    let report = backend.clone_tree_on(source, destination, &exclude, workers)?;
     let elapsed = started.elapsed();
-    Ok(render(backend.name(), elapsed.as_secs_f64(), &report))
+    Ok(render(backend.name(), workers, elapsed.as_secs_f64(), &report))
 }
 
-/// One line of JSON: the backend, the seconds it took, and the report.
-fn render(backend: &str, seconds: f64, report: &Report) -> String {
+/// One line of JSON: the backend, the workers it ran on, the seconds it took, and the
+/// report.
+fn render(backend: &str, workers: usize, seconds: f64, report: &Report) -> String {
     let report = serde_json::to_string(report).unwrap_or_else(|_| String::from("{}"));
-    format!("{{\"backend\":\"{backend}\",\"seconds\":{seconds:.4},\"report\":{report}}}")
+    format!(
+        "{{\"backend\":\"{backend}\",\"workers\":{workers},\"seconds\":{seconds:.4},\"report\":{report}}}"
+    )
 }

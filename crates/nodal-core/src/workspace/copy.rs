@@ -40,8 +40,14 @@ impl Materializer for CopyFallback {
         ))
     }
 
-    fn clone_tree(&self, source: &Path, destination: &Path, exclude: &Excludes) -> Result<Report> {
-        materialize(source, destination, exclude, Ops { file: put })
+    fn clone_tree_on(
+        &self,
+        source: &Path,
+        destination: &Path,
+        exclude: &Excludes,
+        workers: usize,
+    ) -> Result<Report> {
+        materialize(source, destination, exclude, Ops { file: put }, workers)
     }
 }
 

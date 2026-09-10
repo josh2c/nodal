@@ -119,13 +119,34 @@ pub trait Materializer {
     /// filesystem that will not share blocks from a directory it could not write in.
     fn clone_probe(&self, source: &Path, destination: &Path) -> std::io::Result<()>;
 
-    /// Copy the tree at `source` into `destination`, leaving out what `exclude` names.
+    /// Copy the tree at `source` into `destination`, leaving out what `exclude` names,
+    /// on `workers` workers.
+    ///
+    /// The result does not depend on the count: the same tree, byte for byte, with the
+    /// same report, at every number of workers. [`tree::materialize`] says how, and
+    /// `tests/safety/tests/clone_identity.rs` asserts it.
     ///
     /// # Errors
     /// [`crate::Error::MaterializeDestination`] when the destination cannot be used,
     /// [`crate::Error::MaterializeUnsupported`] when this backend does not work there,
     /// [`crate::Error::Io`] when an entry could not be read or written.
-    fn clone_tree(&self, source: &Path, destination: &Path, exclude: &Excludes) -> Result<Report>;
+    fn clone_tree_on(
+        &self,
+        source: &Path,
+        destination: &Path,
+        exclude: &Excludes,
+        workers: usize,
+    ) -> Result<Report>;
+
+    /// The same copy, on the worker count [`tree::workers`] gives this machine.
+    ///
+    /// Every caller but a measurement and the identity test uses this one.
+    ///
+    /// # Errors
+    /// As [`Materializer::clone_tree_on`].
+    fn clone_tree(&self, source: &Path, destination: &Path, exclude: &Excludes) -> Result<Report> {
+        self.clone_tree_on(source, destination, exclude, tree::workers())
+    }
 }
 
 /// The backends, in the order they are tried. This is the only list of them.
