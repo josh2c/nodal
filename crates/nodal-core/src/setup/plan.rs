@@ -9,8 +9,9 @@
 //!
 //! - the block in a start-up file, per shell that has one ([`super::rc`]);
 //! - the shell script in the state directory, per shell that has one ([`super::shims`]);
-//! - the hooks in a `.claude/settings.json`, per project the registry knows and per unit
-//!   home it made ([`crate::adapters::claude_code`]). Those live in somebody's
+//! - the hooks in a `.claude/settings.json`: the person's own file, then one per project
+//!   the registry knows, then one per unit home it made
+//!   ([`crate::adapters::claude_code`]). Those live in somebody's
 //!   repository rather than on their machine, so they are removed the way they were
 //!   added: what Nodal wrote and nothing else. The homes are surveyed because a home
 //!   carries a settings file of its own — it is what makes the session's observers fire
@@ -249,8 +250,14 @@ fn claude_items(request: &Request, items: &mut Vec<Item>, notes: &mut Vec<String
 
 /// Every settings file that holds Nodal's hooks, over every directory Nodal can name.
 ///
-/// The project roots and the unit homes, in that order, and the two are not treated
-/// alike.
+/// The person's own file, then the project roots, then the unit homes, and the three are
+/// not treated alike.
+///
+/// The **person's own file** is where `nodal init --claude-hooks` writes by default. It
+/// is under their own directory and no registry knows about it, so it is looked for by
+/// path rather than found: [`settings::user_path`], which reads Claude Code's own
+/// variable for a person who moved that directory. It is removed the way a project's is,
+/// which is what leaves the file byte for byte the file it was.
 ///
 /// In a **project**, `nodal init` wrote the hooks into the person's own file, committed
 /// or not, and an uninstall takes back exactly what that install put in.
@@ -263,6 +270,7 @@ fn claude_items(request: &Request, items: &mut Vec<Item>, notes: &mut Vec<String
 /// the list, so nothing is missed by leaving the clones alone.
 fn settings_files(request: &Request, notes: &mut Vec<String>) -> Result<Vec<Item>> {
     let mut found = Vec::new();
+    found.extend(hooked(&settings::user_path(&request.home), notes));
     for root in project_roots(&request.state, request.project.as_deref())? {
         found.extend(hooked(&settings::path(&root), notes));
     }

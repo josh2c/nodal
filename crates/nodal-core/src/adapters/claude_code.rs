@@ -71,10 +71,19 @@
 //! `WorktreeCreate` is the one hook that can end a session. Claude reads one line of
 //! standard output and treats it as the directory to work in; empty output, or output
 //! that is not an absolute path, is fatal. So this hook has exactly one good answer and
-//! one bad one, and the bad one is deliberate: when Nodal cannot make a unit it prints
+//! one bad one, and the bad one is deliberate: when Nodal cannot answer at all it prints
 //! [`REFUSED`] — a relative path with a dot segment in it, which Claude will not accept
-//! — and says why on standard error. A person then reads one sentence about a missing
-//! `nodal.toml` instead of watching a session end for no stated reason.
+//! — and says why on standard error. A person then reads one sentence instead of
+//! watching a session end for no stated reason.
+//!
+//! **A project with no recipe is not one of those cases.** The hooks go in the person's
+//! own settings by default, so this hook fires in every project on the machine and most
+//! of them are not Nodal projects. Ending a session in each of them would make the
+//! integration unusable. So [`default_worktree`] makes the worktree Claude Code would
+//! have made for itself, under the project's `.claude/worktrees`, and answers with it.
+//! Nodal registers nothing there: no unit, no environment, no event. A directory that is
+//! not in a Git repository has no worktree to make, and the session is answered with the
+//! directory it is already in.
 //!
 //! [`acceptable`] is the same rule read from Nodal's side: what this hook prints is
 //! checked before it is printed, so a home that is somehow not an absolute path is a
@@ -104,7 +113,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::adapters::settings::{self, Hook};
+use crate::adapters::settings::{self, Hook, Scope};
 use crate::env::files;
 use crate::lifecycle::marker;
 use crate::lifecycle::ops::new::{self, Request};
@@ -127,6 +136,19 @@ pub const REFUSED: &str = "./nodal-worktree-create-refused";
 ///
 /// It is the table's ([`files::WRITTEN`]), read rather than written again here.
 pub const EXCLUDE: &str = "/.claude/settings.json";
+
+/// Where Claude Code keeps the worktrees it makes for itself, under a project root.
+///
+/// It is Claude Code's path, not Nodal's. The provider hook answers with a directory
+/// under it in a project Nodal has no recipe for, so `claude --worktree` puts the
+/// session exactly where it would have been with no hook installed at all.
+pub const DEFAULT_WORKTREES: &str = ".claude/worktrees";
+
+/// The handle such a worktree gets when the payload carried none Nodal could read.
+const UNNAMED: &str = "session";
+
+/// How many names are tried before the provider says the directory is full.
+const NAMES: usize = 100;
 
 /// The name of the provider event.
 pub const WORKTREE_CREATE: &str = "WorktreeCreate";
@@ -271,10 +293,11 @@ pub fn acceptable(path: &Path) -> bool {
 
 /// `WorktreeCreate`: make the unit Claude is about to work in, and answer with its home.
 ///
-/// The project is the directory the payload names. It must have a recipe: a project
-/// nobody has run `nodal init` in has nothing to say about how a home is built, and
-/// guessing at that moment would put an agent in a directory that cannot run the
-/// project's tests.
+/// The project is the directory the payload names. A unit is made only where there is a
+/// recipe: a project nobody has run `nodal init` in has nothing to say about how a home
+/// is built, and guessing at that moment would put an agent in a directory that cannot
+/// run the project's tests. Such a project gets Claude Code's own worktree instead
+/// ([`default_worktree`]), because a refusal there ends the session.
 ///
 /// A request made from inside a unit home is answered with that home, and creates
 /// nothing. See the module note.
@@ -286,15 +309,15 @@ pub fn acceptable(path: &Path) -> bool {
 /// fail the create.
 ///
 /// # Errors
-/// [`Error::InvalidValue`] when the project has no recipe or the home that was made is
-/// not a path Claude would accept, and whatever the create itself reported.
+/// [`Error::InvalidValue`] when the directory that was made is not a path Claude would
+/// accept, and whatever the create or the worktree itself reported.
 pub fn worktree_create(store: &mut Store, payload: &Payload) -> Result<PathBuf> {
     let root = project_root(payload);
     if let Some((home, _)) = new::containing_home(store.conn(), &root)? {
         return answer(home);
     }
     if !recipe::load(&root)?.written {
-        return Err(no_recipe(&root));
+        return default_worktree(&root, payload);
     }
     let request = Request {
         source: root.clone(),
@@ -429,15 +452,16 @@ pub fn carry_settings(
 /// The one thing to say about a settings file that declares none of Nodal's hooks.
 ///
 /// It is one sentence about a consequence and one about what to do, and what to do is
-/// not `nodal init --claude-hooks`: that writes the hooks into the project's working
-/// file, which changes nothing for a home whose copy came from a commit. The two things
-/// that do work are committing the hooks, so the next clone carries them, and putting
-/// them in the settings Claude Code reads for every project.
+/// not `--claude-hooks=project`: that writes the hooks into the project's working file,
+/// which changes nothing for a home whose copy came from a commit. The two things that
+/// do work are committing the hooks, so the next clone carries them, and putting them in
+/// the settings Claude Code reads for every project, which is what `nodal init
+/// --claude-hooks` writes.
 fn hookless() -> String {
     format!(
         "{} in this home declares none of nodal's hooks, so nothing observes this session \
          starting or stopping and this unit records only what a command writes. Commit the \
-         hooks, or install them in your own settings.",
+         hooks, or run `nodal init --claude-hooks` to put them in your own settings.",
         settings::FILE
     )
 }
@@ -606,13 +630,76 @@ fn refusal(why: String) -> Error {
     Error::InvalidValue { kind: "claude code worktree", value: why }
 }
 
-/// The refusal a project with no recipe gets, in the words a person can act on.
-fn no_recipe(root: &Path) -> Error {
-    refusal(format!(
-        "{} has no {}; run `nodal init` there before Claude Code makes a unit in it",
-        root.display(),
+/// The directory a session gets in a project Nodal knows nothing about.
+///
+/// The hooks live in the person's own settings file, so this hook fires in every
+/// project on the machine and most of them are not Nodal projects. A refusal there
+/// would end the session, which is the fault this path exists to prevent. So Nodal
+/// makes the worktree Claude Code would have made for itself, in the directory Claude
+/// Code uses ([`DEFAULT_WORKTREES`]), and answers with it. Nothing is registered: no
+/// unit, no environment, no event. Nodal made a directory and stepped out of the way.
+///
+/// A directory that is not in a Git repository has no worktree to make. The session is
+/// answered with the directory it is already in, which is where a session started
+/// without `--worktree` would have run anyway.
+///
+/// # Errors
+/// [`Error::InvalidValue`] when no free name was found, when the directory cannot be
+/// named absolutely, and whatever `git worktree add` reported.
+fn default_worktree(root: &Path, payload: &Payload) -> Result<PathBuf> {
+    let Ok(git) = crate::git::Git::open(root) else { return work_in_place(root) };
+    let top = git.top_level()?;
+    let wanted = payload.slug().map_or_else(|| String::from(UNNAMED), |slug| slug.to_string());
+    let directory = top.join(DEFAULT_WORKTREES);
+    let name = free_name(&git, &directory, &wanted)?;
+    let home = answer(directory.join(&name))?;
+    if let Some(parent) = home.parent() {
+        std::fs::create_dir_all(parent).map_err(Error::io(parent))?;
+    }
+    git.add_worktree(&home, &name)?;
+    eprintln!(
+        "nodal: {} has no {}, so this session was given the worktree claude code makes for \
+         itself; run `nodal init` there to get a unit instead",
+        top.display(),
         recipe::FILE_NAME
-    ))
+    );
+    Ok(home)
+}
+
+/// The directory a session in no repository at all is answered with: the one it is in.
+///
+/// # Errors
+/// [`Error::InvalidValue`] when it is not a path Claude Code would accept, which is a
+/// directory that cannot be named absolutely.
+fn work_in_place(root: &Path) -> Result<PathBuf> {
+    let here = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    eprintln!(
+        "nodal: {} is not a git repository, so there is no worktree to make; this session \
+         works where it started",
+        here.display()
+    );
+    answer(here)
+}
+
+/// A name no directory under `directory` holds and no branch of `git` holds.
+///
+/// The wanted name first, then the wanted name and a number. Both halves matter and for
+/// the same reason: **a directory that is already there holds somebody's work**, and
+/// `git worktree add` on a branch another worktree has checked out is refused. Taking
+/// either would cost a person something they had, so a free name is found instead of a
+/// collision being resolved.
+///
+/// # Errors
+/// [`Error::Git`] when the branches could not be read, and [`Error::InvalidValue`] when
+/// [`NAMES`] names were all taken.
+fn free_name(git: &crate::git::Git, directory: &Path, wanted: &str) -> Result<String> {
+    for attempt in 1..=NAMES {
+        let name = if attempt == 1 { wanted.to_owned() } else { format!("{wanted}-{attempt}") };
+        if !directory.join(&name).exists() && !git.branch_exists(&name)? {
+            return Ok(name);
+        }
+    }
+    Err(refusal(format!("{} already holds {NAMES} worktrees called {wanted}", directory.display())))
 }
 
 /// The session's last message: what Claude sent, or what the transcript holds.
@@ -696,31 +783,39 @@ struct Said {
 pub struct Installed {
     /// The settings file that was written.
     pub path: PathBuf,
+    /// Which file it was: the person's own, or the project's.
+    pub scope: Scope,
     /// The events it now answers, in the order they were written.
     pub events: Vec<&'static str>,
     /// Whether the install made the file.
     pub created: bool,
 }
 
-/// Write Nodal's hooks into the settings file of the project at `root`.
+/// Write Nodal's hooks into the settings file at `path`.
+///
+/// The caller says which file that is, because the two are chosen differently:
+/// [`settings::user_path`] reads an environment variable, and [`settings::path`] takes
+/// a project root. `scope` says which one was chosen, so the answer can be reported
+/// without asking the path where it came from.
 ///
 /// `Ok(None)` means the file already reads that way, which is what a second
-/// `nodal init` finds. Nothing else in the file is touched
+/// `nodal init --claude-hooks` finds. Nothing else in the file is touched
 /// ([`crate::adapters::settings`]).
 ///
 /// # Errors
 /// [`Error::InvalidValue`] when the settings file is not a JSON object, and
 /// [`Error::Io`] when it cannot be read or written.
-pub fn install(root: &Path) -> Result<Option<Installed>> {
-    let path = settings::path(root);
-    let before = read(&path)?;
+pub fn install(path: &Path, scope: Scope) -> Result<Option<Installed>> {
+    let before = read(path)?;
     let hooks = hooks();
     let Some(after) = settings::add(&before, &hooks)? else { return Ok(None) };
-    let directory = root.join(settings::DIR);
-    std::fs::create_dir_all(&directory).map_err(Error::io(&directory))?;
-    std::fs::write(&path, after).map_err(Error::io(&path))?;
+    if let Some(directory) = path.parent() {
+        std::fs::create_dir_all(directory).map_err(Error::io(directory))?;
+    }
+    std::fs::write(path, after).map_err(Error::io(path))?;
     Ok(Some(Installed {
-        path,
+        path: path.to_path_buf(),
+        scope,
         events: hooks.iter().map(|hook| hook.event).collect(),
         created: before.is_empty(),
     }))

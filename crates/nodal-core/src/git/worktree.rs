@@ -106,6 +106,26 @@ pub(super) fn remove(repo: &Path, worktree: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Make a linked worktree of the repository at `repo` at `path`, on a new branch.
+///
+/// The one place Nodal creates a worktree. A unit is never one; this exists for the
+/// Claude Code provider hook, which has to answer a directory in a repository that is
+/// not a Nodal project at all ([`crate::adapters::claude_code`]).
+///
+/// `-b` is not optional here. A worktree on a branch that already exists is one Git
+/// refuses when another worktree of the same repository has that branch checked out,
+/// and the caller has already picked a name no branch holds.
+///
+/// # Errors
+/// [`Error::Git`] when Git refused, [`Error::GitEncoding`] when the path is not UTF-8.
+pub(super) fn add(repo: &Path, path: &Path, branch: &str) -> Result<()> {
+    let target = path.to_str().ok_or_else(|| Error::GitEncoding {
+        args: vec![String::from("worktree"), String::from("add")],
+    })?;
+    cmd::run_ok(repo, &["worktree", "add", "-b", branch, "--", target])?;
+    Ok(())
+}
+
 /// Parse the blocks `git worktree list --porcelain` writes.
 ///
 /// One block per worktree, separated by an empty line. The first line of a block names
