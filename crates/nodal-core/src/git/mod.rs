@@ -2,9 +2,11 @@
 //!
 //! Nodal talks to Git through its command line rather than a library, so refs, hooks and
 //! config behave exactly as the user's own tools see them. A unit is an independent
-//! repository. Nodal never creates a worktree. This facade detects linked worktrees so
-//! operations do not damage the repository they share, and reclaim may run
-//! `git worktree remove` after the person confirms.
+//! repository. Nodal creates a worktree in one case only, and it is not for a unit: the
+//! Claude Code provider hook makes Claude's own worktree in a repository that is not a
+//! Nodal project, because refusing there ends the session. This facade otherwise detects
+//! linked worktrees so operations do not damage the repository they share, and reclaim
+//! may run `git worktree remove` after the person confirms.
 
 pub mod branches;
 pub mod cmd;
@@ -564,6 +566,19 @@ impl Git {
     /// [`Error::Git`] when Git refused, [`Error::GitEncoding`] when the path is not UTF-8.
     pub fn remove_worktree(&self, path: &Path) -> Result<()> {
         worktree::remove(&self.root, path)
+    }
+
+    /// Make a linked worktree of this repository at `path`, on a new branch.
+    ///
+    /// The Claude Code provider hook is the only caller. It answers a session in a
+    /// repository that is not a Nodal project with the worktree Claude Code would have
+    /// made for itself, because refusing there ends the session.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when Git refused, [`Error::GitEncoding`] when the path is not
+    /// UTF-8.
+    pub fn add_worktree(&self, path: &Path, branch: &str) -> Result<()> {
+        worktree::add(&self.root, path, branch)
     }
 
     /// Which Git operations, if any, are in progress here.

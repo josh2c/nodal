@@ -12,11 +12,13 @@
 //! The four events are not four of a kind, and the tests are not either:
 //!
 //! - `WorktreeCreate` is a **provider**. Claude reads a directory from its standard
-//!   output and ends the session when it does not get one, so both answers are tested:
-//!   the home of a unit that was really made, and the refusal a project with no recipe
-//!   gets. The refusal is checked to be a path Claude rejects rather than an empty line,
-//!   and the case where `nodal` is not installed at all is run through the command text
-//!   that is really written into `.claude/settings.json`, with an empty `PATH`.
+//!   output and ends the session when it does not get one, so every answer is tested:
+//!   the home of a unit that was really made, the plain worktree a project with no
+//!   recipe gets, the directory itself where there is no repository, and the refusal a
+//!   directory Claude would reject gets. The refusal is checked to be a path Claude
+//!   rejects rather than an empty line, and the case where `nodal` is not installed at
+//!   all is run through the command text that is really written into
+//!   `.claude/settings.json`, with an empty `PATH`.
 //! - `SessionStart` prints a memory inside a unit home and nothing anywhere else.
 //! - `Stop` records a handoff where there is a message to record, and is silent where
 //!   the desktop application sent none.
@@ -24,7 +26,9 @@
 //!   anyway, and the test says what it must do if it ever fires: nothing that removes
 //!   anything.
 //!
-//! The last two tests are about the file. It goes into a project a person may commit,
+//! The last two tests are about the file. Every test here installs it in the project
+//! (`--claude-hooks=project`), because that is the scope whose file a home copies; where
+//! the hooks go by default is `tests/safety/tests/claude_scope.rs`. It may be committed,
 //! so it names no path of this machine; and an install followed by an uninstall leaves
 //! it byte for byte the file it was, including the hooks somebody else had put in it.
 
@@ -64,7 +68,7 @@ fn project() -> Workspace {
 /// The same, with a recipe written and the hooks installed.
 fn initialised_project() -> Workspace {
     let project = project();
-    succeed(&project.nodal(&["init", "--claude-hooks"]));
+    succeed(&project.nodal(&["init", "--claude-hooks=project"]));
     project
 }
 
@@ -167,23 +171,82 @@ fn the_slug_claude_derived_becomes_the_unit_and_is_marked_recovered() {
     );
 }
 
+/// The hooks go in the person's own settings by default, so the provider fires in every
+/// project on the machine. Refusing in the ones that are not Nodal projects would end a
+/// session per project, which is worse than the fault the integration exists to fix. So
+/// Claude Code gets the worktree it would have made for itself.
 #[test]
-fn a_project_with_no_recipe_is_refused_with_a_path_claude_would_reject() {
+fn a_project_with_no_recipe_is_given_the_worktree_claude_code_makes_for_itself() {
     let project = project();
-    let refused = project.hook("worktree-create", &create_payload(&project.source));
+    let output = project.hook("worktree-create", &create_payload(&project.source));
+    let answered = succeed(&output);
 
-    assert!(!refused.status.success(), "a project with no recipe made a unit anyway");
+    let made = PathBuf::from(answered.trim());
+    assert!(made.is_absolute(), "{made:?} is not absolute, so the session would end");
+    assert!(made.is_dir(), "{made:?} was printed and is not there");
     assert_eq!(
-        String::from_utf8(refused.stdout.clone()).unwrap().trim(),
-        REFUSED,
-        "the refusal was not the one Claude Code rejects"
+        made,
+        std::fs::canonicalize(project.source.join(".claude").join("worktrees"))
+            .unwrap()
+            .join("say-hi-6fac65"),
+        "the session was not sent where claude code puts its own worktrees"
     );
-    let said = stderr(&refused);
-    assert!(
-        said.contains("nodal.toml"),
-        "the reason did not name the file that is missing: {said}"
+    assert_eq!(
+        git(&made, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "say-hi-6fac65",
+        "the worktree is not on a branch of its own"
     );
+    assert!(!made.join(".nodal").join("id").exists(), "nodal marked a directory it does not own");
+    assert!(project.homes().is_empty(), "a unit was made for a project with no recipe");
+    let said = stderr(&output);
+    assert!(said.contains("nodal.toml"), "the reason did not name what is missing: {said}");
     assert!(said.contains("nodal init"), "the reason did not say what to do: {said}");
+}
+
+/// The same request twice must not take the directory the first one made. A worktree
+/// that is already there holds somebody's session, and Nodal removes nothing of anyone
+/// else's to answer a hook.
+#[test]
+fn a_second_request_gets_a_name_of_its_own_and_leaves_the_first_alone() {
+    let project = project();
+    let first = PathBuf::from(
+        succeed(&project.hook("worktree-create", &create_payload(&project.source)))
+            .trim()
+            .to_owned(),
+    );
+    std::fs::write(first.join("their-work.txt"), "a session was here\n").unwrap();
+
+    let second = PathBuf::from(
+        succeed(&project.hook("worktree-create", &create_payload(&project.source)))
+            .trim()
+            .to_owned(),
+    );
+
+    assert_ne!(second, first, "the second session was sent into the first one's worktree");
+    assert_eq!(
+        std::fs::read_to_string(first.join("their-work.txt")).unwrap(),
+        "a session was here\n",
+        "work in the first worktree did not survive the second request"
+    );
+    assert!(second.is_dir(), "{second:?} was printed and is not there");
+}
+
+/// A directory that is in no repository at all has no worktree to make. The session is
+/// answered with the directory it is in, which is where it would have run without
+/// `--worktree`, rather than ended.
+#[test]
+fn a_directory_in_no_repository_is_answered_with_itself() {
+    let project = project();
+    let plain = project.root().join("not-a-repository");
+    std::fs::create_dir_all(&plain).unwrap();
+
+    let answered = succeed(&project.hook("worktree-create", &create_payload(&plain)));
+
+    assert_eq!(
+        std::fs::canonicalize(answered.trim()).unwrap(),
+        std::fs::canonicalize(&plain).unwrap(),
+        "a session in no repository was sent somewhere other than where it is"
+    );
 }
 
 #[test]
@@ -364,7 +427,7 @@ fn the_home_is_given_the_projects_own_settings_and_not_a_regenerated_four() {
     let theirs = "{\n  \"permissions\": {\n    \"deny\": [\"Bash(rm:*)\"]\n  }\n}\n";
     std::fs::create_dir_all(project.source.join(".claude")).unwrap();
     std::fs::write(project.settings(), theirs).unwrap();
-    succeed(&project.nodal(&["init", "--claude-hooks"]));
+    succeed(&project.nodal(&["init", "--claude-hooks=project"]));
     let home = PathBuf::from(
         succeed(&project.hook("worktree-create", &create_payload(&project.source)))
             .trim()
@@ -391,7 +454,7 @@ fn a_settings_file_the_project_commits_is_left_exactly_as_the_clone_carried_it()
     std::fs::write(project.settings(), theirs).unwrap();
     git(&project.source, &["add", "--", ".claude/settings.json"]);
     git(&project.source, &["commit", "--quiet", "--message", "the project's own settings"]);
-    succeed(&project.nodal(&["init", "--claude-hooks"]));
+    succeed(&project.nodal(&["init", "--claude-hooks=project"]));
 
     let home = PathBuf::from(
         succeed(&project.hook("worktree-create", &create_payload(&project.source)))
@@ -411,11 +474,12 @@ fn a_settings_file_the_project_commits_is_left_exactly_as_the_clone_carried_it()
     );
 }
 
-/// The advice a hookless tracked file gets has to be advice that works. `nodal init
-/// --claude-hooks` writes the project's working file, which the home's copy came from a
-/// commit of: running it changes nothing for this unit or the next one cloned. The two
-/// things that do work are committing the hooks and putting them in the person's own
-/// settings, and the note says both.
+/// The advice a hookless tracked file gets has to be advice that works.
+/// `--claude-hooks=project` writes the project's working file, which the home's copy
+/// came from a commit of: running it changes nothing for this unit or the next one
+/// cloned. The two things that do work are committing the hooks and putting them in the
+/// person's own settings, and the note says both. It names the command for the second,
+/// because `nodal init --claude-hooks` is what writes that file.
 #[test]
 fn a_tracked_settings_file_with_no_hooks_in_it_is_one_note_saying_what_to_do() {
     let project = project();
@@ -434,8 +498,8 @@ fn a_tracked_settings_file_with_no_hooks_in_it_is_one_note_saying_what_to_do() {
         "the note does not say what would work: {said}"
     );
     assert!(
-        !said.contains("nodal init --claude-hooks"),
-        "the note sends a person to a command that is a no-op in this state: {said}"
+        said.contains("nodal init --claude-hooks") && !said.contains("--claude-hooks=project"),
+        "the note does not name the command that works, or names one that is a no-op here: {said}"
     );
     assert!(home.is_dir());
 }
@@ -450,7 +514,7 @@ fn a_hookless_settings_file_is_said_on_standard_error_as_well_as_recorded() {
     std::fs::write(project.settings(), theirs).unwrap();
     git(&project.source, &["add", "--", ".claude/settings.json"]);
     git(&project.source, &["commit", "--quiet", "--message", "the project's own settings"]);
-    succeed(&project.nodal(&["init", "--claude-hooks"]));
+    succeed(&project.nodal(&["init", "--claude-hooks=project"]));
 
     let created = project.hook("worktree-create", &create_payload(&project.source));
     assert!(created.status.success(), "{}", stderr(&created));
@@ -467,7 +531,7 @@ fn tracked_settings(project: &Workspace, theirs: &str) -> PathBuf {
     std::fs::write(project.settings(), theirs).unwrap();
     git(&project.source, &["add", "--", ".claude/settings.json"]);
     git(&project.source, &["commit", "--quiet", "--message", "the project's own settings"]);
-    succeed(&project.nodal(&["init", "--claude-hooks"]));
+    succeed(&project.nodal(&["init", "--claude-hooks=project"]));
     PathBuf::from(
         succeed(&project.hook("worktree-create", &create_payload(&project.source)))
             .trim()
@@ -583,7 +647,7 @@ fn the_hooks_go_in_and_come_out_and_leave_the_file_they_found() {
     std::fs::create_dir_all(project.source.join(".claude")).unwrap();
     std::fs::write(project.settings(), theirs).unwrap();
 
-    succeed(&project.nodal(&["init", "--claude-hooks"]));
+    succeed(&project.nodal(&["init", "--claude-hooks=project"]));
     let installed = std::fs::read_to_string(project.settings()).unwrap();
     assert!(installed.contains("./audit.sh"), "somebody else's hook went: {installed}");
     assert!(installed.contains("nodal claude-code"), "{installed}");
@@ -600,7 +664,7 @@ fn the_hooks_go_in_and_come_out_and_leave_the_file_they_found() {
 fn a_second_install_writes_the_same_file_and_a_removal_takes_the_file_it_made() {
     let project = initialised_project();
     let once = std::fs::read_to_string(project.settings()).unwrap();
-    succeed(&project.nodal(&["init", "--force", "--claude-hooks"]));
+    succeed(&project.nodal(&["init", "--force", "--claude-hooks=project"]));
     assert_eq!(
         std::fs::read_to_string(project.settings()).unwrap(),
         once,
@@ -739,7 +803,7 @@ fn a_home_claude_would_not_accept_is_refused_before_anything_records_it() {
     let project = project();
     let state = format!("{}/./state", project.root().display());
     let project = project.with_env("NODAL_HOME", &state);
-    succeed(&project.nodal(&["init", "--claude-hooks"]));
+    succeed(&project.nodal(&["init", "--claude-hooks=project"]));
 
     let refused = project.hook("worktree-create", &create_payload(&project.source));
 

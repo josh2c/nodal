@@ -1,16 +1,21 @@
 //! `nodal init`: write the project's `nodal.toml`, with a line for every gap.
 //!
-//! It also offers the Claude Code integration, because this is the moment a person is
-//! deciding what Nodal does for this project and the moment they are at a terminal. The
-//! offer is one question, the answer is four hooks in `.claude/settings.json`, and
-//! `nodal uninstall` takes them out again. Nothing is installed without being asked
-//! unless a flag said so, and a run nothing is watching installs nothing and says why.
+//! It installs the Claude Code hooks when `--claude-hooks` asks for it, and it asks
+//! nothing. A person who runs `nodal init` is writing a recipe, and a question about a
+//! second tool in the middle of that is a question they did not come for.
+//!
+//! The four hooks go in the person's own `~/.claude/settings.json` by default, so they
+//! apply in every project on the machine and are committed nowhere.
+//! `--claude-hooks=project` writes the project's file instead, and says what that costs:
+//! a clone of that file on a machine with no `nodal` answers `WorktreeCreate` with a
+//! refusal, and Claude Code ends the session over it. `nodal uninstall` takes either
+//! back.
 
-use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::Args;
+use clap::{Args, ValueEnum};
+use nodal_core::adapters::settings::Scope;
 use nodal_core::adapters::{claude_code, settings};
 use nodal_core::lifecycle::hooks;
 use nodal_core::output::view::InitReport;
@@ -57,17 +62,44 @@ pub struct Init {
 /// only pair that writes anywhere but `nodal.toml`.
 #[derive(Debug, Args)]
 pub struct Claude {
-    /// Install the Claude Code hooks without asking. What a script uses.
-    #[arg(long = "claude-hooks")]
-    pub install: bool,
+    /// Install the Claude Code hooks. `user` writes your own settings file, `project`
+    /// writes this project's.
+    #[arg(long = "claude-hooks", value_name = "SCOPE", num_args = 0..=1,
+          default_missing_value = "user", value_enum)]
+    pub install: Option<Where>,
 
-    /// Do not ask about the Claude Code hooks, and install none.
-    #[arg(long = "no-claude-hooks", conflicts_with = "install")]
+    /// Accepted and does nothing. `nodal init` installs no hook unless asked to.
+    #[arg(long = "no-claude-hooks", conflicts_with = "install", hide = true)]
     pub none: bool,
 }
 
-/// What a person types to agree.
-const AGREED: [&str; 2] = ["y", "yes"];
+/// Which settings file `--claude-hooks` writes.
+///
+/// The library states the same two ([`Scope`]). This is the reading of them clap does,
+/// so that `nodal-core` declares no command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Where {
+    /// The person's own settings file, which applies in every project on this machine.
+    User,
+    /// This project's settings file, which a person may commit.
+    Project,
+}
+
+impl From<Where> for Scope {
+    fn from(chosen: Where) -> Self {
+        match chosen {
+            Where::User => Self::User,
+            Where::Project => Self::Project,
+        }
+    }
+}
+
+/// What a person is told before the hooks go into a file they may commit.
+///
+/// The provider hook is the reason. A clone of the project on a machine with no `nodal`
+/// runs it, and it answers `WorktreeCreate` with a refusal, which ends the session.
+const PROJECT_COST: &str = "these hooks end a claude code session on a machine that has no nodal \
+                            on its PATH; --claude-hooks alone writes your own settings instead";
 
 impl Init {
     /// Say that this machine makes a full copy for every home, where it does.
@@ -136,58 +168,40 @@ fn approve(plan: &recipe::InitPlan) -> nodal_core::Result<()> {
 }
 
 impl Init {
-    /// Offer the Claude Code hooks, and install them when the answer is yes.
+    /// Install the Claude Code hooks, in the file the flag named.
     ///
-    /// The question is asked once, of a terminal. A run nothing is watching is not
-    /// waited on: it is told that `--claude-hooks` installs them, which is the same rule
-    /// `nodal uninstall` follows.
+    /// No flag installs nothing and says nothing. There is no question here: see the
+    /// module note.
     ///
     /// Everything goes to standard error, because the command's answer on standard
     /// output is one document.
+    ///
+    /// # Errors
+    ///
+    /// [`nodal_core::Error::NoHomeDirectory`] when nothing says where the person's own
+    /// directory is, and whatever reading or writing the settings file reported.
     fn offer(&self, root: &Path) -> nodal_core::Result<()> {
-        if self.claude.none || !self.wanted(root)? {
+        let Some(chosen) = self.claude.install else { return Ok(()) };
+        let scope = Scope::from(chosen);
+        let file = match scope {
+            Scope::User => settings::user_path(&home::user()?),
+            Scope::Project => {
+                eprintln!("nodal: {PROJECT_COST}");
+                settings::path(root)
+            }
+        };
+        let Some(done) = claude_code::install(&file, scope)? else {
+            eprintln!("nodal: {} already declares the hooks", file.display());
             return Ok(());
-        }
-        let Some(done) = claude_code::install(root)? else { return Ok(()) };
+        };
         eprintln!(
-            "nodal: wrote {} Claude Code hooks into {}; commit that file or do not, as you like",
+            "nodal: wrote {} Claude Code hooks into {} ({} scope)",
             done.events.len(),
-            done.path.display()
+            done.path.display(),
+            done.scope.name()
         );
         Ok(())
     }
-
-    /// Whether the hooks are wanted: because a flag said so, or because a person did.
-    ///
-    /// A project that already has them is not asked about again, so a second
-    /// `nodal init` is one question fewer rather than the same question twice.
-    fn wanted(&self, root: &Path) -> nodal_core::Result<bool> {
-        if self.claude.install {
-            return Ok(true);
-        }
-        let file = settings::path(root);
-        if settings::holds_hooks(&claude_code::read(&file)?) {
-            return Ok(false);
-        }
-        if !std::io::stdin().is_terminal() {
-            eprintln!(
-                "nodal: pass --claude-hooks to install the Claude Code hooks for this project"
-            );
-            return Ok(false);
-        }
-        ask(&file)
-    }
-}
-
-/// Ask the one question, and read the one answer.
-fn ask(file: &Path) -> nodal_core::Result<bool> {
-    eprintln!("nodal: Claude Code can make a unit for every session it starts on this project.");
-    eprintln!("nodal: that writes four hooks into {}.", file.display());
-    eprint!("install them? [y/N] ");
-    std::io::stderr().flush().map_err(nodal_core::Error::io("<stderr>"))?;
-    let mut answer = String::new();
-    std::io::stdin().lock().read_line(&mut answer).map_err(nodal_core::Error::io("<stdin>"))?;
-    Ok(AGREED.contains(&answer.trim().to_lowercase().as_str()))
 }
 
 /// The project root a plan writes into.

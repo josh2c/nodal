@@ -1,8 +1,12 @@
 //! `.claude/settings.json`: putting Nodal's hooks in it, and taking exactly them out.
 //!
-//! # Whose file this is
+//! # Which file, and whose it is
 //!
-//! The file belongs to the project, not to Nodal. It may already hold permissions, an
+//! There are two. [`path`] is the project's, which a person may commit; [`user_path`]
+//! is the person's own, which Claude Code reads in every project on the machine.
+//! [`Scope`] is the choice between them. Everything below holds for both.
+//!
+//! The file belongs to whoever owns it, not to Nodal. It may already hold permissions, an
 //! environment, and hooks somebody else installed, and every one of those has to
 //! survive both halves of this module. It is also a file a person may commit, so
 //! nothing Nodal writes into it names a path that is only true on one machine: every
@@ -45,6 +49,17 @@ pub const DIR: &str = ".claude";
 /// The settings file itself, relative to a project root.
 pub const FILE: &str = ".claude/settings.json";
 
+/// The settings file's own name, inside whichever directory holds it.
+pub const NAME: &str = "settings.json";
+
+/// The variable Claude Code reads to move its configuration directory.
+///
+/// It is read rather than assumed for two reasons. A person who moved that directory
+/// has moved the file Claude Code reads, so writing to `~/.claude` would install hooks
+/// nothing fires. And a test that sets it writes nowhere near the settings of whoever
+/// runs the test.
+pub const CONFIG_DIR_VAR: &str = "CLAUDE_CONFIG_DIR";
+
 /// The token every command Nodal writes into the file carries.
 ///
 /// It is what a fallback removal matches on, and it is the command a person reads.
@@ -81,6 +96,45 @@ pub struct Hook {
 #[must_use]
 pub fn path(root: &Path) -> PathBuf {
     root.join(FILE)
+}
+
+/// Where the person's own settings file is, the one Claude Code reads in every project.
+///
+/// [`CONFIG_DIR_VAR`] names the directory when it is set, and `<home>/.claude` is the
+/// directory when it is not.
+#[must_use]
+pub fn user_path(home: &Path) -> PathBuf {
+    match std::env::var_os(CONFIG_DIR_VAR).filter(|value| !value.is_empty()) {
+        Some(moved) => PathBuf::from(moved).join(NAME),
+        None => home.join(FILE),
+    }
+}
+
+/// Which settings file a set of hooks goes in.
+///
+/// The two files are read by Claude Code in different circumstances, and the difference
+/// is the reason [`Scope::User`] is the default. The user's file applies in every
+/// project on this machine and belongs to nobody else. A project's file may be
+/// committed, and a clone of it on a machine with no `nodal` answers `WorktreeCreate`
+/// with a refusal, which ends the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scope {
+    /// The person's own settings file. What `--claude-hooks` writes.
+    #[default]
+    User,
+    /// The project's settings file. What `--claude-hooks=project` writes.
+    Project,
+}
+
+impl Scope {
+    /// The word a person types for this scope, and reads in a report.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Project => "project",
+        }
+    }
 }
 
 /// `text` with `hooks` installed, or `None` when it already reads exactly that way.

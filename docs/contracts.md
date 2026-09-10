@@ -601,12 +601,18 @@ shows the command. A command nobody approved refuses in the same way. `--no-hook
 and needs no approval.
 
 ## Claude Code
-Claude Code fires named events at commands a project declares in `.claude/settings.json`. `nodal init`
-offers to write four of them and installs them when the answer is yes; `--claude-hooks` installs them
-without asking and `--no-claude-hooks` does not ask. `nodal uninstall` removes them again. Each command is
-the word `nodal` and a subcommand, and names no path of one machine, so the file is the same on every
-machine that has Nodal on its `PATH`. **Commit that file or do not: it is the project's, and Nodal reads it
-the same either way.** A clone of it on a machine with no Nodal does nothing.
+Claude Code fires named events at commands declared in a `.claude/settings.json`. There are two such
+files. The person's own, `~/.claude/settings.json`, applies in every project on the machine;
+`CLAUDE_CONFIG_DIR` moves it. The project's applies in that project and may be committed.
+
+**`nodal init` asks nothing and installs nothing.** `--claude-hooks` writes the four hooks into the
+person's own file. `--claude-hooks=project` writes the project's file instead, and prints what that
+costs first: the provider hook on a machine with no `nodal` answers `WorktreeCreate` with a refusal, and
+Claude Code ends the session over it. `--no-claude-hooks` is accepted and does nothing, because installing
+nothing is now the default. `nodal uninstall` removes the hooks from either file.
+
+Each command is the word `nodal` and a subcommand, and names no path of one machine, so the file is the
+same on every machine that has Nodal on its `PATH`.
 
 | event | kind | what Nodal does |
 |---|---|---|
@@ -617,14 +623,23 @@ the same either way.** A clone of it on a machine with no Nodal does nothing.
 
 `WorktreeCreate` is a **provider**, not an observer: Claude reads one absolute path from its standard
 output and uses that directory, and empty or invalid output ends the session. Nodal's answer therefore
-overrides Claude's own worktree creation even in a Git repository, and Claude makes no `.claude/worktrees/`
-entry. The unit's objective is the slug Claude derived from the opening prompt, recorded as `observed`
-rather than `stated`: it is a reading of somebody's intent, not a statement of one.
+overrides Claude's own worktree creation, and Claude makes no `.claude/worktrees/` entry of its own. The
+unit's objective is the slug Claude derived from the opening prompt, recorded as `observed` rather than
+`stated`: it is a reading of somebody's intent, not a statement of one.
 
-The hook that cannot answer prints `./nodal-worktree-create-refused` — a relative path with a dot segment,
-which Claude rejects — and says why on standard error. That is deliberate: printing nothing ends the
-session just as certainly and says nothing about why. The two reasons are a project with no `nodal.toml`
-and a machine with no `nodal`, and the second is handled by the command text itself.
+**A project with no `nodal.toml` is not a refusal.** The hooks are in the person's own settings by
+default, so the provider fires in every project on the machine and most of them are not Nodal projects.
+Nodal makes the worktree Claude Code would have made for itself, at `<project>/.claude/worktrees/<name>`,
+on a new branch of the same name, and answers with it. It registers nothing: no unit, no environment, no
+event. It says on standard error which file is missing and that `nodal init` gets a unit instead. A name
+that is taken gets a number after it, because a directory that is already there holds somebody's work and
+a branch another worktree has checked out is one Git refuses. A directory that is in no Git repository at
+all has no worktree to make, and the session is answered with the directory it is already in.
+
+The hook that cannot answer at all prints `./nodal-worktree-create-refused` — a relative path with a dot
+segment, which Claude rejects — and says why on standard error. That is deliberate: printing nothing ends
+the session just as certainly and says nothing about why. The reasons are a machine with no `nodal`, which
+the command text itself handles, and a directory that cannot be named in a form Claude Code accepts.
 
 `SessionStart` fires more than once for one session, with a different session identifier each time, and the
 create payload carries a third. **Nothing correlates by session identifier.** The `cwd` a payload carries
@@ -679,8 +694,8 @@ error is one line on standard error, and a note event where the store allows one
 answered with. Ending the session there would leave a fully built unit with nobody in it, which is the
 failure this whole path exists to prevent.
 
-`nodal uninstall` surveys the homes of registered units as well as project roots, and takes only Nodal's
-own region out of each settings file it finds. A home left carrying the provider hook after the binary has
+`nodal uninstall` surveys the person's own settings file, then every project root the registry knows, then
+the homes of registered units, and takes only Nodal's own region out of each settings file it finds. A home left carrying the provider hook after the binary has
 gone would answer a later `claude --worktree` with `nodal: not on PATH` and end the session over a tool
 the person removed. A home whose copy the project tracks is left alone: that file is the project's, and the
 project's own copy is surveyed in its own right. One file the survey cannot read is one line saying so, and

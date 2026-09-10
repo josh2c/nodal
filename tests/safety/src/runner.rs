@@ -17,14 +17,18 @@ use std::process::{Command, Output};
 
 /// A command for the binary, with `state` as its state directory.
 ///
-/// `NODAL_CD_FILE` is removed as well. It names a file a waiting shell reads a path
-/// from, and a test run from inside an activated home would otherwise inherit the one
-/// belonging to that shell.
+/// Two variables are removed as well. `NODAL_CD_FILE` names a file a waiting shell
+/// reads a path from, and a test run from inside an activated home would otherwise
+/// inherit the one belonging to that shell. `CLAUDE_CONFIG_DIR` names the directory
+/// Claude Code keeps the settings file in, and `nodal init --claude-hooks` writes that
+/// file: a test run by a person who has moved that directory would otherwise install
+/// hooks into it.
 #[must_use]
 pub fn nodal(binary: impl AsRef<Path>, state: impl AsRef<Path>) -> Command {
     let mut command = Command::new(binary.as_ref());
     command.env(nodal_core::workspace::home::DIRECTORY_VAR, state.as_ref());
     command.env_remove("NODAL_CD_FILE");
+    command.env_remove(nodal_core::adapters::settings::CONFIG_DIR_VAR);
     command
 }
 
