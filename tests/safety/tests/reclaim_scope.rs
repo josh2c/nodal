@@ -14,9 +14,10 @@
 //! Both levels are real processes, started against a real unit, because the property is
 //! about what a signal reaches and a table a test wrote reaches nothing.
 //!
-//! The scan reads `/proc`, which macOS does not have, so the two tests that need it say
-//! which claim they are not making rather than passing quietly. The third needs no scan:
-//! a process group is addressed with `kill`, which every host answers.
+//! The scan reads `/proc`, which macOS does not have, so the three tests that need it
+//! say which claim they are not making rather than passing quietly. The fourth needs no
+//! scan: what it asserts is that a tether is stopped, and `kill` answers for a process
+//! on every host.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
@@ -49,14 +50,22 @@ fn environment(machine: &Machine) -> EnvId {
     environments::latest_for_unit(store.conn(), unit.id).unwrap().expect("it has a home").id
 }
 
-/// Start a tether in the home, and answer with the process group the registry recorded.
+/// Start a tether in the home, and answer with the process it left behind.
 ///
-/// The tethered command leaves a sleeping child and returns, which is the shape of a
-/// development server: the process `nodal run` waited for is gone, and the group it made
-/// is what is still there.
-fn tether(machine: &Machine, home: &Path) -> u32 {
+/// The tethered command starts a sleeping child, records its process id, and returns.
+/// That is the shape of a development server: the process `nodal run` waited for is gone
+/// long before anybody reclaims anything, and what is still running is a generation
+/// below it. So the assertion is about that child, which is the process a signal to the
+/// group has to reach.
+///
+/// The child is asked for its own id rather than looked up, and `record` is outside
+/// every home. A file written inside the home would be untracked work, and the
+/// uniqueness check would refuse the reclaim, which is that check doing its job and
+/// nothing to do with this property.
+fn tether(machine: &Machine, home: &Path, record: &Path) -> u32 {
+    let line = format!("sleep 300 >/dev/null 2>&1 & printf %s \"$!\" > {}", record.display());
     let ran = machine
-        .command(&["run", "--tether", "sh", "-c", "sleep 300 &"])
+        .command(&["run", "--tether", "sh", "-c", &line])
         .current_dir(home)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -66,23 +75,26 @@ fn tether(machine: &Machine, home: &Path) -> u32 {
 
     let open = sessions::list_open_tethers(machine.store().conn(), environment(machine)).unwrap();
     assert_eq!(open.len(), 1, "the unit holds one tether");
-    open[0].pgid.expect("the row records a process group")
+    open[0].pgid.expect("the row records a process group");
+
+    let pid: u32 = std::fs::read_to_string(record).unwrap().trim().parse().unwrap();
+    assert!(alive(pid), "the tethered command left a process behind");
+    pid
 }
 
-/// Whether a process is still there. `kill -0`, so that this reads the same on a host
-/// with no process table.
+/// Whether a process is still there.
+///
+/// `kill -0` on one process id, rather than `/proc` and rather than a process group. A
+/// host with no process table still answers this, and `kill` is asked about a plain
+/// positive number, which every implementation of it reads the same way. A negative
+/// argument does not read the same way everywhere, so no test here passes one.
 fn alive(pid: u32) -> bool {
-    signalled(&pid.to_string())
-}
-
-/// Whether a process group still holds a process.
-fn group_alive(pgid: u32) -> bool {
-    signalled(&format!("-{pgid}"))
-}
-
-/// Whether `kill -0` answers for this target.
-fn signalled(target: &str) -> bool {
-    Command::new("kill").args(["-0", target]).stderr(Stdio::null()).status().unwrap().success()
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
 }
 
 /// Wait for something to become true, and insist that it does.
@@ -109,7 +121,8 @@ fn a_bystander_standing_in_the_home_survives_a_reclaim_and_is_named() {
     }
     let machine = Machine::new();
     let home = machine.unit(UNIT);
-    let group = tether(&machine, &home);
+    let outside = tempfile::TempDir::new().unwrap();
+    let tethered = tether(&machine, &home, &outside.path().join("tethered"));
     let bystander = process::standing_in(&home);
 
     let refused = machine.nodal(&["reclaim", UNIT]);
@@ -125,7 +138,7 @@ fn a_bystander_standing_in_the_home_survives_a_reclaim_and_is_named() {
     assert_eq!(machine.homes(), vec![home.clone()], "the home is still the project's");
     assert!(machine.trashed().is_empty(), "the refusal put something in the trash");
 
-    wait_for("the tether to go", || !group_alive(group));
+    wait_for("the tether to go", || !alive(tethered));
 }
 
 /// The same machine, forced: the home moves, and the bystander is still not signalled.
@@ -165,12 +178,13 @@ fn a_forced_reclaim_moves_the_home_and_still_leaves_the_bystander_running() {
 fn a_reclaim_with_no_bystander_stops_its_tether_and_takes_the_home() {
     let machine = Machine::new();
     let home = machine.unit(UNIT);
-    let group = tether(&machine, &home);
+    let outside = tempfile::TempDir::new().unwrap();
+    let tethered = tether(&machine, &home, &outside.path().join("tethered"));
 
     let reclaimed = machine.nodal(&["reclaim", UNIT]);
 
     assert!(reclaimed.status.success(), "{}", stderr(&reclaimed));
-    wait_for("the tether to go", || !group_alive(group));
+    wait_for("the tether to go", || !alive(tethered));
     assert!(!home.exists(), "the home is not where it was");
     assert_eq!(machine.trashed().len(), 1, "the trash holds it");
 }
