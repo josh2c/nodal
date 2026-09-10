@@ -157,6 +157,7 @@ runtime/
     process_env.rs · cwd.rs · docker.rs · listeners.rs
   ps.rs                merge signals into Attributed rows with confidence
   stop.rs              Signals trait; a process or a whole group; SIGINT, SIGTERM, then SIGKILL
+  verdict.rs           the worktrees of a checkout Nodal holds no row for; writes nothing at all
 
 context/               WORKUNIT.md: recomputed from the project, never from the last copy
   mod.rs               refresh(): one survey, one file per unit, and the notes
@@ -203,7 +204,7 @@ output/
   json.rs              pretty for --json, compact for one line of a stream
   watch.rs             Source trait + polling loop; writes only changed answers
   view/                the read types themselves, one file per command family
-    unit.rs · status.rs · event.rs · base.rs · init.rs · env.rs · created.rs
+    unit.rs · verdict.rs · status.rs · event.rs · base.rs · init.rs · env.rs · created.rs
     reclaim.rs · doctor.rs · merge.rs · done.rs · explain.rs · setup.rs
 ```
 

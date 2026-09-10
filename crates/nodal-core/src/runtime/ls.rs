@@ -90,7 +90,7 @@ pub fn rows(
     // project tracks its own `CLAUDE.md` is eight units with one thing wrong, not eight
     // things (`crate::output::notice`).
     let notes = notice::collapse(&notices, "units");
-    UnitList { project: project.name.clone(), now, units, notes }
+    UnitList { project: project.name.clone(), now, units, worktrees: Vec::new(), notes }
 }
 
 /// Put the units a person should look at first at the top.

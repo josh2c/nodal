@@ -17,6 +17,15 @@
 //! 2. a command built by the harness leaves that home directory untouched and writes
 //!    into the state directory the test owns.
 //!
+//! Both halves are asserted with `nodal ps`, and the choice of command is the point of
+//! this paragraph. It has to be a command that opens the registry, because the claim is
+//! about where the registry is made. A bare `nodal` is not one: it answers about the
+//! directory it stands in, and where that directory is a checkout Nodal holds no row
+//! for, it prints the verdict on the checkout's worktrees without making a registry at
+//! all (`cli::registry_if_present`). That is a promise of its own, kept by
+//! `tests/safety/tests/verdict_writes_nothing.rs`, and a command that keeps it cannot
+//! also demonstrate the fault this file is about.
+//!
 //! Neither half goes near the real `~/.nodal`. Each gives the command a temporary
 //! directory as its home, which is the fault under a microscope rather than the fault.
 //!
@@ -50,7 +59,7 @@ fn living_in<'a>(command: &'a mut Command, home: &Path) -> &'a mut Command {
 fn a_command_that_names_no_state_directory_writes_into_the_home_directory() {
     let home = a_home_of_its_own();
     let mut command = Command::new(state::BINARY);
-    living_in(&mut command, home.path()).arg("-vv").env_remove("NODAL_HOME");
+    living_in(&mut command, home.path()).args(["ps", "-vv"]).env_remove("NODAL_HOME");
 
     let output = command.output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
@@ -65,7 +74,7 @@ fn a_command_the_harness_built_leaves_the_home_directory_alone() {
     let home = a_home_of_its_own();
     let machine = Machine::new();
     let mut command = machine.nodal();
-    living_in(&mut command, home.path()).arg("-vv");
+    living_in(&mut command, home.path()).args(["ps", "-vv"]);
 
     let output = command.output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));

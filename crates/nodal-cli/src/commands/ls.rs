@@ -1,16 +1,19 @@
 //! `nodal ls`: every unit of the project, and what each one needs next.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Args;
 use nodal_core::context::survey::{self, Snapshot};
+use nodal_core::doctor::intent;
+use nodal_core::lifecycle::guard;
 use nodal_core::lifecycle::ops::new;
 use nodal_core::lifecycle::states;
 use nodal_core::model::{Project, ProjectName, Timestamp};
-use nodal_core::output::view::UnitList;
+use nodal_core::output::view::{UnitList, Verdict, WorktreeRow};
 use nodal_core::output::{self, Format};
-use nodal_core::runtime::{entry, ls, processes};
+use nodal_core::runtime::{entry, ls, processes, verdict};
 use nodal_core::store::Store;
 
 use crate::commands::context;
@@ -78,9 +81,22 @@ impl Listing {
 pub enum Reading {
     /// A project the registry holds units of.
     Listed(Box<Listing>),
-    /// A project declared by a `nodal.toml` and holding no units yet.
-    Declared(ProjectName),
-    /// A directory that is no project of Nodal's.
+    /// A project declared by a `nodal.toml` and holding no units yet, with whatever
+    /// worktrees its repository names.
+    ///
+    /// The worktrees come with it because they are the reason the answer is worth
+    /// printing. A person who has just run `nodal init` in a checkout with nine
+    /// worktrees is told there are no units yet, and told what the nine are.
+    Declared(Box<UnitList>),
+    /// A checkout Nodal holds nothing about, and the verdict on its worktrees.
+    ///
+    /// The fourth answer, and the one a person meets first. A repository with no recipe
+    /// and no registry row is not a directory Nodal has nothing to say about: it is a
+    /// repository whose other worktrees Git already knows, and every fact the verdict
+    /// prints is one a read can reach. So the answer is that table, and reaching it
+    /// initialises nothing ([`verdict`]).
+    Checkout(Box<Verdict>),
+    /// A directory that is no project of Nodal's and no checkout either.
     Unknown,
 }
 
@@ -96,16 +112,22 @@ impl Ls {
     ///
     /// [`nodal_core::Error::ProjectNotFound`] when the directory is in no project Nodal
     /// records, and whatever the registry or Git reported.
-    pub fn run(&self, store: &Store) -> nodal_core::Result<ExitCode> {
+    pub fn run(&self, store: Option<&Store>) -> nodal_core::Result<ExitCode> {
         let path = self.directory()?;
         match self.read(store)? {
             Reading::Listed(mut listing) => {
-                listing.settle(store);
-                listing.compile();
+                // A listed project came from a registry, so there is one to settle
+                // into. The two writes the list makes are the command layer's, and
+                // `docs/contracts.md` names both.
+                if let Some(store) = store {
+                    listing.settle(store);
+                    listing.compile();
+                }
                 self.print(&listing.list)
             }
-            Reading::Declared(project) => self.print(&Self::nothing_yet(project)),
-            Reading::Unknown => Err(nodal_core::Error::ProjectNotFound { path }),
+            Reading::Declared(empty) => self.print(empty.as_ref()),
+            Reading::Checkout(seen) => self.print(seen.as_ref()),
+            Reading::Unknown => Err(verdict::nowhere(&path)),
         }
     }
 
@@ -116,11 +138,17 @@ impl Ls {
     /// `--json` gets the shape it gets everywhere else, with no units in it. The line
     /// under it is a note for the same reason every other note is one: it is something
     /// the person should read, and it is not a row.
-    pub(crate) fn nothing_yet(project: ProjectName) -> UnitList {
+    pub(crate) fn nothing_yet(project: ProjectName, root: &Path) -> UnitList {
+        let now = Timestamp::now();
+        let sessions = intent::config_directory();
+        let worktrees = verdict::read(root, sessions.as_deref(), Some(project.clone()), now)
+            .map(|seen| seen.rows)
+            .unwrap_or_default();
         UnitList {
             project,
-            now: Timestamp::now(),
+            now,
             units: Vec::new(),
+            worktrees,
             notes: vec![String::from(
                 "nodal.toml is here and no unit has been made yet; run `nodal new \"<what \
                  the work is>\"` to make the first",
@@ -140,18 +168,67 @@ impl Ls {
     /// # Errors
     ///
     /// Whatever the registry or Git reported.
-    pub fn read(&self, store: &Store) -> nodal_core::Result<Reading> {
+    pub fn read(&self, store: Option<&Store>) -> nodal_core::Result<Reading> {
         let path = self.directory()?;
-        let Some(project) = entry::project_at(store.conn(), &path)? else {
-            return Ok(match entry::declared_at(&path) {
-                Some(root) => Reading::Declared(new::name_of(&root)),
-                None => Reading::Unknown,
-            });
+        // A machine with no registry has no projects, and asking one that is not there
+        // is the same question with the same answer. The file is not made to ask it.
+        let recorded = match store {
+            Some(store) => entry::project_at(store.conn(), &path)?,
+            None => None,
+        };
+        let Some(project) = recorded else {
+            if let Some(root) = entry::declared_at(&path) {
+                let named = new::name_of(&root);
+                return Ok(Reading::Declared(Box::new(Self::nothing_yet(named, &root))));
+            }
+            return Ok(Self::checkout(&path));
         };
         let now = Timestamp::now();
+        let Some(store) = store else { return Ok(Self::checkout(&path)) };
         let surveyed = survey::project(store.conn(), &project)?;
-        let list = ls::rows(&surveyed, &processes::Live, &project, now);
+        let mut list = ls::rows(&surveyed, &processes::Live, &project, now);
+        list.worktrees = Self::foreign(&project, &surveyed, now);
         Ok(Reading::Listed(Box::new(Listing { project, surveyed, list })))
+    }
+
+    /// The verdict on a checkout the registry holds nothing about.
+    ///
+    /// A directory Git does not know is [`Reading::Unknown`], and so is a checkout
+    /// whose own record of its worktrees could not be read: both are "Nodal cannot say
+    /// what is here", and the caller turns that into the one sentence or the help.
+    fn checkout(path: &Path) -> Reading {
+        let Some(root) = verdict::checkout_at(path) else { return Reading::Unknown };
+        let sessions = intent::config_directory();
+        match verdict::read(&root, sessions.as_deref(), None, Timestamp::now()) {
+            Ok(seen) => Reading::Checkout(Box::new(seen)),
+            Err(error) => {
+                tracing::debug!(%error, "the checkout's record of its worktrees could not be read");
+                Reading::Unknown
+            }
+        }
+    }
+
+    /// The worktrees of a registered project's repository that are not units.
+    ///
+    /// A unit is a clone and not a worktree, so the two sets rarely overlap; an adopted
+    /// unit is the case where they do, because `nodal adopt` takes a checkout somebody
+    /// else made and that checkout may be a worktree of this repository. A row for one
+    /// of those would be the same directory twice, once under the word `unit` and once
+    /// under the word `worktree`, so the homes the registry holds are taken out.
+    ///
+    /// A repository that could not be read costs the foreign rows and nothing else. The
+    /// units are what a person asked for and they are already in hand.
+    fn foreign(project: &Project, surveyed: &[Snapshot], now: Timestamp) -> Vec<WorktreeRow> {
+        let sessions = intent::config_directory();
+        let Ok(seen) = verdict::read(&project.root, sessions.as_deref(), None, now) else {
+            return Vec::new();
+        };
+        let homes: HashSet<PathBuf> = surveyed
+            .iter()
+            .filter_map(|subject| subject.home.as_ref())
+            .map(|environment| guard::resolve(&environment.home))
+            .collect();
+        seen.rows.into_iter().filter(|row| !homes.contains(&row.path)).collect()
     }
 
     /// Render the list in the format the arguments asked for.
@@ -159,7 +236,7 @@ impl Ls {
     /// # Errors
     ///
     /// [`nodal_core::Error::Render`] when the list cannot be encoded as JSON.
-    pub fn print(&self, answer: &UnitList) -> nodal_core::Result<ExitCode> {
+    pub fn print<A: output::Render>(&self, answer: &A) -> nodal_core::Result<ExitCode> {
         output::write(answer, Format::from_json_flag(self.json), &mut std::io::stdout())?;
         Ok(ExitCode::SUCCESS)
     }

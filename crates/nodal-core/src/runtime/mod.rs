@@ -37,5 +37,6 @@ pub mod shell;
 pub mod shells;
 pub mod show;
 pub mod stop;
+pub mod verdict;
 
 pub use crate::runtime::shells::Shell;

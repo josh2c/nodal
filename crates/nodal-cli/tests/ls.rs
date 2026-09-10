@@ -291,11 +291,21 @@ fn a_project_that_init_has_just_written_answers_with_an_empty_list() {
             .unwrap()
     };
 
-    // Before the recipe there is nothing here, and the error says so.
+    // Before the recipe there is no project here and there is still a checkout, so the
+    // answer is the verdict on its worktrees rather than a refusal (`runtime::verdict`).
     let before = run(&["ls"]);
-    assert!(!before.status.success(), "a directory with no recipe and no rows is no project");
-    let refused = String::from_utf8_lossy(&before.stderr).into_owned();
-    assert!(refused.contains("is in no project Nodal knows"), "{refused}");
+    assert!(
+        before.status.success(),
+        "a checkout with no recipe and no rows was refused: {}",
+        String::from_utf8_lossy(&before.stderr)
+    );
+    let read = String::from_utf8_lossy(&before.stdout).into_owned();
+    assert!(read.contains("no project of nodal's"), "{read}");
+    assert!(read.contains("nodal removed nothing"), "{read}");
+    assert!(
+        !read.contains("no units yet"),
+        "a checkout with no rows is not an empty list:\n{read}"
+    );
 
     let written = run(&["init", "--no-claude-hooks"]);
     assert!(written.status.success(), "{}", String::from_utf8_lossy(&written.stderr));

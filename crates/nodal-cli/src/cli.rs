@@ -126,7 +126,7 @@ impl Cli {
             Some(Command::Env(env)) => env.run(),
             Some(Command::New(new)) => new.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Adopt(adopt)) => adopt.run(&mut self.registry()?, !self.no_hooks),
-            Some(Command::Ls(ls)) => ls.run(&self.registry()?),
+            Some(Command::Ls(ls)) => ls.run(self.registry_if_present()?.as_ref()),
             Some(Command::Show(show)) => show.run(&self.registry()?),
             Some(Command::Explain(explain)) => explain.run(&self.registry()?),
             Some(Command::Cd(cd)) => cd.run(&self.registry()?),
@@ -150,27 +150,37 @@ impl Cli {
         }
     }
 
-    /// A bare `nodal` is `nodal ls`, and the help where there is no list to print.
+    /// A bare `nodal` is `nodal ls`, and the help where there is nothing to read.
     ///
     /// The list is what a person wants from the word on its own once they have units. A
     /// project that has been set up and has no units yet still gets the list, empty,
     /// because that person has started and the answer to "what is here" is "nothing
-    /// yet" rather than a page of help. A directory that is no project at all gets the
-    /// surface instead of an error: that person has not started.
+    /// yet" rather than a page of help.
+    ///
+    /// A repository Nodal has never seen gets the verdict on its worktrees, and gets it
+    /// without anything being written. That is the first thing most people who ever run
+    /// this command will see, and it is a reading of what Git already holds: a table of
+    /// the other checkouts of the repository they are standing in, what each is for,
+    /// which are finished, and which hold the only copy of something. A directory that
+    /// is not even a repository gets the surface instead of an error: that person has
+    /// not started.
     ///
     /// # Errors
     ///
     /// Whatever the registry or Git reported.
     fn bare(&self) -> nodal_core::Result<ExitCode> {
         let command = Ls::default();
-        let store = self.registry()?;
-        match command.read(&store)? {
+        let store = self.registry_if_present()?;
+        match command.read(store.as_ref())? {
             Reading::Listed(mut listing) => {
-                listing.settle(&store);
-                listing.compile();
+                if let Some(store) = &store {
+                    listing.settle(store);
+                    listing.compile();
+                }
                 command.print(&listing.list)
             }
-            Reading::Declared(project) => command.print(&Ls::nothing_yet(project)),
+            Reading::Declared(empty) => command.print(empty.as_ref()),
+            Reading::Checkout(seen) => command.print(seen.as_ref()),
             Reading::Unknown => {
                 tracing::debug!("no subcommand given and no project here");
                 Self::command().print_help().map_err(nodal_core::Error::io("<stdout>"))?;
@@ -196,6 +206,38 @@ impl Cli {
     ///
     /// [`nodal_core::Error::NoHomeDirectory`] when no override and no home directory
     /// say where the registry belongs, and whatever opening or reading it reported.
+    /// The registry, when this machine already has one, and **no registry when it does
+    /// not**.
+    ///
+    /// This is what makes the first `nodal` a person ever types write nothing at all.
+    /// The list is the one command that has an answer for a directory Nodal holds no
+    /// row about — the verdict on the checkout's worktrees — and reaching that answer
+    /// by first creating a registry to find out there is nothing in it would make the
+    /// command's own promise false. A machine with no registry has no projects, so the
+    /// answer is the same one an empty registry would have given, and the file is not
+    /// made.
+    ///
+    /// Only the two reading commands that have such an answer use this. Everything that
+    /// records anything goes through [`Self::registry`], which makes the file.
+    ///
+    /// # Errors
+    ///
+    /// [`nodal_core::Error::NoHomeDirectory`] when nothing says where the registry
+    /// belongs, and whatever opening or reading an existing one reported.
+    fn registry_if_present(&self) -> nodal_core::Result<Option<Store>> {
+        let path = match &self.store {
+            Some(chosen) => chosen.clone(),
+            None => home::registry()?,
+        };
+        if !path.exists() {
+            tracing::debug!(path = %path.display(), "no registry on this machine; nothing is made");
+            return Ok(None);
+        }
+        let mut store = Store::open(path)?;
+        report(&lifecycle::resolve(&mut store, &ops::rebuilders())?);
+        Ok(Some(store))
+    }
+
     fn registry(&self) -> nodal_core::Result<Store> {
         let path = match &self.store {
             Some(chosen) => chosen.clone(),

@@ -12,6 +12,7 @@ use crate::model::{
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, NONE, Table};
 use crate::output::view::event;
+use crate::output::view::verdict::{RowKind, WorktreeRow};
 
 /// How current a unit's environment is against the project it came from.
 ///
@@ -187,9 +188,30 @@ pub struct UnitList {
     pub now: Timestamp,
     /// The units, in the order the producer chose.
     pub units: Vec<UnitRow>,
+    /// The worktrees of the project's repository that are not units: folders another
+    /// tool made, in the same table as the units and marked as what they are.
+    ///
+    /// They share the table because a person looking at a project wants one answer to
+    /// "what checkouts of this repository are on my disk", and two tables make them do
+    /// the joining. They carry the word `worktree` in the leading column because the
+    /// one thing that must never happen is a directory Nodal did not make being
+    /// presented as a unit it did.
+    #[serde(default)]
+    pub worktrees: Vec<WorktreeRow>,
     /// What a signal could not answer. A note is not a failure: it is the difference
     /// between "nothing is attached" and "I could not see".
     pub notes: Vec<String>,
+}
+
+impl UnitList {
+    /// Whether the list holds anything but units.
+    ///
+    /// The leading column is only printed when it distinguishes something. A project
+    /// whose repository has no other worktrees prints the table it always printed.
+    #[must_use]
+    pub fn is_mixed(&self) -> bool {
+        !self.worktrees.is_empty()
+    }
 }
 
 impl Render for UnitList {
@@ -197,10 +219,10 @@ impl Render for UnitList {
 
     fn doc(&self) -> Doc {
         let mut doc = Doc::new();
-        if self.units.is_empty() {
+        if self.units.is_empty() && self.worktrees.is_empty() {
             doc.push(Block::line(format!("{}: no units yet", self.project)));
         } else {
-            doc.push(Block::table(list_table(&self.units, self.now)));
+            doc.push(Block::table(list_table(self)));
         }
         for note in &self.notes {
             doc.push(Block::line(note.clone()));
@@ -244,22 +266,75 @@ const COLUMNS: [&str; 7] = ["unit", "state", "branch", "main", "disk", "running"
 const LIST_COLUMNS: [&str; 8] =
     ["unit", "state", "branch", "main", "remote", "who", "age", "objective"];
 
-/// The table `nodal ls` prints.
-pub(crate) fn list_table(units: &[UnitRow], now: Timestamp) -> Table {
-    let mut table = Table::new(&LIST_COLUMNS);
-    for unit in units {
-        table.push(vec![
+/// The columns of a list that holds worktrees as well as units.
+///
+/// Two differences, and both exist so that no row is described by a word that is not
+/// true of it. A leading column says which kind each row is, and the heading over the
+/// names becomes `name` rather than `unit`, because a folder Nodal did not make must
+/// never appear under the word `unit`.
+///
+/// A project whose repository names no other worktrees prints [`LIST_COLUMNS`] and is
+/// unchanged by any of this. A column whose every cell reads `unit` tells a person
+/// nothing and costs them the width.
+const MIXED_COLUMNS: [&str; 9] =
+    ["kind", "name", "state", "branch", "main", "remote", "who", "age", "objective"];
+
+/// The table `nodal ls` prints: every unit, and every worktree of the project's
+/// repository that is not one.
+pub(crate) fn list_table(list: &UnitList) -> Table {
+    let mixed = list.is_mixed();
+    let mut table = Table::new(if mixed { &MIXED_COLUMNS[..] } else { &LIST_COLUMNS[..] });
+    for unit in &list.units {
+        let mut cells = vec![
             unit.slug.to_string(),
             state_cell(unit),
             branch_cell(unit),
             main_cell(unit),
             remote_cell(unit),
             who_cell(unit),
-            human::span(now, unit.created_at),
+            human::span(list.now, unit.created_at),
             objective_cell(unit),
-        ]);
+        ];
+        if mixed {
+            cells.insert(0, RowKind::Unit.label().to_owned());
+        }
+        table.push(cells);
+    }
+    for found in &list.worktrees {
+        table.push(worktree_cells(found, list.now));
     }
     table
+}
+
+/// One foreign worktree in the columns of the unit table.
+///
+/// Three of those columns are questions only a unit has an answer to — what its
+/// environment's state is, who is attached to it, and what a remote has of it beyond
+/// the commits it holds — and they carry the placeholder rather than a guess. The rest
+/// line up: the branch and its uncommitted paths, what merging would do, the age, and
+/// what the worktree was made for.
+///
+/// The reason a row was not read further — `locked`, `prunable` — goes in the state
+/// column and not in the verdict column, which is where the verdict table puts it. Here
+/// there is a column for it, so a row that says `locked` twice would be saying one
+/// thing in two places.
+fn worktree_cells(found: &WorktreeRow, now: Timestamp) -> Vec<String> {
+    let branch = found.branch.clone().unwrap_or_else(|| String::from("detached"));
+    let dirty =
+        if found.uncommitted > 0 { format!(" *{}", found.uncommitted) } else { String::new() };
+    let unpushed =
+        if found.unpushed > 0 { format!("^{}", found.unpushed) } else { String::from(NONE) };
+    vec![
+        RowKind::Worktree.label().to_owned(),
+        found.name.clone(),
+        found.note.clone().unwrap_or_else(|| String::from(NONE)),
+        format!("{branch}{dirty}"),
+        found.done.label(),
+        unpushed,
+        String::from(NONE),
+        found.age_cell(now),
+        found.for_cell(),
+    ]
 }
 
 /// The unit table, which both the list and the status share.
