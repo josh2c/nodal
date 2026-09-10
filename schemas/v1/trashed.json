@@ -54,6 +54,13 @@
       "$ref": "#/$defs/ProjectId",
       "description": "The project that unit belongs to, so `gc` can sweep one project's trash."
     },
+    "pruned_bytes": {
+      "default": 0,
+      "description": "What the prune dropped from the copy on its way in: the build output and the\ninstalled dependencies the home was keeping warm, in bytes.\n\nZero is the honest answer for a home that held none, for one an ignore rule\ncovered none of, and for a row written before Nodal pruned anything at all.\nDefaulted on the way in for that last case: a journalled reclaim from an older\nNodal has no such field and still has to be rebuilt and finished.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
     "slug": {
       "$ref": "#/$defs/Slug",
       "description": "The unit's handle, kept here so a listing reads without a join to a unit row."

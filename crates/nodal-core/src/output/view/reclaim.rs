@@ -24,6 +24,7 @@ use crate::output::human::{self, Block, Doc, Field, JOIN, NONE, Table};
 use crate::runtime::attribute::Note;
 use crate::runtime::stop::Stopped;
 use crate::services::ports::Released;
+use crate::workspace::prune;
 
 /// What a reclaim did on the remote: the refs of Nodal's own it deleted there.
 ///
@@ -107,6 +108,10 @@ pub struct Reclaimed {
     pub released: Released,
     /// Where the home went, when it was a home Nodal made.
     pub trashed: Option<Trashed>,
+    /// What the trashed copy lost on the way in: the build output and the installed
+    /// dependencies, and the local state the trash kept instead.
+    #[serde(default)]
+    pub trimmed: prune::Report,
     /// What was deleted on the remote, when a remote was reached at all.
     pub pruned: Option<Pruned>,
     /// The directory that was left exactly as it is, when the unit was adopted in
@@ -136,6 +141,9 @@ impl Render for Reclaimed {
             Field::new("stop", self.stop_cell()),
             Field::new(self.home_label(), self.home_cell()),
         ];
+        if !self.trimmed.kept.is_empty() {
+            fields.push(Field::new("local state kept in the trash", self.kept_cell()));
+        }
         if !self.hooks.is_empty() {
             fields.push(Field::new("hooks", self.hooks_cell()));
         }
@@ -201,11 +209,56 @@ impl Reclaimed {
             return format!("{} left in place; the unit is no longer registered", root.display());
         }
         let Some(entry) = &self.trashed else { return String::from(NONE) };
-        format!(
+        let mut lines = vec![format!(
             "home moved to {}; gc removes it {}",
             entry.path.display(),
             human::until(self.now, entry.expires_at)
+        )];
+        lines.push(self.dropped_line());
+        lines.extend(self.trimmed.notes.clone());
+        lines.join("\n")
+    }
+
+    /// What the trash did not have to keep, and what it holds instead.
+    ///
+    /// The contract in one line: the trash holds the home without its build output and
+    /// its dependencies. A home that held none of it says so, because "nothing was
+    /// dropped" and "the line is missing" are different claims and a person reading a
+    /// thirteen gigabyte trash needs the first.
+    fn dropped_line(&self) -> String {
+        if self.trimmed.changed_nothing() {
+            return String::from("the trash holds the whole home; it held no build output");
+        }
+        let names = self
+            .trimmed
+            .removed
+            .iter()
+            .map(|removal| removal.path.display().to_string())
+            .collect::<Vec<String>>();
+        format!(
+            "dropped {} of build output and dependencies: {}",
+            human::bytes(self.trimmed.bytes),
+            human::join(&names)
         )
+    }
+
+    /// The ignored state the trash kept, which is what a person goes back for.
+    ///
+    /// Named one by one while there are few enough to read ([`prune::NAMED`]), and
+    /// counted with a total after that. Either way the answer is the same claim: this
+    /// is what is in the trash that no commit holds.
+    fn kept_cell(&self) -> String {
+        let kept = &self.trimmed.kept;
+        if kept.len() > prune::NAMED {
+            return format!(
+                "{} paths holding {}; nodal show names them",
+                kept.len(),
+                human::bytes(self.trimmed.kept_bytes)
+            );
+        }
+        let names: Vec<String> =
+            kept.iter().map(|entry| entry.path.display().to_string()).collect();
+        human::join(&names)
     }
 
     /// Which hooks ran, in order.
@@ -420,6 +473,7 @@ mod tests {
             containers: Vec::new(),
             released: crate::services::ports::Released::default(),
             trashed: None,
+            trimmed: crate::workspace::prune::Report::default(),
             pruned: None,
             root: None,
             hooks: Vec::new(),

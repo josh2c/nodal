@@ -493,6 +493,7 @@ impl World {
             home: self.home(),
             path: self.state.join("project").join("trash").join("00000001"),
             snapshot: None,
+            pruned_bytes: 0,
             trashed_at: at(),
             expires_at: at(),
         }

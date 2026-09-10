@@ -88,6 +88,35 @@ fn the_json_answer_carries_the_same_rows() {
     assert!(parsed["now"].is_string(), "{text}");
 }
 
+/// Put a reclaimed home in the trash of a project under the state root.
+fn trash(fixture: &Fixture, project: &str, home: &str, relative: &str, bytes: usize) {
+    let path = fixture.root().join(project).join("trash").join(home).join(relative);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, vec![0_u8; bytes]).unwrap();
+}
+
+#[test]
+fn the_header_says_what_the_trash_holds() {
+    let fixture = Fixture::new();
+    let checkout = checkout(fixture.root());
+
+    let empty = doctor(&fixture, &checkout, &[]);
+    assert!(empty.contains("no reclaimed home is waiting for gc"), "{empty}");
+
+    trash(&fixture, "project", "E00M0001", "src/main.rs", 2048);
+    trash(&fixture, "project", "E00M0002", ".env.local", 64);
+    trash(&fixture, "storefront", "E00M0003", "src/app.ts", 1024);
+
+    let text = doctor(&fixture, &checkout, &[]);
+    assert!(text.contains("3 reclaimed homes"), "the header does not count the trash: {text}");
+    assert!(text.contains("3.1 kB"), "the header does not say what the trash holds: {text}");
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&doctor(&fixture, &checkout, &["--json"])).expect("one document");
+    assert_eq!(parsed["trash"]["homes"], 3, "the json carries the same count");
+    assert_eq!(parsed["trash"]["bytes"], 3136);
+}
+
 #[test]
 fn the_report_never_says_it_took_anything_away() {
     let fixture = Fixture::new();

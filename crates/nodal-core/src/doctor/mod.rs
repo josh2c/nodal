@@ -96,6 +96,7 @@ pub mod databases;
 pub mod intent;
 pub mod machine;
 pub mod size;
+pub mod trash;
 pub mod units;
 pub mod worktrees;
 
@@ -339,6 +340,7 @@ pub fn survey(
         checkout: checkout_of(&scope),
         state_root: machine.state_dir.to_path_buf(),
         sharing: machine.sharing.cloned(),
+        trash: trash::count(machine.state_dir),
         here,
         elsewhere,
         branches,

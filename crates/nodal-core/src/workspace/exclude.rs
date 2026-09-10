@@ -106,6 +106,28 @@ pub fn invalidated() -> Vec<&'static Row> {
     ROWS.iter().filter(|row| row.invalidate).collect()
 }
 
+/// The rows whose content a tool makes again: build output, installed dependencies and
+/// task caches.
+///
+/// This is the table read a third time, for the one place where the answer inverts.
+/// A live home keeps this content because a warm build is what the home is for; a
+/// reclaimed home in the trash has no build to keep warm, and the same rows are then
+/// thirteen gigabytes a person is storing for a fortnight to no purpose.
+/// [`super::prune`] is what acts on it.
+///
+/// The rule is the two words the table already carries, and it is derived rather than
+/// written a second time so that a row cannot be regenerable here and not there. A
+/// [`kept`] row is kept precisely because the tool that wrote it can write it again,
+/// and a [`dropped_everywhere`] row is a cache the tool rebuilds after a move. What is
+/// left out is the other reason a row is dropped: content that is not this project's.
+/// A nested checkout another tool made, a report of a run that happened elsewhere and
+/// the state of the copy a home was found in are none of them things a build remakes,
+/// so a prune must not be the operation that takes one away.
+#[must_use]
+pub fn regenerable() -> Vec<&'static Row> {
+    ROWS.iter().filter(|row| row.keep || row.invalidate).collect()
+}
+
 /// Where a row on an exclusion list came from.
 ///
 /// This decides what a tracked path does to the row. A default row is Nodal's guess
@@ -264,6 +286,17 @@ mod tests {
                 "{} is invalidated after a clone but carried by one",
                 row.path
             );
+        }
+    }
+
+    #[test]
+    fn what_a_tool_makes_again_is_every_row_but_the_content_that_is_not_ours() {
+        let regenerable: Vec<&str> = super::regenerable().iter().map(|row| row.path).collect();
+        for path in ["target", "node_modules", ".venv", ".turbo", ".next", "__pycache__"] {
+            assert!(regenerable.contains(&path), "{path} is state a tool writes again");
+        }
+        for path in [".claude/worktrees", ".nodal", "test-results", "coverage"] {
+            assert!(!regenerable.contains(&path), "{path} is not this project's to remake");
         }
     }
 

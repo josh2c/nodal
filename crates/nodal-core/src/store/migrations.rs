@@ -36,11 +36,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "step output",
         sql: include_str!("migrations/0007_step_output.sql"),
     },
+    Migration {
+        version: 8,
+        name: "trash pruned",
+        sql: include_str!("migrations/0008_trash_pruned.sql"),
+    },
 ];
 
 /// The schema version a database is brought to by [`run`]. Kept as a literal rather
 /// than derived from the table's length, so that a version appears in a diff.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Bring `store` up to [`SCHEMA_VERSION`].
 ///

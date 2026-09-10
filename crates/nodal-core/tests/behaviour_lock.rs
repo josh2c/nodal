@@ -205,7 +205,11 @@ fn plan_reclaim_stops_the_runtime_and_then_does_one_of_three_things() {
     let trashing = reclaim::plan(&params).unwrap();
     assert_eq!(trashing.kind, reclaim::KIND);
     assert_eq!(trashing.recovery, Recovery::RollBack);
-    assert_eq!(trashing.keys(), ["runtime.stop", "home.trash"]);
+    assert_eq!(
+        trashing.keys(),
+        ["runtime.stop", "home.trash", "home.prune"],
+        "the build output is taken out of the copy after it is trash and never before"
+    );
     assert_rebuilds_the_same(&world, &trashing, reclaim::KIND);
 
     let mut params = world.reclaim_params();
