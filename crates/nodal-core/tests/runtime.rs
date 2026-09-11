@@ -147,7 +147,7 @@ fn a_process_started_with_a_homes_environment_is_seen_on_this_machine() {
     }
     let directory = tempfile::tempdir().unwrap();
     let home = directory.path().join("home");
-    let host = nodal_core::lifecycle::owner::current_host();
+    let host = nodal_core::model::HostName::current();
     let store = registry(directory.path(), &home, &host);
     let environment = EnvId::parse(ENVIRONMENT).unwrap();
 

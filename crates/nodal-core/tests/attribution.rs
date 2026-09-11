@@ -61,7 +61,7 @@ fn registry(root: &Path, home: &Path, ports: Ports) -> Store {
 }
 
 fn host() -> HostName {
-    nodal_core::lifecycle::owner::current_host()
+    nodal_core::model::HostName::current()
 }
 
 /// A home the kernel names the same way this test does, so a directory read back from

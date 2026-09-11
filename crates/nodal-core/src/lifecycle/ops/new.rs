@@ -54,13 +54,12 @@ use crate::fingerprint;
 use crate::git::{Git, refs, scrub};
 use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Runner};
 use crate::lifecycle::journal::Operation;
-use crate::lifecycle::owner;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::{Rebuild, guard, identity, marker, run};
 use crate::model::{
-    BranchName, CommitId, EnvId, EnvState, Environment, Epistemic, EventKind, Objective, PortBlock,
-    PortName, Ports, Project, ProjectId, ProjectName, Recipe, RemoteUrl, Slug, Timestamp, Unit,
-    UnitId, UnitStatus,
+    BranchName, CommitId, EnvId, EnvState, Environment, Epistemic, EventKind, HostName, Objective,
+    PortBlock, PortName, Ports, Project, ProjectId, ProjectName, Recipe, RemoteUrl, Slug,
+    Timestamp, Unit, UnitId, UnitStatus,
 };
 use crate::output::view::{Arrival, Created};
 use crate::services::ports;
@@ -1049,7 +1048,7 @@ pub(super) fn new_environment(
         base_id: None,
         ws_fp_materialized: None,
         schema_fp_materialized: None,
-        host: owner::current_host(),
+        host: HostName::current(),
         db_name: None,
         ports: Ports::default(),
         fixed_port: None,

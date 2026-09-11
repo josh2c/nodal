@@ -70,10 +70,10 @@ use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Runner};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::ops::new;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
-use crate::lifecycle::{Rebuild, guard, marker, owner, run};
+use crate::lifecycle::{Rebuild, guard, marker, run};
 use crate::model::{
-    BranchName, EnvId, Environment, Epistemic, EventKind, Objective, PortBlock, PortName, Project,
-    Recipe, Slug, Timestamp, Unit, UnitId, UnitStatus,
+    BranchName, EnvId, Environment, Epistemic, EventKind, HostName, Objective, PortBlock, PortName,
+    Project, Recipe, Slug, Timestamp, Unit, UnitId, UnitStatus,
 };
 use crate::output::view::{AdoptedAll, AdoptedRow, Arrival, Created};
 use crate::services::ports;
@@ -758,7 +758,7 @@ fn standing_environment(unit: UnitId, checkout: &Path, at: Timestamp) -> Environ
         base_id: None,
         ws_fp_materialized: None,
         schema_fp_materialized: None,
-        host: owner::current_host(),
+        host: HostName::current(),
         db_name: None,
         ports: crate::model::Ports::default(),
         fixed_port: None,

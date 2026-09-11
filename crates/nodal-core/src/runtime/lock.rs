@@ -80,7 +80,7 @@ pub fn enter(
     now: Timestamp,
 ) -> Result<Entered> {
     let actor = crate::runtime::actor::current()?;
-    let host = crate::lifecycle::owner::current_host();
+    let host = HostName::current();
     let idle_hours = idle_hours(&project.root);
     let held = locks::get(conn, unit.id)?;
     let mine = Lock {
@@ -138,7 +138,7 @@ pub fn enter(
 pub fn open(conn: &Connection, unit: UnitId, idle_hours: u32, now: Timestamp) -> Result<()> {
     let mine = Lock {
         unit_id: unit,
-        host: crate::lifecycle::owner::current_host(),
+        host: HostName::current(),
         actor: Some(crate::runtime::actor::current()?),
         pid: Some(std::process::id()),
         taken_at: now,
@@ -198,7 +198,7 @@ pub fn touch(conn: &Connection, home: &Path, now: Timestamp) -> Result<Option<En
 /// # Errors
 /// [`Error::Store`] on a failed statement.
 pub fn release(conn: &Connection, unit: UnitId) -> Result<bool> {
-    locks::release(conn, unit, &crate::lifecycle::owner::current_host())
+    locks::release(conn, unit, &HostName::current())
 }
 
 /// Who holds `unit`, once the clock has been applied: `None` when the hold has lapsed.
