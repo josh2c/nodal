@@ -104,21 +104,30 @@ SHIM
 
     per_row=$(awk -v total="$list_total" -v units="$units" 'BEGIN { printf "%.1f", total / units }')
 
-    # Baseline 7.0 per row at 10 units on the shapes fixture, where every unit sits at
+    # Baseline 7.4 per row at 10 units on the shapes fixture, where every unit sits at
     # the base tip. It was 9.0 until the layout of an ordinary checkout was read from the
-    # shape on disk rather than from two `git rev-parse` invocations per home. A project
-    # whose units are ahead of the base pays one more call for the verdict and one for
-    # the tree it compares against, which the ceiling holds. The three history readings
-    # a memory needs are what is left; batching them is the next ratchet.
+    # shape on disk rather than from two `git rev-parse` invocations per home, and 7.0
+    # until each home was measured against the person's own checkout rather than against
+    # refs frozen when the base was built. That refresh costs one invocation per home and
+    # only when the checkout's refs have actually moved: a reading of them is taken by
+    # `stat` alone, and a home already at that reading is skipped, so a run of commands
+    # between two fetches pays for the first and nothing after it. A project whose units
+    # are ahead of the base pays one more call for the verdict and one for the tree it
+    # compares against, which the ceiling holds. The three history readings a memory
+    # needs are what is left; batching them is the next ratchet.
     gate "git processes per list row" "$per_row" 8 "per row" \
-        "baseline 7.0 at 10 units; ratchet to 5 when the history readings are batched"
+        "baseline 7.4 at 10 units; ratchet to 5 when the history readings are batched"
 
-    # Baseline 86 for the tenth create: 16 for the create itself, and 7 for each of the
-    # ten units the memory is then written for, the new one included. It was 112, and the
-    # 26 that went are the two layout invocations, paid once per home surveyed and three
-    # more times by the create itself. Ratchet to 70 with the list row.
-    gate "git processes, create number $units" "$last_create" 90 "processes" \
-        "baseline 86 at the tenth create; ratchet to 70 with the list row"
+    # Baseline 90 for the tenth create: 18 for the create itself, and 7 for each of the
+    # ten units the memory is then written for, the new one included. It was 112 before
+    # the two layout invocations went, and 86 until a create started reading the person's
+    # own checkout rather than the base: one invocation to read the checkout's HEAD, and
+    # one to copy its refs into the new home, which is what makes a unit start where the
+    # person is. The survey that follows pays nothing for it, because the same step
+    # records the reading the survey would have refreshed against. Ratchet to 74 with the
+    # list row.
+    gate "git processes, create number $units" "$last_create" 92 "processes" \
+        "baseline 90 at the tenth create; ratchet to 74 with the list row"
 
     report "git processes, list total" "$list_total" "processes" "over $units units"
 fi

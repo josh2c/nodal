@@ -278,9 +278,13 @@ fn a_project_row_with_no_remote_is_given_one_from_its_own_checkout() {
         let store = workspace.store();
         store
             .conn()
+            // Every column added after version 8 goes, not only the one this test is
+            // about: the version is what decides which migrations replay, and a schema
+            // that already carries a later column would fail the step that adds it.
             .execute_batch(
                 "DROP INDEX project_remote_url;\n\
                  ALTER TABLE project DROP COLUMN remote_url;\n\
+                 ALTER TABLE unit DROP COLUMN base_commit;\n\
                  PRAGMA user_version = 8;",
             )
             .unwrap();

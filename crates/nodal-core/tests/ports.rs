@@ -123,6 +123,7 @@ impl Registry {
                 objective_epistemic: None,
                 branch: BranchName::parse(format!("nodal/unit-{n}")).unwrap(),
                 parent_branch: None,
+                base_commit: None,
                 status: UnitStatus::Open,
                 created_at: now(),
                 updated_at: now(),

@@ -79,6 +79,7 @@ fn unit() -> Unit {
         objective_epistemic: Some(Epistemic::Stated),
         branch: BranchName::parse("nodal/fix-worker-import").unwrap(),
         parent_branch: Some(BranchName::parse("main").unwrap()),
+        base_commit: None,
         status: UnitStatus::Open,
         created_at: at("2026-09-06T10:01:00Z"),
         updated_at: at("2026-09-06T10:01:00Z"),

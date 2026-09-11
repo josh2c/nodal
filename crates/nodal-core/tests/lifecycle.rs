@@ -307,6 +307,7 @@ fn fixture_unit(id: UnitId, project_id: nodal_core::model::ProjectId) -> Unit {
         objective_epistemic: None,
         branch: "nodal/fix-worker-import".parse().unwrap(),
         parent_branch: None,
+        base_commit: None,
         status: UnitStatus::Open,
         created_at: at(),
         updated_at: at(),

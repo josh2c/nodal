@@ -6,6 +6,12 @@
       "pattern": "^(?![-/])(?!.*(?:\\.\\.|//|@\\{))(?!.*[/.]$)(?!.*\\.lock$)[^\\s~^:?*\\[\\\\\\x00-\\x1F\\x7F-\\x9F]+$",
       "type": "string"
     },
+    "CommitId": {
+      "description": "A Git object id in full, lowercase hexadecimal form.",
+      "maxLength": 64,
+      "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+      "type": "string"
+    },
     "Epistemic": {
       "description": "How the event is known. V1 has two tiers and no more: Nodal watched it happen, or\nsomebody said so.",
       "oneOf": [
@@ -80,6 +86,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "One PR-sized piece of work.",
   "properties": {
+    "base_commit": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommitId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The commit the unit forked from, when it was recorded.\n\nWritten once, by the create, and never updated: a unit forks once. It is the\ncommit the person's own checkout was at, or the one `--from` named.\n\n`None` means not recorded, which is every unit made before the column existed.\nIt never means a unit forked from nothing. A reader that needs a fork point and\nfinds `None` falls back to the merge base it used before, and says which of the\ntwo it is reporting."
+    },
     "branch": {
       "$ref": "#/$defs/BranchName",
       "description": "The branch this unit owns. Unique among open units, enforced by the registry."

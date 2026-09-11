@@ -286,6 +286,17 @@ impl Machine {
         self.runner.command(args)
     }
 
+    /// The same machine, with `named` set in the environment of every command it runs.
+    ///
+    /// One suite wants it. The refresh properties name Git's transport allow-list and
+    /// its proxy command, so that a fetch which reached for anything but the filesystem
+    /// would fail rather than quietly succeed on whichever host happened to be online.
+    #[must_use]
+    pub fn with_env(mut self, named: (&str, &str)) -> Self {
+        self.runner = self.runner.with_env(named.0, named.1);
+        self
+    }
+
     /// Where this machine's commands keep the settings Claude Code reads.
     ///
     /// It is beside the state directory and it is not `$HOME/.claude`

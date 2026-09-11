@@ -333,6 +333,7 @@ fn pin(store: &Store, project: &Project, base: &nodal_core::model::BaseId) {
         objective_epistemic: None,
         branch: "nodal/holds-the-base".parse().unwrap(),
         parent_branch: None,
+        base_commit: None,
         status: UnitStatus::Open,
         created_at: Timestamp::now(),
         updated_at: Timestamp::now(),

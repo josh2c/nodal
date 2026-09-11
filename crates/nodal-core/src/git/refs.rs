@@ -9,6 +9,37 @@ use crate::error::{Error, Result};
 /// Where Nodal keeps its own refs inside a unit's repository.
 pub const NAMESPACE: &str = "refs/nodal/";
 
+/// Where a home keeps the copy it took of the person's own checkout's branches.
+///
+/// A home is cloned from a base, and a base is a clone of the remote. Neither of them
+/// has the branches the person made in their own checkout, and `--from` names one of
+/// those as often as it names a branch the remote carries. So the create copies them
+/// here, under a namespace of Nodal's own, rather than into `refs/heads/`, where they
+/// would look to the person's `git` like branches of the unit's own repository.
+pub const CHECKOUT: &str = "refs/nodal/checkout/";
+
+/// Where a home keeps the copy it took of what the person's checkout knows of `origin`.
+///
+/// Not `refs/remotes/origin/`, and the distinction is the whole of this constant. A
+/// home has an `origin` of its own, it pushes to it, and `refs/remotes/origin/*` is its
+/// own record of what it has sent — which is what decides whether a unit's work exists
+/// anywhere but this machine ([`super::remote::containment`]). Writing the checkout's
+/// reading over that would answer a question about the remote with a reading taken
+/// somewhere else, in a namespace whose meaning several other operations depend on.
+///
+/// So the copy lives beside it, under a name that says whose reading it is.
+pub const ORIGIN: &str = "refs/nodal/origin/";
+
+/// The refspec that brings a checkout's reading of `origin` in, under [`ORIGIN`].
+///
+/// Forced, because the point of copying is that the checkout's copy is newer than the
+/// one the base was built with, and a fast-forward rule would refuse exactly the case
+/// where the remote branch was rewritten.
+pub const MIRROR_ORIGIN: &str = "+refs/remotes/origin/*:refs/nodal/origin/*";
+
+/// The refspec that brings a checkout's own branches in, under [`CHECKOUT`].
+pub const MIRROR_HEADS: &str = "+refs/heads/*:refs/nodal/checkout/*";
+
 /// A ref and what it points at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ref {

@@ -152,6 +152,7 @@ fn seeded(dir: &Path) -> PathBuf {
             objective_epistemic: Some(Epistemic::Stated),
             branch: BranchName::parse("nodal/fix-worker-import").unwrap(),
             parent_branch: None,
+            base_commit: None,
             status: UnitStatus::Open,
             created_at: Timestamp::from_unix_seconds(1_788_689_400).unwrap(),
             updated_at: Timestamp::from_unix_seconds(1_788_689_400).unwrap(),

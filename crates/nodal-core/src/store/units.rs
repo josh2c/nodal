@@ -8,7 +8,8 @@ use rusqlite::{Connection, Row, params};
 
 use crate::Result;
 use crate::model::{
-    BranchName, Epistemic, Objective, ProjectId, Slug, Timestamp, Unit, UnitId, UnitStatus,
+    BranchName, CommitId, Epistemic, Objective, ProjectId, Slug, Timestamp, Unit, UnitId,
+    UnitStatus,
 };
 use crate::store::row;
 
@@ -17,7 +18,7 @@ const TABLE: &str = "unit";
 
 /// Every column [`decode`] reads.
 const COLUMNS: &str = "id, project_id, slug, objective, objective_epistemic, branch, \
-     parent_branch, status, created_at, updated_at";
+     parent_branch, base_commit, status, created_at, updated_at";
 
 /// Record a new unit.
 ///
@@ -28,7 +29,8 @@ pub fn insert(conn: &Connection, unit: &Unit) -> Result<()> {
     row::write(
         conn,
         "INSERT INTO unit (id, project_id, slug, objective, objective_epistemic, branch, \
-         parent_branch, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         parent_branch, base_commit, status, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             unit.id.to_string(),
             unit.project_id.to_string(),
@@ -37,6 +39,7 @@ pub fn insert(conn: &Connection, unit: &Unit) -> Result<()> {
             epistemic_name(unit.objective_epistemic)?,
             unit.branch.as_str(),
             unit.parent_branch.as_ref().map(BranchName::as_str),
+            unit.base_commit.as_ref().map(CommitId::as_str),
             row::name_of(&unit.status, "unit status")?,
             unit.created_at.unix_seconds(),
             unit.updated_at.unix_seconds(),
@@ -179,6 +182,7 @@ fn decode(row: &Row<'_>) -> Result<Unit> {
         objective_epistemic: row::name_opt::<Epistemic>(row, TABLE, "objective_epistemic")?,
         branch: row::scalar::<BranchName>(row, TABLE, "branch")?,
         parent_branch: row::scalar_opt::<BranchName>(row, TABLE, "parent_branch")?,
+        base_commit: row::scalar_opt::<CommitId>(row, TABLE, "base_commit")?,
         status: row::name::<UnitStatus>(row, TABLE, "status")?,
         created_at: row::stamp(row, TABLE, "created_at")?,
         updated_at: row::stamp(row, TABLE, "updated_at")?,

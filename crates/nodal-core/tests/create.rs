@@ -43,6 +43,7 @@ fn the_plan_is_the_same_plan_however_it_is_built() {
             "home.materialize",
             "home.relocate",
             "git.scrub",
+            "git.refresh",
             "git.branch",
             "git.hide",
             "home.marker",
@@ -106,8 +107,8 @@ fn a_run_whose_process_is_gone_is_rebuilt_and_rolled_back_to_nothing() {
         reported[0].action,
         Action::RolledBack {
             undone: vec![
-                String::from("git.hide"),
                 String::from("git.branch"),
+                String::from("git.refresh"),
                 String::from("git.scrub"),
                 String::from("home.relocate"),
                 String::from("home.materialize"),

@@ -242,8 +242,8 @@ fn the_list_counts_the_working_tree_by_side() {
     assert_eq!(work.uncommitted(), 3);
     assert!(!work.detached);
     assert_eq!(
-        work.base, "refs/remotes/origin/HEAD",
-        "the project's own default branch is what a clone records"
+        work.base, "main",
+        "the base is named as the person names it, not as the ref Nodal measured it from"
     );
     drop(fixture.directory);
 }
