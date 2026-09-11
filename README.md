@@ -1,26 +1,162 @@
 # Nodal
 
-> **Warning: pre-alpha.** The foundation layer is built and tested. The commands below are under construction. Interfaces and on-disk formats may change without notice.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org)
+[![CI](https://github.com/josh2c/nodal/actions/workflows/ci.yml/badge.svg)](https://github.com/josh2c/nodal/actions/workflows/ci.yml)
 
-One list for every coding agent on your project. Cheap work units instead of full checkouts. Nothing left behind.
+**[Install](#install)** · **[Try it](#try-it-on-a-repository-you-already-have)** · **[Commands](#commands)** · **[Docs](docs/contracts.md)** · **[Contributing](CONTRIBUTING.md)**
 
-- work units are copy-on-write clones: seconds to create, a few megabytes each
-- one list across every tool: how far behind main, what changed, what runs, what is done
-- each unit knows what its sibling units changed, so agents do not answer from stale code
-- deterministic cleanup: trash, gc, and a doctor that reports and never deletes
-- no daemon, no cloud, no new version control; Git and GitHub do not change
+**Git made branches cheap. Worktrees made branches parallel. Nodal makes their
+environments cheap, durable, and manageable.**
 
-## The problem
+See every worktree you already have, manage them safely in place, or create Nodal units
+that arrive ready to run.
 
-Run several coding agents on one project. Each agent creates a worktree. Each worktree installs dependencies, builds, and starts a dev server. Disk fills. Nobody knows which worktrees are done. An agent in an old worktree answers from code that main replaced weeks ago.
+> **Pre-alpha.** The foundation is built and tested. Parts of the command surface are
+> not. Interfaces and on-disk formats may change without notice.
 
-## The unit of work
+## What it looks like
 
-A **WorkUnit** is a branch with a home directory and a memory.
+Real output, on a repository Nodal had never been told about. It read the worktrees,
+answered, and wrote nothing.
 
-- **Branch**: an identity every tool understands. One WorkUnit is one PR-sized change.
-- **Home directory**: a normal folder with its own repository. Any terminal, IDE, or agent can open it. The folder supplies the correct ports and environment. No plugin is necessary.
-- **Memory**: a `WORKUNIT.md` file, compiled and never edited. `nodal show` writes it again every time it is asked. It states what the unit is for and how that is known, the unit's condition, what sibling units changed, and the unit's own log. The next agent or engineer continues without a transcript.
+```console
+$ nodal
+
+  ~/projects/protonpass  (no project of nodal's; nothing was written)
+
+  WORKTREE            FOR  DONE             ONLY HERE  BEHIND             SIZE    AGE
+  ../protonpass-t8    —    conflict         ^1         -49 (origin/main)  141 kB  21 d
+  ../protonpass-t14   —    conflict         ^1         -43 (origin/main)  254 kB  21 d
+  ../protonpass-t16   —    conflict         ^1         -41 (origin/main)  263 kB  21 d
+  ../protonpass-t21   —    done (ancestor)  —          -37 (origin/main)  276 kB  21 d
+  ../protonpass-t22   —    done (ancestor)  —          -37 (origin/main)  282 kB  21 d
+  /tmp/…/scratch/h1   —    prunable (gitdir file points to non-existent location)
+  /tmp/…/scratch/h2   —    prunable (gitdir file points to non-existent location)
+
+  2 worktrees are done and hold nothing unique: 558 kB. nodal removed nothing.
+```
+
+**`ONLY HERE` is the column that matters.** It answers the only question that stops
+people deleting anything: *will this destroy work that exists nowhere else?* `^1` means
+one commit is only in that folder. A dash means nothing is.
+
+`DONE` is a separate question, read with `git merge-tree`, so a squash merge still counts
+as done. `FOR` shows the purpose you gave a unit, or a purpose recovered from a supported
+agent's session record. Today that means Claude Code; a worktree any other tool made
+shows a dash until you name it.
+
+## Try it on a repository you already have
+
+```sh
+cd ~/projects/anything
+nodal
+```
+
+That is the whole first minute. It needs no `init`, no config file, and no permission. It
+reads Git and the filesystem, prints the table above, and tells you it removed nothing.
+`nodal doctor --machine` does the same across every clone under your home directory,
+grouped by remote.
+
+Cleanup is a trust problem before it is a disk problem, so nothing is ever removed for
+you. Nodal says what exists, why it believes a thing is disposable, and what it touched.
+Reclaiming is a separate command you choose, and it refuses outright while a folder holds
+work that exists nowhere else.
+
+## Install
+
+Rust 1.88 or later.
+
+```sh
+cargo install --git https://github.com/josh2c/nodal nodal-cli
+```
+
+Then, for `nodal cd` to move the shell you are in:
+
+```sh
+echo 'eval "$(nodal shell-init bash)"' >> ~/.bashrc   # or zsh, or fish
+```
+
+Nodal makes no network calls of its own: no update check, no telemetry. The only network
+traffic it causes is the `git` you configured talking to the remotes you configured.
+
+## Two kinds of folder
+
+Nodal reads the worktrees you already have, and it makes something different from them.
+The first is how you arrive. The second is the product.
+
+| | Where it lives | What it is |
+| --- | --- | --- |
+| **A worktree you already have** | where you made it | Git's own worktree, sharing Git's object database, exactly as it was. Nodal reads it, and `nodal adopt` registers it in place. The only files written are `.nodal/` and `.envrc`, both excluded from Git first, so `git status` there stays byte for byte what it was. |
+| **A unit Nodal makes** | its own home | An independent, ready-to-run development environment: its own repository, its own ports, its own runtime state, and a memory. Not a worktree. |
+
+## What `nodal new` makes
+
+Git gave every task a branch. Worktrees gave every branch a folder. Nodal gives every
+task a complete environment without giving every task a complete copy of the project.
+
+```sh
+nodal init          # write nodal.toml, one line per gap
+nodal new "fix the worker import"
+```
+
+A unit is an independent, ready-to-run development environment with its own repository,
+runtime state, and memory.
+
+- **Ready, not empty.** Dependencies are already there. Ports and environment come from
+  the folder, so any terminal, IDE or agent can open it with no plugin.
+- **An environment, not a second install.** A unit's home is a copy-on-write clone of a
+  warm base, so it costs the blocks that differ rather than another full environment.
+  Measured here: a unit on this repository is ready in about five seconds, and on a
+  200,000-file monorepo in about thirty. Your project will land somewhere on that curve.
+- **Its own repository, on purpose.** Nodal does not create worktrees. A unit's home is a
+  full clone including `.git`, independent of every other unit, while the shared history
+  costs nothing to duplicate. Worktrees existed to avoid expensive checkouts;
+  copy-on-write makes checkouts cheap, so the trade is no longer worth making. You get
+  logical independence and physical deduplication at the same time, and none of the
+  shared-repository edge cases around `gc`, stash, refs and branch checkout.
+- **A memory.** `WORKUNIT.md` is compiled, never edited, and rewritten on every `nodal
+  show`. It says what the unit is for, what its siblings changed, and what ran. The next
+  agent or engineer continues without a transcript.
+- **Cleanup that sorts by kind.** Unique work is kept, reconstructable state is
+  reclaimed, runtime is stopped, shared state is left alone.
+
+A base is rebuilt only when the inputs that define an environment move: lockfiles,
+toolchain, migrations, service definitions. An ordinary source commit moves nothing.
+
+## Commands
+
+Everyday:
+
+| Command | What it does |
+| --- | --- |
+| `nodal` | the table above: every worktree and unit, what it is for, whether it is done |
+| `nodal new` | a unit from a warm base: branch, home, ports, environment |
+| `nodal adopt` | register a worktree or checkout where it stands, without moving it |
+| `nodal show` | one unit in full, and its memory rewritten |
+| `nodal shell`, `cd`, `run` | work inside a unit, and record what ran |
+| `nodal done`, `merge` | push and print the compare link, or squash, rebase and fast-forward |
+| `nodal reclaim` | end a unit; it refuses while the home holds work that is only there |
+
+When you need it: `nodal doctor` reports what every tool left behind on this machine and
+removes nothing; `nodal explain` says why a home is as it is; `nodal ps` names the unit a
+running process or bound port belongs to; `nodal base` lists and builds the warm bases;
+`nodal env` reports what a home carries; `nodal gc` empties the trash after its retention;
+`nodal uninstall` takes back everything Nodal put on the machine, file by file.
+
+Full surface and guarantees: [`docs/contracts.md`](docs/contracts.md).
+
+## Agents
+
+Nodal is agent-neutral. A unit is a folder and the environment comes from the folder, so
+any tool that can open a directory can use one with no integration at all.
+
+| Tool | Integration |
+| --- | --- |
+| Claude Code | hooks can answer a worktree request with a Nodal unit instead of a bare worktree; context loads at session start, and the unit outlives the session |
+| Codex | an `AGENTS.md` pointer line; unit context in `WORKUNIT.md` |
+| Cursor, VS Code, any IDE | open the unit folder; the integrated terminal is already activated |
+| Plain terminal | `nodal shell-init`, or `cd` and `.envrc` |
 
 ## Platforms
 
@@ -31,40 +167,14 @@ A **WorkUnit** is a branch with a home directory and a memory.
 | Any other filesystem | a copy of the bytes, with a warning |
 | Windows | via WSL2, as Linux |
 
-## Commands
-
-- `nodal new "fix worker import"` clones a warm **golden base** as an independent repository on a new branch, with its own port and environment. The clone takes approximately two seconds.
-- `nodal` lists every unit: how far behind main, what it touched, what runs, whether it is done. Done detection includes squash merges.
-- `nodal merge` commits, squashes, rebases, fast-forwards, and removes the unit in one command. It shows the plan first.
-- `nodal ps` reports what runs on this machine and which unit owns it: processes, containers and bound ports. Every row states one of two confidences. `certain` means the thing names its unit. `probable` means Nodal inferred the unit from where the thing is.
-- `nodal adopt` brings an existing worktree or checkout under management without moving it. `nodal adopt --all --in-place` does every worktree of the project except the main checkout.
-- `nodal doctor` reports what tools left behind: stale worktrees, dead containers, orphan caches. It deletes nothing. `nodal doctor --machine` finds every repository under the home directory, groups clones by remote, and says whether anything unique is still only on this machine. A registry written by a later Nodal stops every other command; doctor reports what it can still read and tells you which command upgrades this copy.
-- `nodal run --tether <command>` gives the command a process group the unit owns. `nodal reclaim` stops the whole group, and a group that outlived the `nodal run` that started it is still stopped.
-- `nodal reclaim` moves a unit to trash. It refuses if the unit holds work that exists nowhere else. A done adopted worktree also prints `git worktree remove <path>` and asks once; `--yes` runs it. `nodal gc` empties the trash after a retention period.
-- `nodal uninstall` takes back what Nodal put on the machine. It names every item first, then removes the lines in your shell start-up file and the scripts they load. `--state` also removes the state directory, and it refuses while a unit home holds work that exists nowhere else.
-- `nodal upgrade` reports how this copy was installed and prints the one command that upgrades it. `nodal update` is the same command. Nodal makes no network calls of its own: no update check, no telemetry. The only network activity Nodal causes is the `git` you configured talking to the remotes you configured.
-
-## Agents
-
-Nodal is agent-neutral. A unit is a folder; the environment comes from the folder. Any tool that can open a directory can use a unit, with no integration at all.
-
-Optional per-tool integrations go further:
-
-| Tool | Integration |
-| --- | --- |
-| Claude Code | hooks: a worktree request becomes a unit, context loads at session start, and the unit outlives the session |
-| Codex | an `AGENTS.md` pointer line; unit context in `WORKUNIT.md` |
-| Cursor, VS Code, any IDE | open the unit folder; the integrated terminal is already activated |
-| Plain terminal | `nodal shell-init` for your shell, or `cd` and `.envrc` |
-
-Adoption works in the other direction too: worktrees that other tools already created can be adopted with their original intent recovered where the tool recorded it.
-
 ## Status
 
-The foundation layer is complete and tested: domain model, published JSON schemas (`schemas/v1/`), SQLite registry, git operations, environment fingerprints, project recipes with inference, an output layer, and an operation journal with crash recovery. Environment activation writes a unit's `.nodal/env`, `.envrc` and `.nodal/manifest.toml`, and `nodal env` reports what a home carries. `nodal new` makes a unit from a golden base. It gets the base for the workspace first. If there is no base yet, it builds one and reports each step on standard error. It then clones that base into a home of its own, scrubs the Git state the clone inherited, takes the unit's branch, grants ports, and writes one registry row set at the end. A unit therefore holds nothing the checkout left uncommitted. The next unit of the same workspace clones the same base and builds nothing. A run that a kill stops part-way through leaves nothing once the next command resolves it. `nodal shell-init` prints a shell function for bash, zsh or fish, so that a terminal entering a unit carries its environment and `nodal cd` moves the shell you are in; `nodal run` records what it ran, and `nodal run --tether` gives a command a process group the unit owns and a reclaim stops. `nodal ps` names the unit a running process, container or bound port belongs to, and states a confidence on every row. A signal this machine does not have becomes a note under the table. Warm bases are built. The first base of a project is a fresh clone of its remote. A project with no remote gets a fresh clone of its own checkout. Each later base is a copy of the nearest base already on the machine. `nodal base` lists, builds and collects them. `nodal ls`, and `nodal` on its own, list every unit of a project: what the working tree holds, how far the branch has moved from the branch it merges into, what the remote has, who is attached, and one integration verdict per unit. The verdict is read with `git merge-tree`, so a squash merge counts as done although no commit of the unit is on the base. The units the base has moved furthest under are printed first and the finished ones last. `nodal merge` takes one unit from a dirty home to a merged branch in one command: it commits what the home holds, folds the branch into one commit, rebases it onto the branch it merges into, fast-forwards that branch in your own checkout, and reclaims the unit. It shows the plan first and asks once. Each stage has a flag that drops it. It moves the target branch only when that is a fast-forward, it pushes nothing, and it keeps every commit it folded on a ref inside the home. A rebase that stops for a conflict is reported with both ways out: run the command again to carry on, or `--abort` to put the branch back. `nodal adopt` makes a unit of work that is already on the machine. A checkout or a linked worktree becomes a unit where it stands: the only writes are `.nodal/` and `.envrc`, both excluded from Git before either is written, so `git status` in that directory is byte for byte what it was, and the directory is a root a reclaim unregisters rather than moves. A branch nothing has checked out gets a home of its own from a base instead, carrying commits the base has never had. Where nothing says what a worktree was for, adoption recovers it from the records of the session that made it and records it as recovered rather than stated, which every rendering says. `nodal show` prints one unit in full and rewrites its `WORKUNIT.md`, and `nodal explain` says why a home is as it is: which base and why, what the clone left out and who decided each row, what was removed from the copy afterwards, and which block the ports came from. `nodal init` offers the Claude Code integration and writes four hooks into the project's `.claude/settings.json`, which you may commit or not: a session that asks for a worktree gets a unit instead, its memory is injected when the session starts, and its closing message is recorded as a stated handoff. The session moves into the home, so the hook that makes the home puts a copy of the project's own settings file there as well; without one the observers fire nowhere and the session leaves no record. It is the project's file rather than four regenerated hooks, so the project's permissions and deny rules keep applying, and it is the project's file that a home whose clone already carried one keeps, untouched. What Nodal writes is hidden from `git status` the way `WORKUNIT.md` is, so a new home is clean, a reclaim works, and a merge commits nothing of Nodal's. Claude never removes a unit — the event that would say so was measured firing in none of four session lifecycles — so a unit outlives its session by design and `done`, `merge`, `reclaim` and `gc` retire it. `nodal uninstall` takes the hooks back out of every project and every unit home, and leaves each file byte for byte the file it found. The rest of the command surface is under construction.
-
-See `docs/contracts.md`, `docs/code-structure.md`, and `docs/scenarios.md`. Contributions: `CONTRIBUTING.md`.
+Built, tested, and used daily on this project to build itself: the substrate, the list,
+adoption, and the cleanup. Under construction: locks across users on one machine, a
+database per unit, and `sync`, which reconciles a unit's environment after its
+dependencies or migrations move. Safety properties are asserted as invariant tests in
+[`tests/safety`](tests/safety) and run on every pull request.
 
 ## License
 
-MIT.
+MIT. See [LICENSE](LICENSE).
