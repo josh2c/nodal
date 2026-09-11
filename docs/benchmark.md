@@ -575,5 +575,29 @@ record the read commands.
 ## `nodal show benchmark-1`
 
 ```
-PLACEHOLDER_SHOW
+  unit       benchmark-1  (review)
+  objective  measure nodal against the clones this project was built with
+  branch     nodal/benchmark-1
+  freshness  —
+  main       open +2
+  remote     —
+  who        claude-code holds 7 h · claude-code 53
+  age        1 h
+  home       /home/josh2c/.nodal/nodal/e/7XM8NZ76
+  env        stopped · managed
+  ports      app 20000
+  running    —
+  disk       —
+  last       1 h ago
+
+  WHEN        KIND     ACTOR        HOW  WHAT
+  1 h ago     command  claude-code  saw  /home/josh2c/Projects/nodal/target/release/nodal doctor --machine /home/josh2c/Projects
+  1 h ago     command  claude-code  saw  /home/josh2c/Projects/nodal/target/release/nodal doctor --machine /home/josh2c/Projects --json
+  1 h ago     command  claude-code  saw  bash /home/josh2c/.cache/nodal-bench-benchmark-1/create_bench.sh
+  1 h ago     command  claude-code  saw  bash /home/josh2c/.cache/nodal-bench-benchmark-1/ready_bench.sh
+  44 min ago  command  claude-code  saw  bash /home/josh2c/.cache/nodal-bench-benchmark-1/cold_bench.sh
+  30 min ago  command  claude-code  saw  bash /home/josh2c/.cache/nodal-bench-benchmark-1/best_bench.sh
+  7 min ago   command  claude-code  saw  bash /home/josh2c/.cache/nodal-bench-benchmark-1/fresh_bench.sh
+  1 min ago   command  claude-code  saw  cargo test --workspace --locked
+  now         sync     claude-code  saw  pushed refs/heads/nodal/benchmark-1 for review
 ```
