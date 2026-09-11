@@ -43,7 +43,7 @@
 //! command pinned by the digest of its text, and a command that has changed or that
 //! nobody has seen is refused with the text it would have run.
 //!
-//! The record is per machine, in `<state directory>/hooks.toml`, beside the secrets
+//! The record is per person, in `~/.config/nodal/hooks.toml`, beside the secrets
 //! file and for the same reason: approving somebody else's command is a decision the
 //! person at this machine made, and it does not travel with the project.
 //!
@@ -75,7 +75,7 @@ use crate::lifecycle::template::Variables;
 use crate::model::{BranchName, CommandLine, Digest, EnvId, Hooks, Slug, UnitId};
 use crate::{Error, Result};
 
-/// The file this machine records its approvals in, under the state directory.
+/// The file a person records their own approvals in.
 pub const FILE_NAME: &str = "hooks.toml";
 
 /// The variable that moves that file, for tests and for a second profile.
@@ -228,11 +228,28 @@ pub struct Approvals {
     projects: BTreeMap<String, BTreeMap<String, String>>,
 }
 
-/// Where the approvals file is: `NODAL_HOOKS_FILE` when it is set, else the state
-/// directory's own.
+/// Where this person's approvals file is.
+///
+/// Three answers, in the order [`crate::env::secrets::MachineSecrets::path_in`] gives
+/// them: [`PATH_VAR`] when it is set, then `~/.config/nodal/hooks.toml` when it is
+/// there, then `<state dir>/hooks.toml` when *that* is there. A machine with neither
+/// gets the second, which is where the first approval is written.
+///
+/// It is the person's own file and not the machine's, for the same reason the secrets
+/// file is ([`crate::workspace::shared`]). An approval says that **this person** read a
+/// command and accepts it running on their account. On a host whose state root a group
+/// owns, an approvals file in that root would let one engineer's reading of a hook
+/// decide that it runs under another engineer's account.
 #[must_use]
 pub fn path_in(state_dir: &Path) -> PathBuf {
-    std::env::var_os(PATH_VAR).map_or_else(|| state_dir.join(FILE_NAME), PathBuf::from)
+    if let Some(named) = std::env::var_os(PATH_VAR).filter(|value| !value.is_empty()) {
+        return PathBuf::from(named);
+    }
+    let Ok(own) = crate::workspace::home::config().map(|config| config.join(FILE_NAME)) else {
+        return state_dir.join(FILE_NAME);
+    };
+    let legacy = state_dir.join(FILE_NAME);
+    if !own.exists() && legacy.exists() { legacy } else { own }
 }
 
 impl Approvals {

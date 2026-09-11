@@ -31,7 +31,9 @@ from the moment it exists, and a home that is dirty at birth is one `nodal recla
 
 A project that commits its own `.envrc` — direnv and Nix users do — keeps it: Nodal writes
 `.nodal/env`, which the committed `.envrc` reads, and states in one line that it left the tracked file
-alone. The same holds for every other row.
+alone. Such a home gets its identity and its generated values from direnv and its secrets from the
+shell hook, because the committed file holds no line that resolves them. The same holds for every
+other row.
 
 Every worktree of a repository shares one exclude file — a linked worktree's own
 `.git/worktrees/<name>/info/exclude` is not read — so a unit adopted in a nested worktree writes the
@@ -636,8 +638,11 @@ message names the variable and the character. Quote the variable in the command 
 holds a space.
 
 Hook commands require approval. `nodal init` approves the set the project declares. It pins each
-command by the digest of its exact text. The record is per machine, in `<state>/hooks.toml`;
-`NODAL_HOOKS_FILE` moves that file. A command that has changed refuses to run, and the message
+command by the digest of its exact text. The record is per person, in
+`~/.config/nodal/hooks.toml`; `NODAL_HOOKS_FILE` moves that file, and a machine that still holds
+`<state>/hooks.toml` and has no file under `~/.config` reads the old path. An approval says that
+this person accepts the command running on their account, so it is never shared through a state
+root a group owns. A command that has changed refuses to run, and the message
 shows the command. A command nobody approved refuses in the same way. `--no-hooks` runs no hook
 and needs no approval.
 

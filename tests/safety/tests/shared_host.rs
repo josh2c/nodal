@@ -42,6 +42,9 @@ const GROUP_CLAIM: &str = "a second uid is refused a file it may not read; asser
 /// A recipe that declares one credential, so that a home has a name a person supplies.
 const RECIPE: &str = "[env]\nsecrets = [\"SESSION_SECRET\"]\n";
 
+/// A recipe that declares one hook, so that a create needs an approval to get past it.
+const HOOKED: &str = "[hooks]\npre_new = \"true\"\n";
+
 /// The value each fake account keeps in its own secrets file.
 const FIRST: &str = "first-accounts-value";
 const SECOND: &str = "second-accounts-value";
@@ -227,7 +230,26 @@ fn two_clones_of_one_remote_are_one_project_with_distinct_ports() {
         .collect();
     assert_eq!(ports.len(), 2);
     assert_ne!(ports[0], ports[1], "two units of one project were granted one port block");
-    assert_eq!(homes.len(), 2);
+
+    // One list, read from either clone. This is the promise the whole arrangement is
+    // for: neither engineer has to stand in the other's directory to see the work.
+    for checkout in &homes {
+        let listed = std::process::Command::new(binary())
+            .arg("ls")
+            .current_dir(checkout)
+            .env(nodal_core::workspace::home::DIRECTORY_VAR, &state)
+            .env("NODAL_SECRETS_FILE", root.path().join("secrets.env"))
+            .env("NODAL_HOOKS_FILE", root.path().join("hooks.toml"))
+            .env_remove("NODAL_CD_FILE")
+            .env("CLAUDE_CONFIG_DIR", root.path().join("claude"))
+            .output()
+            .unwrap();
+        assert!(listed.status.success(), "nodal ls: {}", stderr(&listed));
+        let said = stdout(&listed);
+        for slug in ["work-0", "work-1"] {
+            assert!(said.contains(slug), "{} does not list {slug}: {said}", checkout.display());
+        }
+    }
 }
 
 /// A registry written before projects had remotes is given them at the upgrade.
@@ -336,6 +358,11 @@ fn the_secrets_file_lives_under_the_persons_own_directory() {
     assert!(made.status.success(), "nodal new: {}", stderr(&made));
     let home = workspace.one_home();
 
+    // The value is read from under this account's own home directory. Nothing names a
+    // file, so where it was read from is the whole claim.
+    let mine = export_as(&workspace, &ada, &home);
+    assert!(mine.contains(FIRST), "the value under the account's own home was not read: {mine}");
+
     let bare = export_as(&workspace, &nobody, &home);
     assert!(!bare.contains(FIRST), "an account with no file read another's value: {bare}");
     assert!(bare.contains("NODAL_UNIT"), "an account with no file lost the unit: {bare}");
@@ -345,6 +372,50 @@ fn the_secrets_file_lives_under_the_persons_own_directory() {
         "a secrets file was written into the state root"
     );
     assert_eq!(mode(&ada.join(".config").join("nodal").join("secrets.env")) & 0o077, 0);
+}
+
+/// One person's approval of a hook does not approve it for another's account.
+///
+/// An approval says that this person read a command line and accepts it running under
+/// their own account. The record used to sit in the state root, and a state root a group
+/// owns would have made one engineer's reading decide what runs as another. So the file
+/// is under each person's own home directory, beside their secrets.
+#[test]
+fn an_approval_by_one_account_does_not_approve_a_hook_for_another() {
+    let workspace = Workspace::new(binary());
+    let ada = account(workspace.root(), "ada", FIRST);
+    let bo = account(workspace.root(), "bo", SECOND);
+    workspace.write_recipe(HOOKED);
+
+    let approved = workspace
+        .command(&["init", "--force"])
+        .env_remove("NODAL_HOOKS_FILE")
+        .env_remove("NODAL_SECRETS_FILE")
+        .env("HOME", &ada)
+        .env_remove("XDG_CONFIG_HOME")
+        .output()
+        .unwrap();
+    assert!(approved.status.success(), "nodal init: {}", stderr(&approved));
+    assert!(
+        ada.join(".config").join("nodal").join("hooks.toml").is_file(),
+        "the approval was not written under the account that made it"
+    );
+    assert!(
+        !workspace.state_dir().join("hooks.toml").exists(),
+        "an approval was written into the state root"
+    );
+
+    let refused = workspace
+        .command(&["new", "--name", "not-yours"])
+        .env_remove("NODAL_HOOKS_FILE")
+        .env_remove("NODAL_SECRETS_FILE")
+        .env("HOME", &bo)
+        .env_remove("XDG_CONFIG_HOME")
+        .output()
+        .unwrap();
+    assert!(!refused.status.success(), "a hook the second account never approved ran");
+    let said = stderr(&refused);
+    assert!(said.contains("not approved"), "the refusal does not say why: {said}");
 }
 
 /// A group nobody has is refused, and the message names it.

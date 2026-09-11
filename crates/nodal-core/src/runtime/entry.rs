@@ -179,13 +179,16 @@ pub fn declared_at(path: &Path) -> Option<PathBuf> {
 }
 
 /// The project rooted at `path` or at any directory above it.
+///
+/// "Rooted at" is not only a path. A host two people log in to holds two clones of one
+/// repository, and both of them are the same project
+/// ([`crate::lifecycle::identity::project_at`]), so an engineer running `nodal ls` in
+/// their own clone reads the list the other engineer's clone recorded.
+///
+/// The project that comes back stands in the directory that was asked about, whichever
+/// clone recorded the row ([`crate::lifecycle::identity::here`]).
 fn project_of_ancestor(conn: &Connection, path: &Path) -> Result<Option<Project>> {
-    for directory in path.ancestors() {
-        if let Some(project) = projects::find_by_root(conn, directory)? {
-            return Ok(Some(project));
-        }
-    }
-    Ok(None)
+    crate::lifecycle::identity::project_containing(conn, path)
 }
 
 /// The project of the unit whose home holds `path`, when `path` is in one.

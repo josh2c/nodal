@@ -51,12 +51,12 @@ use crate::env::files;
 use crate::env::secrets::MachineSecrets;
 use crate::env::{Produced, StandIns, resolve as resolve_env};
 use crate::fingerprint;
-use crate::git::{Git, remote, scrub};
+use crate::git::{Git, scrub};
 use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Runner};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::owner;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
-use crate::lifecycle::{Rebuild, guard, marker, run};
+use crate::lifecycle::{Rebuild, guard, identity, marker, run};
 use crate::model::{
     BranchName, EnvId, EnvState, Environment, Epistemic, EventKind, Objective, PortBlock, PortName,
     Ports, Project, ProjectId, ProjectName, Recipe, RemoteUrl, Slug, Timestamp, Unit, UnitId,
@@ -713,9 +713,9 @@ pub(super) fn remove_tree(path: &Path) -> Result<()> {
 pub fn ensure_project(store: &mut Store, root: &Path, recipe: &Recipe) -> Result<Project> {
     let root = guard::resolve(root);
     let root = root.as_path();
-    let remote = remote_of(root);
+    let remote = identity::remote_of(root);
     if let Some(found) = find(store.conn(), root, remote.as_ref())? {
-        return Ok(here(found, root));
+        return Ok(identity::here(found, root));
     }
     let fresh = Project {
         id: ProjectId::from_ulid(ulid::Ulid::new()),
@@ -733,7 +733,7 @@ pub fn ensure_project(store: &mut Store, root: &Path, recipe: &Recipe) -> Result
         fresh
     };
     tx.commit().map_err(crate::store::row::store_error(store.conn()))?;
-    Ok(here(project, root))
+    Ok(identity::here(project, root))
 }
 
 /// The schema version that gave a project row its remote.
@@ -755,7 +755,7 @@ pub const REMOTE_VERSION: u32 = 9;
 /// upgrade may do while a person is not looking. Each keeps the identity it had, and the
 /// first row to claim the remote is the one that gets it.
 ///
-/// Nothing here reaches a network ([`remote_of`]).
+/// Nothing here reaches a network ([`identity::remote_of`]).
 ///
 /// # Errors
 /// Whatever the registry reports while the rows are read or written.
@@ -763,7 +763,7 @@ pub fn backfill_remotes(store: &mut Store) -> Result<usize> {
     let rows = projects::list(store.conn())?;
     let mut filled = 0;
     for project in rows.into_iter().filter(|project| project.remote_url.is_none()) {
-        let Some(remote) = remote_of(&project.root) else { continue };
+        let Some(remote) = identity::remote_of(&project.root) else { continue };
         if projects::find_by_remote(store.conn(), &remote)?.is_some() {
             continue;
         }
@@ -785,40 +785,13 @@ fn find(
     root: &Path,
     remote: Option<&RemoteUrl>,
 ) -> Result<Option<Project>> {
-    if let Some(remote) = remote
-        && let Some(found) = projects::find_by_remote(conn, remote)?
-    {
-        return Ok(Some(found));
-    }
-    let Some(mut found) = projects::find_by_root(conn, root)? else { return Ok(None) };
+    let Some(mut found) = identity::project_at(conn, root)? else { return Ok(None) };
     if let (Some(remote), None) = (remote, found.remote_url.as_ref()) {
         projects::set_remote_url(conn, found.id, remote)?;
         found.remote_url = Some(remote.clone());
     }
     Ok(Some(found))
 }
-
-/// The same project, standing in the checkout the caller is in.
-fn here(project: Project, root: &Path) -> Project {
-    Project { root: root.to_path_buf(), ..project }
-}
-
-/// Which repository the checkout at `root` is a clone of.
-///
-/// `origin` is the remote, because it is the one every clone has and the one `nodal
-/// done` pushes to. A directory that is not a repository, a repository with no `origin`
-/// and a URL that reduces to nothing all answer `None`, and a project with no answer is
-/// keyed by its path exactly as it always was.
-///
-/// Nothing here reaches a network. `git remote get-url` reads the repository's own
-/// configuration file and contacts no server.
-fn remote_of(root: &Path) -> Option<RemoteUrl> {
-    let url = Git::at(root).remote_url(ORIGIN).ok().flatten()?;
-    remote::identity(&url).and_then(|text| RemoteUrl::parse(text).ok())
-}
-
-/// The remote a project's identity is read from.
-const ORIGIN: &str = "origin";
 
 /// What a project is called: the name of the directory it is rooted at.
 ///

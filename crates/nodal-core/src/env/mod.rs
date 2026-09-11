@@ -236,13 +236,16 @@ fn dedupe(vars: &mut Vec<EnvVar>) {
 /// generated value is the unit's, and neither is a person's to override.
 ///
 /// # Errors
-/// [`crate::Error::Io`] when `.nodal/env` cannot be read, [`crate::Error::Recipe`] when
-/// the manifest is not one, [`crate::Error::SecretsPermissions`] when this person's
-/// secrets file is readable by anybody else, and [`crate::Error::NoHomeDirectory`] when
-/// nothing says where the state directory is.
+/// [`crate::Error::Io`] when `.nodal/env` cannot be read,
+/// [`crate::Error::SecretsPermissions`] when this person's secrets file is readable by
+/// anybody else, and [`crate::Error::NoHomeDirectory`] when nothing says where the
+/// state directory is.
 pub fn entering(home: &Path) -> Result<Vec<(EnvName, String)>> {
     let mut pairs = files::read_dotenv(home)?;
-    let manifest = files::read_manifest(home)?;
+    // A home with no manifest has no record of which names a person supplies, so there
+    // is nothing to resolve and the file itself is the whole answer. Refusing here
+    // would take away a home that worked a moment ago.
+    let Ok(manifest) = files::read_manifest(home) else { return Ok(pairs) };
     let source = MachineSecrets::open(MachineSecrets::path_in(&home::directory()?))?;
     for name in wanted(&manifest) {
         if pairs.iter().any(|(held, _)| *held == name) {
