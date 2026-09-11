@@ -164,12 +164,13 @@ work from a unit back to `main` went mostly unused.
 
 ### What was recovered, and what was lost
 
-`reclaim` ran 46 times and pruned **218.67 GB**. The mean unit gave back 4.75 GB and the
-largest, `parallel-walk`, gave back 20.29 GB. No trash row holds a snapshot, and no unit was
+`reclaim` ran 46 times and pruned **218.67 GB**. The mean across all 46 is 4.75 GB, the
+mean across the 36 units of this project is 6.07 GB, and the largest, `parallel-walk`, gave
+back 20.29 GB. No trash row holds a snapshot, and no unit was
 reported as holding unique work.
 
 That number is the strongest one in this report. Over four days the unit model created and
-reclaimed three times the byte volume that the clone era left sitting on disk, and left
+reclaimed four times the byte volume that the clone era left sitting on disk, and left
 nothing behind for a person to judge.
 
 ### The other project on this machine
@@ -282,8 +283,8 @@ a sum over paths counts each of them once per path. `btrfs filesystem du` puts
 person deciding what to delete, `doctor` overstates the prize by about 8%.
 
 Compression does not change the answer. This filesystem runs `compress=zstd:3`, but the
-on-disk size of these five trees equals their apparent size to two decimal places. Rust
-build output does not compress.
+on-disk size of these five trees equals their apparent size to two decimal places.
+Compression recovered nothing measurable on Rust build output.
 
 | Group | Clones | Size | Verdict |
 | --- | --- | --- | --- |
@@ -327,10 +328,24 @@ person must type would show it. It does, with one correction.
 | Nodal | `nodal doctor --machine ~/Projects`, 33 characters | 470 ms | 3 groups, sizes, ignored bulk, dirt, unpushed counts, and a verdict |
 | By hand | 15 lines of shell, 894 characters | 639 ms | 37 unlabelled rows of numbers |
 
-The hand-written equivalent is in this report's history and does the same walk: find every
-`.git`, read its origin, size it, size its ignored bulk, count dirty paths, count commits on
-no remote. It is 27 times more to type, it is slower, and it stops one step short of an
-answer. It returns the inputs to a decision. `doctor` returns the decision.
+The hand-written equivalent does the same walk. It is 27 times more to type, it is slower,
+and it stops one step short of an answer. It returns the inputs to a decision, and `doctor`
+returns the decision.
+
+```sh
+cd ~/Projects || exit 1
+for g in $(find . -maxdepth 6 -name .git -type d -printf '%h\n' 2>/dev/null); do
+  origin=$(git -C "$g" remote get-url origin 2>/dev/null)
+  size=$(du -sb "$g" 2>/dev/null | cut -f1)
+  ign=$(du -sb "$g/target" 2>/dev/null | cut -f1)
+  dirty=$(git -C "$g" status --porcelain 2>/dev/null | wc -l)
+  unp=$(git -C "$g" for-each-ref --format='%(refname)' refs/heads |
+        while read -r r; do git -C "$g" rev-list --count --not --remotes -- "$r" 2>/dev/null; done |
+        awk '{s+=$1} END{print s+0}')
+  last=$(git -C "$g" log -1 --format=%cI 2>/dev/null)
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$g" "$origin" "$size" "${ign:-0}" "$dirty" "$unp" "$last"
+done | sort -t$'\t' -k2,2 -k3,3gr
+```
 
 The correction is the one in section 3. Neither route answers the question that was
 actually asked. `doctor` says `nothing unique` and the hand-written version says
