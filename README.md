@@ -103,12 +103,17 @@ nodal new "fix the worker import"
 A unit is an independent, ready-to-run development environment with its own repository,
 runtime state, and memory.
 
-- **Ready, not empty.** Dependencies are already there. Ports and environment come from
-  the folder, so any terminal, IDE or agent can open it with no plugin.
+- **Dependencies, not a build.** A base installs the project's dependencies, so a unit
+  starts with them in place. A base runs the project's build command only when `nodal base
+  build --warm` made it. A unit of a compiled project builds before it runs. Ports and
+  environment come from the folder, so any terminal, IDE or agent can open it with no
+  plugin.
 - **An environment, not a second install.** A unit's home is a copy-on-write clone of a
   warm base, so it costs the blocks that differ rather than another full environment.
-  Measured here: a unit on this repository is ready in about five seconds, and on a
-  200,000-file monorepo in about thirty. Your project will land somewhere on that curve.
+  Measured on this repository, on btrfs, on 28 cores: `nodal new` returns a home in 0.29 s
+  from a base of sources, and in 0.49 s from a 6.8 GB base that carries a build. The second
+  home costs 48 KiB of its own at creation. `docs/benchmark.md` states the method, and says
+  what a whole task costs, of which a create is a small part.
 - **Its own repository, on purpose.** Nodal does not create worktrees. A unit's home is a
   full clone including `.git`, independent of every other unit, while the shared history
   costs nothing to duplicate. Worktrees existed to avoid expensive checkouts;

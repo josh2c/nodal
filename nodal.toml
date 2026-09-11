@@ -12,6 +12,9 @@ monorepo = false
 rust = "stable"
 
 [commands]
+build = "cargo build --workspace"
+test = "cargo test --workspace --locked"
+lint = "cargo clippy --workspace --all-targets --locked"
 
 [db]
 # none: this project has no database
