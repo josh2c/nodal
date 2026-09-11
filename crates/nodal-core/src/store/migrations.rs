@@ -51,11 +51,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "unit base commit",
         sql: include_str!("migrations/0010_unit_base_commit.sql"),
     },
+    Migration {
+        version: 11,
+        name: "lock actor",
+        sql: include_str!("migrations/0011_lock_actor.sql"),
+    },
 ];
 
 /// The schema version a database is brought to by [`run`]. Kept as a literal rather
 /// than derived from the table's length, so that a version appears in a diff.
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// Bring `store` up to [`SCHEMA_VERSION`].
 ///

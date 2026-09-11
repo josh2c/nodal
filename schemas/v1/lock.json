@@ -1,5 +1,44 @@
 {
   "$defs": {
+    "Actor": {
+      "description": "The actor of a session or an event.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ActorKind",
+          "description": "Person or agent."
+        },
+        "name": {
+          "$ref": "#/$defs/ActorName",
+          "description": "What it is called."
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
+    "ActorKind": {
+      "description": "Whether the actor is a person or a program acting on its own.",
+      "oneOf": [
+        {
+          "const": "human",
+          "description": "A person at a terminal or an editor.",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "A coding agent.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActorName": {
+      "description": "What the actor is called: a tool name such as `claude-code`, or a person's\nhandle. Never a credential.",
+      "maxLength": 255,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
+      "type": "string"
+    },
     "HostName": {
       "description": "The name of a host a unit can live on.",
       "maxLength": 255,
@@ -20,8 +59,19 @@
   },
   "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/lock.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "The single-writer claim on a unit. V1 runs on one host at a time; the lock exists so\nthat a unit moved to another machine cannot be written from both.",
+  "description": "The single-writer claim on a unit.\n\nTwo clocks, and they answer different questions. `expires_at` is the absolute lapse\na transfer bundle carries from the host that made it. `refreshed_at` is when an\nentry last touched the home, and the idle window is measured from it, so a person\nworking all day keeps the lock and a home nobody has entered since yesterday\nreleases it.",
   "properties": {
+    "actor": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Actor"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Who holds it. `None` for a row written before locks carried an actor: such a row\nnames a host and holds no actor, and the next entry rewrites it."
+    },
     "expires_at": {
       "$ref": "#/$defs/Timestamp",
       "description": "When the claim lapses unless renewed."
@@ -29,6 +79,23 @@
     "host": {
       "$ref": "#/$defs/HostName",
       "description": "The host that holds the write."
+    },
+    "pid": {
+      "description": "The process that took the hold. Recorded so a person can look. Nothing signals\nit, and a lock is never expired because the process is gone.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "refreshed_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When an entry last touched the home."
+    },
+    "taken_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When the hold began, which a hand-off resets."
     },
     "unit_id": {
       "$ref": "#/$defs/UnitId",
@@ -38,6 +105,8 @@
   "required": [
     "unit_id",
     "host",
+    "taken_at",
+    "refreshed_at",
     "expires_at"
   ],
   "title": "Lock",

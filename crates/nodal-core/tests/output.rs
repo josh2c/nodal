@@ -29,8 +29,8 @@ use nodal_core::model::{
 use nodal_core::output::view::verdict::{Behind, RowKind, Verdict, WorktreeRow};
 use nodal_core::output::view::{
     Arrival, BaseList, BaseRow, Created, Done, EnvLine, EventLog, Exclusion, Explained, Freshness,
-    InitReport, Invalidation, Origin, PortLine, Ps, Remote, Running, SharedResource, StandInLine,
-    Status, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
+    Holder, InitReport, Invalidation, Origin, PortLine, Ps, Remote, Running, SharedResource,
+    StandInLine, Status, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
 };
 use nodal_core::output::{Format, Render, render, watch};
 use nodal_core::recipe::gap::{Gap, GapKey};
@@ -62,6 +62,22 @@ fn digest(text: &str) -> Digest {
 
 fn tool(name: &str, count: u32) -> ToolSessions {
     ToolSessions { tool: ActorName::parse(name).expect("an actor name"), count }
+}
+
+/// The writer of a unit, as a report shows one.
+///
+/// One of the two units in these snapshots carries a holder and the other does not, so
+/// every rendering of WHO is proved in both states: the writer and the attachments
+/// together, and the attachments alone on a unit nobody holds.
+fn holder(name: &str) -> Holder {
+    Holder {
+        actor: ActorName::parse(name).expect("an actor name"),
+        host: HostName::parse("workshop").expect("a host name"),
+        pid: Some(4_120),
+        taken_at: at("2026-09-06T09:40:00Z"),
+        refreshed_at: at("2026-09-06T14:21:40Z"),
+        expires_at: at("2026-09-06T22:21:40Z"),
+    }
 }
 
 /// The revision every row in these snapshots is measured against.
@@ -115,6 +131,7 @@ fn units() -> Vec<UnitRow> {
                 running: Vec::new(),
             }),
             created_at: at("2026-09-04T09:15:00Z"),
+            holder: None,
             sessions: vec![tool("claude-code", 1)],
             last_active: Some(at("2026-09-06T14:10:00Z")),
         },
@@ -151,6 +168,7 @@ fn units() -> Vec<UnitRow> {
                 running: vec![Running { command: String::from("next dev"), port: Some(41_231) }],
             }),
             created_at: at("2026-09-06T09:40:00Z"),
+            holder: Some(holder("josh")),
             sessions: vec![tool("codex", 1), tool("josh", 1)],
             last_active: Some(at("2026-09-06T14:21:40Z")),
         },
@@ -172,6 +190,7 @@ fn unmeasured_unit() -> UnitRow {
         work: None,
         environment: None,
         created_at: at("2026-09-05T08:00:00Z"),
+        holder: None,
         sessions: Vec::new(),
         last_active: None,
     }

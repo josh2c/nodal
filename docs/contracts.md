@@ -184,7 +184,7 @@ would make the next clone copy a copy.
 `backend`, `package_manager`, `commands.{dev,build,test,migrate,seed}`, `toolchain`, `db.{kind,url_var}`,
 `services.{shared,per_unit}`, `env.{required_local,generated,secrets,stand_in}`, `base.{exclude,invalidate}`,
 `hooks.{pre_new,post_new,pre_reclaim,post_reclaim}`, `sync.auto_irreversible`, `reclaim.trash_retention`
-(in days). Alongside those, and additive to them: `package_manager_pin`, `monorepo`, `task_cache`,
+(in days), `lock.idle_hours`. Alongside those, and additive to them: `package_manager_pin`, `monorepo`, `task_cache`,
 `dockerfile`, `compose`, `commands.{lint,typecheck,reset}`, `db.{tool,migrations_dir,fixed_ports}`.
 
 No copy drops a path the project tracks. A copy that is missing a tracked path is dirty the moment it is
@@ -539,6 +539,46 @@ asks nothing when a shell ends.
 
 Sessions are derived, not declared: a process carrying `NODAL_ID` is attached to that unit, and a
 session ends when the process is gone. Nothing has to be run on entry or on exit.
+
+Each of those five verbs takes the unit's write lock before it does its own work. See Locks.
+
+## Locks
+One actor writes a unit's home at a time. The registry holds one lock row per unit. The row names the
+host, the actor, the process that took the hold, when it began and when an entry last touched it.
+
+`nodal cd`, `shell`, `run`, `new` and `adopt` take the hold or refresh it. A second actor running one
+of those in a held home is refused. The message names the holder, says how long they have held it, and
+says `--take`. Every one of those verbs accepts `--take`.
+
+The lock is advisory. It refuses Nodal's own write verbs and stops nothing else. An editor opens in a
+held home. `git` runs in it. A process starts in it. A second actor is told, not blocked.
+
+The read verbs never refuse. `ls`, `show`, `ps`, `explain` and `env --export` answer in a held home.
+`env --export` is what the prompt hook runs on entry, so it refreshes the holder's window and takes a
+free lock. It refuses nobody, and a second actor's shell carries the unit's variables and ports.
+
+A hold lapses two ways. The absolute expiry passes, which is the clock a transfer bundle carries from
+another host. Or nobody enters the home for the idle window, which is `lock.idle_hours` in
+`nodal.toml` and eight hours when the recipe does not say. The idle window runs from the last entry.
+A lapsed hold is taken by the next actor without `--take` and without a hand-off, because nothing was
+taken from anybody.
+
+`--take` moves a hold that has not lapsed. It writes a `handoff` event on the unit naming who it came
+from and who it went to. Nothing else moves a live hold.
+
+A reclaim releases the unit's hold. This host releases only its own; a hold another machine took is
+that machine's to release.
+
+The process that took a hold is recorded and reported. Nothing signals it. No hold is released because
+the process is gone: a lock names an actor, and an actor outlives any one shell.
+
+A lock row written before locks carried an actor names a host and holds nobody. It refuses no one, and
+the next entry into that home rewrites it.
+
+WHO is two readings, in this order: the lock rows, then the process table. The order is the point. A
+process scan reads `/proc`, which does not cross Linux accounts, so on a host two people share it
+cannot see the other person. The lock row is written down and can. `nodal ls --json` and
+`nodal show --json` carry both: `holder` with its expiry, and `sessions`.
 
 ## Attribution
 `nodal ps` answers what is running on this host and which unit each thing belongs to. Every row

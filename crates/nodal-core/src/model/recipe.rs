@@ -260,6 +260,17 @@ pub struct Reclaim {
     pub trash_retention: Option<u32>,
 }
 
+/// How long a unit's write lock survives with nobody entering its home.
+///
+/// Named for the policy rather than the thing, because [`crate::model::Lock`] is the
+/// hold itself and a recipe holds no locks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct LockPolicy {
+    /// Hours with no entry after which the lock lapses and anybody may take it.
+    pub idle_hours: Option<u32>,
+}
+
 /// A project's recipe: `nodal.toml`, the inference of it, or the merge of both.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -296,6 +307,8 @@ pub struct Recipe {
     pub sync: Sync,
     /// Reclaim behaviour.
     pub reclaim: Reclaim,
+    /// How long a write lock survives idle.
+    pub lock: LockPolicy,
 }
 
 /// Days a trashed home is kept when a recipe does not say.
@@ -318,6 +331,12 @@ impl Recipe {
     #[must_use]
     pub fn auto_irreversible(&self) -> bool {
         self.sync.auto_irreversible.unwrap_or(false)
+    }
+
+    /// Hours a write lock survives with nothing entering the home.
+    #[must_use]
+    pub fn lock_idle_hours(&self) -> u32 {
+        self.lock.idle_hours.unwrap_or(crate::model::lock::DEFAULT_IDLE_HOURS)
     }
 
     /// Days a trashed home is kept before `nodal gc` may delete it.

@@ -355,6 +355,23 @@
       },
       "type": "object"
     },
+    "LockPolicy": {
+      "additionalProperties": false,
+      "description": "How long a unit's write lock survives with nobody entering its home.\n\nNamed for the policy rather than the thing, because [`crate::model::Lock`] is the\nhold itself and a recipe holds no locks.",
+      "properties": {
+        "idle_hours": {
+          "default": null,
+          "description": "Hours with no entry after which the lock lapses and anybody may take it.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "MigrationTool": {
       "description": "The tool that owns a project's migrations.",
       "oneOf": [
@@ -595,6 +612,13 @@
         "pre_reclaim": null
       },
       "description": "Lifecycle hooks."
+    },
+    "lock": {
+      "$ref": "#/$defs/LockPolicy",
+      "default": {
+        "idle_hours": null
+      },
+      "description": "How long a write lock survives idle."
     },
     "monorepo": {
       "default": null,

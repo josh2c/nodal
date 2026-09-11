@@ -332,6 +332,10 @@ fn commit_of(params: &Params) -> Commit {
         }
         environments::update_state(tx, environment.id, EnvState::Absent, now)?;
         units::update_status(tx, unit.id, UnitStatus::Archived, now)?;
+        // The home has gone, so a row naming its writer would name the writer of
+        // nothing. Only this host's hold is given up: a claim another machine took is
+        // that machine's to release.
+        crate::runtime::lock::release(tx, unit.id)?;
         let entry = entry.clone().map(|entry| Trashed { pruned_bytes: pruned.bytes, ..entry });
         if let Some(entry) = &entry {
             trash::insert(tx, entry)?;

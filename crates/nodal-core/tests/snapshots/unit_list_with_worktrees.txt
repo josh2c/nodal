@@ -1,6 +1,6 @@
-  KIND      NAME                        STATE                              BRANCH                        MAIN             REMOTE  WHO               AGE   OBJECTIVE
-  unit      worker-import               open                               nodal/worker-import *3 +1 ?2  open +2          ^2      claude-code 1     2 d   worker import: handle missing supervisor_id
-  unit      payroll-export              open · stale (deps, schema)        nodal/payroll-export          open +1 -4       —       codex 1 · josh 1  4 h   payroll export CSV (recovered)
-  worktree  ../oauth-login              —                                  oauth-login *2                open             ^3      —                 23 d  Add oauth login to the account page and keep th…
-  worktree  .claude/worktrees/finished  —                                  finished                      done (absorbed)  —       —                 66 d  —
-  worktree  /var/tmp/agent-held         locked (an agent is working here)  detached                      unknown          —       —                 —     —
+  KIND      NAME                        STATE                              BRANCH                        MAIN             REMOTE  WHO                                AGE   OBJECTIVE
+  unit      worker-import               open                               nodal/worker-import *3 +1 ?2  open +2          ^2      claude-code 1                      2 d   worker import: handle missing supervisor_id
+  unit      payroll-export              open · stale (deps, schema)        nodal/payroll-export          open +1 -4       —       josh holds 7 h · codex 1 · josh 1  4 h   payroll export CSV (recovered)
+  worktree  ../oauth-login              —                                  oauth-login *2                open             ^3      —                                  23 d  Add oauth login to the account page and keep th…
+  worktree  .claude/worktrees/finished  —                                  finished                      done (absorbed)  —       —                                  66 d  —
+  worktree  /var/tmp/agent-held         locked (an agent is working here)  detached                      unknown          —       —                                  —     —

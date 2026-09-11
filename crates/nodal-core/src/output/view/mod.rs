@@ -44,6 +44,7 @@ pub use crate::output::view::reclaim::{Idle, Leftover, Pruned, Reclaimed, Retire
 pub use crate::output::view::setup::{Installed, Uninstall, Upgrade};
 pub use crate::output::view::status::{SharedResource, Status};
 pub use crate::output::view::unit::{
-    EnvLine, Freshness, Remote, Running, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
+    EnvLine, Freshness, Holder, Remote, Running, ToolSessions, UnitDetail, UnitList, UnitRow,
+    WorkTree,
 };
 pub use crate::output::view::verdict::{Behind, RowKind, Verdict, WorktreeRow};

@@ -123,7 +123,7 @@ impl Cli {
     pub fn dispatch(&self) -> nodal_core::Result<ExitCode> {
         match &self.command {
             Some(Command::Init(init)) => init.run(),
-            Some(Command::Env(env)) => env.run(),
+            Some(Command::Env(env)) => env.run(self.registry_if_present()?.as_ref()),
             Some(Command::New(new)) => new.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Adopt(adopt)) => adopt.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Ls(ls)) => ls.run(self.registry_if_present()?.as_ref()),
@@ -142,7 +142,7 @@ impl Cli {
                 hook.run(Some(&mut self.registry()?))
             }
             Some(Command::ClaudeCode(hook)) => hook.run(None),
-            Some(Command::Shell(shell)) => shell.run(),
+            Some(Command::Shell(shell)) => shell.run(&self.registry()?),
             Some(Command::Uninstall(uninstall)) => uninstall.run(),
             Some(Command::Upgrade(upgrade)) => upgrade.run(),
             Some(Command::Base(base)) => base.run(&mut self.registry()?),

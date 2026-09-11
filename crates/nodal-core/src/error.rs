@@ -568,6 +568,27 @@ pub enum Error {
         slug: String,
     },
 
+    /// Another actor holds the write on a unit, and this one did not ask to take it.
+    ///
+    /// The message names the holder, how long they have held it, and the one flag that
+    /// moves it, because a refusal a person cannot act on is a refusal without its
+    /// reason. The lock is advisory: nothing here stops an editor, `git`, or any other
+    /// program from working in the home.
+    #[error(
+        "{slug:?} is held by {actor} on {host} since {since}; --take to take it. \
+         The lock is advisory: it refuses the write verbs and stops nothing else"
+    )]
+    UnitLocked {
+        /// The slug of the unit being held.
+        slug: String,
+        /// Who holds it.
+        actor: String,
+        /// The host they hold it from.
+        host: String,
+        /// How long ago the hold began, already in words.
+        since: String,
+    },
+
     /// A process scan was asked for on a host whose process table Nodal cannot read.
     #[error("a process scan reads /proc, which {host} does not have")]
     ProcessScanUnsupported {
