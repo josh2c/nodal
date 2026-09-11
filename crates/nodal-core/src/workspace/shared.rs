@@ -99,7 +99,7 @@ pub fn adopt(registry: &Path) {
     if !is_shared(root) {
         return;
     }
-    set_umask(UMASK);
+    set_umask();
     relax(registry);
     for suffix in SIDECARS {
         relax(&sidecar(registry, suffix));
@@ -142,17 +142,25 @@ fn relax(path: &Path) {
 #[cfg(not(unix))]
 fn relax(_path: &Path) {}
 
+/// [`UMASK`] in the type the system call takes.
+///
+/// It is written twice rather than converted once. macOS types `mode_t` as sixteen bits
+/// and Linux as thirty-two, so one conversion is a truncating cast on one host and a
+/// pointless fallible call on the other. The test below is what holds the two together.
+#[cfg(unix)]
+const UMASK_MODE: libc::mode_t = 0o002;
+
 /// Put this process's umask where a shared root needs it.
 #[cfg(unix)]
-fn set_umask(mask: u32) {
+fn set_umask() {
     // SAFETY: `umask` takes a mode and returns the old one. It touches no memory.
     unsafe {
-        libc::umask(mask as libc::mode_t);
+        libc::umask(UMASK_MODE);
     }
 }
 
 #[cfg(not(unix))]
-fn set_umask(_mask: u32) {}
+fn set_umask() {}
 
 /// A group on this host: the name a person typed and the number the kernel uses.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,7 +255,7 @@ pub fn share(root: &Path, group: &Group) -> Result<Made> {
     chown_group(root, group)?;
     std::fs::set_permissions(root, std::fs::Permissions::from_mode(ROOT_MODE))
         .map_err(Error::io(root))?;
-    set_umask(UMASK);
+    set_umask();
     let registry = root.join(crate::store::FILE_NAME);
     let mut relaxed = Vec::new();
     for path in std::iter::once(registry.clone())
@@ -296,4 +304,15 @@ fn chown_group(path: &Path, group: &Group) -> Result<()> {
         group: group.name.clone(),
         why: std::io::Error::last_os_error().to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    /// The two spellings of the umask are one number. One of them is what the system
+    /// call takes and the other is what every reader and every test reads.
+    #[test]
+    #[cfg(unix)]
+    fn the_umask_constant_and_the_mode_it_is_called_with_agree() {
+        assert_eq!(u64::from(super::UMASK_MODE), u64::from(super::UMASK));
+    }
 }
