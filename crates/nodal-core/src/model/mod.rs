@@ -39,14 +39,14 @@ pub use crate::model::ids::{
     BaseId, EnvId, EventId, OperationId, ProjectId, SessionId, TemplateId, UnitId,
 };
 pub use crate::model::lease::{Lease, ResourceKey};
-pub use crate::model::lock::Lock;
+pub use crate::model::lock::{DEFAULT_IDLE_HOURS, Lock};
 pub use crate::model::manifest::{Manifest, Missing, Origin, Want};
 pub use crate::model::port::{PortAllocation, PortBlock};
 pub use crate::model::project::{Project, ProjectName, RemoteUrl};
 pub use crate::model::recipe::{
     Backend, BaseSpec, CommandLine, Commands, DEFAULT_TRASH_RETENTION_DAYS, Db, DbKind, Env,
-    EnvName, Hooks, MigrationTool, PackageManager, Recipe, Reclaim, ServiceName, Services, Sync,
-    TaskCache, ToolName, ToolVersion,
+    EnvName, Hooks, LockPolicy, MigrationTool, PackageManager, Recipe, Reclaim, ServiceName,
+    Services, Sync, TaskCache, ToolName, ToolVersion,
 };
 pub use crate::model::schema::{SCHEMA_VERSION, SchemaDoc};
 pub use crate::model::session::Session;

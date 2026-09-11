@@ -26,6 +26,7 @@ const EMBEDDED_TYPES: &[&str] = &[
     "Db",
     "Env",
     "Hooks",
+    "LockPolicy",
     "Reclaim",
     "Services",
     "Sync",

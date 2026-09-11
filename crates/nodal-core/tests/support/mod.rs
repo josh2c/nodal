@@ -299,7 +299,7 @@ impl World {
             base_id: Some(id('4')),
             ws_fp_materialized: None,
             schema_fp_materialized: None,
-            host: nodal_core::lifecycle::owner::current_host(),
+            host: nodal_core::model::HostName::current(),
             db_name: None,
             ports: Ports::default(),
             fixed_port: None,

@@ -22,7 +22,7 @@ use nodal_core::store::{Store, environments, units};
 /// The host every materialisation a test writes stands on: this one.
 #[must_use]
 pub fn host() -> HostName {
-    nodal_core::lifecycle::owner::current_host()
+    nodal_core::model::HostName::current()
 }
 
 /// A project row whose recipe nothing has hashed and whose checkout has no remote.

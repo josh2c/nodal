@@ -4,7 +4,7 @@
   freshness  stale (deps, schema)
   main       open +1 -4
   remote     —
-  who        codex 1 · josh 1
+  who        josh holds 7 h · codex 1 · josh 1
   age        4 h
   home       /home/j/code/app/.claude/worktrees/payroll
   env        running · unmanaged: never reclaimed

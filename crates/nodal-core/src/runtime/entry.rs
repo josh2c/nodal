@@ -95,6 +95,22 @@ pub fn unit_named(conn: &Connection, target: Option<&str>, cwd: &Path) -> Result
     unit_of(conn, &Slug::parse(target)?, cwd)
 }
 
+/// The unit and the project a home belongs to, when the registry knows both.
+///
+/// `None` for a directory that is not a home, a home with no marker, and a marker
+/// naming a unit the registry has lost. Each of those is a home Nodal holds no write on,
+/// and there is nothing for a lock to be about. A command that needs the row says so
+/// itself; this answers the narrower question a lock asks.
+///
+/// # Errors
+/// [`Error::Store`] when the registry could not be read.
+pub fn registered(conn: &Connection, home: &Path) -> Result<Option<(Unit, Project)>> {
+    let Some(marked) = crate::lifecycle::marker::read(home)? else { return Ok(None) };
+    let Some(unit) = units::get(conn, marked)? else { return Ok(None) };
+    let Some(project) = projects::get(conn, unit.project_id)? else { return Ok(None) };
+    Ok(Some((unit, project)))
+}
+
 /// The unit whose home holds `cwd`, read from the marker that home carries.
 fn unit_here(conn: &Connection, cwd: &Path) -> Result<Unit> {
     let home = crate::env::files::find_home(cwd)?;

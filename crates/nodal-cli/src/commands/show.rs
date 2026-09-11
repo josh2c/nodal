@@ -7,7 +7,7 @@ use nodal_core::context::survey;
 use nodal_core::lifecycle::states;
 use nodal_core::model::Timestamp;
 use nodal_core::output::{self, Format};
-use nodal_core::runtime::{entry, ls, processes, show};
+use nodal_core::runtime::{entry, lock, ls, processes, show};
 use nodal_core::store::Store;
 
 use crate::commands::context;
@@ -46,7 +46,11 @@ impl Show {
         let project = entry::project_of_unit(store.conn(), &unit)?;
         let now = Timestamp::now();
         let surveyed = survey::project(store.conn(), &project)?;
-        let mut listed = ls::rows(&surveyed, &processes::Live, &project, now);
+        let held = ls::Held::of(
+            &lock::live(store.conn(), &project.root, now)?,
+            lock::idle_hours(&project.root),
+        );
+        let mut listed = ls::rows(&surveyed, &processes::Live, &project, &held, now);
         states::settle(store.conn(), &mut listed.units, now);
         let answer = show::detail(store.conn(), listed, &unit)?;
         context::compile(&project, &surveyed);

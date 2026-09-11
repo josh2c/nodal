@@ -57,6 +57,8 @@
 //! | one registry per host | a second account cannot open the list, or two clones of one remote make two projects | `tests/shared_host.rs` |
 //! | secrets stay their owner's | a second account entering a home reads the first's credentials | `tests/shared_host.rs` |
 //! | approvals stay their owner's | one person's reading of a hook decides what runs as another | `tests/shared_host.rs` |
+//! | one writer per home | two actors write one home and neither is told the other is there | `tests/one_writer.rs` |
+//! | an advisory lock | a held unit stops an editor, a `git` call or a read command | `tests/one_writer.rs` |
 //!
 //! ## How the properties are asserted
 //!

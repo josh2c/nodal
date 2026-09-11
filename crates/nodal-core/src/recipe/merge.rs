@@ -12,7 +12,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::model::recipe::{BaseSpec, Commands, Db, Env, Hooks, Recipe, Reclaim, Services, Sync};
+use crate::model::recipe::{
+    BaseSpec, Commands, Db, Env, Hooks, LockPolicy, Recipe, Reclaim, Services, Sync,
+};
 
 /// Combine two values of one shape, keeping whatever the higher-precedence side set.
 pub trait Merge: Sized {
@@ -58,6 +60,7 @@ merge_fields!(BaseSpec { exclude, invalidate });
 merge_fields!(Hooks { pre_new, post_new, pre_merge, post_merge, pre_reclaim, post_reclaim });
 merge_fields!(Sync { auto_irreversible });
 merge_fields!(Reclaim { trash_retention });
+merge_fields!(LockPolicy { idle_hours });
 merge_fields!(Recipe {
     backend,
     package_manager,
@@ -75,6 +78,7 @@ merge_fields!(Recipe {
     hooks,
     sync,
     reclaim,
+    lock,
 });
 
 #[cfg(test)]

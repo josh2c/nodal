@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::git::integration::{Divergence, Integration};
 use crate::model::{
     ActorName, BranchName, EnvId, EnvState, Environment, Epistemic, Event, FingerprintPart,
-    Objective, Ports, ProjectName, Slug, Timestamp, Unit, UnitId, UnitStatus,
+    HostName, Lock, Objective, Ports, ProjectName, Slug, Timestamp, Unit, UnitId, UnitStatus,
 };
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, NONE, Table};
@@ -84,6 +84,50 @@ pub struct ToolSessions {
     pub count: u32,
 }
 
+/// The actor holding the write on a unit, as a report shows it.
+///
+/// This is the first half of WHO, and it is read from the registry rather than from the
+/// process table. The process table does not cross Linux accounts, so on a host two
+/// engineers share it cannot see the other person at all. A lock row can.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Holder {
+    /// Who holds it. A row that records no actor holds nobody, so it never becomes a
+    /// holder and this is never absent.
+    pub actor: ActorName,
+    /// The host the hold was taken from.
+    pub host: HostName,
+    /// The process that took it. Recorded so a person can look; nothing signals it.
+    pub pid: Option<u32>,
+    /// When the hold began.
+    pub taken_at: Timestamp,
+    /// When an entry last touched the home, which the idle window runs from.
+    pub refreshed_at: Timestamp,
+    /// When the hold lapses: the earlier of the absolute expiry and the end of the idle
+    /// window, because either one releases it.
+    pub expires_at: Timestamp,
+}
+
+impl Holder {
+    /// The holder of a lock, with the project's idle window applied to its clock.
+    ///
+    /// `None` for a lock that holds nobody: a row written before locks carried an actor
+    /// names a host rather than a writer, and a report that printed it as a holder would
+    /// be naming somebody the registry never recorded.
+    #[must_use]
+    pub fn from_lock(lock: &Lock, idle_hours: u32) -> Option<Self> {
+        let idle =
+            Timestamp::from_unix_seconds(lock.idle_deadline(idle_hours)).unwrap_or(lock.expires_at);
+        Some(Self {
+            actor: lock.actor.as_ref()?.name.clone(),
+            host: lock.host.clone(),
+            pid: lock.pid,
+            taken_at: lock.taken_at,
+            refreshed_at: lock.refreshed_at,
+            expires_at: lock.expires_at.min(idle),
+        })
+    }
+}
+
 /// A process seen running against the unit's environment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Running {
@@ -152,6 +196,9 @@ pub struct UnitRow {
     pub environment: Option<EnvLine>,
     /// When the unit was created, which its age is measured from.
     pub created_at: Timestamp,
+    /// Who holds the write on it, when anybody does.
+    #[serde(default)]
+    pub holder: Option<Holder>,
     /// Who is attached to it right now, by tool.
     pub sessions: Vec<ToolSessions>,
     /// When something was last seen happening in it.
@@ -173,6 +220,7 @@ impl UnitRow {
             work: None,
             environment: None,
             created_at: unit.created_at,
+            holder: None,
             sessions: Vec::new(),
             last_active: None,
         }
@@ -291,7 +339,7 @@ pub(crate) fn list_table(list: &UnitList) -> Table {
             branch_cell(unit),
             main_cell(unit),
             remote_cell(unit),
-            who_cell(unit),
+            who_cell(unit, list.now),
             human::span(list.now, unit.created_at),
             objective_cell(unit),
         ];
@@ -364,7 +412,7 @@ fn detail_fields(unit: &UnitRow, now: Timestamp) -> Vec<Field> {
     ];
     fields.push(Field::new("main", main_cell(unit)));
     fields.push(Field::new("remote", remote_cell(unit)));
-    fields.push(Field::new("who", who_cell(unit)));
+    fields.push(Field::new("who", who_cell(unit, now)));
     fields.push(Field::new("age", human::span(now, unit.created_at)));
     if let Some(environment) = &unit.environment {
         fields.push(Field::new("home", environment.home.display().to_string()));
@@ -469,11 +517,28 @@ fn remote_cell(unit: &UnitRow) -> String {
     if counts.is_empty() { String::from("even") } else { counts.trim_start().to_owned() }
 }
 
-/// Who is attached to the unit right now, as `claude-code 2 · josh 1`.
-fn who_cell(unit: &UnitRow) -> String {
-    let named: Vec<String> =
-        unit.sessions.iter().map(|each| format!("{} {}", each.tool, each.count)).collect();
+/// Who has the unit: the writer first, then who is attached, as
+/// `ada holds 6 h · claude-code 2`.
+///
+/// The order is the point. The lock row is the one signal that crosses Linux accounts,
+/// so on a host two engineers share it is the only answer to "is somebody else in this
+/// unit"; the process table comes second because it can only see this account's
+/// processes. A unit nobody holds shows the attachments alone, exactly as before.
+///
+/// The holder carries how long the hold has left, because "who has it" and "for how
+/// much longer" are one question to a person deciding whether to wait or to take it.
+fn who_cell(unit: &UnitRow, now: Timestamp) -> String {
+    let mut named = Vec::new();
+    if let Some(holder) = &unit.holder {
+        named.push(holds_cell(holder, now));
+    }
+    named.extend(unit.sessions.iter().map(|each| format!("{} {}", each.tool, each.count)));
     human::join(&named)
+}
+
+/// One holder: who, and how long the hold has left.
+fn holds_cell(holder: &Holder, now: Timestamp) -> String {
+    format!("{} holds {}", holder.actor, human::span(holder.expires_at, now))
 }
 
 /// What the unit's home occupies, when it has been measured.

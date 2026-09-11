@@ -95,7 +95,7 @@ pub fn observe(
 /// process table Nodal cannot read is not a reason to fail the work the person asked
 /// for. What happened is a debug line.
 pub fn observe_quietly(conn: &Connection) {
-    let host = crate::lifecycle::owner::current_host();
+    let host = crate::model::HostName::current();
     match observe(conn, &crate::runtime::processes::Live, &host, Timestamp::now()) {
         Ok(change) => tracing::debug!(opened = change.opened, ended = change.ended, "sessions"),
         Err(error) => tracing::debug!(%error, "the session scan did not run"),

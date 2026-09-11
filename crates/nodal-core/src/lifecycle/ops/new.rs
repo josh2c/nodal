@@ -54,13 +54,12 @@ use crate::fingerprint;
 use crate::git::{Git, refs, scrub};
 use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Runner};
 use crate::lifecycle::journal::Operation;
-use crate::lifecycle::owner;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::{Rebuild, guard, identity, marker, run};
 use crate::model::{
-    BranchName, CommitId, EnvId, EnvState, Environment, Epistemic, EventKind, Objective, PortBlock,
-    PortName, Ports, Project, ProjectId, ProjectName, Recipe, RemoteUrl, Slug, Timestamp, Unit,
-    UnitId, UnitStatus,
+    BranchName, CommitId, EnvId, EnvState, Environment, Epistemic, EventKind, HostName, Objective,
+    PortBlock, PortName, Ports, Project, ProjectId, ProjectName, Recipe, RemoteUrl, Slug,
+    Timestamp, Unit, UnitId, UnitStatus,
 };
 use crate::output::view::{Arrival, Created};
 use crate::services::ports;
@@ -443,12 +442,22 @@ pub fn plan(params: &Params) -> Result<Plan> {
 fn commit_of(params: &Params) -> Commit {
     let (unit, environment) = (params.unit.clone(), params.environment.clone());
     let (block, names) = (params.block, params.ports.clone());
+    let idle_hours = params.recipe.lock_idle_hours();
     Box::new(move |tx: &Transaction<'_>, outputs: &Outputs| -> Result<Output> {
         units::insert(tx, &unit)?;
         environments::insert(tx, &environment)?;
         let granted = ports::allocate(tx, block, environment.id, &names)?;
         environments::set_ports(tx, environment.id, &granted)?;
         record_relocation(tx, unit.id, environment.id, outputs.read(RELOCATE)?.as_ref())?;
+        // The maker of a unit holds the write on it from the instant the row exists, so
+        // a second actor entering the home a moment later is told rather than let in.
+        //
+        // Here, and not as a step in the plan beside `RefreshRefs` or `TakeBranch`. A
+        // hold is a registry row naming a unit, so it belongs in the transaction that
+        // writes that unit: a hold naming a unit that does not exist, and a unit with no
+        // hold, are both states an interrupted create must never leave behind. The
+        // steps are filesystem work and are undone one at a time; this is not.
+        crate::runtime::lock::open(tx, unit.id, idle_hours, Timestamp::now())?;
         Ok(nothing())
     })
 }
@@ -1039,7 +1048,7 @@ pub(super) fn new_environment(
         base_id: None,
         ws_fp_materialized: None,
         schema_fp_materialized: None,
-        host: owner::current_host(),
+        host: HostName::current(),
         db_name: None,
         ports: Ports::default(),
         fixed_port: None,

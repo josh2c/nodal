@@ -28,6 +28,7 @@ pub mod attribute;
 pub mod entry;
 pub mod explain;
 pub mod init;
+pub mod lock;
 pub mod ls;
 pub mod processes;
 pub mod ps;

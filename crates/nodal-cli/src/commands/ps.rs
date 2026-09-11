@@ -26,7 +26,7 @@ impl Ps {
     /// the answer, not a failure: a host with no Docker daemon still reports its
     /// processes and its ports.
     pub fn run(&self, store: &Store) -> nodal_core::Result<ExitCode> {
-        let host = nodal_core::lifecycle::owner::current_host();
+        let host = nodal_core::model::HostName::current();
         let answer =
             ps::observe(store.conn(), &processes::Live, &docker::Cli, &host, Timestamp::now())?;
         output::write(&answer, Format::from_json_flag(self.json), &mut std::io::stdout())?;

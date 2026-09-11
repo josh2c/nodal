@@ -13,7 +13,7 @@ use nodal_core::lifecycle::states;
 use nodal_core::model::{Project, ProjectName, Timestamp};
 use nodal_core::output::view::{UnitList, Verdict, WorktreeRow};
 use nodal_core::output::{self, Format};
-use nodal_core::runtime::{entry, ls, processes, verdict};
+use nodal_core::runtime::{entry, lock, ls, processes, verdict};
 use nodal_core::store::Store;
 
 use crate::commands::context;
@@ -186,9 +186,24 @@ impl Ls {
         let now = Timestamp::now();
         let Some(store) = store else { return Ok(Self::checkout(&path)) };
         let surveyed = survey::project(store.conn(), &project)?;
-        let mut list = ls::rows(&surveyed, &processes::Live, &project, now);
+        let held = Self::holders(store, &project, now)?;
+        let mut list = ls::rows(&surveyed, &processes::Live, &project, &held, now);
         list.worktrees = Self::foreign(&project, &surveyed, now);
         Ok(Reading::Listed(Box::new(Listing { project, surveyed, list })))
+    }
+
+    /// Who holds the write on each of a project's units, with lapsed holds left out.
+    ///
+    /// Read once for the whole list. WHO puts this before the process table because a
+    /// process scan reads `/proc`, which does not cross Linux accounts: on a host two
+    /// engineers share, a lock row is the only signal that sees the other person.
+    fn holders(
+        store: &Store,
+        project: &nodal_core::model::Project,
+        now: Timestamp,
+    ) -> nodal_core::Result<ls::Held> {
+        let held = lock::live(store.conn(), &project.root, now)?;
+        Ok(ls::Held::of(&held, lock::idle_hours(&project.root)))
     }
 
     /// The verdict on a checkout the registry holds nothing about.

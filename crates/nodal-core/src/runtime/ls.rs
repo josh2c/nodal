@@ -26,6 +26,13 @@
 //! attached to each home. It is not a question about a repository and no home is asked
 //! it.
 //!
+//! **WHO is two readings, in this order.** The lock rows first, then the process table.
+//! The order is not a preference: the process table is `/proc`, which does not cross
+//! Linux accounts, so on a host two engineers share it cannot see the other person at
+//! all. The lock row is written down and therefore can. A lapsed hold is not a holder
+//! and never reaches a row, which is why the caller passes the live ones rather than
+//! every row the table holds.
+//!
 //! **What the list writes** (`docs/contracts.md`, The list): "The list's reading is
 //! pure. After reading, the command layer records at most two things it learned or
 //! derived: a unit's flip to merged, and each touched unit's recomputed `WORKUNIT.md`.
@@ -44,9 +51,9 @@ use rusqlite::Connection;
 
 use crate::Result;
 use crate::context::survey::{self, Snapshot, Work};
-use crate::model::{ActorName, Project, Timestamp};
+use crate::model::{ActorName, Lock, Project, Timestamp, UnitId};
 use crate::output::notice::{self, Notice};
-use crate::output::view::{EnvLine, ToolSessions, UnitList, UnitRow, WorkTree};
+use crate::output::view::{EnvLine, Holder, ToolSessions, UnitList, UnitRow, WorkTree};
 use crate::runtime::processes::Processes;
 use crate::runtime::sessions;
 
@@ -65,7 +72,37 @@ pub fn list(
     project: &Project,
     now: Timestamp,
 ) -> Result<UnitList> {
-    Ok(rows(&survey::project(conn, project)?, processes, project, now))
+    let surveyed = survey::project(conn, project)?;
+    let held = crate::runtime::lock::live(conn, &project.root, now)?;
+    let idle_hours = crate::runtime::lock::idle_hours(&project.root);
+    Ok(rows(&surveyed, processes, project, &Held::of(&held, idle_hours), now))
+}
+
+/// The writers of a project's units, by unit, with the project's idle window applied.
+///
+/// The rows are read once for the whole list rather than once per unit, for the reason
+/// the survey gives about Git: a list of eight units must not become eight statements to
+/// answer one column.
+#[derive(Debug, Default)]
+pub struct Held(BTreeMap<UnitId, Holder>);
+
+impl Held {
+    /// The holders of these locks, as a report shows them.
+    #[must_use]
+    pub fn of(locks: &[Lock], idle_hours: u32) -> Self {
+        Self(
+            locks
+                .iter()
+                .filter_map(|lock| Some((lock.unit_id, Holder::from_lock(lock, idle_hours)?)))
+                .collect(),
+        )
+    }
+
+    /// Who holds one unit, `None` when nobody does.
+    #[must_use]
+    pub fn of_unit(&self, unit: UnitId) -> Option<Holder> {
+        self.0.get(&unit).cloned()
+    }
 }
 
 /// The same list, built from a survey the caller has already taken.
@@ -74,6 +111,7 @@ pub fn rows(
     surveyed: &[Snapshot],
     processes: &dyn Processes,
     project: &Project,
+    held: &Held,
     now: Timestamp,
 ) -> UnitList {
     let mut notices = Vec::new();
@@ -83,7 +121,7 @@ pub fn rows(
         notices.extend(
             subject.notes.iter().map(|cause| Notice::about(subject.unit.slug.to_string(), cause)),
         );
-        units.push(row(subject, &attached));
+        units.push(row(subject, &attached, held));
     }
     order(&mut units);
     // One line per cause, however many units reported it. A list of eight units whose
@@ -113,8 +151,12 @@ pub fn order(rows: &mut [UnitRow]) {
 }
 
 /// One row: the registry's facts about a unit, and the survey's.
-fn row(subject: &Snapshot, attached: &Attached) -> UnitRow {
+fn row(subject: &Snapshot, attached: &Attached, held: &Held) -> UnitRow {
     let mut row = UnitRow::from_unit(&subject.unit);
+    // The writer is a fact about the unit and not about its home, so it is set before
+    // the row gives up on a unit that has none. A unit whose home was reclaimed holds
+    // nothing, because the reclaim released it.
+    row.holder = held.of_unit(subject.unit.id);
     let Some(environment) = subject.home.as_ref() else { return row };
     row.sessions = attached.of(&environment.home);
     row.last_active = Some(environment.last_active);

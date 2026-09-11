@@ -12,6 +12,7 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
+use crate::model::lock::DEFAULT_IDLE_HOURS;
 use crate::model::recipe::{DEFAULT_TRASH_RETENTION_DAYS, Recipe};
 use crate::recipe::gap::Gap;
 
@@ -170,6 +171,16 @@ fn policy(out: &mut String, recipe: &Recipe) {
         }
         None => {
             let _ = writeln!(out, "# trash_retention = {DEFAULT_TRASH_RETENTION_DAYS}");
+        }
+    }
+
+    section(out, "lock");
+    match recipe.lock.idle_hours {
+        Some(hours) => {
+            let _ = writeln!(out, "idle_hours = {hours}");
+        }
+        None => {
+            let _ = writeln!(out, "# idle_hours = {DEFAULT_IDLE_HOURS}");
         }
     }
 }

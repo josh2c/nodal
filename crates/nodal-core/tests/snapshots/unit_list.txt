@@ -1,3 +1,3 @@
-  UNIT            STATE                        BRANCH                        MAIN        REMOTE  WHO               AGE  OBJECTIVE
-  worker-import   open                         nodal/worker-import *3 +1 ?2  open +2     ^2      claude-code 1     2 d  worker import: handle missing supervisor_id
-  payroll-export  open · stale (deps, schema)  nodal/payroll-export          open +1 -4  —       codex 1 · josh 1  4 h  payroll export CSV (recovered)
+  UNIT            STATE                        BRANCH                        MAIN        REMOTE  WHO                                AGE  OBJECTIVE
+  worker-import   open                         nodal/worker-import *3 +1 ?2  open +2     ^2      claude-code 1                      2 d  worker import: handle missing supervisor_id
+  payroll-export  open · stale (deps, schema)  nodal/payroll-export          open +1 -4  —       josh holds 7 h · codex 1 · josh 1  4 h  payroll export CSV (recovered)

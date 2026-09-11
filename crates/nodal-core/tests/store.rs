@@ -458,27 +458,134 @@ fn a_lease_is_held_by_one_environment_until_it_lapses() {
     assert!(leases::list_for_environment(conn, id('A')).unwrap().is_empty());
 }
 
+/// A person at a terminal, by the name they log in as.
+fn actor(name: &str) -> Actor {
+    Actor { kind: ActorKind::Human, name: ActorName::parse(name).unwrap() }
+}
+
+/// The hold a test starts from: `ada` on `laptop`, taken at `now`.
+fn holding(now: Timestamp) -> Lock {
+    Lock {
+        unit_id: id('2'),
+        host: HostName::parse("laptop").unwrap(),
+        actor: Some(actor("ada")),
+        pid: Some(4_120),
+        taken_at: now,
+        refreshed_at: now,
+        expires_at: at("2026-09-06T20:00:00Z"),
+    }
+}
+
+/// One actor writes a unit at a time, and the holder's own entry refreshes the hold.
+///
+/// Two engineers on one box are two actors and one host, which is the case the process
+/// table cannot see: it does not cross Linux accounts. So the rival here shares the
+/// host and differs only in who it is.
 #[test]
-fn a_unit_is_written_from_one_host_until_the_claim_lapses() {
+fn one_actor_writes_a_unit_and_their_own_entry_refreshes_it() {
     let registry = Registry::seeded();
     let conn = registry.store.conn();
     let now = at("2026-09-06T10:00:00Z");
-    let laptop = HostName::parse("laptop").unwrap();
-    let desktop = HostName::parse("desktop").unwrap();
-    let held =
-        Lock { unit_id: id('2'), host: laptop.clone(), expires_at: at("2026-09-06T11:00:00Z") };
+    let held = holding(now);
+    let idle = held.idle_deadline(8);
 
-    assert!(locks::acquire(conn, &held, now).unwrap());
-    let rival = Lock { host: desktop.clone(), ..held.clone() };
-    assert!(!locks::acquire(conn, &rival, now).unwrap());
+    assert!(locks::take(conn, &held, now, idle).unwrap());
+    let rival = Lock { actor: Some(actor("bo")), pid: Some(4_121), ..held.clone() };
+    assert!(!locks::take(conn, &rival, now, idle).unwrap(), "a second actor took a held lock");
     assert_eq!(locks::get(conn, id('2')).unwrap(), Some(held.clone()));
-    assert_eq!(locks::list_for_host(conn, &laptop).unwrap(), vec![held.clone()]);
+    assert_eq!(locks::list_for_host(conn, &held.host).unwrap(), vec![held.clone()]);
+    assert_eq!(locks::list_all(conn).unwrap(), vec![held.clone()]);
 
-    let after = at("2026-09-06T12:00:00Z");
-    assert!(locks::acquire(conn, &rival, after).unwrap());
-    assert!(!locks::release(conn, id('2'), &laptop).unwrap());
-    assert!(locks::release(conn, id('2'), &desktop).unwrap());
+    let later = at("2026-09-06T14:00:00Z");
+    let again = Lock { taken_at: later, refreshed_at: later, ..held };
+    assert!(locks::take(conn, &again, later, idle).unwrap());
+    let read = locks::get(conn, id('2')).unwrap().unwrap();
+    assert_eq!(read.taken_at, now, "a refresh moved the instant the hold began");
+    assert_eq!(read.refreshed_at, later);
+}
+
+/// A hold nobody has entered for the idle window is anybody's, and moves with no
+/// hand-off.
+#[test]
+fn an_idle_hold_lapses_and_the_next_actor_takes_it() {
+    let registry = Registry::seeded();
+    let conn = registry.store.conn();
+    let now = at("2026-09-06T10:00:00Z");
+    let held = holding(now);
+    assert!(locks::take(conn, &held, now, held.idle_deadline(8)).unwrap());
+
+    let tomorrow = at("2026-09-07T09:00:00Z");
+    assert!(held.has_lapsed(tomorrow, 8), "an idle hold did not lapse");
+    let rival = Lock {
+        actor: Some(actor("bo")),
+        pid: Some(4_121),
+        taken_at: tomorrow,
+        refreshed_at: tomorrow,
+        ..held.clone()
+    };
+    assert!(locks::take(conn, &rival, tomorrow, held.idle_deadline(8)).unwrap());
+    let read = locks::get(conn, id('2')).unwrap().unwrap();
+    assert_eq!(read.actor, Some(actor("bo")), "the lapsed hold did not move");
+    assert_eq!(read.taken_at, tomorrow, "a take over kept the first holder\'s start");
+}
+
+/// Only the host that holds a unit gives it up.
+#[test]
+fn a_hold_is_released_by_the_host_that_took_it_and_no_other() {
+    let registry = Registry::seeded();
+    let conn = registry.store.conn();
+    let now = at("2026-09-06T10:00:00Z");
+    let held = holding(now);
+    assert!(locks::take(conn, &held, now, held.idle_deadline(8)).unwrap());
+
+    let elsewhere = HostName::parse("desktop").unwrap();
+    assert!(!locks::release(conn, id('2'), &elsewhere).unwrap(), "another host released a hold");
+    assert!(locks::release(conn, id('2'), &held.host).unwrap());
     assert_eq!(locks::get(conn, id('2')).unwrap(), None);
+}
+
+/// `--take` moves a hold that has not lapsed, and nothing else does.
+#[test]
+fn a_hand_over_moves_a_hold_the_clock_has_not_released() {
+    let registry = Registry::seeded();
+    let conn = registry.store.conn();
+    let now = at("2026-09-06T10:00:00Z");
+    let host = HostName::parse("laptop").unwrap();
+    let held = Lock {
+        unit_id: id('2'),
+        host: host.clone(),
+        actor: Some(actor("ada")),
+        pid: Some(4_120),
+        taken_at: now,
+        refreshed_at: now,
+        expires_at: at("2026-09-06T20:00:00Z"),
+    };
+    assert!(locks::take(conn, &held, now, held.idle_deadline(8)).unwrap());
+
+    let taken = Lock { actor: Some(actor("bo")), pid: Some(4_121), ..held.clone() };
+    assert!(!locks::take(conn, &taken, now, held.idle_deadline(8)).unwrap());
+    locks::hand_over(conn, &taken).unwrap();
+    assert_eq!(locks::get(conn, id('2')).unwrap(), Some(taken));
+}
+
+/// A row written before locks carried an actor holds no actor, and nobody matches it.
+#[test]
+fn a_lock_row_with_no_actor_is_held_by_nobody() {
+    let registry = Registry::seeded();
+    let conn = registry.store.conn();
+    conn.execute(
+        "INSERT INTO lock (unit_id, host, expires_at) VALUES (?, ?, ?)",
+        rusqlite::params![
+            id::<UnitId>('2').to_string(),
+            "laptop",
+            at("2026-09-06T20:00:00Z").unix_seconds()
+        ],
+    )
+    .unwrap();
+    let read = locks::get(conn, id('2')).unwrap().unwrap();
+    assert_eq!(read.actor, None, "an actor was invented for a row that recorded none");
+    assert!(!read.is_held_by(&actor("ada"), &HostName::parse("laptop").unwrap()));
+    assert!(read.has_lapsed(at("2026-09-06T10:00:00Z"), 8), "an actor-less row held the unit");
 }
 
 #[test]
