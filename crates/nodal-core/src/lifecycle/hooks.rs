@@ -320,9 +320,32 @@ impl Approvals {
         }
         let text = toml::to_string_pretty(self)
             .map_err(|_| Error::StoreEncode { kind: "hook approvals" })?;
-        std::fs::write(path, text).map_err(Error::io(path))
+        std::fs::write(path, text).map_err(Error::io(path))?;
+        own_it(path)
     }
 }
+
+/// Make a file the owner's alone, whatever umask this process is running under.
+///
+/// The approvals are a record of what one person accepts running on their account. A
+/// shared host runs Nodal under a umask that keeps the group's write bit
+/// ([`crate::workspace::shared::UMASK`]), and a group-writable approvals file would let
+/// another account add a command to the list this one acts on.
+#[cfg(unix)]
+fn own_it(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(OWNER_ONLY))
+        .map_err(Error::io(path))
+}
+
+#[cfg(not(unix))]
+fn own_it(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+/// The mode the approvals file is kept at: the owner reads and writes it, nobody else.
+pub const OWNER_ONLY: u32 = 0o600;
 
 /// Approve, on this machine, exactly the hooks a project declares now.
 ///

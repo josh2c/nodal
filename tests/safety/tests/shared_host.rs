@@ -404,6 +404,11 @@ fn an_approval_by_one_account_does_not_approve_a_hook_for_another() {
         !workspace.state_dir().join("hooks.toml").exists(),
         "an approval was written into the state root"
     );
+    assert_eq!(
+        mode(&ada.join(".config").join("nodal").join("hooks.toml")) & 0o077,
+        0,
+        "another account may write the list of commands this one accepts"
+    );
 
     let refused = workspace
         .command(&["new", "--name", "not-yours"])
