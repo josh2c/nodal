@@ -103,8 +103,9 @@ the project described itself to the tool.
 landed in #7 at 12:17. Warm bases landed in #8 at 12:27. From 12:27 on 2026-09-07, the
 binary on `main` could create a unit.
 
-**Eighteen of the 34 clones were made after that point.** They hold 53.39 GB of the 53.41 GB
-the 34 hold in total. Every one of the five large clones is in that group.
+**Eighteen of the 34 clones were made after that point**, and the earliest of them at 12:36,
+nine minutes after warm bases landed. They hold 53.39 GB of the 53.41 GB the 34 hold in
+total. Every one of the five large clones is in that group.
 
 So the answer to the pointed version of the question is split, and the second half is the
 uncomfortable one:
@@ -115,8 +116,8 @@ uncomfortable one:
   What was missing was a 50-line `nodal.toml`, which `nodal init` writes.
 
 This rejects the first thing the brief wondered. The clones do not exist only because Nodal
-was not ready. For the 18 that hold 92% of the bytes, Nodal was ready and was not reached
-for. The gap was not capability. It was that nobody had run `nodal init` on the project
+was not ready. For the 18 that hold 99.9% of the bytes, Nodal was ready and was not
+reached for. The gap was not capability. It was that nobody had run `nodal init` on the project
 Nodal was being written in.
 
 ## 2. What a week of real use says
@@ -228,9 +229,9 @@ I could not confirm or refute that inside Nodal. I used `git ls-remote` to read 
 remote, then `git merge-base --is-ancestor` to test each clone's HEAD against `main`, then
 `git cherry` to test whether each commit had an equivalent already in `main`.
 
-The verdict turned out to be correct. Of 236 commits in those ten clones, `git cherry`
-found exactly one with no equivalent in `main`: `41c723d` in `nodal-t0.12`, which added the
-startup benchmark. `benches/startup` is in `main` today and `main` is ahead of that commit
+The verdict turned out to be correct. Across the 102 commits `git cherry` compared in those
+ten clones, exactly one has no equivalent in `main`: `41c723d` in `nodal-t0.12`, which added
+the startup benchmark. `benches/startup` is in `main` today and `main` is ahead of that commit
 by 15 lines. Nothing is lost.
 
 It was correct, but not for the reason `doctor` gave. Had a branch been deleted before its
@@ -246,13 +247,21 @@ their own rows. Nothing records an invocation of `ls`, `show`, `explain`, `cd`, 
 `gc` or `doctor`. A tool whose first claim is visibility has no view of its own use. I could
 measure adoption of `new`, `reclaim`, `run` and `done`, and nothing else.
 
-### `doctor` reports apparent size on a filesystem that compresses
+### `doctor` reports a size that is not the size
 
-`doctor --machine` reports 72.7 GB for the group. That is the sum of file sizes. This
-filesystem is btrfs with `compress=zstd:3`, so the blocks on disk are fewer. A person
-deciding what to delete wants the second number. I used `du` and `btrfs filesystem du` to
-get it. The same command also cannot separate what a clone shares with another tree from
-what it owns alone, which is the number that says what removing it frees.
+`doctor --machine` sums file sizes per path. `cargo` hardlinks its artifacts, so a file with
+two names is counted twice. On the five built-in clones that inflates the total from
+53.35 GB to 57.85 GB, which is about 8%. `nodal-t0.10` alone holds 11,814 files with more
+than one link.
+
+`doctor` also cannot say what a clone shares with another tree and what it owns alone. That
+second number is the one that says what removal frees. I used `du -sb`, which is
+hardlink-aware, and `btrfs filesystem du -s`, which reports exclusive bytes. The two agree
+with each other and not with `doctor`.
+
+Compression is not the problem here, which surprised me. This filesystem runs
+`compress=zstd:3`, and the on-disk size of these trees matches their apparent size. Rust
+build artifacts do not give zstd anything to work with.
 
 ### Smaller ones
 
