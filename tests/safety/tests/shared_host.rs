@@ -27,6 +27,8 @@
 
 use std::path::{Path, PathBuf};
 
+use nodal_core::workspace::shared;
+
 use nodal_core::store::{Store, projects};
 use nodal_safety::machine::binary;
 use nodal_safety::project::Workspace;
@@ -141,11 +143,8 @@ fn a_group_owned_state_root_gets_a_registry_the_group_can_write() {
     let registry = state.join("registry.db");
     let store = Store::open(&registry).unwrap();
     assert_eq!(store.path(), registry.as_path());
-    for path in [
-        registry.clone(),
-        PathBuf::from(format!("{}-wal", registry.display())),
-        PathBuf::from(format!("{}-shm", registry.display())),
-    ] {
+    let sidecars = shared::SIDECARS.map(|suffix| shared::sidecar(&registry, suffix));
+    for path in std::iter::once(registry.clone()).chain(sidecars) {
         assert_eq!(
             mode(&path),
             0o660,

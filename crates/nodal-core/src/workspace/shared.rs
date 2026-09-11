@@ -43,9 +43,6 @@ pub const ROOT_MODE: u32 = 0o2775;
 /// The mode the registry and its two sidecar files are set to on a shared host.
 pub const REGISTRY_MODE: u32 = 0o660;
 
-/// The mode the registry has where the host is one person's own.
-pub const OWNER_REGISTRY_MODE: u32 = 0o600;
-
 /// The umask Nodal runs under on a shared host: nothing masked from the group.
 pub const UMASK: u32 = 0o002;
 
@@ -73,7 +70,7 @@ pub fn is_shared(root: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
 
     std::fs::metadata(root)
-        .is_ok_and(|meta| meta.is_dir() && meta.permissions().mode() & u32::from(SETGID) != 0)
+        .is_ok_and(|meta| meta.is_dir() && meta.permissions().mode() & SETGID != 0)
 }
 
 /// A host with no Unix modes keeps one registry per account.
@@ -85,7 +82,7 @@ pub fn is_shared(_root: &Path) -> bool {
 
 /// The setgid bit, as the permission bits carry it.
 #[cfg(unix)]
-const SETGID: u16 = 0o2000;
+const SETGID: u32 = 0o2000;
 
 /// Bring this process and the registry files into line with the root's own mode.
 ///
