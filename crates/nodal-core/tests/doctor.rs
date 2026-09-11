@@ -487,6 +487,7 @@ fn unit_row(project: nodal_core::model::ProjectId, index: usize) -> nodal_core::
         branch: nodal_core::model::BranchName::parse(format!("nodal/unit-{index}"))
             .expect("a branch"),
         parent_branch: None,
+        base_commit: None,
         status: nodal_core::model::UnitStatus::Open,
         created_at: now,
         updated_at: now,

@@ -60,6 +60,7 @@ pub fn unit(id: UnitId, project: ProjectId, slug: &str, branch: &str, at: Timest
         objective_epistemic: None,
         branch: BranchName::parse(branch).expect("a branch name"),
         parent_branch: None,
+        base_commit: None,
         status: UnitStatus::Open,
         created_at: at,
         updated_at: at,

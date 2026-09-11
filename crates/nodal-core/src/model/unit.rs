@@ -3,6 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::model::base::CommitId;
 use crate::model::event::Epistemic;
 use crate::model::ids::{ProjectId, UnitId};
 use crate::model::scalar::{self, string_newtype};
@@ -62,6 +63,16 @@ pub struct Unit {
     pub branch: BranchName,
     /// The branch the work started from, when it is known.
     pub parent_branch: Option<BranchName>,
+    /// The commit the unit forked from, when it was recorded.
+    ///
+    /// Written once, by the create, and never updated: a unit forks once. It is the
+    /// commit the person's own checkout was at, or the one `--from` named.
+    ///
+    /// `None` means not recorded, which is every unit made before the column existed.
+    /// It never means a unit forked from nothing. A reader that needs a fork point and
+    /// finds `None` falls back to the merge base it used before, and says which of the
+    /// two it is reporting.
+    pub base_commit: Option<CommitId>,
     /// Where the unit is in its life.
     pub status: UnitStatus,
     /// When the unit was created.

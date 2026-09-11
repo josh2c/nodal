@@ -727,6 +727,11 @@ fn adopted_unit(
         objective_epistemic: objective.map(|(_, epistemic)| *epistemic),
         branch: branch.clone(),
         parent_branch: None,
+        // Not recorded, and not guessable. Nodal did not make this worktree and was not
+        // there when its branch left the base; the merge base it has now is where the
+        // branch stands, which is a different fact and would be a wrong answer to the
+        // question this column asks ([`crate::model::Unit::base_commit`]).
+        base_commit: None,
         status: UnitStatus::Open,
         created_at: now,
         updated_at: now,

@@ -95,6 +95,7 @@ fn unit() -> Unit {
         objective_epistemic: Some(Epistemic::Stated),
         branch: BranchName::parse("nodal/fix-worker-import").expect("sample branch is valid"),
         parent_branch: Some(BranchName::parse("main").expect("sample branch is valid")),
+        base_commit: None,
         status: UnitStatus::Open,
         created_at: at("2026-09-06T10:00:00Z"),
         updated_at: at("2026-09-06T10:30:00Z"),
