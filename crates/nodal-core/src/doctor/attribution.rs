@@ -148,6 +148,7 @@ mod tests {
                 name: ProjectName::parse(name).expect("a name"),
                 recipe_hash: Digest::parse("0".repeat(64)).expect("a digest"),
                 created_at: crate::model::Timestamp::now(),
+                remote_url: None,
             },
             root: PathBuf::from(root),
         }

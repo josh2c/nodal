@@ -36,6 +36,7 @@
 
 pub mod guard;
 pub mod hooks;
+pub mod identity;
 pub mod idle;
 pub mod journal;
 pub mod marker;

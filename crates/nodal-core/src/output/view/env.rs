@@ -129,7 +129,7 @@ const fn origin(origin: Origin) -> &'static str {
     match origin {
         Origin::Identity => "nodal",
         Origin::Generated => "this unit",
-        Origin::Machine => "this machine",
+        Origin::Machine => "your own secrets file",
         Origin::StandIn => "a stand-in",
     }
 }
@@ -138,6 +138,6 @@ const fn origin(origin: Origin) -> &'static str {
 const fn want(want: Want) -> &'static str {
     match want {
         Want::Generated => "a service of this unit",
-        Want::Secret | Want::RequiredLocal => "~/.nodal/secrets.env",
+        Want::Secret | Want::RequiredLocal => crate::env::secrets::DISPLAY_PATH,
     }
 }

@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 use rusqlite::Connection;
 
 pub use crate::store::migrations::SCHEMA_VERSION;
-use crate::workspace::sharing;
+use crate::workspace::{shared, sharing};
 use crate::{Error, Result};
 
 /// The file the registry lives in, inside Nodal's home directory. `--store` overrides
@@ -80,6 +80,8 @@ pub struct Store {
     conn: Connection,
     /// Where the database file lives, for error messages.
     path: PathBuf,
+    /// The schema version the file was at when this connection opened it.
+    opened_at: u32,
 }
 
 impl Store {
@@ -87,6 +89,14 @@ impl Store {
     ///
     /// Opening is idempotent and safe to do concurrently: two processes that both find
     /// an out-of-date database will not both migrate it.
+    ///
+    /// The open is also where shared mode takes effect. A state root whose own mode
+    /// says a group owns it ([`shared::is_shared`]) gets a registry, a `-wal` and a
+    /// `-shm` the group may write, and this process gets the umask that keeps the
+    /// group's write bit on everything it creates afterwards. A root that is one
+    /// person's own is left exactly as it was: the modes are set after the first open
+    /// rather than at creation, because the files SQLite writes are not there to be
+    /// moded until the connection has made them.
     ///
     /// The open that *makes* the state root also records whether Nodal shares file
     /// blocks there ([`crate::workspace::sharing`]). That is the one moment the
@@ -111,10 +121,22 @@ impl Store {
         }
         let conn = Connection::open(&path)
             .map_err(|source| Error::Store { path: path.clone(), source: Box::new(source) })?;
-        let mut store = Self { conn, path };
+        let mut store = Self { conn, path, opened_at: SCHEMA_VERSION };
         store.configure()?;
-        migrations::run(&mut store)?;
+        store.opened_at = migrations::run(&mut store)?;
+        shared::adopt(&store.path);
         Ok(store)
+    }
+
+    /// Whether this open is the one that brought the file up through `version`.
+    ///
+    /// A migration is SQL and runs in the runner's transaction. A step that is not SQL
+    /// cannot: reading each checkout's `origin` means running `git`, which no
+    /// transaction should be held open across. So the step runs after the open, once,
+    /// on the connection that crossed the version, and this is what tells it so.
+    #[must_use]
+    pub const fn upgraded_past(&self, version: u32) -> bool {
+        self.opened_at < version && version <= SCHEMA_VERSION
     }
 
     /// Where this registry lives.

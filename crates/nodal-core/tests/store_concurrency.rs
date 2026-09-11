@@ -138,6 +138,7 @@ fn seeded(dir: &Path) -> PathBuf {
             name: ProjectName::parse("acme").unwrap(),
             recipe_hash: Digest::parse("0f1e2d").unwrap(),
             created_at: Timestamp::from_unix_seconds(1_788_689_400).unwrap(),
+            remote_url: None,
         },
     )
     .unwrap();

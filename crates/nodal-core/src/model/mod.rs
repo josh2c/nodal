@@ -42,7 +42,7 @@ pub use crate::model::lease::{Lease, ResourceKey};
 pub use crate::model::lock::Lock;
 pub use crate::model::manifest::{Manifest, Missing, Origin, Want};
 pub use crate::model::port::{PortAllocation, PortBlock};
-pub use crate::model::project::{Project, ProjectName};
+pub use crate::model::project::{Project, ProjectName, RemoteUrl};
 pub use crate::model::recipe::{
     Backend, BaseSpec, CommandLine, Commands, DEFAULT_TRASH_RETENTION_DAYS, Db, DbKind, Env,
     EnvName, Hooks, MigrationTool, PackageManager, Recipe, Reclaim, ServiceName, Services, Sync,

@@ -22,6 +22,7 @@ use nodal_core::output::view::InitReport;
 use nodal_core::output::{self, Format};
 use nodal_core::recipe;
 use nodal_core::workspace::home;
+use nodal_core::workspace::shared;
 use nodal_core::workspace::sharing::Sharing;
 
 /// Arguments of `nodal init`.
@@ -46,6 +47,12 @@ pub struct Init {
     /// Print the plan as JSON.
     #[arg(long)]
     pub json: bool,
+
+    /// Make the state root one a group shares, so that every account in that group
+    /// sees one list. Give it a group name or a group number. Run it once per host;
+    /// every command after it reads the root's own mode and needs no flag.
+    #[arg(long, value_name = "GROUP")]
+    pub shared: Option<String>,
 
     /// Ask the state root again whether nodal can share file blocks there, and record
     /// the answer. What a person runs after they move the state root, or after they fix
@@ -126,12 +133,37 @@ impl Init {
         Ok(())
     }
 
+    /// Hand the state root to a group, and say what that took.
+    ///
+    /// This is the one command that *makes* a host shared. Everything after it reads
+    /// the root's own mode ([`shared::is_shared`]), so there is no flag to remember and
+    /// no second place for the answer to live.
+    ///
+    /// The lines go to standard error, for the same reason the approval line does: the
+    /// command's answer on standard output is one document.
+    ///
+    /// # Errors
+    ///
+    /// [`nodal_core::Error::UnknownGroup`] when this host has no such group,
+    /// [`nodal_core::Error::GroupChange`] when the root could not be given to it, and
+    /// [`nodal_core::Error::Io`] when its mode could not be set.
+    fn hand_the_root_to_a_group(&self) -> nodal_core::Result<()> {
+        let Some(name) = self.shared.as_deref() else { return Ok(()) };
+        let group = shared::group(name)?;
+        let made = shared::share(&home::directory()?, &group)?;
+        for line in made.lines() {
+            eprintln!("nodal: {line}");
+        }
+        Ok(())
+    }
+
     /// Infer the recipe, then print it or write it.
     ///
     /// # Errors
     ///
     /// Propagates a recipe that cannot be read, and a file that cannot be written.
     pub fn run(&self) -> nodal_core::Result<ExitCode> {
+        self.hand_the_root_to_a_group()?;
         let root = self.path.clone().unwrap_or_else(|| PathBuf::from("."));
         let plan = recipe::plan_init(&root)?;
         let report = InitReport::from_plan(&plan);

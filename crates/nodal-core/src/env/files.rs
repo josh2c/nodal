@@ -1,9 +1,21 @@
 //! The activation files: `.nodal/env`, `.envrc`, `.nodal/manifest.toml`.
 //!
-//! Three files, two consumers. direnv reads `.envrc`, which reads `.nodal/env`. A shell
-//! with no direnv gets the same set from `nodal env --export`, which renders the same
-//! variables as shell assignments. `.nodal/manifest.toml` is what a tool reads to learn
-//! what the directory is, and it holds names only.
+//! Three files, two consumers. direnv reads `.envrc`; a shell with no direnv runs
+//! `nodal env --export`. `.nodal/manifest.toml` is what a tool reads to learn what the
+//! directory is, and it holds names only.
+//!
+//! # What is in the file, and what is resolved at entry
+//!
+//! `.nodal/env` holds the unit's identity and the values its own services generated,
+//! and no secret of any person's. A secret is resolved when somebody enters the home,
+//! from **their** secrets file ([`crate::env::secrets::MachineSecrets::path_in`]), by
+//! `nodal env --export`. That is why [`ENVRC_CONTENTS`] is two lines: the dotenv line
+//! delivers what the home is, and the eval line delivers what the person has.
+//!
+//! A host two people log in to is the reason. A unit home under a shared state root is
+//! a directory both accounts can enter, and a file of resolved secrets in it would hand
+//! whoever entered second the values of whoever created it. Nothing about sharing a
+//! registry entitles one engineer to another's credentials.
 //!
 //! Two renderings of one set, because the two consumers do not quote alike.
 //! [`dotenv`] writes `NAME="value"` with the escapes a dotenv reader decodes.
@@ -26,6 +38,7 @@ use std::path::{Path, PathBuf};
 use crate::env::{Activation, secrets};
 use crate::lifecycle::Step;
 use crate::lifecycle::step::{Output, nothing};
+use crate::model::manifest::Origin;
 use crate::model::{EnvName, Manifest};
 use crate::{Error, Result};
 
@@ -48,12 +61,21 @@ pub const MANIFEST: &str = ".nodal/manifest.toml";
 /// there first.
 pub const WORKUNIT: &str = "WORKUNIT.md";
 
-/// The whole of `.envrc`. One line, because direnv is the reader and `.nodal/env` is
-/// the content; anything else here would be a second place to keep the truth.
-pub const ENVRC_CONTENTS: &str = "dotenv .nodal/env\n";
+/// The whole of `.envrc`: what the home is, then what the person entering it has.
+///
+/// The first line is the home's own identity and generated values, which are the same
+/// for everybody who enters. The second resolves this person's secrets from their own
+/// file, so two accounts entering one home get two answers and neither reads the
+/// other's. A home entered on a machine with no `nodal` on the path still gets its
+/// identity from the first line; the eval line answers with nothing and says why on
+/// standard error.
+pub const ENVRC_CONTENTS: &str = "dotenv .nodal/env\neval \"$(nodal env --export)\"\n";
 
-/// The mode `.nodal/env` is created with. It holds resolved secret values, so it is
-/// owner-only for the same reason the per-machine file is.
+/// The mode `.nodal/env` is created with in a home outside the state root.
+///
+/// A home under a **shared** state root is written group-readable instead, because both
+/// accounts that share the registry may enter it ([`crate::workspace::shared::env_mode`]).
+/// The file holds no secret either way ([`dotenv`]).
 pub const ENV_MODE: u32 = secrets::OWNER_ONLY;
 
 /// The paths a home's activation writes: the [`Kind::Activation`] rows of [`WRITTEN`].
@@ -334,7 +356,7 @@ pub fn write(home: &Path, activation: &Activation, manifest: &Manifest) -> Resul
         }
         let path = home.join(written.path);
         match written.path {
-            ENV => write_owner_only(&path, &dotenv(activation))?,
+            ENV => write_env(&path, home, &dotenv(activation))?,
             ENVRC => write_text(&path, ENVRC_CONTENTS)?,
             _ => write_text(&path, &render_manifest(manifest)?)?,
         }
@@ -491,12 +513,17 @@ pub fn unhide(git_dir: &Path) -> Result<bool> {
 
 /// The dotenv rendering: what `.nodal/env` holds and what direnv reads.
 ///
+/// The unit's identity and the values its own services generated, and nothing a person
+/// supplied. A value from somebody's secrets file is left out and resolved at entry
+/// instead (see the module note), so the file is the same bytes for every account that
+/// enters the home.
+///
 /// Values are double-quoted with `\`, `"`, `$` and a backtick escaped, so a reader
 /// neither expands a variable reference nor ends the value early.
 #[must_use]
 pub fn dotenv(activation: &Activation) -> String {
     let mut text = String::from(HEADER);
-    for var in &activation.vars {
+    for var in activation.vars.iter().filter(|var| !is_a_persons_own(var)) {
         text.push_str(var.name().as_str());
         text.push('=');
         text.push('"');
@@ -504,6 +531,15 @@ pub fn dotenv(activation: &Activation) -> String {
         text.push_str("\"\n");
     }
     text
+}
+
+/// Whether a variable's value came from the secrets file of whoever ran the command.
+///
+/// These are the values `.nodal/env` does not hold. Every other origin is a fact about
+/// the unit rather than about a person ([`Origin`]).
+#[must_use]
+pub fn is_a_persons_own(var: &crate::env::EnvVar) -> bool {
+    var.origin() == Origin::Machine
 }
 
 /// The shell rendering: what `nodal env --export` prints for a script to `eval`.
@@ -602,7 +638,8 @@ pub fn read_manifest(home: &Path) -> Result<Manifest> {
 
 /// What `.nodal/env` says about itself, so a person who opens it knows not to edit it.
 const HEADER: &str = "# Written by nodal. Edits are lost the next time the unit is \
-                      activated.\n# Per-machine values belong in ~/.nodal/secrets.env.\n";
+                      activated.\n# It holds no secret: your own values go in \
+                      ~/.config/nodal/secrets.env and are resolved when you enter.\n";
 
 /// Escape a value for the double-quoted form of a dotenv file.
 fn escape_dotenv(value: &str) -> String {
@@ -691,9 +728,18 @@ fn read_if_there(path: &Path) -> Result<Option<String>> {
     }
 }
 
-/// Write a file at owner-only permissions, whether or not it is already there.
+/// Write `.nodal/env` at the mode this home's state root calls for.
+///
+/// A home under a shared state root is group-readable, because the second account has
+/// to be able to read what the home is. A home anywhere else is owner-only, as it has
+/// always been. The file holds no secret either way ([`dotenv`]).
+fn write_env(path: &Path, home: &Path, text: &str) -> Result<()> {
+    write_at(path, text, crate::workspace::shared::env_mode(home))
+}
+
+/// Write a file at `mode`, whether or not it is already there.
 #[cfg(unix)]
-fn write_owner_only(path: &Path, text: &str) -> Result<()> {
+fn write_at(path: &Path, text: &str, mode: u32) -> Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
@@ -701,16 +747,15 @@ fn write_owner_only(path: &Path, text: &str) -> Result<()> {
         .write(true)
         .create(true)
         .truncate(true)
-        .mode(ENV_MODE)
+        .mode(mode)
         .open(path)
         .map_err(Error::io(path))?;
     file.write_all(text.as_bytes()).map_err(Error::io(path))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(ENV_MODE))
-        .map_err(Error::io(path))
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(Error::io(path))
 }
 
 #[cfg(not(unix))]
-fn write_owner_only(path: &Path, text: &str) -> Result<()> {
+fn write_at(path: &Path, text: &str, _mode: u32) -> Result<()> {
     write_text(path, text)
 }
 

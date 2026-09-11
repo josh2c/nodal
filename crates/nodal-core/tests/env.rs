@@ -96,6 +96,7 @@ fn project(root: &Path) -> Project {
         name: ProjectName::parse("fixture").unwrap(),
         recipe_hash: nodal_core::model::Digest::parse("0".repeat(64)).unwrap(),
         created_at: Timestamp::now(),
+        remote_url: None,
     }
 }
 
@@ -295,9 +296,14 @@ fn no_secret_value_reaches_a_manifest_a_report_or_a_message() {
         assert!(!text.contains(SECRET), "a rendering carries a value: {text}");
     }
 
-    // The two files that are meant to carry values are the only ones that do.
+    // The one rendering that is meant to carry a person's credential is the export a
+    // shell evaluates on the way in. The file in the home is not: a home is a directory
+    // a second account on a shared host may enter, and it holds no credential at all.
+    // `SESSION_SECRET` is the name the person's own file answered. The generated names
+    // are in the file and are meant to be: they are the unit's, not a person's.
     let dotenv = std::fs::read_to_string(activated.home.join(files::ENV)).unwrap();
-    assert!(dotenv.contains(SECRET), "the dotenv file is what direnv reads");
+    assert!(!dotenv.contains("SESSION_SECRET"), "the dotenv file carries a credential: {dotenv}");
+    assert!(dotenv.contains("NODAL_UNIT"), "the dotenv file says which unit this is");
     assert!(files::export(&activated.activation).contains(SECRET), "--export is for scripts");
 }
 
@@ -317,19 +323,27 @@ fn the_files_are_idempotent_and_a_step_takes_them_back() {
     }
 }
 
+/// The file reads back as what was written into it, escapes and all.
+///
+/// What was written into it is the activation without the values a person supplied:
+/// those are resolved when somebody enters the home, from their own file. The awkward
+/// value is still a person's credential, because the escaping is what this test is
+/// about and a credential is the value most likely to hold a quote.
 #[test]
 fn the_dotenv_file_reads_back_as_the_set_it_was_written_from() {
-    let activated = activate(&[("SESSION_SECRET", "a $b \"c\" 'd' \\e")], &[]);
+    let awkward = "a $b \"c\" 'd' \\e";
+    let activated = activate(&[("SESSION_SECRET", awkward)], &[]);
     let read = files::read_dotenv(&activated.home).unwrap();
 
     let written: Vec<(EnvName, String)> = activated
         .activation
         .vars
         .iter()
+        .filter(|var| !files::is_a_persons_own(var))
         .map(|var| (var.name().clone(), var.expose().to_owned()))
         .collect();
     assert_eq!(read, written);
-    assert_eq!(files::export_lines(&read), files::export(&activated.activation));
+    assert!(!read.iter().any(|(_, value)| value == awkward), "a credential is in the file");
 }
 
 #[test]

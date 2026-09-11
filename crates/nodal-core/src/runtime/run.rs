@@ -101,7 +101,7 @@ pub fn execute(
         return Err(Error::InvalidValue { kind: "command", value: String::new() });
     };
     let manifest = files::read_manifest(home)?;
-    let pairs = files::read_dotenv(home)?;
+    let pairs = crate::env::entering(home)?;
     let values: BTreeMap<String, String> =
         pairs.iter().map(|(name, value)| (name.to_string(), value.clone())).collect();
     let tethered = tethered_to(conn, &manifest, home, mode)?;

@@ -105,6 +105,7 @@ workspace/
   reflink.rs           Linux FICLONE walk
   btrfs.rs             subvolume snapshot
   copy.rs              fallback
+  shared.rs            shared hosts: the state root's mode says one registry serves a group
   sharing.rs           the recorded answer about sharing blocks at the state root: probe once, then read
   relocate.rs          CacheRelocator trait + InvalidateCache (rewrite reserved, not built)
   home.rs              where Nodal keeps its state, and where a home goes inside it (pure paths)
@@ -195,6 +196,7 @@ lifecycle/             the only module that composes others; each op = plan() pu
     new.rs · adopt.rs · sync.rs · merge.rs · reclaim.rs · gc.rs · done.rs · transfer.rs · doctor.rs
   uniqueness.rs        the single uniqueness_check
   hooks.rs             recipe hooks: the six phases, the context, and approval by digest
+  identity.rs          which project a directory belongs to: its remote first, its path second
   template.rs          the five values a hook command may name, and the substitution
   states.rs            transition tables as data (unit, environment, session)
   idle.rs              idle detection (pure over timestamps + process list)

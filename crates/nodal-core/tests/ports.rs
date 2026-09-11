@@ -103,6 +103,7 @@ impl Registry {
                 name: ProjectName::parse(format!("project-{n}")).unwrap(),
                 recipe_hash: Digest::parse("0f1e2d").unwrap(),
                 created_at: now(),
+                remote_url: None,
             },
         )
         .unwrap();

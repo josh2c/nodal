@@ -44,6 +44,7 @@ pub mod prune;
 pub mod reflink;
 pub mod relocate;
 pub mod remove;
+pub mod shared;
 pub mod sharing;
 pub mod tracked;
 pub mod tree;

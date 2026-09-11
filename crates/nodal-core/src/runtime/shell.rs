@@ -13,7 +13,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::env::files;
 use crate::{Error, Result};
 
 /// The variable naming the shell to start.
@@ -41,7 +40,7 @@ pub fn plan(home: &Path) -> Result<Entry> {
     let program = std::env::var_os(SHELL_VAR)
         .filter(|value| !value.is_empty())
         .map_or_else(|| PathBuf::from(FALLBACK), PathBuf::from);
-    let vars = files::read_dotenv(home)?
+    let vars = crate::env::entering(home)?
         .into_iter()
         .map(|(name, value)| (name.to_string(), value))
         .collect();

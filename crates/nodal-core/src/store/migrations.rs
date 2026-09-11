@@ -41,11 +41,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "trash pruned",
         sql: include_str!("migrations/0008_trash_pruned.sql"),
     },
+    Migration {
+        version: 9,
+        name: "project remote",
+        sql: include_str!("migrations/0009_project_remote.sql"),
+    },
 ];
 
 /// The schema version a database is brought to by [`run`]. Kept as a literal rather
 /// than derived from the table's length, so that a version appears in a diff.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Bring `store` up to [`SCHEMA_VERSION`].
 ///
@@ -58,14 +63,20 @@ pub const SCHEMA_VERSION: u32 = 8;
 /// version is read again inside it, so a second process that migrated the file while
 /// this one was waiting for the lock leaves nothing to redo.
 ///
+/// It answers with the version the file was at before this call, so that a caller can
+/// tell which step it crossed. A step whose work is not SQL — reading each checkout's
+/// `origin`, say — cannot run inside the transaction, and this is how it learns it is
+/// due ([`Store::upgraded_past`]).
+///
 /// # Errors
 /// [`Error::StoreTooNew`] when the database was written by a later version of Nodal,
 /// [`Error::StoreMigration`] when a step failed, [`Error::Store`] when the version
 /// could not be read or the write lock could not be taken.
-pub fn run(store: &mut Store) -> Result<()> {
+pub fn run(store: &mut Store) -> Result<u32> {
     let path = store.path().to_path_buf();
-    match version(store.conn(), &path)? {
-        applied if applied == SCHEMA_VERSION => return Ok(()),
+    let found = version(store.conn(), &path)?;
+    match found {
+        applied if applied == SCHEMA_VERSION => return Ok(found),
         applied if applied > SCHEMA_VERSION => {
             return Err(Error::StoreTooNew { path, found: applied, supported: SCHEMA_VERSION });
         }
@@ -86,7 +97,8 @@ pub fn run(store: &mut Store) -> Result<()> {
     }
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(|source| Error::Store { path: path.clone(), source: Box::new(source) })?;
-    tx.commit().map_err(|source| Error::Store { path, source: Box::new(source) })
+    tx.commit().map_err(|source| Error::Store { path, source: Box::new(source) })?;
+    Ok(found)
 }
 
 /// The schema version a database is currently at; zero for an empty file.
