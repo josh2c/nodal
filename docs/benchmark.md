@@ -400,8 +400,9 @@ Those three rows are the report. Read them in order.
 **A warm base as Nodal delivers it makes this project slower.** 119.8 s cold against 124.3 s
 warm. The warm home compiles three crates instead of 102 and still loses, because the 99
 dependencies are small and the three workspace crates are where the time is. This project's
-`target` is dominated by its own test binaries. Nineteen integration-test binaries each link
-the whole library, so rebuilding three crates rebuilds nearly everything.
+`target` is dominated by its own test binaries. It has 66 integration-test files across three
+crates, and each one links the whole library, so rebuilding three crates rebuilds nearly
+everything.
 
 **The same base, made fresh, is 2.6 times faster than a cold clone** and costs 104 KiB per
 unit instead of 7.29 GB. Nothing compiles. The 45.9 s is the test suite's own running time,
