@@ -51,16 +51,16 @@ use crate::env::files;
 use crate::env::secrets::MachineSecrets;
 use crate::env::{Produced, StandIns, resolve as resolve_env};
 use crate::fingerprint;
-use crate::git::{Git, scrub};
+use crate::git::{Git, refs, scrub};
 use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Runner};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::owner;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::{Rebuild, guard, identity, marker, run};
 use crate::model::{
-    BranchName, EnvId, EnvState, Environment, Epistemic, EventKind, Objective, PortBlock, PortName,
-    Ports, Project, ProjectId, ProjectName, Recipe, RemoteUrl, Slug, Timestamp, Unit, UnitId,
-    UnitStatus,
+    BranchName, CommitId, EnvId, EnvState, Environment, Epistemic, EventKind, Objective, PortBlock,
+    PortName, Ports, Project, ProjectId, ProjectName, Recipe, RemoteUrl, Slug, Timestamp, Unit,
+    UnitId, UnitStatus,
 };
 use crate::output::view::{Arrival, Created};
 use crate::services::ports;
@@ -163,6 +163,17 @@ pub struct Params {
     pub base_path: PathBuf,
     /// Where Nodal keeps its state on this machine.
     pub state_dir: PathBuf,
+    /// The person's own checkout, which the home copies refs out of.
+    ///
+    /// Not what the home is cloned from — that is `base_path`, and it stays a base for
+    /// the reason this module's header gives. Refs are not a working tree: copying them
+    /// brings across what the person has fetched and nothing they have edited.
+    ///
+    /// Defaulted when absent, so a plan rebuilt from a journal an older build wrote
+    /// still rebuilds. An empty path means no refresh, which is what that older build
+    /// did.
+    #[serde(default)]
+    pub checkout: PathBuf,
     /// The unit row the operation ends by writing.
     pub unit: Unit,
     /// The environment row it writes beside it, before its ports are granted.
@@ -311,13 +322,14 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
     refuse_held_branch(store.conn(), project.id, &branch)?;
 
     let state_dir = home::directory()?;
-    let unit = new_unit(project.id, &name.slug, &branch, request);
+    let forked_at = fork_point(&git, &source, request.parent_branch.as_ref())?;
+    let unit = new_unit(project.id, &name.slug, &branch, request, forked_at);
     let mut environment = new_environment(unit.id, &project.name, &state_dir, unit.created_at);
     guard::placement(store.conn(), &environment.home, &source)?;
 
     let wanted = substrate::Request {
         project: project.clone(),
-        source,
+        source: source.clone(),
         recipe: effective.recipe.clone(),
         state_dir: state_dir.clone(),
         warm: WARM_BUILD,
@@ -331,6 +343,7 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
         recipe: effective.recipe,
         project,
         base_path: base.base.path,
+        checkout: source,
         state_dir,
         unit,
         environment,
@@ -338,7 +351,42 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
     })
 }
 
-/// The plan: seven steps in the home, then one registry write.
+/// The commit the unit's branch starts at, read out of the person's own checkout.
+///
+/// This is the whole of the answer to "where does a unit start". It is read from the
+/// checkout rather than from the base, because the base is a clone made at some earlier
+/// commit and the checkout is what the person believes the project is. A base built on
+/// Monday and a `nodal new` run on Friday used to produce a unit that started on Monday.
+///
+/// Without `--from` it is the commit the checkout's HEAD is on. A checkout on a detached
+/// HEAD, or one with no commit yet, gives `None`: neither is a branch the refresh copies,
+/// so the commit would not reach the home, and the unit falls back to the base's own HEAD
+/// as it always did.
+///
+/// With `--from` it is that branch in the checkout, the person's own copy first and the
+/// remote's copy second. A `--from` naming a branch the checkout has never heard of is an
+/// error, and it names the branch and the checkout it was looked for in.
+///
+/// # Errors
+/// [`Error::GitUnknownBranch`] when `--from` named a branch the checkout does not have,
+/// [`Error::Git`] when the checkout could not be read.
+fn fork_point(git: &Git, checkout: &Path, from: Option<&BranchName>) -> Result<Option<CommitId>> {
+    let Some(branch) = from else {
+        return git.head_position()?.map(|(_, oid)| CommitId::parse(oid.to_string())).transpose();
+    };
+    let candidates = [format!("refs/heads/{branch}"), format!("refs/remotes/origin/{branch}")];
+    for candidate in &candidates {
+        if let Some(oid) = git.rev_parse_opt(candidate)? {
+            return CommitId::parse(oid.to_string()).map(Some);
+        }
+    }
+    Err(Error::GitUnknownBranch {
+        repo: checkout.to_path_buf(),
+        branch: branch.as_str().to_owned(),
+    })
+}
+
+/// The plan: eight steps in the home, then one registry write.
 ///
 /// The default exclusion rows that yielded to a path the project tracks are the clone
 /// step's own output ([`MATERIALIZE`]), because the report is written after the plan has
@@ -363,10 +411,11 @@ pub fn plan(params: &Params) -> Result<Plan> {
             relocator: InvalidateCache::with_recipe(&params.recipe.base.invalidate),
         })
         .then(Scrub { home: home.clone() })
+        .then(RefreshRefs { home: home.clone(), checkout: params.checkout.clone() })
         .then(TakeBranch {
             home: home.clone(),
             branch: params.unit.branch.clone(),
-            start: params.unit.parent_branch.clone(),
+            start: params.unit.base_commit.clone(),
         })
         .then(files::Hide { home: home.clone() })
         .then(marker::WriteMarker { home, unit: params.unit.id })
@@ -573,15 +622,68 @@ impl Step for Scrub {
     }
 }
 
+/// Copy the person's checkout's refs into the home.
+///
+/// A home is a clone of a base, and a base is a clone of the remote taken at whatever
+/// moment it was built. Everything either of them knows about the project is that old.
+/// This step is what makes the home current: it copies the checkout's remote-tracking
+/// refs, so the base the unit is measured against is the one the person last fetched,
+/// and the checkout's own branches, so `--from` can name one of them.
+///
+/// By path, over the filesystem, with the objects those refs need and nothing else. It
+/// makes no network call of its own, and a home whose `origin` is unreachable refreshes
+/// exactly as well as one whose `origin` answers.
+///
+/// It also writes the home's refresh stamp, so the survey that runs moments later on the
+/// same command does not fetch into this home again ([`crate::context::refresh`]).
+pub(super) struct RefreshRefs {
+    /// The home the refs are copied into.
+    pub(super) home: PathBuf,
+    /// The checkout they are copied out of. An empty path means a plan rebuilt from an
+    /// older journal, which had no refresh step and is left without one.
+    pub(super) checkout: PathBuf,
+}
+
+impl Step for RefreshRefs {
+    fn key(&self) -> String {
+        String::from("git.refresh")
+    }
+
+    /// Repeatable: the refspecs are forced, so a second run writes the same refs the
+    /// first did, or newer ones, and never fails over a ref that moved.
+    fn apply(&self) -> Result<Output> {
+        if self.checkout.as_os_str().is_empty() {
+            return Ok(nothing());
+        }
+        // `at`, not `open`: `open` spends a `git rev-parse --git-dir` proving the home
+        // is a repository, and the step before this one made it. The create is what
+        // `ci/measure.sh` holds a per-invocation ceiling over, so a check with a known
+        // answer is a process not worth starting.
+        let specs = [refs::MIRROR_ORIGIN, refs::MIRROR_HEADS];
+        Git::at(&self.home).refresh_from(&self.checkout, &specs)?;
+        crate::context::refresh::stamp(&self.checkout).write(&self.home)?;
+        Ok(nothing())
+    }
+
+    /// Nothing, for the reason [`Scrub::undo`] gives: the refs are inside a repository
+    /// the first step's undo removes.
+    fn undo(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
 /// Create the unit's branch and check it out.
 pub(super) struct TakeBranch {
     /// The home whose repository the branch is created in.
     pub(super) home: PathBuf,
+    /// The commit the work starts at, as [`fork_point`] read it off the checkout.
+    ///
+    /// A commit and not a branch name, because the name is the checkout's and the
+    /// commit is what both repositories agree on. `None` starts the branch where the
+    /// clone's HEAD is, which is the base's own HEAD.
+    pub(super) start: Option<CommitId>,
     /// The branch the unit owns.
     pub(super) branch: BranchName,
-    /// The branch the work starts from. `None` starts it where the clone's HEAD is,
-    /// which is the branch the project was on when it was cloned.
-    pub(super) start: Option<BranchName>,
 }
 
 impl Step for TakeBranch {
@@ -601,7 +703,7 @@ impl Step for TakeBranch {
             git.switch(name)?;
             return Ok(nothing());
         }
-        git.switch_new(name, self.start.as_ref().map(BranchName::as_str))?;
+        git.switch_new(name, self.start.as_ref().map(CommitId::as_str))?;
         Ok(nothing())
     }
 
@@ -897,7 +999,13 @@ pub(super) fn refuse_held_branch(
 }
 
 /// The unit row a create will write.
-fn new_unit(project: ProjectId, slug: &Slug, branch: &BranchName, request: &Request) -> Unit {
+fn new_unit(
+    project: ProjectId,
+    slug: &Slug,
+    branch: &BranchName,
+    request: &Request,
+    forked_at: Option<CommitId>,
+) -> Unit {
     let now = Timestamp::now();
     Unit {
         id: UnitId::from_ulid(ulid::Ulid::new()),
@@ -907,6 +1015,7 @@ fn new_unit(project: ProjectId, slug: &Slug, branch: &BranchName, request: &Requ
         objective_epistemic: request.objective.as_ref().map(|_| request.objective_epistemic),
         branch: branch.clone(),
         parent_branch: request.parent_branch.clone(),
+        base_commit: forked_at,
         status: UnitStatus::Open,
         created_at: now,
         updated_at: now,

@@ -500,6 +500,62 @@ impl Git {
         Ok(())
     }
 
+    /// Copy refs out of a repository on this machine, by path.
+    ///
+    /// This is how a home learns what the person's own checkout knows. The refspecs are
+    /// the caller's ([`refs::MIRROR_ORIGIN`], [`refs::MIRROR_HEADS`]); the objects those
+    /// refs need come with them, and nothing of the other repository's working tree or
+    /// index does.
+    ///
+    /// No network. The source is a path, the transport is the filesystem, and a
+    /// repository whose `origin` is unreachable refreshes from the checkout beside it
+    /// exactly as well as one whose `origin` answers.
+    ///
+    /// Pruning, and that is the half that is easy to leave out. Without one, a branch
+    /// the checkout no longer has stays in the copy for ever, and the copy stops being a
+    /// reading of the checkout and becomes the union of every reading ever taken. With
+    /// one, what the home holds under a refspec is what the checkout holds under it,
+    /// including nothing at all.
+    ///
+    /// This is safe only because the destinations are Nodal's own namespaces
+    /// ([`refs::CHECKOUT`], [`refs::ORIGIN`]). A prune aimed at `refs/remotes/origin/*`
+    /// would delete the home's own record of what it has pushed.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the path is not a repository or a refspec was refused,
+    /// [`Error::InvalidValue`] when the path is not UTF-8.
+    pub fn refresh_from(&self, source: &Path, refspecs: &[&str]) -> Result<()> {
+        let mut args = vec!["fetch", "--quiet", "--no-tags", "--prune", "--", text_of(source)?];
+        args.extend_from_slice(refspecs);
+        cmd::run_ok(&self.root, &args)?;
+        Ok(())
+    }
+
+    /// The branch HEAD is on and the commit it is at, in one invocation.
+    ///
+    /// `None` for a detached HEAD and for a branch that has no commit yet. Both are
+    /// answers rather than failures: a create reading this off a person's checkout
+    /// falls back to the base's own HEAD when it gets one.
+    ///
+    /// One process rather than two, because this is read on every create and the create
+    /// is what `ci/measure.sh` holds a ceiling over.
+    ///
+    /// # Errors
+    /// [`Error::GitOid`] when the resolved id could not be read.
+    pub fn head_position(&self) -> Result<Option<(String, Oid)>> {
+        // No `--verify`: it takes one revision, and this asks for two readings of one.
+        // A repository with no commit yet exits non-zero here and is the `None` below.
+        let args = ["rev-parse", "HEAD", "--symbolic-full-name", "HEAD"];
+        let output = cmd::run(&self.root, &args)?;
+        if !output.ok() {
+            return Ok(None);
+        }
+        let lines = output.lines()?;
+        let (Some(oid), Some(name)) = (lines.first(), lines.get(1)) else { return Ok(None) };
+        let Some(branch) = name.strip_prefix("refs/heads/") else { return Ok(None) };
+        Ok(Some((branch.to_owned(), Oid::parse(oid)?)))
+    }
+
     /// Put the working tree at a revision, with HEAD detached at it.
     ///
     /// Detached rather than on a branch because a base is a substrate and not a piece

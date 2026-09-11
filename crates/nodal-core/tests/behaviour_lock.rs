@@ -96,7 +96,7 @@ use support::{World, journal_of};
 // ---------------------------------------------------------------------------
 
 #[test]
-fn plan_new_has_seven_steps_and_rolls_back() {
+fn plan_new_has_eight_steps_and_rolls_back() {
     let world = World::new();
     let params = world.create_params();
     let plan = new::plan(&params).unwrap();
@@ -108,6 +108,7 @@ fn plan_new_has_seven_steps_and_rolls_back() {
             "home.materialize",
             "home.relocate",
             "git.scrub",
+            "git.refresh",
             "git.branch",
             "git.hide",
             "home.marker",

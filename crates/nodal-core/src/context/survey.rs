@@ -21,16 +21,18 @@
 //! per unit that it had already paid for.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+use crate::context::refresh;
 use crate::git::history::{Commit, FileChange};
 use crate::git::status::{Change, Head, State, Summary};
 use crate::git::{Divergence, Git, Integration, Oid, Standing};
 use crate::model::manifest::Origin;
 use crate::model::{
-    EnvName, EnvState, Environment, Epistemic, Event, EventKind, Project, Unit, UnitStatus,
+    CommitId, EnvName, EnvState, Environment, Epistemic, Event, EventKind, Project, Unit,
+    UnitStatus,
 };
 use crate::output::view::Remote;
 use crate::store::{environments, events, units};
@@ -60,8 +62,18 @@ const FALLBACK_BRANCHES: [&str; 2] = ["main", "master"];
 pub struct Work {
     /// The revision the branch is measured against, as it was named.
     pub base: String,
-    /// The commit the branch and the base last agreed on: where the unit started.
+    /// The commit the branch and the base agree on now.
+    ///
+    /// Measured, not remembered, and it is what every range below is taken from. After
+    /// a rebase it is the commit the branch was moved onto, which is the only value
+    /// that makes "what this branch changed" right on both sides of a rebase.
     pub base_commit: Option<Oid>,
+    /// The commit the unit forked from, as the registry recorded it at create.
+    ///
+    /// A different fact from [`Work::base_commit`], and the two part company exactly
+    /// when somebody rebases: this one does not move, because a unit forks once. `None`
+    /// for a unit made before the registry had a column for it.
+    pub forked_at: Option<CommitId>,
     /// How far the branch has moved from the base, in commits, both ways.
     pub divergence: Divergence,
     /// What merging the branch into the base would do.
@@ -138,11 +150,23 @@ pub fn project(conn: &Connection, project: &Project) -> Result<Vec<Snapshot>> {
     let homes = live_homes(&environments::list_for_project(conn, project.id)?);
     let mut bases = Bases::default();
     let mut snapshots = Vec::new();
+    // One reading of the checkout's refs for the whole survey, taken without starting a
+    // process. Each home is brought up to it, and a home already at it costs nothing
+    // ([`crate::context::refresh`]).
+    let checkout = Checkout { path: &project.root, stamp: refresh::stamp(&project.root) };
     for unit in units::list(conn, project.id)? {
         let home = homes.iter().find(|environment| environment.unit_id == unit.id).cloned();
-        snapshots.push(one(conn, unit, home, &mut bases)?);
+        snapshots.push(one(conn, unit, home, &mut bases, &checkout)?);
     }
     Ok(snapshots)
+}
+
+/// The person's own checkout, and the reading of its refs this survey measures against.
+struct Checkout<'a> {
+    /// Where it is.
+    path: &'a Path,
+    /// What its refs looked like when the survey started.
+    stamp: refresh::Stamp,
 }
 
 /// Survey one unit: its log from the registry, its work from its home.
@@ -151,8 +175,24 @@ fn one(
     unit: Unit,
     home: Option<Environment>,
     bases: &mut Bases,
+    checkout: &Checkout<'_>,
 ) -> Result<Snapshot> {
     let mut notes = Vec::new();
+    // Before anything is measured, not after: a BEHIND count taken against refs frozen
+    // at the moment the base was built is arithmetic about the wrong commits. A refresh
+    // that fails is a note on this unit and nothing more, exactly like a home Git cannot
+    // answer for, because a checkout that has been moved must not stop a list printing.
+    //
+    // Homes Nodal made, and no others. A worktree adopted in place is the person's own
+    // directory: it is one Nodal will never remove, it shares a ref store with the
+    // repository it belongs to, and writing refs into it would be Nodal editing somebody
+    // else's repository to make its own column easier to compute. Such a row is read as
+    // it stands ([`crate::model::Environment::managed`]).
+    if let Some(environment) = home.as_ref().filter(|environment| environment.managed)
+        && let Err(error) = refresh::ensure(&environment.home, checkout.path, &checkout.stamp)
+    {
+        notes.push(error.to_string());
+    }
     let work = match &home {
         Some(environment) => match work(&Git::at(&environment.home), &unit, bases) {
             Ok(work) => Some(work),
@@ -218,8 +258,9 @@ fn work(git: &Git, unit: &Unit, bases: &mut Bases) -> Result<Work> {
         None => (Vec::new(), Vec::new(), Vec::new()),
     };
     Ok(Work {
-        base: standing.base,
+        base: readable(&standing.base),
         base_commit,
+        forked_at: unit.base_commit.clone(),
         divergence: standing.divergence,
         integration: standing.integration,
         dirty: count(&summary, side_worktree),
@@ -359,14 +400,27 @@ impl Bases {
     }
 
     /// The revisions to try, best first, without repeats.
+    ///
+    /// Two passes over the same names, and the split between them is the point. The
+    /// first pass asks only the copies this survey took out of the person's own checkout
+    /// ([`crate::context::refresh`]); the second asks the home's own refs, every one of
+    /// which is where the base was built and has not moved since.
+    ///
+    /// Every fresh candidate is tried before any frozen one, including the fresh
+    /// fallbacks against the frozen parent. A home's `refs/remotes/origin/HEAD` is the
+    /// trap this ordering exists for: it is a name that reads like the remote's answer
+    /// and resolves into the frozen namespace, and it used to win against a copy of the
+    /// checkout's own `main` taken a moment earlier.
     fn candidates(&self, unit: &Unit) -> Vec<String> {
         let mut names: Vec<String> = self.chosen.iter().cloned().collect();
-        if let Some(parent) = &unit.parent_branch {
-            push_branch(&mut names, parent.as_str());
-        }
-        names.push(String::from("refs/remotes/origin/HEAD"));
-        for fallback in FALLBACK_BRANCHES {
-            push_branch(&mut names, fallback);
+        for source in [Source::Checkout, Source::Home] {
+            if let Some(parent) = &unit.parent_branch {
+                push_branch(&mut names, parent.as_str(), source);
+            }
+            names.push(source.head());
+            for fallback in FALLBACK_BRANCHES {
+                push_branch(&mut names, fallback, source);
+            }
         }
         let mut seen = BTreeSet::new();
         names.retain(|name| seen.insert(name.clone()));
@@ -374,12 +428,66 @@ impl Bases {
     }
 }
 
-/// The two refs a branch name can be: the remote's copy, then this repository's own.
-/// The remote's copy comes first, because integration is a question about the branch
-/// everybody merges into rather than about a local copy of it.
-fn push_branch(names: &mut Vec<String>, branch: &str) {
-    names.push(format!("refs/remotes/origin/{branch}"));
-    names.push(format!("refs/heads/{branch}"));
+/// A candidate ref as the branch a person calls it.
+///
+/// Every reader of [`Work::base`] prints it: the memory, the ledger and the list's own
+/// row. The refs it is chosen from are full names, and two of them are in a namespace
+/// Nodal invented for its own copies, so printing the ref as it stands would put
+/// `refs/nodal/checkout/main` in front of a person as the name of the branch their work
+/// merges into. They call it `main`, so that is what it says.
+///
+/// Nothing is measured from this. The ref that answered is what every range is taken
+/// against ([`since`]); this is the word for it.
+fn readable(reference: &str) -> String {
+    let namespaces = [
+        (crate::git::refs::ORIGIN, "origin/"),
+        (crate::git::refs::CHECKOUT, ""),
+        ("refs/remotes/", ""),
+        ("refs/heads/", ""),
+    ];
+    for (prefix, shown) in namespaces {
+        if let Some(rest) = reference.strip_prefix(prefix) {
+            return format!("{shown}{rest}");
+        }
+    }
+    reference.to_owned()
+}
+
+/// Which repository's reading of a branch a candidate is.
+#[derive(Debug, Clone, Copy)]
+enum Source {
+    /// Copied out of the person's own checkout on this survey, and so as new as their
+    /// repository is.
+    Checkout,
+    /// The home's own, which is where the base was built and has not moved since.
+    Home,
+}
+
+impl Source {
+    /// The two namespaces a branch name is looked for in, remote's reading first.
+    ///
+    /// The remote's leads because integration is a question about the branch everybody
+    /// merges into rather than about a local copy of it. The local one follows because a
+    /// project that has never been pushed has no remote to read, and then the person's
+    /// own `main` is the only answer there is.
+    const fn namespaces(self) -> [&'static str; 2] {
+        match self {
+            Self::Checkout => [crate::git::refs::ORIGIN, crate::git::refs::CHECKOUT],
+            Self::Home => ["refs/remotes/origin/", "refs/heads/"],
+        }
+    }
+
+    /// The ref that names the project's own default branch in this source.
+    fn head(self) -> String {
+        format!("{}HEAD", self.namespaces()[0])
+    }
+}
+
+/// The two refs one branch name can be in one source, best first.
+fn push_branch(names: &mut Vec<String>, branch: &str, source: Source) {
+    for namespace in source.namespaces() {
+        names.push(format!("{namespace}{branch}"));
+    }
 }
 
 /// Read one of an event's references.

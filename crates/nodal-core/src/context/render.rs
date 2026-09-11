@@ -19,6 +19,7 @@
 
 use crate::context::ledger::{CAP, Entry, Gained, Ledger};
 use crate::context::survey::{Snapshot, reference};
+use crate::git::Oid;
 use crate::git::history::FileChange;
 use crate::model::{Epistemic, Event};
 use crate::output::view::event::kind_label;
@@ -142,8 +143,18 @@ fn standing(subject: &Snapshot) -> Vec<String> {
         .base_commit
         .as_ref()
         .map_or_else(|| String::from("unknown"), |oid| short(oid.as_str()));
-    let mut lines = vec![
-        field("base", &format!("{} at {commit}", work.base)),
+    let mut lines = vec![field("base", &format!("{} at {commit}", work.base))];
+    // Only when the two disagree, which is only after a rebase. Saying "forked at" and
+    // "base at" with one commit between them twice would be noise on every other unit.
+    let measured = work.base_commit.as_ref().map(Oid::as_str);
+    if let Some(forked) = work.forked_at.as_ref().filter(|forked| Some(forked.as_str()) != measured)
+    {
+        lines.push(field(
+            "forked at",
+            &format!("{} — the branch has since been moved onto {commit}", short(forked.as_str())),
+        ));
+    }
+    lines.extend([
         field(
             "staleness",
             &format!(
@@ -154,7 +165,7 @@ fn standing(subject: &Snapshot) -> Vec<String> {
             ),
         ),
         field("merging", &work.integration.label()),
-    ];
+    ]);
     lines.extend(list("uncommitted", "file", &files(&work.uncommitted)));
     lines.extend(list("changed since the base commit", "file", &files(&work.touched)));
     let commits: Vec<String> = work
