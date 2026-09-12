@@ -18,6 +18,46 @@ use super::cmd;
 use super::oid::Oid;
 use crate::error::{Error, Result};
 
+/// Which of `wanted` this repository has, without walking any history.
+///
+/// `--no-walk` makes `rev-list` print the revisions it was given rather than the history
+/// behind them, and `--ignore-missing` drops the ones this repository does not have. So
+/// what comes back is the subset it holds, in one process and at no traversal cost.
+///
+/// # Errors
+/// [`Error::Git`] when `rev-list` failed, [`Error::GitOid`] on unreadable output.
+pub(super) fn held(repo: &Path, wanted: &[Oid]) -> Result<Vec<Oid>> {
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec!["rev-list", "--ignore-missing", "--no-walk"];
+    args.extend(wanted.iter().map(Oid::as_str));
+    let output = cmd::run_ok(repo, &args)?;
+    output.lines()?.iter().map(|line| Oid::parse(line)).collect()
+}
+
+/// Commits of any of `revs` that none of `held` reaches, newest first.
+///
+/// The counterpart of [`commits`] for a caller asking about many revisions at once. One
+/// process answers for all of them, and a revision that comes back in the answer is one
+/// nothing in `held` reaches.
+///
+/// # Errors
+/// As [`commits`].
+pub(super) fn among(repo: &Path, revs: &[Oid], held: &[Oid]) -> Result<Vec<Oid>> {
+    if revs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec!["rev-list", "--ignore-missing"];
+    args.extend(revs.iter().map(Oid::as_str));
+    if !held.is_empty() {
+        args.push("--not");
+        args.extend(held.iter().map(Oid::as_str));
+    }
+    let output = cmd::run_ok(repo, &args)?;
+    output.lines()?.iter().map(|line| Oid::parse(line)).collect()
+}
+
 /// Commits of `rev` that none of `held` reaches, newest first.
 ///
 /// An id in `held` that this repository does not have is ignored rather than refused:

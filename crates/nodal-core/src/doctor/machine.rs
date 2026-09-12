@@ -126,9 +126,10 @@ fn group(name: String, mut entries: Vec<(CloneRow, Evidence)>) -> Group {
         .map(|(row, evidence)| Subject { path: row.path.clone(), evidence: evidence.clone() })
         .collect();
     for ((row, _), proof) in entries.iter_mut().zip(unique::prove(&subjects)) {
-        row.unpushed = proof.off_remote.unwrap_or(0);
+        row.unpushed = proof.off_remote;
         row.only_copy = proof.only_copy;
         row.unchecked = proof.unchecked;
+        row.witnesses = proof.witnesses;
     }
     let repositories: Vec<CloneRow> = entries.into_iter().map(|(row, _)| row).collect();
     totals(name, repositories)
@@ -136,9 +137,11 @@ fn group(name: String, mut entries: Vec<(CloneRow, Evidence)>) -> Group {
 
 /// Fold the rows of one group into the line the table prints.
 fn totals(name: String, repositories: Vec<CloneRow>) -> Group {
-    let unpushed: usize = repositories.iter().map(|row| row.unpushed).sum();
+    let unpushed: usize = repositories.iter().filter_map(|row| row.unpushed).sum();
     let dirty = repositories.iter().filter(|row| row.dirty > 0).count();
     let unchecked = repositories.iter().filter(|row| row.unchecked.is_some()).count();
+    let unwitnessed =
+        repositories.iter().filter(|row| row.unpushed.is_none() && row.unchecked.is_none()).count();
     let unique_commits: usize = repositories.iter().filter_map(|row| row.only_copy).sum();
     let unique_clones =
         repositories.iter().filter(|row| row.only_copy.is_some_and(|only| only > 0)).count();
@@ -146,6 +149,7 @@ fn totals(name: String, repositories: Vec<CloneRow>) -> Group {
         name,
         clones: repositories.len(),
         unpushed,
+        unwitnessed,
         dirty,
         bytes: distinct_bytes(&repositories),
         ignored: fold_ignored(&repositories),

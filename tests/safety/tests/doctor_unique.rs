@@ -111,6 +111,18 @@ fn survey(machine: &Machine, clones: &Path) -> String {
     stdout(&machine.nodal(&["doctor", "--machine", clones.to_str().unwrap()]))
 }
 
+/// The same answer as JSON, which is where a tool reads the same facts from.
+fn survey_json(machine: &Machine, clones: &Path) -> String {
+    stdout(&machine.nodal(&["doctor", "--machine", clones.to_str().unwrap(), "--json"]))
+}
+
+/// A second bare repository, so a clone can have a remote that is not its `origin`.
+fn spare_remote(root: &Path, name: &str) -> PathBuf {
+    let bare = root.join(name);
+    git(root, &["init", "--quiet", "--bare", "--initial-branch=main", bare.to_str().unwrap()]);
+    bare
+}
+
 /// A clone holding a commit no other clone and no remote has is named, with its count.
 ///
 /// `keeper` pushed the branch and the remote dropped it afterwards. `fresh` was cloned
@@ -188,4 +200,89 @@ fn a_clone_that_cannot_be_examined_is_not_called_clean() {
     assert!(report.contains("not checked"), "{report}");
     assert!(report.contains(broken.to_str().unwrap()), "the clone is not named:\n{report}");
     planted.assert_unchanged(&Snapshot::of(&clones), "doctor --machine wrote in a broken clone");
+}
+
+/// A clone no other clone here can check is never called clean on its own bookkeeping.
+///
+/// One clone of a remote, and its branch is pushed. Its `refs/remotes/origin/work` says
+/// so, and that ref is exactly the record this survey learnt not to believe: it is
+/// written at the push and never corrected. With no other clone of the remote here,
+/// nothing can say whether the branch is still there, so the answer is not known. It
+/// used to be read straight off the ref and reported as nothing unique.
+#[test]
+fn a_clone_no_other_clone_can_check_is_not_called_clean() {
+    let machine = Machine::new();
+    let clones = planted_under(&machine);
+    let bare = remote(&clones);
+    let alone = clone(&clones, &bare, "alone");
+    work_and_push(&alone);
+
+    let report = survey(&machine, &clones);
+    assert!(!report.contains("nothing unique"), "nothing here checked that ref:\n{report}");
+    assert!(report.contains("not checked"), "{report}");
+    assert!(report.contains(alone.to_str().unwrap()), "the clone is not named:\n{report}");
+    assert!(
+        report.contains("no fresher clone") || report.contains("could not be checked"),
+        "the report does not say why it could not answer:\n{report}"
+    );
+}
+
+/// The JSON names the clone whose reading of the remote checked this one's refs.
+///
+/// A verdict that rests on another clone's reading is only auditable if the report says
+/// which clone that was. `fresh` heard from the remote last, so `fresh` is what convicted
+/// `keeper` of holding work no remote has.
+#[test]
+fn the_json_names_the_clone_that_checked_the_refs() {
+    let machine = Machine::new();
+    let clones = planted_under(&machine);
+    let bare = remote(&clones);
+    let keeper = clone(&clones, &bare, "keeper");
+    work_and_push(&keeper);
+    delete_from_remote(&bare);
+    let fresh = clone(&clones, &bare, "fresh");
+    heard_last(&fresh);
+
+    let answer = survey_json(&machine, &clones);
+    assert!(answer.contains("\"witnesses\""), "the field is not there:\n{answer}");
+    let named = answer
+        .split("\"path\"")
+        .find(|chunk| chunk.starts_with(&format!(": \"{}\"", keeper.display())))
+        .unwrap_or_else(|| panic!("no row for the keeper:\n{answer}"));
+    assert!(
+        named.split("\"only_copy\"").next().unwrap().contains(fresh.to_str().unwrap()),
+        "the row does not name the clone that checked it:\n{named}"
+    );
+}
+
+/// A ref of another remote may not stand in for a ref of `origin`.
+///
+/// The group is the clones that share an `origin`, so the question is what `origin` has.
+/// Here the work went to `backup` and never to `origin`, and both clones fetched it back
+/// from `backup`. The commit survives the folder, because the other clone holds it, and
+/// it is on no remote of this group. Reading `backup/feature` as an answer about
+/// `origin` hid both facts and reported the group as clean.
+#[test]
+fn a_ref_of_another_remote_does_not_answer_for_origin() {
+    let machine = Machine::new();
+    let clones = planted_under(&machine);
+    let bare = remote(&clones);
+    let backup = spare_remote(&clones, "backup.git");
+
+    let keeper = clone(&clones, &bare, "keeper");
+    git(&keeper, &["switch", "--quiet", "--create", "feature"]);
+    std::fs::write(keeper.join("feature.md"), "sent to the backup only\n").unwrap();
+    git::commit(&keeper, "work the origin never saw");
+    git(&keeper, &["remote", "add", "backup", backup.to_str().unwrap()]);
+    git(&keeper, &["push", "--quiet", "backup", "feature"]);
+
+    let fresh = clone(&clones, &bare, "fresh");
+    git(&fresh, &["remote", "add", "backup", backup.to_str().unwrap()]);
+    git(&fresh, &["fetch", "--quiet", "backup"]);
+    heard_last(&fresh);
+
+    let report = survey(&machine, &clones);
+    assert!(report.contains("on no remote"), "the origin has no such branch:\n{report}");
+    assert!(report.contains(keeper.to_str().unwrap()), "the clone is not named:\n{report}");
+    assert!(report.contains("1 commit"), "the count is not there:\n{report}");
 }

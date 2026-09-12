@@ -80,7 +80,7 @@ git/
   cmd.rs               run(args) -> Output, one place for process spawning
   refs.rs              read/write refs, WIP snapshot ref
   branches.rs          local branches, the merged set, and the unpushed count of one ref
-  outside.rs           commits of a revision that no commit the caller names already holds
+  outside.rs           commits of a revision that no commit the caller names already holds, and which of a set a repository has
   push.rs              the one call that leaves this machine: refspecs to a remote
   host.rs              the web host a remote names, and its compare page (a table)
   status.rs            porcelain parsing -> StatusSummary

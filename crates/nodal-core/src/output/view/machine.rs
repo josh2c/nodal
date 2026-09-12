@@ -57,12 +57,23 @@ pub struct CloneRow {
     /// The URL of `origin`, `None` when this clone names no such remote.
     #[serde(default)]
     pub origin: Option<String>,
-    /// Commits of HEAD that no remote-tracking ref this run trusts already holds.
+    /// Commits of HEAD that no remote-tracking ref this run checked already holds.
     ///
-    /// A ref is trusted unless a clone of the same remote that heard from it later does
-    /// not have the branch. That is how a branch deleted on the remote stops counting as
-    /// a push; `super::super::super::doctor::unique` states the rule in full.
-    pub unpushed: usize,
+    /// A ref counts only where a clone of the same remote that heard from it later
+    /// vouches for it. That is how a branch deleted or rewritten on the remote stops
+    /// counting as a push; `super::super::super::doctor::unique` states the rule in full.
+    ///
+    /// `None` where no such clone exists, so nothing here could check this clone's refs.
+    /// It is not zero: whether the remote has the work is not something this machine
+    /// knows, and a zero would read as a push nobody witnessed.
+    #[serde(default)]
+    pub unpushed: Option<usize>,
+    /// The clones whose reading of the remote checked this one's refs, in path order.
+    ///
+    /// Empty means nothing here could check them. A reader that wants to know why a
+    /// clone was believed, or why it was not, starts with this.
+    #[serde(default)]
+    pub witnesses: Vec<PathBuf>,
     /// Commits of HEAD no other copy on this machine holds, `None` when the proof could
     /// not be made.
     #[serde(default)]
@@ -96,8 +107,14 @@ pub struct Group {
     pub name: String,
     /// How many clones the group holds.
     pub clones: usize,
-    /// Unpushed commits across the clones.
+    /// Commits on no remote, across the clones this run could check.
     pub unpushed: usize,
+    /// How many clones had no fresher clone of their remote here to check their refs.
+    ///
+    /// Their uniqueness was settled by a second copy on this machine, so they are not
+    /// unchecked; what went unanswered is whether the remote has their commits.
+    #[serde(default)]
+    pub unwitnessed: usize,
     /// How many clones have uncommitted paths.
     pub dirty: usize,
     /// Logical size of every clone.
@@ -179,9 +196,13 @@ impl Render for MachineReport {
                 doc.push(block);
             }
         }
-        if let Some(line) = self.not_checked() {
+        let closing: Vec<Block> =
+            [self.not_checked(), self.not_witnessed()].into_iter().flatten().collect();
+        if !closing.is_empty() {
             doc.push(Block::blank());
-            doc.push(line);
+            for line in closing {
+                doc.push(line);
+            }
         }
         for skip in &self.skipped {
             doc.push(Block::line(format!("{}: {}", skip.path.display(), skip.why)));
@@ -218,6 +239,21 @@ impl MachineReport {
         (clones > 0).then(|| {
             Block::line(format!(
                 "{} not checked; a clone this run could not read is not known to be safe",
+                plural(clones, "clone")
+            ))
+        })
+    }
+
+    /// How many clones had no fresher clone of their remote here to check their refs.
+    ///
+    /// Their uniqueness is proved: another copy on this machine holds every commit they
+    /// hold. What no reading here could answer is whether the remote has the work.
+    fn not_witnessed(&self) -> Option<Block> {
+        let clones: usize = self.groups.iter().map(|group| group.unwitnessed).sum();
+        (clones > 0).then(|| {
+            Block::line(format!(
+                "{} had no fresher clone of their remote here; another copy on this machine \
+                 holds their commits, and whether a remote does was not checked",
                 plural(clones, "clone")
             ))
         })
@@ -276,7 +312,7 @@ fn unique(group: &Group) -> String {
     if group.unchecked > 0 {
         said.push(format!("{} not checked", plural(group.unchecked, "clone")));
     }
-    let off = group.repositories.iter().filter(|row| row.unpushed > 0).count();
+    let off = group.repositories.iter().filter(|row| off_remote(row) > 0).count();
     if off > group.unique_clones {
         said.push(format!("{} on no remote", off - group.unique_clones));
     }
@@ -301,7 +337,7 @@ fn details(group: &Group) -> Vec<Block> {
     let off: Vec<&CloneRow> = group
         .repositories
         .iter()
-        .filter(|row| row.unpushed > 0 && row.only_copy.is_none_or(|only| only == 0))
+        .filter(|row| off_remote(row) > 0 && row.only_copy.is_none_or(|only| only == 0))
         .collect();
     let unread: Vec<&CloneRow> =
         group.repositories.iter().filter(|row| row.unchecked.is_some()).collect();
@@ -312,7 +348,7 @@ fn details(group: &Group) -> Vec<Block> {
     blocks.extend(listing("unique work, the only copy on this machine", &only, |row| {
         row.only_copy.unwrap_or(0)
     }));
-    blocks.extend(listing("on no remote, held by another clone here", &off, |row| row.unpushed));
+    blocks.extend(listing("on no remote, held by another clone here", &off, off_remote));
     blocks.extend(unreadable(&unread));
     if !only.is_empty() {
         blocks.push(Block::line(RESCUE).at(2));
@@ -350,6 +386,12 @@ fn unreadable(rows: &[&CloneRow]) -> Vec<Block> {
     blocks
 }
 
+/// Commits of a clone that reached no remote this run could check. A clone whose refs
+/// nothing checked counts none, because nothing here knows what its remote holds.
+fn off_remote(row: &CloneRow) -> usize {
+    row.unpushed.unwrap_or(0)
+}
+
 /// A count and its noun, with the `s` English wants on everything but one.
 fn plural(count: usize, noun: &str) -> String {
     if count == 1 { format!("1 {noun}") } else { format!("{count} {noun}s") }
@@ -383,6 +425,7 @@ mod tests {
                 ignored: vec![IgnoredDir::new("target", 40_000_000)],
                 committed: Some(at("2026-09-06T12:00:00Z")),
                 nothing_unique: false,
+                unwitnessed: 0,
                 unique_clones: 1,
                 unique_commits: 1,
                 unchecked: 0,
@@ -390,7 +433,8 @@ mod tests {
                     path: "/tmp/a".into(),
                     branch: String::from("main"),
                     origin: Some(String::from("git@github.com:josh2c/nodal.git")),
-                    unpushed: 1,
+                    unpushed: Some(1),
+                    witnesses: vec!["/tmp/b".into()],
                     only_copy: Some(1),
                     unchecked: None,
                     dirty: 0,
@@ -427,7 +471,7 @@ mod tests {
         clean.groups[0].dirty = 0;
         clean.groups[0].unique_clones = 0;
         clean.groups[0].unique_commits = 0;
-        clean.groups[0].repositories[0].unpushed = 0;
+        clean.groups[0].repositories[0].unpushed = Some(0);
         clean.groups[0].repositories[0].only_copy = Some(0);
         clean
     }

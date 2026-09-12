@@ -138,7 +138,7 @@ fn three_clones_of_one_remote_are_one_group() {
         group
             .repositories
             .iter()
-            .any(|row| row.path == real(&planted.unpushed) && row.unpushed == 1)
+            .any(|row| row.path == real(&planted.unpushed) && row.unpushed == Some(1))
     );
     assert!(group.repositories.iter().any(|row| row.path == real(&planted.dirty) && row.dirty > 0));
     assert!(

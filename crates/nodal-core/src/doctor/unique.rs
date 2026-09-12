@@ -16,13 +16,27 @@
 //! | another clone's object store holds the commit | the commit survives this folder | nothing: it is a second copy |
 //! | a remote-tracking ref holds the commit | the commit reached the remote once | the branch may have been deleted or rewritten since |
 //!
-//! The second is kept, because without it every single clone of a third-party project
-//! on the machine would be called unique work. It is kept under one condition: the
-//! **freshest witness** does not contradict it. The freshest witness is the clone of the
-//! same remote that heard from that remote most recently, out of those that heard from
-//! it after this clone did and that fetch every branch. When that clone does not have
-//! the branch, the branch is gone and the ref is not proof. When there is no clone
-//! fresher than this one, nothing on this machine can say either way and the ref stands.
+//! The second is kept, because without it a clone whose work is on the remote would be
+//! called unique work every time. It is kept under one condition: a **freshest witness**
+//! vouches for it. The freshest witness is the clone of the same remote that heard from
+//! that remote most recently, out of those that heard from it after this clone did and
+//! that fetch every branch. That clone's reading of a branch replaces this clone's: a
+//! branch it does not have is gone, and a branch it has is read at its tip.
+//!
+//! A clone's own tip for a branch is used as well, but only where the witness confirms
+//! it. A branch that moves forward keeps its old tip in its history, so the old tip is
+//! still on the remote; a branch that was rewritten drops it. The witness is the one copy
+//! here that can tell those apart, and it is asked in two processes for all of a clone's
+//! branches at once. Without this the survey reported the whole history of a clone made
+//! before the remote's last few merges as work no remote has, because the witness's newer
+//! tip was not in that clone's object store to exclude anything with.
+//!
+//! When there is no clone fresher than this one, this clone's own refs are not used
+//! either. They are the reading that cannot be checked, and a reading nothing can check
+//! is not a proof. The clone is reported as **not checked** unless a second copy on this
+//! machine settles the question without any ref at all, which it does whenever another
+//! clone holds every commit of this one. So a lone clone of a remote is never called
+//! clean on the strength of its own bookkeeping.
 //!
 //! Only the freshest witness is asked, and this is not a detail. Thirty-four clones of
 //! one remote were made over several weeks, and each one holds the refs the remote had
@@ -75,22 +89,36 @@ pub struct Evidence {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Proof {
     /// Commits of HEAD that no remote-tracking ref this run trusts already holds.
+    ///
+    /// `None` where no clone of this remote on this machine could vouch for this one's
+    /// refs. Whether the remote has the work is then not something this machine knows.
     pub off_remote: Option<usize>,
     /// Commits of HEAD that no other copy on this machine holds.
     pub only_copy: Option<usize>,
     /// Why the proof was not made, `None` when it was.
     pub unchecked: Option<String>,
+    /// The clones whose reading of the remote was used to check this one's refs.
+    pub witnesses: Vec<PathBuf>,
 }
+
+/// What a clone is told when nothing on this machine can check its refs.
+const UNWITNESSED: &str = "no clone of this remote here heard from it more recently, so this clone's own \
+     remote-tracking refs could not be checked";
 
 impl Proof {
     /// A clone the run could not examine.
     fn unchecked(why: impl Into<String>) -> Self {
-        Self { off_remote: None, only_copy: None, unchecked: Some(why.into()) }
+        Self {
+            off_remote: None,
+            only_copy: None,
+            unchecked: Some(why.into()),
+            witnesses: Vec::new(),
+        }
     }
 
     /// A clone with nothing in it to lose.
     fn empty() -> Self {
-        Self { off_remote: Some(0), only_copy: Some(0), unchecked: None }
+        Self { off_remote: Some(0), only_copy: Some(0), unchecked: None, witnesses: Vec::new() }
     }
 }
 
@@ -112,12 +140,54 @@ pub fn prove(subjects: &[Subject]) -> Vec<Proof> {
     subjects
         .iter()
         .enumerate()
-        .map(|(index, subject)| one(subject, &trusted(subjects, index), &elsewhere[index]))
+        .map(|(index, subject)| {
+            let mut trusted = trusted(subjects, index);
+            trusted.tips.extend(confirmed(subject, &freshest(subjects, index)));
+            trusted.tips.sort_unstable();
+            trusted.tips.dedup();
+            one(subject, &trusted, &elsewhere[index])
+        })
         .collect()
 }
 
+/// This clone's own remote-tracking tips that the witness says are still on the remote.
+///
+/// Replacing a clone's tip with the witness's tip is right where the clone has the
+/// witness's tip. Where it does not, and an older clone of a busy repository usually does
+/// not, the exclusion is dropped and every commit behind the branch is reported as work
+/// no remote has. The clone's own tip is the answer in that case, and only the witness
+/// can say whether it is still good: a branch that moved forward keeps its old tip in its
+/// history, and a branch that was rewritten does not.
+///
+/// Two processes in the witness answer for every branch at once. The first asks which of
+/// this clone's tips the witness has at all, because a tip it never fetched is one it
+/// cannot vouch for. The second asks which of those its current remote refs no longer
+/// reach. What is left is on the remote.
+///
+/// A witness that cannot answer vouches for nothing, which leaves the clone reported as
+/// holding more than it may. That is the direction this survey errs in.
+fn confirmed(subject: &Subject, witnesses: &[&Subject]) -> Vec<Oid> {
+    let mine: Vec<Oid> = subject.evidence.remotes.iter().map(|tip| tip.oid.clone()).collect();
+    if mine.is_empty() {
+        return Vec::new();
+    }
+    for witness in witnesses {
+        let git = Git::at(&witness.path);
+        let theirs: Vec<Oid> = witness.evidence.remotes.iter().map(|tip| tip.oid.clone()).collect();
+        let Ok(held) = git.held(&mine) else {
+            continue;
+        };
+        let Ok(gone) = git.among_outside(&held, &theirs) else {
+            continue;
+        };
+        let gone: BTreeSet<Oid> = gone.into_iter().collect();
+        return held.into_iter().filter(|oid| !gone.contains(oid)).collect();
+    }
+    Vec::new()
+}
+
 /// The proof for one clone: two `rev-list` runs at worst, one when it is contained.
-fn one(subject: &Subject, trusted: &[Oid], elsewhere: &[Oid]) -> Proof {
+fn one(subject: &Subject, trusted: &Trusted, elsewhere: &[Oid]) -> Proof {
     if let Some(why) = &subject.evidence.unreadable {
         return Proof::unchecked(why.clone());
     }
@@ -125,36 +195,74 @@ fn one(subject: &Subject, trusted: &[Oid], elsewhere: &[Oid]) -> Proof {
         return Proof::empty();
     };
     let git = Git::at(&subject.path);
-    let off_remote = match git.count_outside(head.as_str(), trusted) {
+    if trusted.witnesses.is_empty() && !subject.evidence.remotes.is_empty() {
+        return unwitnessed(&git, head, elsewhere);
+    }
+    let off_remote = match git.count_outside(head.as_str(), &trusted.tips) {
         Ok(count) => count,
         Err(error) => return Proof::unchecked(error.to_string()),
     };
+    let witnesses = trusted.witnesses.clone();
     if off_remote == 0 {
-        return Proof { off_remote: Some(0), only_copy: Some(0), unchecked: None };
+        return Proof { off_remote: Some(0), only_copy: Some(0), unchecked: None, witnesses };
     }
-    let mut anywhere: Vec<Oid> = trusted.to_vec();
+    let mut anywhere: Vec<Oid> = trusted.tips.clone();
     anywhere.extend_from_slice(elsewhere);
     match git.count_outside(head.as_str(), &anywhere) {
-        Ok(only_copy) => {
-            Proof { off_remote: Some(off_remote), only_copy: Some(only_copy), unchecked: None }
-        }
+        Ok(only_copy) => Proof {
+            off_remote: Some(off_remote),
+            only_copy: Some(only_copy),
+            unchecked: None,
+            witnesses,
+        },
         Err(error) => Proof::unchecked(error.to_string()),
     }
 }
 
+/// The proof for a clone whose own refs nothing on this machine can check.
+///
+/// One question is still open to it, and it is the one the uniqueness column asks: does
+/// another copy here hold every commit of this clone? A yes settles it without reading a
+/// single remote-tracking ref, and the clone is safe to delete whatever the remote has.
+/// A no leaves the clone unproved, because the commits it alone holds may be on the
+/// remote and may not, and only the remote could say. It is reported as not checked.
+///
+/// Either way the remote question goes unanswered, so `off_remote` is `None` rather than
+/// a zero somebody could read as "this reached the remote".
+fn unwitnessed(git: &Git, head: &Oid, elsewhere: &[Oid]) -> Proof {
+    match git.count_outside(head.as_str(), elsewhere) {
+        Ok(0) => {
+            Proof { off_remote: None, only_copy: Some(0), unchecked: None, witnesses: Vec::new() }
+        }
+        Ok(_) => Proof::unchecked(UNWITNESSED),
+        Err(error) => Proof::unchecked(error.to_string()),
+    }
+}
+
+/// What this run is willing to believe the remote holds, and who vouched for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Trusted {
+    /// The commits a checked remote-tracking ref holds.
+    tips: Vec<Oid>,
+    /// The clones whose reading of the remote was used. Empty means nothing checked it.
+    witnesses: Vec<PathBuf>,
+}
+
 /// What this run is willing to believe the remote holds, for one clone.
 ///
-/// With no clone fresher than this one, nothing on this machine can correct its refs and
-/// they stand as they are. With a fresher clone, that clone's reading of each branch
-/// replaces this one's: the branch it does not have is gone, and the branch it has is at
-/// its tip, not at whatever tip this clone last saw. A branch that was rewritten keeps
-/// its name and drops its old commits, and reading the old tip as proof of a push is the
-/// same mistake as reading a deleted branch that way.
-fn trusted(subjects: &[Subject], index: usize) -> Vec<Oid> {
+/// With a fresher clone, that clone's reading of each branch replaces this one's: the
+/// branch it does not have is gone, and the branch it has is at its tip, not at whatever
+/// tip this clone last saw. A branch that was rewritten keeps its name and drops its old
+/// commits, and reading the old tip as proof of a push is the same mistake as reading a
+/// deleted branch that way.
+///
+/// With no clone fresher than this one, nothing is believed. This clone's own refs are
+/// exactly the reading that cannot be checked, and [`unwitnessed`] takes it from here.
+fn trusted(subjects: &[Subject], index: usize) -> Trusted {
     let subject = &subjects[index];
     let witnesses = freshest(subjects, index);
     if witnesses.is_empty() {
-        return subject.evidence.remotes.iter().map(|tip| tip.oid.clone()).collect();
+        return Trusted::default();
     }
     let mut tips: Vec<Oid> = subject
         .evidence
@@ -164,32 +272,33 @@ fn trusted(subjects: &[Subject], index: usize) -> Vec<Oid> {
         .collect();
     tips.sort_unstable();
     tips.dedup();
-    tips
+    Trusted { tips, witnesses: witnesses.iter().map(|witness| witness.path.clone()).collect() }
 }
 
 /// Where the freshest witness has this branch, `None` when it does not have it at all.
-fn witnessed(witnesses: &[&Evidence], branch: &str) -> Option<Oid> {
+fn witnessed(witnesses: &[&Subject], branch: &str) -> Option<Oid> {
     witnesses
         .iter()
-        .flat_map(|witness| witness.remotes.iter())
+        .flat_map(|witness| witness.evidence.remotes.iter())
         .find(|tip| tip.branch == branch)
         .map(|tip| tip.oid.clone())
 }
 
 /// The clones that heard from the remote most recently, out of those that heard from it
 /// after `index` did. More than one only where two clones share a reading to the second.
-fn freshest(subjects: &[Subject], index: usize) -> Vec<&Evidence> {
+fn freshest(subjects: &[Subject], index: usize) -> Vec<&Subject> {
     let subject = &subjects[index];
-    let candidates: Vec<&Evidence> = subjects
+    let candidates: Vec<&Subject> = subjects
         .iter()
         .enumerate()
         .filter(|(other, candidate)| *other != index && fresher(&candidate.evidence, subject))
-        .map(|(_, candidate)| &candidate.evidence)
+        .map(|(_, candidate)| candidate)
         .collect();
-    let Some(latest) = candidates.iter().filter_map(|candidate| candidate.heard).max() else {
+    let latest = candidates.iter().filter_map(|candidate| candidate.evidence.heard).max();
+    let Some(latest) = latest else {
         return Vec::new();
     };
-    candidates.into_iter().filter(|candidate| candidate.heard == Some(latest)).collect()
+    candidates.into_iter().filter(|candidate| candidate.evidence.heard == Some(latest)).collect()
 }
 
 /// Whether `candidate` heard from the remote after `subject` did, and fetches every
@@ -275,6 +384,7 @@ pub fn complete(refspecs: &[String]) -> bool {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests fail by panicking")]
 mod tests {
+    use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
 
     use super::{Evidence, RemoteTip, Subject, complete, fresher, held_by_others, trusted};
@@ -306,7 +416,7 @@ mod tests {
     fn a_fresher_witness_without_the_branch_takes_the_ref_away() {
         let old = subject("old", clone_of("gone", 1, 100));
         let new = subject("new", clone_of("main", 2, 200));
-        assert!(trusted(&[old, new], 0).is_empty(), "a deleted branch is not proof of a push");
+        assert!(trusted(&[old, new], 0).tips.is_empty(), "a deleted branch is not proof of a push");
     }
 
     /// A branch keeps its name through a rewrite and drops its old commits. The tip the
@@ -315,15 +425,27 @@ mod tests {
     fn a_rewritten_branch_is_read_at_the_freshest_tip() {
         let old = subject("old", clone_of("main", 1, 100));
         let new = subject("new", clone_of("main", 2, 200));
-        assert_eq!(trusted(&[old, new], 0), vec![oid(2)], "the old tip is not the remote");
+        assert_eq!(trusted(&[old, new], 0).tips, vec![oid(2)], "the old tip is not the remote");
     }
 
-    /// Nothing on this machine can say either way, so the ref stands.
+    /// Nothing on this machine can check the ref, so nothing here believes it. The clone
+    /// falls to [`unwitnessed`], which asks the one question that needs no ref at all.
     #[test]
-    fn a_ref_no_fresher_clone_contradicts_stands() {
+    fn a_ref_no_fresher_clone_can_check_is_not_believed() {
         let alone = subject("alone", clone_of("main", 1, 100));
         let older = subject("older", clone_of("other", 2, 50));
-        assert_eq!(trusted(&[alone, older], 0), vec![oid(1)]);
+        let trusted = trusted(&[alone, older], 0);
+        assert!(trusted.tips.is_empty(), "an unchecked ref proves nothing: {trusted:?}");
+        assert!(trusted.witnesses.is_empty(), "{trusted:?}");
+    }
+
+    /// The clone that checked a ref is named, so a reader can see who vouched.
+    #[test]
+    fn the_clone_that_checked_a_ref_is_named() {
+        let old = subject("old", clone_of("main", 1, 100));
+        let new = subject("new", clone_of("main", 2, 200));
+        let trusted = trusted(&[old, new], 0);
+        assert_eq!(trusted.witnesses, vec![PathBuf::from("new")]);
     }
 
     /// The reason only the freshest is asked. A clone made a day after this one holds
@@ -336,7 +458,7 @@ mod tests {
         nearly.remotes.push(RemoteTip { branch: String::from("gone"), oid: oid(1) });
         let today = subject("today", clone_of("main", 3, 900));
         let subjects = [stale, subject("nearly", nearly), today];
-        assert!(trusted(&subjects, 0).is_empty(), "the freshest clone has no such branch");
+        assert!(trusted(&subjects, 0).tips.is_empty(), "the freshest clone has no such branch");
     }
 
     /// An older clone cannot testify that a branch is gone.

@@ -420,6 +420,25 @@ impl Git {
         outside::commits(&self.root, rev, held)
     }
 
+    /// Which of `wanted` this repository has, at no traversal cost.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `rev-list` failed.
+    pub fn held(&self, wanted: &[Oid]) -> Result<Vec<Oid>> {
+        outside::held(&self.root, wanted)
+    }
+
+    /// Which of `revs` none of `held` reaches. One process for all of them.
+    ///
+    /// A revision that comes back is one no commit in `held` has in its history. This is
+    /// how a clone of a remote is asked whether another clone's ref is still on it.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when a revision is unknown.
+    pub fn among_outside(&self, revs: &[Oid], held: &[Oid]) -> Result<Vec<Oid>> {
+        outside::among(&self.root, revs, held)
+    }
+
     /// How many commits of `rev` none of `held` reaches.
     ///
     /// # Errors

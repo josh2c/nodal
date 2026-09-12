@@ -24,8 +24,14 @@ use crate::{Error, Result};
 /// How many ignored directories a row keeps.
 const TOP: usize = 3;
 
-/// Where a remote-tracking ref lives.
-const REMOTES: &str = "refs/remotes/";
+/// Where the refs that say what a clone last saw of its own remote live.
+///
+/// The remote is named, and that is the point of the constant. A group is the clones
+/// that share the URL of `origin`, so `origin` is the remote the group's question is
+/// about. A clone often has others — a `backup` it mirrors to, an `upstream` it was
+/// forked from — and their refs say nothing about whether `origin` has a commit.
+/// `backup/main` is not a reading of `origin/main` and may not stand in for one.
+const REMOTES: &str = "refs/remotes/origin/";
 
 /// The ref under `refs/remotes/<remote>/` that names a default branch rather than one.
 const HEAD: &str = "HEAD";
@@ -65,7 +71,8 @@ pub fn one(path: &Path, links: &mut Links) -> Result<Inspected> {
             path: path.to_path_buf(),
             branch: branch.unwrap_or_else(|| String::from("detached")),
             origin,
-            unpushed: 0,
+            unpushed: None,
+            witnesses: Vec::new(),
             only_copy: None,
             unchecked: None,
             dirty,
@@ -122,15 +129,18 @@ fn head_of(git: &Git, branch: Option<&str>, tips: &[crate::git::refs::Ref]) -> R
     }
 }
 
-/// The remote-tracking refs, with the remote taken off the front of the branch name.
+/// What this clone last saw of `origin`, branch by branch.
 ///
-/// `refs/remotes/<remote>/HEAD` is dropped: it is a symbolic ref naming the default
+/// Refs of any other remote are left out; [`REMOTES`] says why. They stay in `tips`,
+/// because a ref of any name keeps an object alive in the store it sits in, and that is
+/// a second copy whoever wrote the ref.
+///
+/// `refs/remotes/origin/HEAD` is dropped: it is a symbolic ref naming the default
 /// branch, not a branch of its own, and the branch it names is in the list already.
 fn remote_tips(tips: &[crate::git::refs::Ref]) -> Vec<RemoteTip> {
     tips.iter()
         .filter_map(|tip| {
-            let rest = tip.name.strip_prefix(REMOTES)?;
-            let (_, branch) = rest.split_once('/')?;
+            let branch = tip.name.strip_prefix(REMOTES)?;
             (branch != HEAD).then(|| RemoteTip { branch: branch.to_owned(), oid: tip.oid.clone() })
         })
         .collect()
@@ -271,6 +281,20 @@ mod tests {
         let remotes = remote_tips(&tips);
         assert_eq!(remotes.len(), 1);
         assert_eq!(remotes[0].branch, "nodal/doctor");
+    }
+
+    /// A group is the clones of one `origin`, and a second remote is a different
+    /// question. `backup/main` may not answer for `origin/main`.
+    #[test]
+    fn a_ref_of_another_remote_says_nothing_about_origin() {
+        let tips = [
+            reference("refs/remotes/backup/main", 1),
+            reference("refs/remotes/upstream/main", 2),
+            reference("refs/remotes/origin/main", 3),
+        ];
+        let remotes = remote_tips(&tips);
+        assert_eq!(remotes.len(), 1, "only origin is read: {remotes:?}");
+        assert_eq!(remotes[0].oid, reference("refs/remotes/origin/main", 3).oid);
     }
 
     /// The default-branch pointer is not a branch, and counting it would be counting

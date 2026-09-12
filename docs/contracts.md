@@ -415,17 +415,33 @@ commits on no remote, dirty clones, logical size, the largest ignored directorie
 The survey proves the uniqueness of each clone on each run. It proves it from two things, and it reaches
 no network. A commit another clone on this machine holds survives the deletion of this one. A commit a
 remote-tracking ref holds reached the remote, but only if the freshest clone of that remote on this
-machine agrees. The freshest clone is the one that heard from the remote most recently and fetches every
-branch. That clone's reading of a branch replaces this clone's. A branch the freshest clone does not have
-is gone, and its old ref proves nothing. A branch the freshest clone has is read at the freshest tip, so
-a rewritten branch does not vouch for the commits it dropped. With no clone fresher than this one, this
-clone's own refs stand.
+machine vouches for the ref. The freshest clone is the one that heard from the remote most recently and
+fetches every branch.
+
+Only refs under `refs/remotes/origin/` are read as evidence about the remote. A group is the clones that
+share the URL of `origin`, so `origin` is the remote in question. A `backup` or an `upstream` remote says
+nothing about it and may not answer for it. Refs of any name still count as a second copy, because a ref
+of any name keeps the object alive in the store it sits in.
+
+The freshest clone's reading of a branch replaces this clone's. A branch it does not have is gone, and
+its old ref proves nothing. A branch it has is read at the freshest tip, so a rewritten branch does not
+vouch for the commits it dropped. This clone's own tip for a branch counts as well, but only where the
+freshest clone confirms it: a branch that moved forward keeps its old tip in its history and a branch
+that was rewritten does not. A tip the freshest clone never fetched is one it cannot vouch for.
+
+With no clone fresher than this one, nothing here can check its refs and none of them is believed. Its
+uniqueness is then settled only by a second copy on this machine. Where another clone holds every commit
+it holds, it is safe to delete and the report says so; its `unpushed` is `null`, because whether a remote
+has the work is not something this machine knows. Where no other clone holds them, the clone is reported
+as "not checked". A lone clone of a remote is therefore never called clean on its own bookkeeping.
 
 "nothing unique" means the survey examined every clone of the group and found no commit that only one
 clone holds. A clone the survey could not read is reported as "not checked", never as clean, and the
-report counts how many were not checked. The report names each clone that holds the only copy of a
-commit, with the count, and gives the command that sends the work to a remote. It names each clone whose
-commits are on no remote but survive in another clone here. `--json` carries every clone.
+report counts how many were not checked. A second closing line counts the clones whose refs nothing here
+could check. The report names each clone that holds the only copy of a commit, with the count, and gives
+the command that sends the work to a remote. It names each clone whose commits are on no remote but
+survive in another clone here. `--json` carries every clone, and each clone names the clones whose
+reading of the remote checked its refs, in `witnesses`.
 
 A group's size counts a file once. Cargo and `git clone --local` hardlink one file into many directories,
 and a sum of the clones would count it once per link. The figure is apparent bytes, held to within 1% of
