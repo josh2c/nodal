@@ -406,7 +406,10 @@ caches of the checkout — and states the mismatch as a note: both schema versio
 the registry was read, and the one command that upgrades this copy of Nodal. Nothing is fetched to say it.
 
 `--machine [ROOT ...]` walks for `.git` under each root. With no path, it walks the home directory.
-Add roots with `--machine <path>`. The default depth is 6. `--depth` changes it. The walk skips Nodal's
+Add roots with `--machine <path>`. A root is the directory the walk searches. A root that is not itself
+a clone is neither a skip nor an error. The walk reads a repository out of a `.git`: a directory holding
+`HEAD`, or a file naming a `gitdir`. A `.git` of any other kind leaves the directory an ordinary one, and
+the walk goes on under it. The default depth is 6. `--depth` changes it. The walk skips Nodal's
 state directory, any registered unit home, and a mount that is not a local filesystem. It reports each
 skip and the reason. It groups clones by the URL of `origin`. SSH and HTTPS forms of one host path are
 one group. A clone with no remote is its own group, named by its path. Each group states the clone count,

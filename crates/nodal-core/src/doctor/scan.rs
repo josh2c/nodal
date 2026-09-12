@@ -1,9 +1,11 @@
 //! A walk for `.git` under a root: directories and worktree files.
 //!
-//! The walk reads and never writes. It does not follow symbolic links. A directory that
-//! holds `.git` is a repository, and the walk does not enter it: nested repositories
-//! are part of that clone. It skips Nodal's state directory, any registered unit home,
-//! and a mount that is not a local filesystem, and it says so.
+//! The walk reads and never writes. It does not follow symbolic links. A directory whose
+//! `.git` a repository is read out of is a repository, and the walk does not enter it:
+//! nested repositories are part of that clone. A `.git` that is none of those leaves the
+//! directory an ordinary one and the walk carries on under it. It skips Nodal's state
+//! directory, any registered unit home, and a mount that is not a local filesystem, and
+//! it says so.
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -81,7 +83,11 @@ impl Walker<'_> {
         self.visit(path, 0, device(path));
     }
 
-    /// Look at one directory for `.git`, then at its children while depth remains.
+    /// Look at one directory for a repository, then at its children while depth remains.
+    ///
+    /// A directory whose `.git` says nothing about a repository is the directory it is,
+    /// and the walk goes on through it. Only a `.git` that a repository would be read
+    /// out of ends the descent here.
     fn visit(&mut self, path: &Path, depth: usize, parent_dev: Option<u64>) {
         let Ok(entries) = fs::read_dir(path) else {
             self.found.skipped.push(Skip::new(path, "could not be read"));
@@ -96,7 +102,7 @@ impl Walker<'_> {
             };
             self.found.entries += 1;
             if entry.file_name() == ".git" {
-                git = true;
+                git = git || is_repository(&entry.path());
                 continue;
             }
             children.push(entry.path());
@@ -148,6 +154,28 @@ impl Walker<'_> {
 /// Whether `path` is `parent` or a directory under it.
 fn is_under(path: &Path, parent: &Path) -> bool {
     path == parent || path.starts_with(parent)
+}
+
+/// Whether a `.git` entry is one a repository is read out of.
+///
+/// The entry's name is not the answer. `.git` is a directory in an ordinary clone and a
+/// file holding a `gitdir:` line in a linked worktree, and anything else wearing the
+/// name — an empty directory left by an abandoned `git init`, a stray file, a symbolic
+/// link pointing nowhere — is not a repository. Taking the name for the answer made the
+/// walk stop at such a directory, report it as a clone, and never look at what was
+/// under it. The classification follows the entry where it points, because a clone may
+/// keep its `.git` on another path, and it reads nothing else.
+fn is_repository(dot_git: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(dot_git) else {
+        return false;
+    };
+    if metadata.is_dir() {
+        return dot_git.join("HEAD").exists();
+    }
+    if !metadata.is_file() {
+        return false;
+    }
+    fs::read_to_string(dot_git).is_ok_and(|text| text.trim_start().starts_with("gitdir:"))
 }
 
 /// The path the filesystem uses, when it can be read.
@@ -244,6 +272,7 @@ mod tests {
 
     fn git_dir(path: &std::path::Path) {
         fs::create_dir_all(path.join(".git")).unwrap();
+        fs::write(path.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     }
 
     #[test]
@@ -286,6 +315,27 @@ mod tests {
         assert!(remote("fuse.sshfs"));
         assert!(!remote("ext4"));
         assert!(!remote("tmpfs"));
+    }
+
+    #[test]
+    fn a_root_wearing_an_empty_dot_git_is_searched_rather_than_reported() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".git")).unwrap();
+        git_dir(&root.path().join("Projects/app"));
+        let found = walk(&[root.path().to_path_buf()], 6, &[]);
+        assert_eq!(found.repositories.len(), 1, "{found:?}");
+        assert!(found.repositories[0].ends_with("Projects/app"), "{found:?}");
+    }
+
+    #[test]
+    fn a_dot_git_that_names_no_repository_is_not_one() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("stray")).unwrap();
+        fs::write(root.path().join("stray/.git"), "notes to self\n").unwrap();
+        fs::create_dir_all(root.path().join("dangling")).unwrap();
+        std::os::unix::fs::symlink("/nowhere/at/all", root.path().join("dangling/.git")).unwrap();
+        let found = walk(&[root.path().to_path_buf()], 6, &[]);
+        assert!(found.repositories.is_empty(), "{found:?}");
     }
 
     #[test]
