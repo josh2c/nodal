@@ -52,7 +52,7 @@ use crate::env::secrets::MachineSecrets;
 use crate::env::{Produced, StandIns, resolve as resolve_env};
 use crate::fingerprint;
 use crate::git::{Git, refs, scrub};
-use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Runner};
+use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Registered, Runner};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::{Rebuild, guard, identity, marker, run};
@@ -205,9 +205,10 @@ pub fn create(
     let environment = params.environment.id;
     let runner = hooks_of(&params, request.hooks)?;
     let context = context_of(&params);
-    runner.run(Phase::PreNew, &params.project.root, &context)?;
+    runner.run(Phase::PreNew, &params.project.root, &context, &hooks::before_the_rows())?;
     let done = run(store, &plan(&params)?)?;
-    runner.run(Phase::PostNew, &params.environment.home, &context)?;
+    let owner = Registered { conn: store.conn() };
+    runner.run(Phase::PostNew, &params.environment.home, &context, &owner)?;
     let created = Created::of(
         &params.unit,
         &read_back(store, environment)?,

@@ -22,21 +22,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Stdio;
 
 use nodal_core::model::EnvId;
 use nodal_core::store::{environments, projects, sessions, units};
+use nodal_safety::process::{alive, wait_for};
 use nodal_safety::{InState as _, Machine, answer, platform, process, stderr};
 
 /// The unit every test here reclaims.
 const UNIT: &str = "worker-import";
-
-/// How long a test waits for a signalled group to go.
-const TIMEOUT: Duration = Duration::from_secs(30);
-
-/// How often a wait looks.
-const POLL: Duration = Duration::from_millis(10);
 
 /// The materialisation of the one unit this machine has.
 fn environment(machine: &Machine) -> EnvId {
@@ -80,33 +74,6 @@ fn tether(machine: &Machine, home: &Path, record: &Path) -> u32 {
     let pid: u32 = std::fs::read_to_string(record).unwrap().trim().parse().unwrap();
     assert!(alive(pid), "the tethered command left a process behind");
     pid
-}
-
-/// Whether a process is still there.
-///
-/// `kill -0` on one process id, rather than `/proc` and rather than a process group. A
-/// host with no process table still answers this, and `kill` is asked about a plain
-/// positive number, which every implementation of it reads the same way. A negative
-/// argument does not read the same way everywhere, so no test here passes one.
-fn alive(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stderr(Stdio::null())
-        .status()
-        .unwrap()
-        .success()
-}
-
-/// Wait for something to become true, and insist that it does.
-fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + TIMEOUT;
-    while Instant::now() < deadline {
-        if ready() {
-            return;
-        }
-        std::thread::sleep(POLL);
-    }
-    panic!("{what} did not happen within {TIMEOUT:?}");
 }
 
 /// A process standing in the home is never signalled, and the refusal names it.

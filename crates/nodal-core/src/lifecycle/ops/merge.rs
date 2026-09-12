@@ -51,7 +51,9 @@ use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
 
 use crate::git::{Git, Oid, merge as plumbing, refs};
-use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Ran, Runner};
+use crate::lifecycle::hooks::{
+    self, Approvals, Context, Ownership, Phase, Ran, Registered, Runner,
+};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::{Rebuild, marker, run};
@@ -218,14 +220,22 @@ pub fn merge(store: &mut Store, request: &Request) -> Result<Merged> {
     let prepared = prepare(store, request)?;
     let params = &prepared.params;
     let mut ran = Vec::new();
-    ran.extend(prepared.hook(Phase::PreMerge, params.home().to_path_buf())?);
+    ran.extend(prepared.hook(
+        Phase::PreMerge,
+        params.home().to_path_buf(),
+        &Registered { conn: store.conn() },
+    )?);
     let finished = run(store, &plan(params)?)?;
     let done = report(params, ran, Sent::of(&finished.outputs)?.forwarded)?;
     if done.conflict.is_some() {
         return Ok(done);
     }
     let mut done = done;
-    done.hooks.extend(prepared.hook(Phase::PostMerge, params.home().to_path_buf())?);
+    done.hooks.extend(prepared.hook(
+        Phase::PostMerge,
+        params.home().to_path_buf(),
+        &Registered { conn: store.conn() },
+    )?);
     remove(store, request, params, &mut done);
     Ok(done)
 }
@@ -651,7 +661,7 @@ impl Prepared {
     ///
     /// `pre_merge` runs in the home, because that is the tree it is about.
     /// `post_merge` runs in the project root, because that is the tree that moved.
-    fn hook(&self, phase: Phase, root: PathBuf) -> Result<Option<Ran>> {
+    fn hook(&self, phase: Phase, root: PathBuf, owner: &dyn Ownership) -> Result<Option<Ran>> {
         let source = &self.params.project.root;
         let directory =
             if matches!(phase, Phase::PreMerge) { root.clone() } else { source.clone() };
@@ -664,7 +674,7 @@ impl Prepared {
             parent: self.params.environment.base_id.map(|base| base.to_string()),
             environment: self.params.environment.id,
         };
-        self.runner.run(phase, &directory, &context)
+        self.runner.run(phase, &directory, &context, owner)
     }
 }
 

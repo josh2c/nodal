@@ -253,7 +253,13 @@ fn settle(signals: &dyn Signals, sent: &[Target], period: Duration) -> Vec<Targe
 }
 
 /// Whether this target is one no signal is ever sent to.
-fn is_spared(target: Target) -> bool {
+///
+/// Public because a caller that has just made a process group of its own has to be able
+/// to ask the same question before it records that group as a unit's to stop. Recording
+/// one of these would put this process's own shell in the registry as something a later
+/// `nodal reclaim` may signal.
+#[must_use]
+pub fn is_spared(target: Target) -> bool {
     match target {
         Target::Process(pid) => RESERVED.contains(&pid) || spared().contains(&pid),
         Target::Group(pgid) => RESERVED.contains(&pgid) || spared_groups().contains(&pgid),

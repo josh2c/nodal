@@ -699,6 +699,28 @@ that stops for a conflict runs `pre_merge` and no other hook.
 `nodal adopt --in-place` runs none of the six: it created nothing. `nodal adopt` without it made a
 home, and runs `post_new` there and nothing else.
 
+### What a hook leaves running
+A hook's shell runs in a process group of its own, and is given no terminal input. A process in a
+group of its own is not the terminal's foreground group, so a read from the terminal would stop it
+rather than answer it; end of file is the answer, as it is for a tethered command. A hook that finishes with nothing still running
+leaves no record, which is every ordinary hook.
+
+A hook that backgrounds work leaves a group that is still running when its shell exits. That group
+is written into the registry as a session of the unit's materialisation, with the group in `pgid`
+and an actor named `hook:<phase>` — the same row `nodal run --tether` writes. `nodal reclaim` stops
+it with the rest of the unit's recorded groups, and `nodal gc` stops one that outlived a unit
+already reclaimed. Both work on a host with no readable process table, because a group is addressed
+with `kill`.
+
+A group that cannot be recorded is stopped before the command returns, and the reason is the error.
+Three cases reach that: `pre_new`, which runs before the unit has any rows for a group to belong to;
+a hook that exited non-zero; and a registry write that failed after the shell had started. Nodal
+does not report a clean operation around a process nothing on the machine can name.
+
+`pre_reclaim` is read after it runs, so a group it leaves is stopped by the same reclaim.
+`post_reclaim` runs after the teardown, so a group it leaves is recorded against the reclaimed
+materialisation, reported as a session the reclaim left open, and stopped by the next `nodal gc`.
+
 Every path a hook is given is resolved: `NODAL_SOURCE`, `NODAL_ROOT`, `{repo_root}`, `{unit_path}`,
 and the directory the hook is started in. A hook can therefore compare one of them with its own
 `$PWD`, which the shell takes from `getcwd`. On a host where a temporary directory is reached

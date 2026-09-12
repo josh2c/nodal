@@ -115,7 +115,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::survey::Bases;
 use crate::git::{Git, refs};
-use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Ran, Runner};
+use crate::lifecycle::hooks::{
+    self, Approvals, Context, Ownership, Phase, Ran, Registered, Runner,
+};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::uniqueness::{self, Finding};
@@ -178,7 +180,8 @@ pub struct Params {
     /// Where the home is going and when it may be removed, for a home Nodal made.
     /// `None` for a checkout adopted in place, which is unregistered and left alone.
     pub entry: Option<Trashed>,
-    /// The process groups the unit's open tethers hold, read before anything moves.
+    /// The process groups the unit's open recorded sessions hold — a tether, or a group
+    /// a recipe hook left behind — read after `pre_reclaim` and before anything moves.
     /// These are the teardown's first and most certain targets.
     ///
     /// Defaulted on the way in, because a reclaim journalled by an older Nodal has no
@@ -201,16 +204,30 @@ pub struct Params {
 /// unit, [`Error::HookNotApproved`] when a declared hook is not the approved one, and
 /// whatever Git, the filesystem or the registry reported.
 pub fn reclaim(store: &mut Store, request: &Request) -> Result<Reclaimed> {
-    let prepared = prepare(store, request)?;
-    let params = &prepared.params;
+    let mut prepared = prepare(store, request)?;
     let mut hooks_ran = Vec::new();
-    hooks_ran.extend(prepared.hook(Phase::PreReclaim, params.environment.home.clone())?);
+    hooks_ran.extend(prepared.hook(
+        Phase::PreReclaim,
+        prepared.params.environment.home.clone(),
+        &Registered { conn: store.conn() },
+    )?);
+    // The groups are read after the hook and not before it. A `pre_reclaim` that
+    // backgrounds work leaves a group this same command has just recorded, and a list
+    // taken earlier would journal a teardown that does not stop it — after which the
+    // registry write would close the row and the group would be exactly the invisible
+    // process the recording exists to prevent.
+    prepared.params.tethers = tethers(store.conn(), prepared.params.environment.id)?;
+    let params = &prepared.params;
     // Before the home moves, because the remote is reached through the repository in
     // it, and after the hook, because a hook that refuses stops the reclaim and nothing
     // should have left this machine by then.
     let pruned = prune_refs(store.conn(), params)?;
     let done = run(store, &plan(params)?)?;
-    hooks_ran.extend(prepared.hook(Phase::PostReclaim, prepared.after())?);
+    hooks_ran.extend(prepared.hook(
+        Phase::PostReclaim,
+        prepared.after(),
+        &Registered { conn: store.conn() },
+    )?);
     report(&prepared, &done, hooks_ran, pruned, verify(store, params)?)
 }
 
@@ -773,7 +790,7 @@ impl Prepared {
     ///
     /// A hook is not a step ([`crate::lifecycle::hooks`]), so this is where the two of
     /// them happen: before the plan, and after the registry write.
-    fn hook(&self, phase: Phase, root: PathBuf) -> Result<Option<Ran>> {
+    fn hook(&self, phase: Phase, root: PathBuf, owner: &dyn Ownership) -> Result<Option<Ran>> {
         let source = &self.params.project.root;
         let directory =
             if matches!(phase, Phase::PreReclaim) { root.clone() } else { source.clone() };
@@ -786,7 +803,7 @@ impl Prepared {
             parent: self.params.environment.base_id.map(|base| base.to_string()),
             environment: self.params.environment.id,
         };
-        self.runner.run(phase, &directory, &context)
+        self.runner.run(phase, &directory, &context, owner)
     }
 
     /// Where the home is once the plan has run, which is what `post_reclaim` is told.
@@ -816,16 +833,22 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
         approvals: Approvals::open(hooks::path_in(&state_dir))?,
         enabled: request.hooks,
     };
-    let tethers = tethers(store.conn(), environment.id)?;
-    let params = Params { project, unit, environment, entry, tethers, force: request.force };
+    let params =
+        Params { project, unit, environment, entry, tethers: Vec::new(), force: request.force };
     Ok(Prepared { params, findings, runner })
 }
 
-/// The process groups an environment's open tethers hold.
+/// The process groups an environment's open recorded groups hold: what
+/// `nodal run --tether` started, and what a recipe hook left behind
+/// ([`crate::lifecycle::hooks`]).
 ///
-/// Read here, before the plan, so that the groups reach the journal: a reclaim killed
+/// Read before the plan, so that the groups reach the journal: a reclaim killed
 /// part-way and rebuilt from that journal stops the same groups the first attempt was
 /// going to, and does not have to find them again in a registry it has since written.
+///
+/// Read after `pre_reclaim`, so that a group that hook left behind is one of them. The
+/// two orderings are both required and they are not in tension: the reading is still
+/// the last thing before the plan.
 fn tethers(conn: &Connection, environment: EnvId) -> Result<Vec<u32>> {
     Ok(sessions::list_open_tethers(conn, environment)?
         .into_iter()
