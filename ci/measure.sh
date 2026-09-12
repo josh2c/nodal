@@ -141,11 +141,12 @@ if [ "${NODAL_MEASURE_SKIP_GIT:-0}" = "1" ]; then
     cargo build --release --locked -q -p nodal-cli
 fi
 size=$(wc -c < "$root/target/release/nodal" | tr -d ' ')
-# Baseline 8,048,288 bytes on x86_64-unknown-linux-gnu, stripped, and 7,961,696 for the
-# same target on the workstation this ceiling was written on. The two differ by the
-# toolchain that built them, not by what Nodal does, which is why the ceiling is the next
-# round million above the larger and not a tight bound on either.
-gate "release binary size" "$size" 9000000 "bytes" "baseline 8,048,288; 7,961,696 here"
+# Baseline 7,890,600 bytes on x86_64-unknown-linux-gnu, stripped, with the release
+# profile linked as one unit. The same build measured 8,920,552 bytes before that, so the
+# link step removes about 1,030,000 bytes. The ceiling is 8,200,000, which keeps about
+# 310,000 bytes of margin for a different toolchain or a different runner, and keeps most
+# of the removed bytes from coming back without a person seeing it.
+gate "release binary size" "$size" 8200000 "bytes" "baseline 7,890,600; 8,920,552 unlinked"
 
 packages=$(grep -c '^\[\[package\]\]' "$root/Cargo.lock")
 # Baseline 127 packages in the lockfile; 83 crates in the nodal-cli normal tree.
