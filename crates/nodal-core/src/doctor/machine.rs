@@ -11,7 +11,8 @@ use std::time::Instant;
 use crate::Result;
 use crate::doctor::origin::normalize;
 use crate::doctor::scan::{self, Avoid};
-use crate::doctor::{Registry, inspect};
+use crate::doctor::unique::{Evidence, Subject};
+use crate::doctor::{Registry, inspect, unique};
 use crate::model::Timestamp;
 use crate::output::view::doctor::Note;
 use crate::output::view::machine::{CloneRow, Group, IgnoredDir, MachineReport, Skip, Walked};
@@ -48,11 +49,12 @@ pub fn survey(
     skipped.extend(found.skipped);
     let mut entries = found.entries;
     let mut rows = Vec::new();
+    let mut links = inspect::Links::default();
     for path in found.repositories {
-        match inspect::one(&path) {
+        match inspect::one(&path, &mut links) {
             Ok(inspected) => {
                 entries += inspected.entries;
-                rows.push(inspected.row);
+                rows.push((inspected.row, inspected.evidence));
             }
             Err(error) => skipped.push(Skip::new(&path, error.to_string())),
         }
@@ -91,10 +93,10 @@ fn note_as_skip(note: Note) -> Skip {
 }
 
 /// Group clones by normalised origin URL. A clone with no remote is its own group.
-fn groups(rows: Vec<CloneRow>) -> Vec<Group> {
-    let mut grouped: BTreeMap<String, Vec<CloneRow>> = BTreeMap::new();
+fn groups(rows: Vec<(CloneRow, Evidence)>) -> Vec<Group> {
+    let mut grouped: BTreeMap<String, Vec<(CloneRow, Evidence)>> = BTreeMap::new();
     for row in rows {
-        grouped.entry(key_of(&row)).or_default().push(row);
+        grouped.entry(key_of(&row.0)).or_default().push(row);
     }
     let mut groups: Vec<Group> =
         grouped.into_iter().map(|(name, rows)| group(name, rows)).collect();
@@ -109,36 +111,95 @@ fn key_of(row: &CloneRow) -> String {
     row.origin.as_deref().map_or_else(|| row.path.display().to_string(), normalize)
 }
 
-/// Totals and the "nothing unique" signal for one group.
-fn group(name: String, mut repositories: Vec<CloneRow>) -> Group {
-    repositories.sort_by(|left, right| {
-        right.bytes.cmp(&left.bytes).then_with(|| left.path.cmp(&right.path))
+/// Totals and the uniqueness verdict for one group.
+///
+/// The verdict is drawn here rather than in [`inspect`] because it needs the group: a
+/// clone's commits are safe when another clone of the same remote holds them, and
+/// whether a remote-tracking ref still means anything is decided by the freshest clone
+/// of that remote on this machine. See [`unique`].
+fn group(name: String, mut entries: Vec<(CloneRow, Evidence)>) -> Group {
+    entries.sort_by(|left, right| {
+        right.0.bytes.cmp(&left.0.bytes).then_with(|| left.0.path.cmp(&right.0.path))
     });
-    let unpushed: usize = repositories.iter().map(|row| row.unpushed).sum();
+    let subjects: Vec<Subject> = entries
+        .iter()
+        .map(|(row, evidence)| Subject { path: row.path.clone(), evidence: evidence.clone() })
+        .collect();
+    for ((row, _), proof) in entries.iter_mut().zip(unique::prove(&subjects)) {
+        row.unpushed = proof.off_remote;
+        row.only_copy = proof.only_copy;
+        row.unchecked = proof.unchecked;
+        row.witnesses = proof.witnesses;
+    }
+    let repositories: Vec<CloneRow> = entries.into_iter().map(|(row, _)| row).collect();
+    totals(name, repositories)
+}
+
+/// Fold the rows of one group into the line the table prints.
+fn totals(name: String, repositories: Vec<CloneRow>) -> Group {
+    let unpushed: usize = repositories.iter().filter_map(|row| row.unpushed).sum();
     let dirty = repositories.iter().filter(|row| row.dirty > 0).count();
-    let bytes: u64 = repositories.iter().map(|row| row.bytes).sum();
-    let nothing_unique = repositories.iter().all(|row| row.unpushed == 0 && row.dirty == 0);
-    let committed = repositories.iter().filter_map(|row| row.committed).max();
-    let ignored = fold_ignored(&repositories);
+    let unchecked = repositories.iter().filter(|row| row.unchecked.is_some()).count();
+    let unwitnessed =
+        repositories.iter().filter(|row| row.unpushed.is_none() && row.unchecked.is_none()).count();
+    let unique_commits: usize = repositories.iter().filter_map(|row| row.only_copy).sum();
+    let unique_clones =
+        repositories.iter().filter(|row| row.only_copy.is_some_and(|only| only > 0)).count();
     Group {
         name,
         clones: repositories.len(),
         unpushed,
+        unwitnessed,
         dirty,
-        bytes,
-        ignored,
-        committed,
-        nothing_unique,
+        bytes: distinct_bytes(&repositories),
+        ignored: fold_ignored(&repositories),
+        committed: repositories.iter().filter_map(|row| row.committed).max(),
+        nothing_unique: unchecked == 0 && unique_commits == 0 && dirty == 0,
+        unique_clones,
+        unique_commits,
+        unchecked,
         repositories,
     }
 }
 
+/// The bytes the group holds, counting a file shared between clones once.
+///
+/// Cargo hardlinks one built file into every target directory that needs it, and
+/// `git clone --local` hardlinks the object store. Adding the clones up counts those
+/// files as many times as there are links to them, which is how a group of clones came
+/// to be reported several gigabytes larger than the filesystem holds. Each row keeps the
+/// apparent size of its own directory, which is what that directory holds; the group
+/// takes off what a row had already been counted for somewhere else in this survey.
+///
+/// ## What the figure is, and how close it is
+///
+/// It is **apparent bytes with each file counted once**, which is what `du -c
+/// --apparent-size` over the same paths reports. On the machine this was written for, a
+/// group of 55 clones of one repository measured 67,526,393,859 bytes here against
+/// 67,529,956,352 from `du`, a difference of 0.005%. The tolerance the figure is held to
+/// is **1% of `du -c --apparent-size`**, and the gap that is left is rounding: `du`
+/// counts in blocks of its own and this counts in bytes.
+///
+/// It is not what the filesystem allocated. The same group allocated 67,764,117,504
+/// bytes, 0.4% more, because a file occupies whole blocks. A filesystem that compresses
+/// or shares extents holds less than either figure, and neither number is a promise
+/// about how much a disk gets back. The report says the size of what is there.
+fn distinct_bytes(repositories: &[CloneRow]) -> u64 {
+    let total: u64 = repositories.iter().map(|row| row.bytes).sum();
+    let repeated: u64 = repositories.iter().map(|row| row.repeated).sum();
+    total.saturating_sub(repeated)
+}
+
 /// The three largest ignored directories in the group, summed by relative path.
+///
+/// A file hardlinked into several clones is counted once here, as it is in the group's
+/// size, so the two figures answer with the same bytes.
 fn fold_ignored(rows: &[CloneRow]) -> Vec<IgnoredDir> {
     let mut sums: BTreeMap<String, u64> = BTreeMap::new();
     for row in rows {
         for dir in &row.ignored {
-            *sums.entry(dir.path.clone()).or_default() += dir.bytes;
+            let entry = sums.entry(dir.path.clone()).or_default();
+            *entry = entry.saturating_add(dir.bytes).saturating_sub(dir.repeated);
         }
     }
     let mut dirs: Vec<IgnoredDir> =

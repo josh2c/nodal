@@ -16,6 +16,7 @@ pub mod ignored;
 pub mod integration;
 pub mod merge;
 pub mod oid;
+pub mod outside;
 pub mod preflight;
 pub mod push;
 pub mod refs;
@@ -395,6 +396,71 @@ impl Git {
     /// [`Error::Git`] when `git for-each-ref` failed.
     pub fn list_refs(&self, prefix: &str) -> Result<Vec<refs::Ref>> {
         refs::list(&self.root, prefix)
+    }
+
+    /// Every ref this repository has, sorted by name.
+    ///
+    /// One process. A tip is a commit this object store holds, which is what a proof
+    /// that another copy of the work exists is built from.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git for-each-ref` failed.
+    pub fn all_refs(&self) -> Result<Vec<refs::Ref>> {
+        refs::all(&self.root)
+    }
+
+    /// Commits of `rev` that none of `held` reaches, newest first.
+    ///
+    /// The caller says what counts as held. See [`outside`] for why a uniqueness proof
+    /// may not ask this of `refs/remotes/` instead.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `rev` is unknown.
+    pub fn commits_outside(&self, rev: &str, held: &[Oid]) -> Result<Vec<Oid>> {
+        outside::commits(&self.root, rev, held)
+    }
+
+    /// Which of `wanted` this repository has, at no traversal cost.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `rev-list` failed.
+    pub fn held(&self, wanted: &[Oid]) -> Result<Vec<Oid>> {
+        outside::held(&self.root, wanted)
+    }
+
+    /// Which of `revs` none of `held` reaches. One process for all of them.
+    ///
+    /// A revision that comes back is one no commit in `held` has in its history. This is
+    /// how a clone of a remote is asked whether another clone's ref is still on it.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when a revision is unknown.
+    pub fn among_outside(&self, revs: &[Oid], held: &[Oid]) -> Result<Vec<Oid>> {
+        outside::among(&self.root, revs, held)
+    }
+
+    /// How many commits of `rev` none of `held` reaches.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `rev` is unknown.
+    pub fn count_outside(&self, rev: &str, held: &[Oid]) -> Result<usize> {
+        outside::count(&self.root, rev, held)
+    }
+
+    /// The refspecs a remote fetches with, in the order the config lists them.
+    ///
+    /// A clone that fetches one branch cannot say that another branch is gone, so a
+    /// uniqueness proof reads this before it lets a clone testify about a remote.
+    ///
+    /// # Errors
+    /// [`Error::GitEncoding`] when a refspec is not UTF-8.
+    pub fn fetch_refspecs(&self, remote: &str) -> Result<Vec<String>> {
+        let key = format!("remote.{remote}.fetch");
+        let output = cmd::run(&self.root, &["config", "--get-all", "--", &key])?;
+        if !output.ok() {
+            return Ok(Vec::new());
+        }
+        Ok(output.lines()?.iter().map(|line| (*line).to_owned()).collect())
     }
 
     /// Which commits of a revision exist on no remote. The Git half of the uniqueness

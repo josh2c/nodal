@@ -103,6 +103,7 @@ pub mod worktrees;
 mod inspect;
 mod origin;
 mod scan;
+pub mod unique;
 
 use std::path::{Path, PathBuf};
 
