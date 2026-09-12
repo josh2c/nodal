@@ -26,7 +26,14 @@
 #   - a kept clone: an install that fails leaves the clone and the half-built base, and
 #     the attempt after it carries on with that one rather than cloning again;
 #   - a reason with every error: a failed install's message carries what the tool wrote
-#     on standard output as well as on standard error;
+#     on standard output as well as on standard error, and so does a failed build;
+#   - a warm base that is still warm: the build command runs at the path the base is
+#     handed over at, a build command that failed leaves no base and no row offering
+#     one, and the attempt after it carries on with the clone and ends up warm;
+#   - a build that stopped is carried on with, whatever release stopped it: a tree an
+#     earlier release left beside the name, and a tree half way between the two names,
+#     are both finished at the delivered path with one clone and one install, and a
+#     build whose tree was removed under it announces no base and says what is missing;
 #   - a pin acted on: a package-manager version the host cannot run is refused before
 #     the clone, with the tool and both versions named;
 #   - one clone at any worker count: a copy made on one, four, eight and sixteen workers
@@ -55,4 +62,6 @@ ln -s "$work/real" "$work/by-another-name"
 TMPDIR="$work/by-another-name" cargo test --locked -p nodal-safety -- --nocapture
 
 echo "acceptance (safety): two units of one project cannot reach each other, under a linked path too;"
-echo "acceptance (safety): a failed base build keeps its clone and says why it failed"
+echo "acceptance (safety): a failed base build keeps its clone and says why it failed;"
+echo "acceptance (safety): a warm base runs the build where it hands the base over;"
+echo "acceptance (safety): a build that stopped is carried on with, whatever release stopped it"

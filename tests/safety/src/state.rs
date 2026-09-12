@@ -48,27 +48,37 @@ pub fn homes(state: &Path) -> Vec<PathBuf> {
 
 /// Every base of the project, in name order.
 ///
-/// One still being assembled carries a suffix and is not a base yet.
+/// One still being assembled has a mark beside it and is not a base yet.
 #[must_use]
 pub fn bases(state: &Path) -> Vec<PathBuf> {
-    entries(segment(state, "b"))
-        .into_iter()
-        .filter(|path| !path.to_string_lossy().ends_with(".partial"))
-        .collect()
+    trees(state).into_iter().filter(|path| !marked(path)).collect()
 }
 
 /// Every directory a build was assembling a base in, in name order.
 ///
-/// What a build that failed leaves. A base is assembled beside its own name and
-/// renamed into it by the last step, so one of these is a clone and an install that
-/// have been paid for and not yet promoted. A test reads it to say that a failure kept
-/// them, and that the attempt after it used the same one.
+/// What a build that failed leaves. A base is assembled at its own name with a mark
+/// beside it, and the last step takes the mark off, so one of these is a clone and an
+/// install that have been paid for and not yet finished. A test reads it to say that a
+/// failure kept them, and that the attempt after it used the same one.
 #[must_use]
 pub fn partials(state: &Path) -> Vec<PathBuf> {
-    entries(segment(state, "b"))
-        .into_iter()
-        .filter(|path| path.to_string_lossy().ends_with(".partial"))
-        .collect()
+    trees(state).into_iter().filter(|path| marked(path)).collect()
+}
+
+/// Every directory the project's bases directory holds, finished or not.
+fn trees(state: &Path) -> Vec<PathBuf> {
+    entries(segment(state, "b")).into_iter().filter(|path| path.is_dir()).collect()
+}
+
+/// Whether this directory is one a build is still working in.
+///
+/// Two shapes say yes: the mark beside a directory at a base's own name, and the name
+/// a release before the mark assembled under. A test reads both, because the suite
+/// asserts what happens to a tree either of them left.
+fn marked(path: &Path) -> bool {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".building");
+    PathBuf::from(name).exists() || path.to_string_lossy().ends_with(".partial")
 }
 
 /// Everything the project's trash holds, in name order.

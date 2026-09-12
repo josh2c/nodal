@@ -636,6 +636,17 @@ pub enum Error {
         commit: String,
     },
 
+    /// The last step of a base build found nothing at the path it was to hand over.
+    ///
+    /// A build that reached this step ran every tool in the tree. The tree being gone
+    /// means something outside the build removed it, and the step refuses rather than
+    /// writing a row that names a directory nobody can clone from.
+    #[error("the base directory {path} is not there, so there is no base to hand over")]
+    BaseGone {
+        /// The path that was to become the base.
+        path: PathBuf,
+    },
+
     /// A base still has units cloned from it, so it cannot be removed.
     #[error("base {base} still holds {pins} unit(s)")]
     BasePinned {

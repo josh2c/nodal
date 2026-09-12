@@ -120,8 +120,8 @@ fn carried_on(
     ));
     if !progress.agrees(&format!("retry from the {step} step?", step = stopped.step)) {
         progress.line(&format!(
-            "starting again; what the earlier build made is still at {partial}",
-            partial = build::partial_of(&stopped.params.destination).display()
+            "starting again; what the earlier build made is still at {kept}",
+            kept = build::kept_at(&stopped.params.destination).display()
         ));
         return Ok(None);
     }
@@ -150,16 +150,16 @@ struct Stopped {
 
 /// The newest failed build for this workspace key whose work is still on the disk.
 ///
-/// Still on the disk is half of the question. A person who removed the partial by hand
-/// has answered it, and being asked about a directory that is not there would be a
-/// question with no good answer.
+/// Still on the disk is half of the question. A person who removed what the attempt
+/// left by hand has answered it, and being asked about a directory that is not there
+/// would be a question with no good answer.
 fn stopped_at(store: &Store, key: &Key) -> Result<Option<Stopped>> {
     for record in journal::failed(store.conn(), build::KIND)? {
         let Ok(params) = serde_json::from_value::<Params>(record.params.clone()) else { continue };
         if params.fingerprint != key.fingerprint || params.platform != key.platform {
             continue;
         }
-        if !build::partial_of(&params.destination).is_dir() {
+        if !build::unfinished(&params.destination) {
             continue;
         }
         let Some((step, why)) = failing_step(store, record.id)? else { continue };
@@ -221,6 +221,14 @@ fn warm(
         bases::delete(store.conn(), base.id)?;
         return Ok(None);
     }
+    // A row is written after the mark comes off, so a marked directory under one is a
+    // build that was undone or interrupted after it committed. Nothing is cloned from
+    // it: its install or its warm build has no valid result. The row stays, because
+    // the next build resumes into exactly this directory.
+    if !build::is_built(&base.path) {
+        tracing::warn!(base = %base.id, path = %base.path.display(), "base is still being built");
+        return Ok(None);
+    }
     bases::touch(store.conn(), base.id, Timestamp::now())?;
     Ok(Some(base))
 }
@@ -269,7 +277,7 @@ fn build_one(
 fn origin_for(store: &Store, request: &Request, key: &Key) -> Result<Origin> {
     let candidates: Vec<Base> = bases::list_for_project(store.conn(), request.project.id)?
         .into_iter()
-        .filter(|base| base.platform == key.platform && base.path.is_dir())
+        .filter(|base| base.platform == key.platform && build::is_built(&base.path))
         .collect();
     if let Some((base, distance)) = nearest(&candidates, &key.commit) {
         return Ok(Origin::Neighbour { base: base.id, path: base.path.clone(), distance });

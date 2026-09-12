@@ -19,6 +19,12 @@
 //! base is a copy-on-write copy of the nearest base already built here, which costs
 //! metadata rather than a network round trip and leaves the installed dependencies in
 //! place for the package manager to update rather than fetch.
+//!
+//! Every step of a build runs at the path the base is delivered at. A base assembled
+//! under one name and renamed into another is a base that has done its work twice,
+//! because the tools a build runs write the path they ran at into what they produce.
+//! So the directory takes the base's own name from the clone onwards, and a mark
+//! beside it says it is not a base yet until the last step takes the mark off.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -45,8 +51,14 @@ pub const KIND: &str = "base build";
 /// The remote a base is cloned from and fetched from.
 pub const ORIGIN: &str = "origin";
 
-/// What the end of a directory's name says, while a base is being assembled in it.
+/// What a name ends with while the base it belongs to is still being assembled.
+///
+/// A release before the mark assembled a base under this name and renamed it into
+/// place at the end, and every attempt's scratch directory still carries it.
 const PARTIAL_SUFFIX: &str = ".partial";
+
+/// What the mark beside an unfinished base is named by.
+const MARK_SUFFIX: &str = ".building";
 
 /// How many lines of a failed tool's output an error carries, from each stream.
 ///
@@ -54,29 +66,116 @@ const PARTIAL_SUFFIX: &str = ".partial";
 /// an error is still something a person reads rather than scrolls.
 const TAIL_LINES: usize = 40;
 
-/// Where a base is assembled, until every step of its build has passed.
+/// What the mark beside an unfinished base holds, for a person who opens it.
+const MARK: &str = "this base is still being built\n";
+
+/// The mark that says the directory at a base's own name is not a base yet.
 ///
-/// A base is built beside its own name and renamed into it once, by [`Promote`], after
-/// the last step. Nothing between the clone and that rename sits at the path a base is
-/// looked for at, so a build that fails leaves a directory that cannot be mistaken for
-/// a base — by a person, by `nodal doctor`, or by the next build.
+/// A base is assembled at the name it is delivered at, and this file beside it is what
+/// an unfinished one is told apart by — by a person, by `nodal doctor`, or by the next
+/// build. [`Promote`] removes it, and removing it is the moment the base begins to
+/// exist.
+///
+/// It is a mark and not a directory of its own because a build has to run the
+/// project's install and its build command at the path the base is handed over at.
+/// Those tools write the path they ran at into what they produce: Cargo records the
+/// absolute path of every source file outside a package root, a Python environment
+/// writes it into the first line of each script, and a Node install writes it into its
+/// links. Work done at one path and delivered at another is work the next command
+/// does again, which is the whole of what a warm base is for.
 ///
 /// The name is stable, which is what makes a failed build retryable: the attempt that
-/// resumes it looks here and finds the clone and the half-finished install waiting.
+/// resumes it finds the clone and the half-finished install waiting under the name the
+/// base will keep.
+///
+/// It is named apart from [`legacy_of`] so that the two can be there at once. A build
+/// carrying an earlier release's tree into place writes the mark first and moves the
+/// tree second, and the two names not colliding is what makes that order possible.
 #[must_use]
-pub fn partial_of(destination: &Path) -> PathBuf {
-    let mut name = destination.as_os_str().to_os_string();
-    name.push(PARTIAL_SUFFIX);
+pub fn mark_of(destination: &Path) -> PathBuf {
+    beside(destination, MARK_SUFFIX)
+}
+
+/// Where a release before the mark left the tree it was assembling.
+#[must_use]
+pub fn legacy_of(destination: &Path) -> PathBuf {
+    beside(destination, PARTIAL_SUFFIX)
+}
+
+/// A sibling of a path, named by adding to the path's own name.
+fn beside(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
     PathBuf::from(name)
 }
 
-/// The directory a build's steps after the clone work in.
+/// Whether a finished base is at this path.
 ///
-/// The partial, until the promotion has happened; the base itself afterwards. A
-/// resumed run may find either, because it is applying the steps of a plan that got
-/// part of the way through on another day.
-fn work_of(destination: &Path) -> PathBuf {
-    if destination.is_dir() { destination.to_path_buf() } else { partial_of(destination) }
+/// Both halves are asked. A directory with the mark still beside it is a build that
+/// stopped part of the way through, and nothing may be cloned from one: its install or
+/// its warm build has no valid result, whatever the directory looks like from outside.
+#[must_use]
+pub fn is_built(destination: &Path) -> bool {
+    destination.is_dir() && !mark_of(destination).exists() && !legacy_of(destination).is_dir()
+}
+
+/// Whether an earlier attempt at this base left work on the disk to carry on with.
+///
+/// Two shapes answer yes. The one this release writes is the directory at the base's
+/// own name with the mark beside it. The other is the directory named by the mark,
+/// which is where a release before this one assembled a base; a build resumes into
+/// either, because a clone and an install cost minutes and belong to whichever attempt
+/// finishes them.
+#[must_use]
+pub fn unfinished(destination: &Path) -> bool {
+    legacy_of(destination).is_dir() || (destination.is_dir() && mark_of(destination).exists())
+}
+
+/// Where the work an unfinished build paid for is, for a progress line to name.
+#[must_use]
+pub fn kept_at(destination: &Path) -> PathBuf {
+    let legacy = legacy_of(destination);
+    if legacy.is_dir() { legacy } else { destination.to_path_buf() }
+}
+
+/// Write the mark that says the directory at `destination` is not a base yet.
+fn mark(destination: &Path) -> Result<()> {
+    let path = mark_of(destination);
+    std::fs::write(&path, MARK).map_err(Error::io(&path))
+}
+
+/// Carry a tree an earlier release left beside the name into the name itself.
+///
+/// Every step of a build works at the path the base is delivered at, and a build that
+/// an earlier release started left its clone and its install one name away. The
+/// journal records that release's clone step as applied, so the step that would have
+/// noticed is skipped by the attempt that resumes; this runs at the top of every step
+/// that touches the tree instead, and does nothing at all once the tree is in place.
+///
+/// The mark is written before the tree moves, so the tree is never the only copy of
+/// itself under a name nothing records. An attempt that dies between the two finds the
+/// mark and the tree exactly where this left them, and the attempt after it finishes
+/// the move. The tree is moved and never copied, so nothing here can lose it.
+///
+/// Both names being there at once is not a state this writes, and it is not one to
+/// tidy away: a tree is what a build paid minutes for, and the only step that removes
+/// one is the undo of the step that made it.
+fn settle(destination: &Path) -> Result<()> {
+    let legacy = legacy_of(destination);
+    if !legacy.is_dir() || destination.exists() {
+        return Ok(());
+    }
+    mark(destination)?;
+    std::fs::rename(&legacy, destination).map_err(Error::io(&legacy))
+}
+
+/// The directory a step works in, with an earlier release's tree carried into it first.
+///
+/// # Errors
+/// Whatever the move reports.
+fn work(destination: &Path) -> Result<&Path> {
+    settle(destination)?;
+    Ok(destination)
 }
 
 /// Where a base's content comes from.
@@ -308,8 +407,9 @@ impl Materialise {
     /// and say nothing when one will not go: an orphan may still hold it, and the
     /// attempt after this one will find it free.
     ///
-    /// The base's own partial is never swept. It holds a clone that a failed build
-    /// paid for, and the next attempt resumes into it; removing it here would be the
+    /// The base's own mark is never swept, and neither is the directory an earlier
+    /// release left under that name. Either holds a clone that a failed build paid
+    /// for, and the next attempt resumes into it; removing one here would be the
     /// discarded clone this module exists to prevent, done by the tidying rather than
     /// by the failure.
     fn sweep(&self) {
@@ -357,26 +457,31 @@ impl Step for Materialise {
         String::from("clone")
     }
 
-    /// Assemble the content in a scratch directory, then rename it to the partial.
+    /// Assemble the content in a scratch directory, then rename it to the base's name.
     ///
-    /// The rename is why the partial existing is enough to say the step is done. A
+    /// The rename is why the directory existing is enough to say the step is done. A
     /// clone or a copy that a kill stops half-way leaves a directory with a `.git` in
     /// it and most of a repository under that, and a resumed build that accepted one
     /// would install into a tree that is missing files. A rename is one step in the
-    /// filesystem, so the partial either holds a whole clone or does not exist.
+    /// filesystem, so the base's directory either holds a whole clone or does not
+    /// exist.
     ///
-    /// The scratch name is this attempt's own, and the partial's is not. A `nodal` a
-    /// kill stops does not take its `git` with it, so an attempt that assembled
-    /// directly into the shared name would be racing a live writer. It assembles
-    /// somewhere nobody else can be and takes the shared name in one move.
+    /// The scratch name is this attempt's own, and the base's is not. A `nodal` a kill
+    /// stops does not take its `git` with it, so an attempt that assembled directly
+    /// into the shared name would be racing a live writer. It assembles somewhere
+    /// nobody else can be and takes the shared name in one move.
+    ///
+    /// The mark is written before that move and not after it, so there is no instant
+    /// in which the directory stands at a base's name with nothing saying it is not
+    /// one yet.
     fn apply(&self) -> Result<Output> {
-        if self.destination.is_dir() {
-            self.progress.line("the base directory is already there");
-            return Ok(nothing());
-        }
-        let partial = partial_of(&self.destination);
-        if partial.is_dir() {
-            self.progress.line("carrying on with the clone the last attempt made");
+        let destination = work(&self.destination)?;
+        if destination.is_dir() {
+            if mark_of(destination).exists() {
+                self.progress.line("carrying on with the clone the last attempt made");
+            } else {
+                self.progress.line("the base directory is already there");
+            }
             return Ok(nothing());
         }
         let parent = self.destination.parent().unwrap_or(Path::new("."));
@@ -396,14 +501,20 @@ impl Step for Materialise {
         // A copy inherits the source's worktree registrations, hooks path and HEAD; a
         // fresh clone inherits none of that and the scrub is a no-op on it.
         Git::open(&scratch)?.scrub(&scrub::Options::default())?;
-        std::fs::rename(&scratch, &partial).map_err(Error::io(&scratch))?;
+        mark(&self.destination)?;
+        std::fs::rename(&scratch, &self.destination).map_err(Error::io(&scratch))?;
         Ok(nothing())
     }
 
     fn undo(&self) -> Result<()> {
         self.sweep();
-        remove(&partial_of(&self.destination))?;
-        remove(&self.destination)
+        remove(&legacy_of(&self.destination))?;
+        remove(&self.destination)?;
+        let mark = mark_of(&self.destination);
+        if mark.is_file() {
+            std::fs::remove_file(&mark).map_err(Error::io(&mark))?;
+        }
+        Ok(())
     }
 }
 
@@ -450,7 +561,7 @@ impl Step for Checkout {
     }
 
     fn apply(&self) -> Result<Output> {
-        let git = Git::open(work_of(&self.destination))?;
+        let git = Git::open(work(&self.destination)?)?;
         self.reach(&git)?;
         self.progress.line(&format!("checking out {}", self.commit));
         git.checkout_detached(self.commit.as_str())?;
@@ -487,7 +598,7 @@ impl Step for Tool {
 
     fn apply(&self) -> Result<Output> {
         self.progress.line(&self.note);
-        run(&work_of(&self.destination), &self.argv, &self.env)?;
+        run(work(&self.destination)?, &self.argv, &self.env)?;
         Ok(nothing())
     }
 
@@ -498,12 +609,16 @@ impl Step for Tool {
     }
 }
 
-/// Rename the finished base into the name a base is looked for at.
+/// Take the mark off the finished base.
 ///
-/// The last step, and the only one that writes at the destination. Everything before
-/// it has worked in the partial, so this is the moment a base begins to exist — and,
-/// because the registry write comes after it in the same operation, the moment is one
-/// rename away from the row that announces it.
+/// The last step. Every step before it has worked at the name the base is delivered
+/// at, with the mark beside it saying the tree there is not a base yet; this is the
+/// moment a base begins to exist — and, because the registry write comes after it in
+/// the same operation, the moment is one unlink away from the row that announces it.
+///
+/// Nothing moves here, and that is the point. A base whose install and whose warm
+/// build ran at one path and was handed over at another is a base that has to do that
+/// work again, because the tools record the path they ran at in what they produce.
 struct Promote {
     /// Where the base goes.
     destination: PathBuf,
@@ -517,26 +632,31 @@ impl Step for Promote {
     }
 
     fn apply(&self) -> Result<Output> {
-        if self.destination.is_dir() {
+        let destination = work(&self.destination)?;
+        // The tree is asked about before the mark is. A mark that is not there means
+        // the step has already run, but only where the tree it handed over is still
+        // standing; with no tree there is no base, and saying otherwise would write a
+        // row naming a directory nobody can clone from.
+        if !destination.is_dir() {
+            return Err(Error::BaseGone { path: destination.to_path_buf() });
+        }
+        let mark = mark_of(destination);
+        if !mark.exists() {
             return Ok(nothing());
         }
-        let partial = partial_of(&self.destination);
-        std::fs::rename(&partial, &self.destination).map_err(Error::io(&partial))?;
+        std::fs::remove_file(&mark).map_err(Error::io(&mark))?;
         self.progress.line("the base is built");
         Ok(nothing())
     }
 
     fn undo(&self) -> Result<()> {
-        // Back to the partial rather than to nothing. The clone and the install under
-        // it cost minutes and are still exactly what the next attempt wants.
-        if !self.destination.is_dir() {
+        // The mark goes back rather than the tree going away. The clone and the
+        // install under it cost minutes and are still exactly what the next attempt
+        // wants.
+        if !self.destination.is_dir() || mark_of(&self.destination).exists() {
             return Ok(());
         }
-        let partial = partial_of(&self.destination);
-        if partial.exists() {
-            return Ok(());
-        }
-        std::fs::rename(&self.destination, &partial).map_err(Error::io(&self.destination))
+        mark(&self.destination)
     }
 }
 
