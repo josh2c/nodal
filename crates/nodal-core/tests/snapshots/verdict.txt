@@ -5,4 +5,4 @@
   .claude/worktrees/finished  —                                                 done (absorbed)                    —          -40 (origin/main)  1.2 GB+  66 d
   /var/tmp/agent-held         —                                                 locked (an agent is working here)  —          unknown            —        —
 
-  1 worktree is done and holds nothing unique: 1.2 GB. nodal removed nothing.
+  1 worktree is done and holds nothing unique: 1.2 GB. behind is measured against origin/main, which last moved on 2026-08-16. nodal removed nothing.

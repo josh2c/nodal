@@ -16,6 +16,7 @@
 //! | nothing is made | a state directory or a registry appears on a machine that had none |
 //! | nothing is written | a byte of the checkout, or of a worktree beside it, differs |
 //! | `--json` is the same reading | the flag chooses how much is shown, never what is touched |
+//! | the two newer readings read | dating a ref or recovering an intent leaves a mark on the repository or on the agent's own records |
 //! | an error carries its reason | a directory that is no repository is refused with a sentence that names it |
 //!
 //! The worktree beside the checkout is watched as a tree of its own, for the reason
@@ -26,49 +27,15 @@
 
 use std::path::{Path, PathBuf};
 
-use nodal_safety::{Machine, Snapshot, git, stderr, stdout};
+use nodal_safety::checkout::{BESIDE, NESTED};
+use nodal_safety::{Machine, Snapshot, checkout, stderr, stdout};
 
-/// A worktree of the checkout, planted inside it.
-const NESTED: &str = "nested-work";
-
-/// A worktree of that same checkout, planted beside it. This is the shape a real
-/// machine had: named by the repository, and not underneath it.
-const BESIDE: &str = "project-beside";
-
-/// A checkout of a repository Nodal holds nothing about: no recipe in it and no row for
-/// it, which is the shape the verdict exists for.
+/// The checkout every property here is asserted on, and the two worktrees it names.
 ///
-/// It is built rather than borrowed from the fixture project, because the fixture ships
-/// a `nodal.toml` and a directory with one of those is a project a person has already
-/// declared. The whole claim here is about the directory of somebody who has declared
-/// nothing.
-///
-/// One worktree is planted inside it and one beside it, and the nested one is left
-/// holding a commit no remote has, so the table has a row that says a directory holds
-/// the only copy of something. A machine where every row is safe would pass a test
-/// about writing without exercising the reading that matters.
+/// [`checkout::plain`] is the shape, stated once for every suite about the verdict.
 fn plant(machine: &Machine) -> (PathBuf, PathBuf) {
-    let root = machine.source.parent().expect("the machine root");
-    let checkout = root.join("plain-checkout");
-    std::fs::create_dir_all(&checkout).unwrap();
-    git(&checkout, &["init", "--quiet", "--initial-branch", "main"]);
-    git(&checkout, &["config", "--local", "user.email", "safety@nodal.invalid"]);
-    git(&checkout, &["config", "--local", "user.name", "Nodal safety suite"]);
-    git(&checkout, &["remote", "add", "origin", root.join("origin.git").to_str().unwrap()]);
-    std::fs::write(checkout.join("README"), "a checkout nodal has never seen").unwrap();
-    git(&checkout, &["add", "--all"]);
-    git(&checkout, &["commit", "--quiet", "--message", "the first commit"]);
-
-    git(&checkout, &["worktree", "add", "--quiet", "-b", NESTED, NESTED]);
-    let nested = checkout.join(NESTED);
-    std::fs::write(nested.join("only-here.txt"), "work that exists nowhere else").unwrap();
-    git(&nested, &["add", "--all"]);
-    git(&nested, &["commit", "--quiet", "--message", "work that is only here"]);
-
-    let beside = root.join(BESIDE);
-    git(&checkout, &["worktree", "add", "--quiet", "--detach", beside.to_str().unwrap()]);
-    assert!(!checkout.join("nodal.toml").exists(), "this checkout declares a project");
-    (checkout, beside)
+    let plain = checkout::plain(machine);
+    (plain.checkout, plain.beside)
 }
 
 /// Whether the state directory is there at all.
@@ -180,4 +147,43 @@ fn the_verdict_asks_no_remote_anything() {
     assert!(answered.status.success(), "the verdict failed with no remote: {}", stderr(&answered));
     assert!(report.contains(NESTED), "the verdict left out a worktree:\n{report}");
     assert!(!state_exists(&machine), "the verdict made a state directory");
+}
+
+/// The two readings the table gained after it shipped are reads as well.
+///
+/// One dates the ref that BEHIND is measured against, by opening the log Git keeps for
+/// it. The other recovers what a worktree was made for, by opening a session record
+/// another tool wrote. Neither is Nodal's file, both are opened on a machine whose owner
+/// has agreed to nothing, and both paths are checked because the flag chooses how much is
+/// shown and never what is touched.
+///
+/// Claude Code's own records are watched as a tree of their own. They are not in the
+/// checkout and not in the state directory, so nothing else here would notice a write
+/// into them.
+#[test]
+fn dating_a_ref_and_recovering_an_intent_write_nothing_on_either_path() {
+    let machine = Machine::new();
+    let plain = checkout::plain(&machine);
+    checkout::tracking_origin(&plain.checkout);
+    checkout::last_moved_days_ago(&plain.checkout, "refs/remotes/origin/main", 23);
+    checkout::record_intent(&machine, &plain.nested, "Fix the join in the importer");
+
+    let source = Snapshot::of(&plain.checkout);
+    let outside = Snapshot::of(&plain.beside);
+    let records = Snapshot::of(machine.config_dir());
+    assert!(!source.is_empty(), "there is nothing here to leave alone");
+    assert!(!records.is_empty(), "no session record was planted");
+
+    for arguments in [&[][..], &["ls", "--json"][..]] {
+        let report = stdout(&machine.nodal_in(&plain.checkout, arguments));
+        assert!(report.contains(NESTED), "the verdict reported nothing:\n{report}");
+        source
+            .assert_unchanged(&Snapshot::of(&plain.checkout), "the verdict wrote in the checkout");
+        outside.assert_unchanged(&Snapshot::of(&plain.beside), "the verdict wrote in a worktree");
+        records.assert_unchanged(
+            &Snapshot::of(machine.config_dir()),
+            "the verdict wrote into the records of the agent it recovered an intent from",
+        );
+        assert!(!state_exists(&machine), "the verdict made a state directory");
+    }
 }

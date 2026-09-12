@@ -17,25 +17,31 @@ that arrive ready to run.
 
 ## What it looks like
 
-Real output, on a repository Nodal had never been told about. It read the worktrees,
-answered, and wrote nothing.
+An example of the answer, in a repository Nodal has never been told about. It reads the
+worktrees, answers, and writes nothing. The names are made up; the shape and the wording
+are what the command prints.
 
 ```console
 $ nodal
 
-  ~/projects/protonpass  (no project of nodal's; nothing was written)
+  ~/projects/acme  (no project of nodal's; nothing was written)
 
-  WORKTREE            FOR  DONE             ONLY HERE  BEHIND             SIZE    AGE
-  ../protonpass-t8    —    conflict         ^1         -49 (origin/main)  141 kB  21 d
-  ../protonpass-t14   —    conflict         ^1         -43 (origin/main)  254 kB  21 d
-  ../protonpass-t16   —    conflict         ^1         -41 (origin/main)  263 kB  21 d
-  ../protonpass-t21   —    done (ancestor)  —          -37 (origin/main)  276 kB  21 d
-  ../protonpass-t22   —    done (ancestor)  —          -37 (origin/main)  282 kB  21 d
-  /tmp/…/scratch/h1   —    prunable (gitdir file points to non-existent location)
-  /tmp/…/scratch/h2   —    prunable (gitdir file points to non-existent location)
+  WORKTREE          FOR  DONE             ONLY HERE  BEHIND             SIZE    AGE
+  ../acme-t8        —    conflict         ^1         -49 (origin/main)  141 kB  21 d
+  ../acme-t14       —    conflict         ^1         -43 (origin/main)  254 kB  21 d
+  ../acme-t16       —    conflict         ^1         -41 (origin/main)  263 kB  21 d
+  ../acme-t21       —    done (ancestor)  —          -37 (origin/main)  276 kB  21 d
+  ../acme-t22       —    done (ancestor)  —          -37 (origin/main)  282 kB  21 d
+  /tmp/scratch/h1   —    prunable (gitdir file points to non-existent location)
+  /tmp/scratch/h2   —    prunable (gitdir file points to non-existent location)
 
-  2 worktrees are done and hold nothing unique: 558 kB. nodal removed nothing.
+  2 worktrees are done and hold nothing unique: 558 kB. behind is measured against
+  origin/main, which last moved on 2026-08-23. nodal removed nothing.
 ```
+
+**`BEHIND` is only as new as your last fetch.** Nodal never fetches to make it newer.
+It reads how old the number is and says so when the number is old. A checkout you fetched
+today gets no such line.
 
 **`ONLY HERE` is the column that matters.** It answers the only question that stops
 people deleting anything: *will this destroy work that exists nowhere else?* `^1` means

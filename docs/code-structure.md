@@ -78,7 +78,8 @@ fingerprint/
 git/
   mod.rs               Git facade struct wrapping `git` CLI invocations
   cmd.rs               run(args) -> Output, one place for process spawning
-  refs.rs              read/write refs, WIP snapshot ref
+  refs.rs              read/write refs, WIP snapshot ref, and when a ref last moved
+  layout.rs            where a repository keeps its files, read without a process
   branches.rs          local branches, the merged set, and the unpushed count of one ref
   outside.rs           commits of a revision that no commit the caller names already holds, and which of a set a repository has
   push.rs              the one call that leaves this machine: refspecs to a remote

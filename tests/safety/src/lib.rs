@@ -13,6 +13,7 @@
 //! | [`state`] | what a state directory holds, read back after a command has run |
 //! | [`rows`] | the registry rows a test writes by hand |
 //! | [`activation`] | one activated home: the three files a shell reads |
+//! | [`checkout`] | a checkout Nodal holds nothing about, and the readings a verdict takes of one |
 //! | [`process`] | a process a test starts, and the two shapes it starts one in |
 //!
 //! Each of those was written out again in every file that wanted it. The binary runner
@@ -94,6 +95,7 @@
 )]
 
 pub mod activation;
+pub mod checkout;
 pub mod git;
 pub mod machine;
 pub mod platform;

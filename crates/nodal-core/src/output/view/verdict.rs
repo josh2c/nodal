@@ -30,8 +30,16 @@
 //! has and paths no commit holds is stated on its own, the sort puts a row that has
 //! either at the top, and the closing line counts only the rows where both are zero.
 //!
-//! The closing line says what was found and then says that nothing was done about it,
-//! in the same tense as [`super::doctor::CLOSING`] and for the same reason.
+//! The closing line says what was found, says how old the reading behind BEHIND is when
+//! that reading is old, and then says that nothing was done about it, in the same tense
+//! as [`super::doctor::CLOSING`] and for the same reason.
+//!
+//! **The age of the BEHIND reading is the closing line's and not a column's.** Every row
+//! is measured against one revision, the checkout's own, so an age in the table would be
+//! the same words repeated down it; and the staleness belongs to the checkout rather than
+//! to any worktree in it. A reading taken minutes after a fetch says nothing extra, which
+//! is [`STALE_AFTER`]: only a reading old enough to change what a person does with it is
+//! worth the words.
 
 use std::path::PathBuf;
 
@@ -60,6 +68,21 @@ pub const UNKNOWN: &str = "unknown";
 
 /// The sentence every verdict ends with, after the count and the size.
 pub const CLOSING: &str = "nodal removed nothing.";
+
+/// How old the BEHIND reading has to be before the closing line says so, in seconds.
+///
+/// A day. Under it the number is what a person's own checkout knows, and saying so would
+/// be clutter on the ordinary reading. Over it the arithmetic is still right and the data
+/// is not current, and nothing else in the table says that.
+pub const STALE_AFTER: i64 = 86_400;
+
+/// How old it has to be before the age is given as a date rather than as a length, in
+/// seconds.
+///
+/// A week. "3 d ago" is a length a person still holds in their head; "23 d ago" is a
+/// subtraction they have to do to get to the day they were actually working, so past a
+/// week the day itself is what is said.
+pub const DATED_AFTER: i64 = 7 * 86_400;
 
 /// What a row is: a folder Nodal did not make, or a home it did.
 ///
@@ -255,6 +278,13 @@ pub struct Verdict {
     /// repository has no default branch to measure with.
     #[serde(default)]
     pub base: Option<String>,
+    /// When that revision last moved in this checkout, `None` when nothing on disk says.
+    ///
+    /// Carried because BEHIND is arithmetic over it. Nodal makes no network call of its
+    /// own, so the number is as new as the person's last fetch and no newer, and this is
+    /// the fact that says which. [`crate::git::refs::last_moved`] is where it is read.
+    #[serde(default)]
+    pub base_moved_at: Option<Timestamp>,
     /// The rows, in the order [`crate::runtime::verdict::order`] put them.
     pub rows: Vec<WorktreeRow>,
     /// What a reading could not answer. A note is not a failure: one checkout that
@@ -280,17 +310,42 @@ impl Verdict {
         let removable: Vec<&WorktreeRow> =
             self.worktrees().filter(|row| row.done_and_empty()).collect();
         let bytes: u64 = removable.iter().filter_map(|row| row.bytes).sum();
-        match removable.len() {
-            0 => format!("no worktree here is done and empty. {CLOSING}"),
-            1 => format!(
-                "1 worktree is done and holds nothing unique: {}. {CLOSING}",
-                human::bytes(bytes)
-            ),
-            count => format!(
-                "{count} worktrees are done and hold nothing unique: {}. {CLOSING}",
-                human::bytes(bytes)
-            ),
+        let found = match removable.len() {
+            0 => String::from("no worktree here is done and empty."),
+            1 => format!("1 worktree is done and holds nothing unique: {}.", human::bytes(bytes)),
+            count => {
+                format!(
+                    "{count} worktrees are done and hold nothing unique: {}.",
+                    human::bytes(bytes)
+                )
+            }
+        };
+        match self.staleness() {
+            Some(age) => format!("{found} {age} {CLOSING}"),
+            None => format!("{found} {CLOSING}"),
         }
+    }
+
+    /// How old the reading behind BEHIND is, when it is old enough to matter.
+    ///
+    /// `None` for a checkout fetched within the day, for one whose default branch nothing
+    /// could date, and for one with no default branch at all. Only a stale reading earns
+    /// the extra words, and a reading this cannot date makes no claim about its age
+    /// either way.
+    #[must_use]
+    pub fn staleness(&self) -> Option<String> {
+        let reference = self.base.as_deref()?;
+        let moved = self.base_moved_at?;
+        let seconds = self.now.unix_seconds() - moved.unix_seconds();
+        if seconds <= STALE_AFTER {
+            return None;
+        }
+        let when = if seconds > DATED_AFTER {
+            format!("on {}", human::date(moved))
+        } else {
+            human::since(self.now, moved)
+        };
+        Some(format!("behind is measured against {reference}, which last moved {when}."))
     }
 
     /// The line above the table: which checkout this is about, and whether Nodal holds
@@ -371,12 +426,18 @@ mod tests {
         }
     }
 
+    /// An instant `hours` before `now`.
+    fn hours_before(now: Timestamp, hours: i64) -> Timestamp {
+        Timestamp::from_unix_seconds(now.unix_seconds() - hours * 3_600).unwrap()
+    }
+
     fn verdict(rows: Vec<WorktreeRow>) -> Verdict {
         Verdict {
             checkout: PathBuf::from("/home/dev/project"),
             project: None,
             now: Timestamp::now(),
             base: Some(String::from("main")),
+            base_moved_at: None,
             rows,
             notes: Vec::new(),
         }
@@ -416,6 +477,64 @@ mod tests {
         unit.kind = RowKind::Unit;
         let line = verdict(vec![unit]).closing();
         assert_eq!(line, "no worktree here is done and empty. nodal removed nothing.");
+    }
+
+    /// The reading a person takes minutes after a fetch. Nothing is added to it: the
+    /// table is wide, and an age on a current reading is clutter that teaches the reader
+    /// to skip the line the stale case needs them to read.
+    #[test]
+    fn a_behind_reading_from_a_checkout_fetched_today_says_nothing_about_its_age() {
+        let mut seen = verdict(vec![row("busy", Integration::Open, 1, 0)]);
+        seen.base_moved_at = Some(hours_before(seen.now, 5));
+        assert_eq!(seen.staleness(), None);
+        assert_eq!(seen.closing(), "no worktree here is done and empty. nodal removed nothing.");
+    }
+
+    /// The shape this exists for: several worktrees, `-0 (origin/main)`, and an
+    /// `origin/main` nobody has fetched for three weeks. The arithmetic is right and the
+    /// data is three weeks old, and this sentence is the only thing that says so.
+    #[test]
+    fn a_behind_reading_older_than_a_week_is_given_the_day_it_was_taken() {
+        let mut seen = verdict(vec![row("busy", Integration::Open, 1, 0)]);
+        seen.base = Some(String::from("origin/main"));
+        seen.now = Timestamp::parse("2026-09-12T07:00:00Z").unwrap();
+        seen.base_moved_at = Some(Timestamp::parse("2026-08-20T06:55:26Z").unwrap());
+        assert_eq!(
+            seen.staleness().unwrap(),
+            "behind is measured against origin/main, which last moved on 2026-08-20."
+        );
+        assert!(seen.closing().ends_with("last moved on 2026-08-20. nodal removed nothing."));
+    }
+
+    /// Between a day and a week the length is what a person still holds in their head.
+    #[test]
+    fn a_behind_reading_of_a_few_days_is_given_as_a_length() {
+        let mut seen = verdict(vec![row("busy", Integration::Open, 1, 0)]);
+        seen.base_moved_at = Some(hours_before(seen.now, 72));
+        assert_eq!(
+            seen.staleness().unwrap(),
+            "behind is measured against main, which last moved 3 d ago."
+        );
+    }
+
+    /// A checkout whose default branch nothing could date claims nothing about its age.
+    /// Saying "fresh" by leaving the sentence off is only honest when the reading was
+    /// taken; a reading that could not be dated is the same silence either way, and the
+    /// alternative is a claim nothing supports.
+    #[test]
+    fn a_reference_nothing_could_date_is_not_called_fresh_or_stale() {
+        let seen = verdict(vec![row("busy", Integration::Open, 1, 0)]);
+        assert_eq!(seen.base_moved_at, None);
+        assert_eq!(seen.staleness(), None);
+    }
+
+    /// A checkout with no default branch has nothing to be behind and nothing to date.
+    #[test]
+    fn a_checkout_with_no_default_branch_says_nothing_about_an_age() {
+        let mut seen = verdict(vec![row("busy", Integration::Open, 1, 0)]);
+        seen.base = None;
+        seen.base_moved_at = Some(hours_before(seen.now, 500));
+        assert_eq!(seen.staleness(), None);
     }
 
     #[test]

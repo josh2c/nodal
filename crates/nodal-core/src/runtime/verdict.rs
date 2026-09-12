@@ -100,6 +100,10 @@ pub fn read(
     // is not the name Git answers with.
     let resolved = git.toplevel().unwrap_or_else(|_| root.to_path_buf());
     let base = branches::base_of(&git).unwrap_or_default();
+    // How old the BEHIND readings are. Nothing here makes them newer: only a fetch could,
+    // and Nodal makes no network call of its own, so the age is what the closing line says
+    // instead of a freshness it cannot honestly claim.
+    let base_moved_at = base.as_deref().and_then(|name| git::refs::last_moved(&resolved, name));
     let mut rows = Vec::new();
     let mut notes = Vec::new();
     for registered in git.worktrees()? {
@@ -109,7 +113,7 @@ pub fn read(
         rows.push(row(&resolved, &registered, base.as_deref(), sessions, &mut notes));
     }
     order(&mut rows);
-    Ok(Verdict { checkout: resolved, project, now, base, rows, notes })
+    Ok(Verdict { checkout: resolved, project, now, base, base_moved_at, rows, notes })
 }
 
 /// Put the worktrees a person has to deal with at the top.

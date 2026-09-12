@@ -301,6 +301,16 @@ pub fn until(now: Timestamp, then: Timestamp) -> String {
     if left == NOW { String::from(NOW) } else { format!("in {left}") }
 }
 
+/// The calendar day `at` falls on, in UTC, written as `2026-08-19`.
+///
+/// What a moment is called once it is too far off for a length to help. "23 d ago" is a
+/// subtraction the reader has to do before it means anything; a date is something they
+/// can hold against what they remember doing.
+#[must_use]
+pub fn date(at: Timestamp) -> String {
+    at.to_offset_date_time().date().to_string()
+}
+
 /// What an elapsed time under a minute is called, in both forms.
 const NOW: &str = "now";
 
@@ -338,7 +348,7 @@ pub fn join(items: &[String]) -> String {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::{Block, Doc, Field, Table, bytes, since, span, until};
+    use super::{Block, Doc, Field, Table, bytes, date, since, span, until};
     use crate::model::Timestamp;
 
     fn at(text: &str) -> Timestamp {
@@ -397,6 +407,12 @@ mod tests {
         assert_eq!(since(now, at("2026-09-06T11:48:00Z")), "12 min ago");
         assert_eq!(since(now, at("2026-09-06T09:00:00Z")), "3 h ago");
         assert_eq!(since(now, at("2026-09-04T12:00:00Z")), "2 d ago");
+    }
+
+    #[test]
+    fn a_date_is_the_calendar_day_in_utc() {
+        assert_eq!(date(at("2026-08-16T23:30:00Z")), "2026-08-16");
+        assert_eq!(date(at("2026-01-02T00:00:00Z")), "2026-01-02");
     }
 
     #[test]
