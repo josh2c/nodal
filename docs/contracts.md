@@ -410,9 +410,28 @@ Add roots with `--machine <path>`. The default depth is 6. `--depth` changes it.
 state directory, any registered unit home, and a mount that is not a local filesystem. It reports each
 skip and the reason. It groups clones by the URL of `origin`. SSH and HTTPS forms of one host path are
 one group. A clone with no remote is its own group, named by its path. Each group states the clone count,
-unpushed commits, dirty clones, logical size, the largest ignored directories, and last commit age.
-"nothing unique" means every clone is clean and every commit exists on a remote. `--json` carries every
-clone. The walk writes nothing.
+commits on no remote, dirty clones, logical size, the largest ignored directories, and last commit age.
+
+The survey proves the uniqueness of each clone on each run. It proves it from two things, and it reaches
+no network. A commit another clone on this machine holds survives the deletion of this one. A commit a
+remote-tracking ref holds reached the remote, but only if the freshest clone of that remote on this
+machine agrees. The freshest clone is the one that heard from the remote most recently and fetches every
+branch. That clone's reading of a branch replaces this clone's. A branch the freshest clone does not have
+is gone, and its old ref proves nothing. A branch the freshest clone has is read at the freshest tip, so
+a rewritten branch does not vouch for the commits it dropped. With no clone fresher than this one, this
+clone's own refs stand.
+
+"nothing unique" means the survey examined every clone of the group and found no commit that only one
+clone holds. A clone the survey could not read is reported as "not checked", never as clean, and the
+report counts how many were not checked. The report names each clone that holds the only copy of a
+commit, with the count, and gives the command that sends the work to a remote. It names each clone whose
+commits are on no remote but survive in another clone here. `--json` carries every clone.
+
+A group's size counts a file once. Cargo and `git clone --local` hardlink one file into many directories,
+and a sum of the clones would count it once per link. The figure is apparent bytes, held to within 1% of
+`du -c --apparent-size` over the same paths. It is not the blocks the filesystem allocated.
+
+The walk writes nothing.
 
 `--json` and the default output are two renderings of one value, so a field a person sees is a field a
 tool can read. A read type carries the instant it was taken as `now`, and every relative time it prints

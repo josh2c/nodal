@@ -126,10 +126,26 @@ pub(super) fn delete(repo: &Path, name: &str) -> Result<()> {
 /// [`Error::Git`] when `git for-each-ref` failed, [`Error::GitParse`] on an unreadable
 /// record.
 pub(super) fn list(repo: &Path, prefix: &str) -> Result<Vec<Ref>> {
-    let output = cmd::run_ok(
-        repo,
-        &["for-each-ref", "--sort=refname", "--format=%(objectname) %(refname)", prefix],
-    )?;
+    for_each_ref(repo, Some(prefix))
+}
+
+/// Every ref the repository has, sorted by name.
+///
+/// One process for the whole repository, and the reading behind the uniqueness proof:
+/// a ref tip is a commit this clone's object store holds, whatever the ref is called.
+///
+/// # Errors
+/// [`Error::Git`] when `git for-each-ref` failed, [`Error::GitParse`] on an unreadable
+/// record.
+pub(super) fn all(repo: &Path) -> Result<Vec<Ref>> {
+    for_each_ref(repo, None)
+}
+
+/// One `for-each-ref`, with a pattern or over everything.
+fn for_each_ref(repo: &Path, prefix: Option<&str>) -> Result<Vec<Ref>> {
+    let mut args = vec!["for-each-ref", "--sort=refname", "--format=%(objectname) %(refname)"];
+    args.extend(prefix);
+    let output = cmd::run_ok(repo, &args)?;
     output
         .lines()?
         .iter()

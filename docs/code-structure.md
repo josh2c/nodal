@@ -80,6 +80,7 @@ git/
   cmd.rs               run(args) -> Output, one place for process spawning
   refs.rs              read/write refs, WIP snapshot ref
   branches.rs          local branches, the merged set, and the unpushed count of one ref
+  outside.rs           commits of a revision that no commit the caller names already holds
   push.rs              the one call that leaves this machine: refspecs to a remote
   host.rs              the web host a remote names, and its compare page (a table)
   status.rs            porcelain parsing -> StatusSummary
@@ -128,6 +129,7 @@ services/
 doctor/                what this machine has left behind; reads only, never removes
   mod.rs               survey(): the sections, and which one a path belongs to
   size.rs              logical bytes and newest modification of a directory (no writes)
+  unique.rs            what a clone is the only copy of, proved from the other clones and the freshest refs
   attribution.rs       whose a Docker resource is when its name is the only evidence
   branches.rs          local branches with no worktree, in three buckets by where their commits are
   worktrees.rs         checkouts from `git worktree list`; locked and prunable are read no further
