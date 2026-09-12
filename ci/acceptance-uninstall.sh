@@ -17,6 +17,11 @@
 #     only what Nodal's own binary printed. Both are read out of the source and out of
 #     the emitted script, in the way `done`'s no-pull-request check reads them.
 #
+# A fifth, and it is the one the default verb is really about: what a person is left
+# with. The default removes no unit home, and a home that outlived the uninstall is a
+# standalone Git repository — read with `nodal` off the search path, because a reading
+# taken on a machine that still had it would prove nothing.
+#
 # The suites are then run a second time with the temporary directory reached through a
 # symbolic link, as `ci/acceptance-doctor.sh` does and for the same reason: an uninstall
 # compares paths a shell wrote with paths a registry holds, and macOS gives that
@@ -28,6 +33,10 @@ cargo test --locked -p nodal-core --lib output::view::setup
 cargo test --locked -p nodal-core --test upgrade
 cargo test --locked -p nodal-cli --test uninstall
 cargo test --locked -p nodal-safety --test no_network
+# The safety suite types the binary, and Cargo names a binary to the package that
+# declares it, so that package is built before the package that types it runs.
+cargo build --locked -p nodal-cli
+cargo test --locked -p nodal-safety --test uninstall_repositories
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -37,3 +46,4 @@ TMPDIR="$work/by-another-name" cargo test --locked -p nodal-core --test upgrade
 TMPDIR="$work/by-another-name" cargo test --locked -p nodal-cli --test uninstall
 
 echo "acceptance (uninstall): a start-up file comes back byte for byte, a v1 registry upgrades, and neither verb fetches anything"
+echo "acceptance (uninstall): the default removes no unit home, and a home that outlived it is a standalone git repository"

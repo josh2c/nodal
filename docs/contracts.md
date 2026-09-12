@@ -236,9 +236,20 @@ runs in every shell a person opens. `nodal shell-init <shell>` on its own still 
 
 `nodal uninstall` removes the block, the scripts, and with `--state` the state directory. It prints one item per
 thing before it removes any of them, and it asks once; a terminal nothing is watching is refused rather than
-waited on. A start-up file is byte-identical to the file it was before the install. `--state` runs
-`lifecycle::uniqueness` over every unit home first and refuses while one holds work that exists nowhere else;
-`--force` accepts that and says what it accepted.
+waited on. A start-up file is byte-identical to the file it was before the install.
+
+The default removes what Nodal installed on the machine and **no unit home**. The state directory stays and the
+homes are inside it, so what a person is left with is what the promise has to be about: **each home is a
+standalone Git repository**. Its history is readable, its tree is clean, its object store is whole, it borrows
+no objects from the base or from anywhere else under the state directory, and nothing in its Git configuration
+names a path only Nodal puts on a machine. `gc.auto = 0` stays, because it names nothing and any Git can use a
+repository that has it; `remote.origin.url` names where the project came from, which is the person's own.
+`tests/safety/tests/uninstall_repositories.rs` asserts each of those from inside a surviving home, with `nodal`
+off the search path and every variable Nodal reads out of the environment.
+
+`--state` is the other promise and it is destructive by request. It removes the state directory and the unit
+homes in it. It runs `lifecycle::uniqueness` over every unit home first and refuses while one holds work that
+exists nowhere else; `--force` accepts that and says what it accepted.
 
 `nodal upgrade`, and `nodal update`, report how this copy was installed — a cargo bin directory, a Homebrew
 cellar, a system package path, or a binary placed by hand — and print the one command that upgrades it there.

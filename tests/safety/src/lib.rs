@@ -49,6 +49,7 @@
 //! | trash prune | the trash loses a path that holds work, or keeps a build a tool writes again | `tests/trash_prune.rs` |
 //! | a session's home | a file nodal wrote for an agent shows as the agent's work, and is merged as it | `tests/hook_home.rs` |
 //! | hook scope | an install nobody asked for leaves a file in a repository, or the provider ends a session in a project that is not Nodal's | `tests/claude_scope.rs` |
+//! | a home after an uninstall | a person who removes Nodal is left a home no Git can read, or one that borrows its objects from a tree Nodal owns | `tests/uninstall_repositories.rs` |
 //! | doctor reads only | a read command changes the machine it is reporting on | `tests/doctor_writes_nothing.rs` |
 //! | stand-in values | a create calls a unit ready with a generated value its own generate step needs | `tests/stand_in_values.rs` |
 //! | a kept clone | a failed install throws away the clone it was installing into | `tests/base_retry.rs` |
