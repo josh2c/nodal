@@ -3,6 +3,7 @@
   "project": null,
   "now": "2026-09-06T14:22:00Z",
   "base": "origin/main",
+  "base_moved_at": "2026-08-16T09:00:00Z",
   "rows": [
     {
       "kind": "worktree",

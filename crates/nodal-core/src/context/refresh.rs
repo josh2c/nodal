@@ -19,10 +19,10 @@
 //! that already refreshed at the same stamp is skipped. In the ordinary case — several
 //! `nodal` commands between two fetches — every home after the first is free.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use crate::git::{Git, refs};
+use crate::git::{Git, layout, refs};
 use crate::{Error, Result};
 
 /// The stamp file, relative to a home's **git directory** and not to the home.
@@ -88,7 +88,7 @@ impl Stamp {
     /// earned is a stale answer.
     #[must_use]
     pub fn matches(&self, home: &Path) -> bool {
-        let Some(path) = git_dir(home).map(|directory| directory.join(FILE)) else {
+        let Some(path) = layout::dir(home).map(|directory| directory.join(FILE)) else {
             return false;
         };
         self.readable && std::fs::read_to_string(path).is_ok_and(|held| held == self.line())
@@ -102,7 +102,7 @@ impl Stamp {
     /// # Errors
     /// [`Error::Io`] when the directory or the file could not be written.
     pub fn write(&self, home: &Path) -> Result<()> {
-        let Some(git_dir) = git_dir(home).filter(|_| self.readable) else {
+        let Some(git_dir) = layout::dir(home).filter(|_| self.readable) else {
             return Ok(());
         };
         let path = git_dir.join(FILE);
@@ -119,32 +119,13 @@ impl Stamp {
 /// the homes it made go on being surveyed against what they already have.
 #[must_use]
 pub fn stamp(checkout: &Path) -> Stamp {
-    let Some(git_dir) = git_dir(checkout) else { return Stamp::unreadable() };
+    let Some(git_dir) = layout::dir(checkout) else { return Stamp::unreadable() };
     let mut reading = Stamp { newest: 0, entries: 0, readable: true };
     for path in [git_dir.join("HEAD"), git_dir.join("packed-refs")] {
         see(&mut reading, &path);
     }
     walk(&mut reading, &git_dir.join("refs"));
     reading
-}
-
-/// Where a repository keeps its refs, and where this module keeps its stamp.
-///
-/// `.git` is a directory in an ordinary clone and a file holding a `gitdir:` line in a
-/// worktree, and both are read here rather than asked of `git`, because the whole point
-/// of a stamp is that taking one costs no process. A path that is itself a bare
-/// repository is read as it stands.
-fn git_dir(checkout: &Path) -> Option<PathBuf> {
-    let dot = checkout.join(".git");
-    if dot.is_dir() {
-        return Some(dot);
-    }
-    if dot.is_file() {
-        let text = std::fs::read_to_string(&dot).ok()?;
-        let pointed = text.strip_prefix("gitdir:")?.trim();
-        return Some(checkout.join(pointed));
-    }
-    checkout.join("HEAD").is_file().then(|| checkout.to_path_buf())
 }
 
 /// Fold one path's modification time into a reading.

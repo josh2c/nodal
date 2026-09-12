@@ -462,6 +462,9 @@ fn the_verdict_on_a_checkout_renders_both_ways() {
         project: None,
         now: now(),
         base: Some(String::from("origin/main")),
+        // Three weeks since this checkout last fetched, which is the shape the closing
+        // line exists for: the arithmetic in BEHIND is right and the data is not current.
+        base_moved_at: Some(at("2026-08-16T09:00:00Z")),
         rows: found(),
         notes: Vec::new(),
     };
@@ -475,6 +478,7 @@ fn a_checkout_with_no_other_worktrees_says_so_and_still_makes_the_promise() {
         project: None,
         now: now(),
         base: Some(String::from("main")),
+        base_moved_at: Some(at("2026-09-06T09:00:00Z")),
         rows: Vec::new(),
         notes: Vec::new(),
     };

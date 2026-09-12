@@ -14,6 +14,7 @@ pub mod history;
 pub mod host;
 pub mod ignored;
 pub mod integration;
+pub mod layout;
 pub mod merge;
 pub mod oid;
 pub mod outside;

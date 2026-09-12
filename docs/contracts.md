@@ -490,12 +490,24 @@ default branch. Nodal resolves that branch from `origin/HEAD` first, then `main`
 `BEHIND` is measured against that same branch. The row names the branch it used. A checkout with no
 default branch says `unknown`. It never says `0`.
 
+`BEHIND` is as new as the checkout's last fetch. Nodal never fetches to make it newer. Nodal reads
+how old the reading is instead. It reads the log Git keeps for the branch. It reads the branch file
+itself when the repository keeps no logs. A branch that neither dates is not called fresh or stale.
+
+The last line names that age when the branch has not moved for more than one day. It gives a length
+up to one week. It gives the date after one week. A checkout fetched within the day gets no such
+words. The age is in the last line and not in a column. Every row is measured against one branch,
+and the staleness belongs to the checkout.
+
+`FOR` is quoted text. It is the first prompt of the session that made the worktree. Nodal cuts it to
+the width of the column. Nodal changes nothing else about it.
+
 `ONLY HERE` counts commits that exist on no remote and paths that no commit holds. This is the
 column that governs the order. A worktree that holds either is printed first. The finished ones are
 printed last.
 
 The last line counts the worktrees that are done and hold nothing unique, gives their total size,
-and says that Nodal removed nothing.
+says how old the `BEHIND` reading is when it is old, and says that Nodal removed nothing.
 
 A registered project prints the same worktrees in its own table. A leading column says whether each
 row is a `unit` or a `worktree`. A home Nodal made is a unit. A folder another tool made is a
