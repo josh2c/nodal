@@ -24,8 +24,9 @@
 #   - hook process ownership: a recipe hook may background a process that carries no
 #     nodal variable and stands in no home, and a reclaim still names and stops it by the
 #     process group the registry recorded; a hook that leaves nothing running records no
-#     group; a failed hook and a group nothing can record leave no child alive; and a
-#     process group no row holds is never signalled;
+#     group; a failed hook and a group nothing can record leave no child alive; a
+#     recorded group that has ended gives its row up without anything being signalled;
+#     and a process group no row holds is never signalled;
 #   - doctor: the checkout, a worktree of that checkout that lives beside it rather than
 #     inside it, and the whole state directory are the same bytes afterwards;
 #   - a kept clone: an install that fails leaves the clone and the half-built base, and

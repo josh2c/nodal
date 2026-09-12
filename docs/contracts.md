@@ -717,6 +717,11 @@ Three cases reach that: `pre_new`, which runs before the unit has any rows for a
 a hook that exited non-zero; and a registry write that failed after the shell had started. Nodal
 does not report a clean operation around a process nothing on the machine can name.
 
+A recorded group that ends on its own gives its row up. `nodal run` and `nodal gc` ask, with signal
+zero, whether each open `pgid` row still holds a process, and close the row of one that does not.
+Nothing is signalled to find out, no process table is read, and a row whose group is still there is
+left exactly as it is. This applies to a tether as much as to a hook.
+
 `pre_reclaim` is read after it runs, so a group it leaves is stopped by the same reclaim.
 `post_reclaim` runs after the teardown, so a group it leaves is recorded against the reclaimed
 materialisation, reported as a session the reclaim left open, and stopped by the next `nodal gc`.

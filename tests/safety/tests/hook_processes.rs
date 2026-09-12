@@ -287,6 +287,46 @@ fn a_group_left_by_post_reclaim_is_reported_and_then_stopped_by_the_sweep() {
     wait_for("the sweep to stop the group post_reclaim left", || !alive(hidden));
 }
 
+/// A recorded group that has ended gives its row up, and nothing is signalled to find
+/// that out.
+///
+/// The row is the claim "this group is still the unit's to stop". When the group has
+/// gone the claim is false, and a registry that kept it would present finished work as an
+/// attachment: the unit is never idle, and a reclaim lists a session it did not need to
+/// end. Nothing else closes one — a process scan will not answer for a process group,
+/// and the hook's shell exited long before its group did.
+///
+/// The question is asked with signal zero, which delivers nothing. The bystander is the
+/// proof: it is in a process group of its own, exactly like the recorded one, and it is
+/// still running afterwards.
+#[test]
+fn a_recorded_group_that_has_ended_closes_its_row_and_signals_nothing() {
+    let out = outside();
+    let record = out.path().join("backgrounded");
+    let machine = machine_declaring(&phase("post_new", &backgrounds(&record)));
+    let bystander = in_a_group_of_its_own();
+    drop(machine.unit(UNIT));
+    assert_eq!(open_groups(&machine).len(), 1, "the hook's group was not recorded");
+
+    // The group ends on its own, as a development server does when its work is done.
+    let hidden = recorded(&record);
+    ended(hidden);
+
+    drop(machine.nodal(&["gc"]));
+
+    assert!(open_groups(&machine).is_empty(), "a group that has ended kept its row");
+    assert!(alive(bystander.pid()), "a group was signalled to find out whether it was there");
+    drop(machine.nodal(&["reclaim", UNIT]));
+}
+
+/// End one process and wait for it to be gone, so that its group is empty.
+fn ended(pid: u32) {
+    let stopped =
+        std::process::Command::new("kill").arg(pid.to_string()).status().expect("kill runs");
+    assert!(stopped.success(), "the test could not end process {pid}");
+    wait_for("the process the test ended to go", || !alive(pid));
+}
+
 /// A process group nothing recorded is never signalled, however close it stands.
 ///
 /// Recording hook groups widens what a teardown signals, and this is the fence around
