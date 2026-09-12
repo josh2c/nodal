@@ -39,16 +39,46 @@ pub const BINARY_VAR: &str = "NODAL_TEST_BINARY";
 /// What the stub package manager writes, so that a base holds a file no commit put there.
 const INSTALLED: &str = "node_modules/installed.txt";
 
+/// Where the stub records the directory it was asked to build in.
+///
+/// A warm build is the one step whose whole value is the path it ran at, so the stub
+/// writes that path down and the suite reads it back. It goes under `node_modules`
+/// because that directory is carried into a base and into every home, so the reading
+/// survives the copy the property is about.
+const BUILT_IN: &str = "node_modules/built-in.txt";
+
 /// The stub package manager itself. It writes one file and succeeds.
 ///
 /// It answers `--version` as well, with the version the fixture's manifest pins. Nodal
 /// compares the two before it builds, and a stub that answered nothing would be a host
 /// without a package manager at all.
+///
+/// `run` is the fixture's build command, which a warm base build runs after the
+/// install. It records the directory it ran in and writes nothing else, so a property
+/// about where the warm step happened reads one file and nothing else changes.
 const STUB: &str = concat!(
     "#!/bin/sh\n",
     "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
     "mkdir -p node_modules || exit 1\n",
-    "echo 'the safety suite installs nothing' > node_modules/installed.txt\n",
+    "case \"$1\" in run) pwd -P > node_modules/built-in.txt; exit 0;; esac\n",
+    "echo 'the safety suite installs nothing' >> node_modules/installed.txt\n",
+);
+
+/// A stub that installs and then refuses to build.
+///
+/// It writes its reason to standard output and a note to standard error, for the same
+/// reason [`STUB_FAILS_ONCE`] does: which stream a tool puts its reason on is the
+/// tool's choice.
+const STUB_WARM_FAILS: &str = concat!(
+    "#!/bin/sh\n",
+    "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
+    "mkdir -p node_modules || exit 1\n",
+    "case \"$1\" in run)\n",
+    "  echo 'ERR_BUILD_FAILED  the build script exited non-zero'\n",
+    "  echo 'a note that is not the reason' >&2\n",
+    "  exit 1;;\n",
+    "esac\n",
+    "echo 'the safety suite installs nothing' >> node_modules/installed.txt\n",
 );
 
 /// The path in a stub script that the fixture replaces with a real one.
@@ -72,7 +102,48 @@ const STUB_FAILS_ONCE: &str = concat!(
     "  exit 1\n",
     "fi\n",
     "mkdir -p node_modules || exit 1\n",
-    "echo 'the safety suite installs nothing' > node_modules/installed.txt\n",
+    "case \"$1\" in run) pwd -P > node_modules/built-in.txt; exit 0;; esac\n",
+    "echo 'the safety suite installs nothing' >> node_modules/installed.txt\n",
+);
+
+/// A stub that builds and takes the tree it was given with it.
+///
+/// A tool is free to remove what it was pointed at, and the last step of a build has to
+/// answer for a tree that is not there rather than announce a base nobody can clone
+/// from. It removes the mark beside the tree as well, which is why the pattern and not
+/// the name: the suite does not spell what the mark is called.
+const STUB_WARM_REMOVES_THE_TREE: &str = concat!(
+    "#!/bin/sh\n",
+    "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
+    "mkdir -p node_modules || exit 1\n",
+    "case \"$1\" in run)\n",
+    "  here=$(pwd -P)\n",
+    "  cd / || exit 1\n",
+    "  rm -rf \"$here\" \"$here\".*\n",
+    "  exit 0;;\n",
+    "esac\n",
+    "echo 'the safety suite installs nothing' >> node_modules/installed.txt\n",
+);
+
+/// A stub that refuses to build the first time and builds after that.
+///
+/// The retry is the property: a base build whose last step failed keeps its clone and
+/// its install, and the attempt after it carries on at the same path.
+const STUB_WARM_FAILS_ONCE: &str = concat!(
+    "#!/bin/sh\n",
+    "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
+    "mkdir -p node_modules || exit 1\n",
+    "case \"$1\" in run)\n",
+    "  if [ ! -f '@WITNESS@' ]; then\n",
+    "    : > '@WITNESS@'\n",
+    "    echo 'ERR_BUILD_FAILED  the build script exited non-zero'\n",
+    "    echo 'a note that is not the reason' >&2\n",
+    "    exit 1\n",
+    "  fi\n",
+    "  pwd -P > node_modules/built-in.txt\n",
+    "  exit 0;;\n",
+    "esac\n",
+    "echo 'the safety suite installs nothing' >> node_modules/installed.txt\n",
 );
 
 /// A stub that installs, and answers `--version` with a version the test chooses.
@@ -80,7 +151,7 @@ const STUB_VERSIONED: &str = concat!(
     "#!/bin/sh\n",
     "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
     "mkdir -p node_modules || exit 1\n",
-    "echo 'the safety suite installs nothing' > node_modules/installed.txt\n",
+    "echo 'the safety suite installs nothing' >> node_modules/installed.txt\n",
 );
 
 /// The programs a sealed machine keeps, beyond the stub package manager.
@@ -181,6 +252,40 @@ impl Machine {
     #[must_use]
     pub fn failing_once() -> Self {
         Self::built(&Setup { stub: Some(STUB_FAILS_ONCE), sealed: true, ..Setup::default() })
+    }
+
+    /// A machine whose package manager installs and then refuses to build.
+    ///
+    /// `tests/base_warm.rs` is what this is for: a warm base build whose last step
+    /// fails is the case where a directory that looks like a base holds a build that
+    /// has no valid result.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    pub fn failing_to_warm() -> Self {
+        Self::built(&Setup { stub: Some(STUB_WARM_FAILS), ..Setup::default() })
+    }
+
+    /// A machine whose package manager refuses to build the first time only.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    pub fn failing_to_warm_once() -> Self {
+        Self::built(&Setup { stub: Some(STUB_WARM_FAILS_ONCE), ..Setup::default() })
+    }
+
+    /// A machine whose build command removes the tree it was given.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    pub fn warming_into_nothing() -> Self {
+        Self::built(&Setup { stub: Some(STUB_WARM_REMOVES_THE_TREE), ..Setup::default() })
     }
 
     /// A machine whose project pins `pin` and whose package manager reports `reports`.
@@ -393,6 +498,12 @@ impl Machine {
     #[must_use]
     pub const fn installed() -> &'static str {
         INSTALLED
+    }
+
+    /// The file the stub build command writes, relative to a tree's root.
+    #[must_use]
+    pub const fn built_in() -> &'static str {
+        BUILT_IN
     }
 }
 

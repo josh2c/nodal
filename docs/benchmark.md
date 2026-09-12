@@ -16,7 +16,7 @@ disagrees with a document, the measurement wins and the document is named.
 | --- | --- | --- | --- |
 | Where the 34 came from, and whether Nodal was there | 100% | M | 0.95 |
 | What the old way cost, and what the new way costs | 100% | L | 0.95 |
-| The defect that separates the two | isolated, not diagnosed | M | 0.85 |
+| The defect that separates the two | diagnosed and repaired | M | 0.99 |
 | What the registry says about a week of real use | 100% | M | 0.80 |
 | Ready, or only installed | 100% | L | 1.00 |
 | What should happen to the 34 | 100% | M | 0.98 |
@@ -40,9 +40,10 @@ that window. What was missing was not a feature. It was a `nodal.toml`, which th
 adds.
 
 **Is it doing what we believe it does?** Half. It creates and reclaims exactly as claimed,
-and it returned 218.67 GB in four days. It does not deliver a warm build, because a base
-built with `--warm` is stale before it is copied. That single defect is the difference
+and it returned 218.67 GB in four days. It did not deliver a warm build, because a base
+built with `--warm` was stale before it was copied. That single defect is the difference
 between 45.9 s and 124.3 s to a green test run, and between 104 KiB and 6.33 GiB per unit.
+Section 5 says what the defect was and what removed it.
 
 **Ready, or only installed?** Only installed, today. The prior finding is confirmed and
 sharpened. A unit arrives in 0.3 s to 0.9 s and cannot run one test until it builds. With
@@ -51,11 +52,10 @@ nothing, which is the first measurement on this machine that makes the word "rea
 
 ## Questions for the founder
 
-1. **Is a base allowed to fail its own build?** A base built with `--warm` recompiles three
-   crates the moment anything runs in it. I propose a final step that runs the build command
-   twice and fails when the second run compiles anything. That turns today's silent 78 s
-   loss into a red base build. Do you want a base build that refuses to hand over a tree it
-   cannot prove is warm?
+1. **Is a base allowed to fail its own build?** Answered by measurement rather than by
+   policy. The base was not failing its build; it was doing the build at one path and
+   handing it over at another. Every step now runs at the delivered path, and the base
+   compiles nothing when the same command is run again.
 2. **Should `nodal new` warm the base it builds?** `WARM_BUILD` is hard-coded `false`. With
    question 1 answered, warming costs 119 s once and saves 74 s on every later unit. The cost
    lands on the first `nodal new` a person ever runs.
@@ -425,17 +425,24 @@ I isolated it against four alternatives. None of them is the cause.
 | `cp -a --reflink` of the delivered base, no Nodal (3 runs) | 3 | 127.6 s |
 
 So Nodal's copier is not the cause: a plain `cp -a` of the delivered base recompiles the
-same three crates. The absolute path is not the cause, and neither is the rename that
-`Promote` does: a tree that is genuinely fresh survives both with nothing to compile. And
-`nodal new` is not the cause: units made from the base after I made it fresh compiled
-nothing at all.
+same three crates. And `nodal new` is not the cause: units made from the base after I made
+it fresh compiled nothing at all.
 
-What is left is the base build's own sequence. `substrate/build.rs:194` plans it as
-materialise, checkout, `install`, `warm`, then `Promote`, and the `warm` step runs in a
-`.partial` directory. I did not isolate which step leaves the tree stale, and I am not going
-to guess in a report. What I can state is the shape of the fix: a base build should end by
-running the project's build command a second time and asserting that it compiles nothing.
-Today that assertion would fail, and it would have failed since the day `--warm` shipped.
+The cause is the base build's own sequence. The `warm` step ran in a `.partial` directory
+and `Promote` renamed that directory afterwards. Cargo records an absolute path for every
+source file outside a package root, and this project has three of them: the shell start-up
+files that `crates/nodal-core/src/runtime/init.rs` reads with `include_str!`. The
+fingerprint of `nodal-core` therefore named a path under `.partial`, the rename took that
+path away, and Cargo reported a missing file. `nodal-safety` and `nodal-cli` went stale
+behind it. Those are the three crates.
+
+Restoring only that one path, with nothing else changed, makes the same tree compile
+nothing. Taking it away again brings the three crates back.
+
+The fix is not a second run of the build command. It is that every step of a base build now
+runs at the path the base is handed over at, with a mark beside the directory saying it is
+not a base yet until the last step takes the mark off. The three crates are zero on the
+delivered base, on a copy of it, and in a unit made from it.
 
 ### Disk
 
@@ -585,7 +592,7 @@ one is worth, so the founder can price them before anyone writes the code.
 | --- | --- | --- | --- |
 | Where the 34 came from, and whether Nodal was there | 100% | M | 0.95 |
 | What the old way cost, and what the new way costs | 100% | L | 0.95 |
-| The defect that separates the two | isolated, not diagnosed | M | 0.85 |
+| The defect that separates the two | diagnosed and repaired | M | 0.99 |
 | What the registry says about a week of real use | 100% | M | 0.80 |
 | Ready, or only installed | 100% | L | 1.00 |
 | What should happen to the 34 | 100% | M | 0.98 |
