@@ -79,3 +79,5 @@ expect_used = "deny"
 
 [profile.release]
 strip = "symbols"
+lto = true
+codegen-units = 1
