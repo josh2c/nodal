@@ -96,26 +96,31 @@ use support::{World, journal_of};
 // ---------------------------------------------------------------------------
 
 #[test]
-fn plan_new_has_eight_steps_and_rolls_back() {
+fn plan_new_has_eight_steps_and_rolls_back_and_a_ninth_when_it_carries() {
     let world = World::new();
     let params = world.create_params();
     let plan = new::plan(&params).unwrap();
     assert_eq!(plan.kind, new::KIND);
     assert_eq!(plan.recovery, Recovery::RollBack);
-    assert_eq!(
-        plan.keys(),
-        [
-            "home.materialize",
-            "home.relocate",
-            "git.scrub",
-            "git.refresh",
-            "git.branch",
-            "git.hide",
-            "home.marker",
-            "env.activate",
-        ]
-    );
+    let clean = [
+        "home.materialize",
+        "home.relocate",
+        "git.scrub",
+        "git.refresh",
+        "git.branch",
+        "git.hide",
+        "home.marker",
+        "env.activate",
+    ];
+    assert_eq!(plan.keys(), clean);
     assert_rebuilds_the_same(&world, &plan, new::KIND);
+
+    // `--carry` adds one step at the end and moves none of the others, so an
+    // interrupted create of either shape is undone by the same steps in the same order.
+    let carrying = new::plan(&world.carry_params()).unwrap();
+    assert_eq!(carrying.recovery, Recovery::RollBack);
+    assert_eq!(carrying.keys(), [clean.as_slice(), &["home.carry"]].concat());
+    assert_rebuilds_the_same(&world, &carrying, new::KIND);
 }
 
 #[test]

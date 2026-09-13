@@ -36,7 +36,7 @@ use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 use nodal_core::model::{Epistemic, Event, EventKind};
-use nodal_safety::git::{git_ok, git_text as git};
+use nodal_safety::git::{self, git_ok, git_text as git};
 use nodal_safety::project::Layout;
 use nodal_safety::text::stdout;
 use nodal_safety::{InState as _, Workspace};
@@ -242,6 +242,145 @@ fn the_second_unit_of_a_workspace_reuses_the_base_the_first_one_paid_for() {
     // Both units hold the base, which is what stops a sweep taking it away.
     let listed = stdout(&workspace.nodal(&["base", "ls", "--json"]));
     assert!(listed.contains("\"pins\": 2"), "{listed}");
+}
+
+// ---------------------------------------------------------------------------
+// `nodal new --carry`.
+// ---------------------------------------------------------------------------
+
+/// Put work in the checkout of every kind a carry has to tell apart.
+///
+/// `staged.txt` is staged and nothing else; `app/main.txt` is staged *and* edited again
+/// on top, which is what `git add -p` leaves behind and the one case a carry that
+/// flattened the two would get wrong; `scratch.txt` was never added; and
+/// `node_modules/` is what the project's ignore file already covers.
+fn dirty(workspace: &Workspace) {
+    std::fs::write(workspace.source.join("staged.txt"), "staged\n").unwrap();
+    std::fs::write(workspace.source.join("app").join("main.txt"), "shared\nstaged\n").unwrap();
+    git_ok(&workspace.source, &["add", "--", "staged.txt", "app/main.txt"]);
+    std::fs::write(workspace.source.join("app").join("main.txt"), "shared\nstaged\nloose\n")
+        .unwrap();
+    std::fs::write(workspace.source.join("scratch.txt"), "notes to self\n").unwrap();
+    write_bulk(&workspace.source.join("node_modules"), 3);
+}
+
+#[test]
+fn a_carried_unit_starts_dirty_in_the_shape_the_checkout_was_in() {
+    let workspace = Workspace::new(state::BINARY);
+    dirty(&workspace);
+
+    let report = stdout(&workspace.nodal(&["new", "worker import", "--carry"]));
+    assert!(report.contains("worker-import"), "{report}");
+    let home = workspace.one_home();
+
+    // Staged as staged, unstaged as unstaged. The distinction is the point: one file is
+    // in both, and a carry that committed or flattened the work would lose that.
+    assert_eq!(
+        git(&home, &["diff", "--cached", "--name-only"]).lines().collect::<Vec<_>>(),
+        ["app/main.txt", "staged.txt"]
+    );
+    assert_eq!(git(&home, &["diff", "--name-only"]).lines().collect::<Vec<_>>(), ["app/main.txt"]);
+    assert_eq!(
+        std::fs::read_to_string(home.join("app").join("main.txt")).unwrap(),
+        "shared\nstaged\nloose\n",
+        "the working tree is the working tree the person had"
+    );
+
+    // Untracked as untracked, and the state an ignore rule covers left to the base.
+    assert_eq!(std::fs::read_to_string(home.join("scratch.txt")).unwrap(), "notes to self\n");
+    assert!(
+        git(&home, &["status", "--porcelain"]).contains("?? scratch.txt"),
+        "a file that was never added arrives never added"
+    );
+    assert!(
+        !home.join("node_modules").exists(),
+        "what the project ignores is the base's state, and the base owns it"
+    );
+
+    // No commit, no ref, no synthetic anything: the branch stands where the checkout
+    // stands and the work sits on top of it, uncommitted.
+    assert_eq!(
+        git(&home, &["rev-parse", "HEAD"]),
+        git(&workspace.source, &["rev-parse", "HEAD"]),
+        "the unit starts at the checkout's HEAD"
+    );
+    assert_eq!(
+        git(&home, &["rev-list", "--count", "HEAD"]).trim(),
+        "1",
+        "nothing was committed for it"
+    );
+
+    let noted = workspace.events();
+    assert!(
+        noted.iter().any(|event| event.body.contains("carried 3 uncommitted paths")),
+        "the unit's log says why it was dirty the moment it was made: {noted:?}"
+    );
+}
+
+#[test]
+fn a_carry_leaves_the_checkout_byte_for_byte_and_index_for_index_as_it_was() {
+    let workspace = Workspace::new(state::BINARY);
+    dirty(&workspace);
+    let before = git::untouched(&workspace.source);
+
+    drop(stdout(&workspace.nodal(&["new", "worker import", "--carry"])));
+
+    // The tree byte for byte, the index byte for byte, and every ref where it stood: a
+    // carry reads the checkout and writes nothing at all in it.
+    before.assert_unchanged(&git::untouched(&workspace.source), "a carry copies; it does not move");
+    assert_eq!(
+        git(&workspace.source, &["status", "--porcelain"]),
+        "MM app/main.txt\nA  staged.txt\n?? scratch.txt\n",
+        "the work is still there, in the state it was in"
+    );
+}
+
+#[test]
+fn a_carry_that_cannot_be_made_is_refused_by_name_and_leaves_nothing_behind() {
+    let workspace = Workspace::new(state::BINARY);
+    dirty(&workspace);
+    let before = git::untouched(&workspace.source);
+
+    // Two starting points at once. The unit starts at HEAD when it carries, so a second
+    // one is a contradiction rather than a preference.
+    let refused = workspace.nodal(&["new", "both", "--carry", "--from", "main"]);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("--from"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+
+    // A HEAD that is not a branch with a commit: the unit would have nowhere to start
+    // and the work nothing to be a difference from.
+    let head = git(&workspace.source, &["rev-parse", "HEAD"]).trim().to_owned();
+    git_ok(&workspace.source, &["checkout", "--quiet", "--detach", &head]);
+    let refused = workspace.nodal(&["new", "detached", "--carry"]);
+    let told = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(!refused.status.success());
+    assert!(told.contains("not on a branch with a commit"), "{told}");
+    git_ok(&workspace.source, &["checkout", "--quiet", "main"]);
+
+    assert!(workspace.homes().is_empty(), "no refusal left a home behind");
+    assert!(workspace.bases().is_empty(), "and none of them built a base first");
+    before.assert_unchanged(&git::untouched(&workspace.source), "nor did one change the checkout");
+}
+
+#[test]
+fn a_create_without_carry_still_carries_nothing() {
+    let workspace = Workspace::new(state::BINARY);
+    dirty(&workspace);
+
+    drop(stdout(&workspace.nodal(&["new", "worker import"])));
+    let home = workspace.one_home();
+
+    assert_eq!(
+        git(&home, &["status", "--porcelain", "--untracked-files=all"]),
+        "",
+        "the default create is what it was: a clean unit from a base"
+    );
+    assert!(!home.join("staged.txt").exists());
+    assert!(!home.join("scratch.txt").exists());
 }
 
 #[test]
