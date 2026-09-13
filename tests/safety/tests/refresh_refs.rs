@@ -138,7 +138,7 @@ fn the_list_counts_behind_after_a_commit_no_home_ever_fetched() {
 /// A unit whose branch carries no work of its own is finished, and the list says so
 /// once the base has moved past it.
 ///
-/// This is the founder's lane board: fifteen units whose branches were already merged
+/// This is a real lane board: fifteen units whose branches were already merged
 /// read `open +N`, because the ref they were compared against was frozen at the base
 /// build. With the base refreshed, a branch that is in main's history reads as done.
 #[test]

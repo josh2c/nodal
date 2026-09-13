@@ -50,7 +50,7 @@ sharpened. A unit arrives in 0.3 s to 0.9 s and cannot run one test until it bui
 the defect in section 5 fixed, the same unit runs the whole suite in 45.9 s and compiles
 nothing, which is the first measurement on this machine that makes the word "ready" true.
 
-## Questions for the founder
+## Questions for the maintainers
 
 1. **Is a base allowed to fail its own build?** Answered by measurement rather than by
    policy. The base was not failing its build; it was doing the build at one path and
@@ -63,8 +63,8 @@ nothing, which is the first measurement on this machine that makes the word "rea
    unique" for ten clones whose branches the remote no longer has. The answer was correct,
    and not for the reason `doctor` gave.
 4. **Should a base clone the local checkout when one exists?** A cold base build needs the
-   network today, on a machine that already holds a full checkout. `DL-031` decided this
-   deliberately, so this is a request to revisit, not a bug report.
+   network today, on a machine that already holds a full checkout. That is deliberate,
+   so this is a request to revisit, not a bug report.
 5. **`docs/contracts.md:203` lists seven commands the binary does not have, and `nodal merge`
    and `nodal adopt` have never been used on real work.** Cut, or build?
 
@@ -176,10 +176,10 @@ nothing behind for a person to judge.
 
 ### The other project on this machine
 
-`aversify` is a pnpm monorepo with Supabase. It has 10 units in the same registry. The
-contrast is sharp in two ways.
+The other project is a pnpm monorepo with Supabase. It has 10 units in the same
+registry. The contrast is sharp in two ways.
 
-| | `nodal` | `aversify` |
+| | `nodal` | the pnpm project |
 | --- | --- | --- |
 | Recipe `[commands]` | empty until this change | all eight filled |
 | Recipe `[db]`, `[env]`, ports | empty | filled, with six fixed ports |
@@ -193,12 +193,13 @@ test command. That is why no base was ever warmed, and it is the same root cause
 eleven-hour gap in section 1: `nodal init` was never run in anger on this project. This
 change fills the three commands in.
 
-The pruning line explains where the disk claim comes from and where it does not. `aversify`
-returned nothing at reclaim, because pnpm keeps its dependencies in a content store and the
-homes shared blocks with the base from the start. There was nothing to prune. `nodal`
-returned 6.07 GB per unit on average, because `cargo` writes a large, exclusive `target`
-into every home. `DL-003` predicted exactly this split and said the disk headline must come
-from build state. On this machine it does, and all of it comes from the Rust project.
+The pruning line explains where the disk claim comes from and where it does not. The
+pnpm project returned nothing at reclaim, because pnpm keeps its dependencies in a
+content store and the homes shared blocks with the base from the start. There was
+nothing to prune. `nodal` returned 6.07 GB per unit on average, because `cargo` writes a
+large, exclusive `target` into every home. This split was predicted, and so was the rule
+behind it: the disk headline must come from build state. On this machine it does, and
+all of it comes from the Rust project.
 
 ### Seven commands in the contract do not exist
 
@@ -269,15 +270,15 @@ build artifacts do not give zstd anything to work with.
   question "which of these 34" is answered in the JSON and not on the screen.
 - A cold base build needs the network. It clones `origin`, which is
   `https://github.com/josh2c/nodal`, even though a complete checkout sits on the same disk.
-  With an unreachable proxy the build fails at the `clone` step. `DL-031` decides this
-  deliberately: a checkout is cloned only when the project names no `origin`. The claim in
+  With an unreachable proxy the build fails at the `clone` step. This is deliberate: a
+  checkout is cloned only when the project names no `origin`. The claim in
   `README.md:80` still holds, because git does the work and the progress line names it.
 - `nodal new` refuses to make a home inside another unit's home. That is correct, and the
   message said so clearly. It is recorded here as the one guard that fired during this task.
 
 ## 4. What should happen to the 34
 
-**Nothing here was removed. The decision is the founder's.** This section says what is safe
+**Nothing here was removed. The decision is the maintainer's.** This section says what is safe
 and why, in enough detail to check.
 
 The 34 clones hold 53.4 GB. That total is not spread across them. Five clones hold
@@ -380,7 +381,7 @@ Median of five runs.
 | `nodal new`, base of sources already built | 291 ms | sources |
 | `nodal new`, base of 7.7 GB that carries a build | 938 ms | sources and a build |
 
-Against the thing the founder actually did, `nodal new` is about four times faster. Against
+Against the thing this project actually did, `nodal new` is about four times faster. Against
 a local `git clone` it is twelve times slower. Both are noise next to what comes next, and
 the README's five seconds matches none of them.
 
@@ -492,11 +493,11 @@ era left 53.4 GB on disk for a person to judge, and it is still there. The unit 
 | `README.md:110` | "a unit on this repository is ready in about five seconds" | `nodal new` returns in 0.29 s to 0.94 s, depending on the base. The project passes its own tests 119.8 s after a cold clone, or 45.9 s from a fresh base. No measurement produced five seconds. |
 | `README.md:106` | "Ready, not empty. Dependencies are already there." | True for dependencies. `cargo fetch` runs in the base. No build runs, because `WARM_BUILD` is `false` on the `new` path. |
 | `docs/contracts.md:203` | 28 commands | 21 commands. Seven do not exist. |
-| `DL-005` | "Warm dependencies transfer; warm builds do not." | Measured on macOS with webpack. On this Linux host with btrfs and cargo, warm builds transfer completely: a unit from a fresh base compiles nothing and reaches green in 45.9 s against 119.8 s cold, owning 104 KiB. Its own "revisit when" condition is met twice over. The host is Linux, and `DL-003` names "Cargo target dirs" as the trigger. |
-| `README.md:80`, `DL-034` | "Nodal makes no network calls of its own" | Holds. A cold base build clones `origin` over the network, which is git talking to a configured remote, and the progress line names it. |
+| Earlier conclusion | "Warm dependencies transfer; warm builds do not." | Measured on macOS with webpack. On this Linux host with btrfs and cargo, warm builds transfer completely: a unit from a fresh base compiles nothing and reaches green in 45.9 s against 119.8 s cold, owning 104 KiB. Its stated "revisit when" condition is met twice over. The host is Linux, and "Cargo target dirs" is the named trigger. |
+| `README.md:80` | "Nodal makes no network calls of its own" | Holds. A cold base build clones `origin` over the network, which is git talking to a configured remote, and the progress line names it. |
 
-`DL-005` is the one worth reopening. It concluded that warm builds do not transfer, and it
-was right about the machine and the stack it measured. Both have changed.
+That earlier conclusion is the one worth reopening. It held that warm builds do not
+transfer, and it was right about the machine and the stack it measured. Both have changed.
 
 ## 7. What I would build next, in order
 
@@ -584,7 +585,7 @@ Two edits, both of them things the measurements proved wrong in this repository.
   eleven-hour gap in section 1.
 
 No behaviour changed. Items 1 to 4 above are product decisions, and section 5 says what each
-one is worth, so the founder can price them before anyone writes the code.
+one is worth, so the maintainers can price them before anyone writes the code.
 
 ## The table again
 
@@ -615,7 +616,7 @@ record the read commands.
   remote     —
   who        claude-code holds 7 h · claude-code 53
   age        1 h
-  home       /home/josh2c/.nodal/nodal/e/7XM8NZ76
+  home       ~/.nodal/nodal/e/7XM8NZ76
   env        stopped · managed
   ports      app 20000
   running    —
@@ -623,13 +624,13 @@ record the read commands.
   last       1 h ago
 
   WHEN        KIND     ACTOR        HOW  WHAT
-  1 h ago     command  claude-code  saw  /home/josh2c/Projects/nodal/target/release/nodal doctor --machine /home/josh2c/Projects
-  1 h ago     command  claude-code  saw  /home/josh2c/Projects/nodal/target/release/nodal doctor --machine /home/josh2c/Projects --json
-  1 h ago     command  claude-code  saw  bash /home/josh2c/.cache/nodal-bench-benchmark-1/create_bench.sh
-  1 h ago     command  claude-code  saw  bash /home/josh2c/.cache/nodal-bench-benchmark-1/ready_bench.sh
-  44 min ago  command  claude-code  saw  bash /home/josh2c/.cache/nodal-bench-benchmark-1/cold_bench.sh
-  30 min ago  command  claude-code  saw  bash /home/josh2c/.cache/nodal-bench-benchmark-1/best_bench.sh
-  7 min ago   command  claude-code  saw  bash /home/josh2c/.cache/nodal-bench-benchmark-1/fresh_bench.sh
+  1 h ago     command  claude-code  saw  ~/Projects/nodal/target/release/nodal doctor --machine ~/Projects
+  1 h ago     command  claude-code  saw  ~/Projects/nodal/target/release/nodal doctor --machine ~/Projects --json
+  1 h ago     command  claude-code  saw  bash ~/.cache/nodal-bench-benchmark-1/create_bench.sh
+  1 h ago     command  claude-code  saw  bash ~/.cache/nodal-bench-benchmark-1/ready_bench.sh
+  44 min ago  command  claude-code  saw  bash ~/.cache/nodal-bench-benchmark-1/cold_bench.sh
+  30 min ago  command  claude-code  saw  bash ~/.cache/nodal-bench-benchmark-1/best_bench.sh
+  7 min ago   command  claude-code  saw  bash ~/.cache/nodal-bench-benchmark-1/fresh_bench.sh
   1 min ago   command  claude-code  saw  cargo test --workspace --locked
   now         sync     claude-code  saw  pushed refs/heads/nodal/benchmark-1 for review
 ```

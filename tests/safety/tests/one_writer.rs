@@ -23,8 +23,8 @@
 //! value of `NODAL_ACTOR`. That is the seam the property is about: who a command is
 //! decided by is the actor the environment names (`runtime::actor`), and a lock row
 //! records exactly that. What it cannot show is the kernel refusing one account the
-//! other's file, and [`UID_CLAIM`] says so out loud. DL-057 already records the same
-//! limit for `tests/shared_host.rs`.
+//! other's file, and [`UID_CLAIM`] says so out loud. `tests/shared_host.rs` records
+//! the same limit.
 
 #![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
 

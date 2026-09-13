@@ -1,8 +1,8 @@
 //! Locks: who may write a unit, and from when.
 //!
 //! A lock is about a unit's home. It is never about a checkout, because a project row
-//! hands each caller the project standing in their own checkout (DL-057), so a hold
-//! that named a checkout would be a hold on one person's working copy.
+//! hands each caller the project standing in their own checkout, so a hold that named
+//! a checkout would be a hold on one person's working copy.
 //!
 //! The lock is advisory. Nodal refuses its own verbs to a second actor and stops
 //! nothing else: an editor opens, `git` runs, and a process starts in the home as

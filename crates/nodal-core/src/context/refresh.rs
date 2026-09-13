@@ -3,7 +3,7 @@
 //! A home is a clone of a base, and a base is a clone of the remote taken whenever it
 //! was built. Its `origin/*` refs are frozen at that moment and nothing moves them, so
 //! a list's BEHIND column was arithmetic over three-week-old data: right, and about the
-//! wrong commits. The founder's own machine printed `-0 (origin/main)` for four
+//! wrong commits. One maintainer's machine printed `-0 (origin/main)` for four
 //! worktrees of a checkout last touched three weeks earlier.
 //!
 //! What moves them is a fetch out of the checkout beside them, by path. **No network
