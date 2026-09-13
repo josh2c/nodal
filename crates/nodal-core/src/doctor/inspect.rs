@@ -87,6 +87,26 @@ pub fn one(path: &Path, links: &mut Links) -> Result<Inspected> {
     })
 }
 
+/// Everything one repository at `path` can say about where its commits also live.
+///
+/// The same reading [`one`] takes, for a caller that wants the evidence and none of the
+/// rest of a row. A destructive check reads a home and the checkout it belongs to this
+/// way, so that the survey and the check read a repository with one pair of eyes.
+///
+/// A path Git will not read is not evidence and is not clean either: `unreadable` says
+/// so, and every proof reports it as not checked.
+#[must_use]
+pub fn evidence(path: &Path) -> Evidence {
+    let git = match Git::open(path) {
+        Ok(git) => git,
+        Err(error) => {
+            return Evidence { unreadable: Some(error.to_string()), ..Evidence::default() };
+        }
+    };
+    let branch = git.current_branch().unwrap_or_default();
+    evidence_of(&git, path, branch.as_deref())
+}
+
 /// Everything this clone can say about where its commits also live.
 ///
 /// A clone Git will not read is not evidence and is not clean either: `unreadable` says

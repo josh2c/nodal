@@ -46,6 +46,7 @@ pub mod states;
 pub mod step;
 pub mod template;
 pub mod uniqueness;
+pub mod witness;
 
 use crate::lifecycle::journal::{Operation, State, StepRecord, StepState};
 use crate::lifecycle::owner::{Liveness, Owner};

@@ -140,13 +140,7 @@ pub fn prove(subjects: &[Subject]) -> Vec<Proof> {
     subjects
         .iter()
         .enumerate()
-        .map(|(index, subject)| {
-            let mut trusted = trusted(subjects, index);
-            trusted.tips.extend(confirmed(subject, &freshest(subjects, index)));
-            trusted.tips.sort_unstable();
-            trusted.tips.dedup();
-            one(subject, &trusted, &elsewhere[index])
-        })
+        .map(|(index, subject)| one(subject, &trusted(subjects, index), &elsewhere[index]))
         .collect()
 }
 
@@ -243,9 +237,9 @@ fn unwitnessed(git: &Git, head: &Oid, elsewhere: &[Oid]) -> Proof {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Trusted {
     /// The commits a checked remote-tracking ref holds.
-    tips: Vec<Oid>,
+    pub tips: Vec<Oid>,
     /// The clones whose reading of the remote was used. Empty means nothing checked it.
-    witnesses: Vec<PathBuf>,
+    pub witnesses: Vec<PathBuf>,
 }
 
 /// What this run is willing to believe the remote holds, for one clone.
@@ -259,8 +253,30 @@ pub struct Trusted {
 /// With no clone fresher than this one, nothing is believed. This clone's own refs are
 /// exactly the reading that cannot be checked, and [`unwitnessed`] takes it from here.
 fn trusted(subjects: &[Subject], index: usize) -> Trusted {
-    let subject = &subjects[index];
-    let witnesses = freshest(subjects, index);
+    believed(&subjects[index], &freshest(subjects, index))
+}
+
+/// The doctrine itself: what one repository's own remote-tracking refs are worth once
+/// `witnesses` have checked them.
+///
+/// This is one function because the question has to have one answer. The survey and
+/// every destructive operation call it, and they differ only in how each one finds the
+/// repositories that may witness this one — the survey reads a whole disk and compares
+/// the times each clone last heard from the remote ([`freshest`]); a destructive
+/// operation is given a home and the checkout it belongs to
+/// ([`crate::lifecycle::witness`]). What counts as proof afterwards is decided here.
+///
+/// Two readings come out, and both need a witness:
+///
+/// - the witness's own tip for each branch this repository names, because the witness
+///   read the remote later than this repository did;
+/// - this repository's tips that the witness still reaches, because a branch that moved
+///   forward keeps its old tip in its history and a branch that was rewritten drops it.
+///
+/// With no witness, nothing. An empty [`Trusted`] is not "the remote has nothing"; it is
+/// "nothing here can say what the remote has", and every caller has to read it that way.
+#[must_use]
+pub fn believed(subject: &Subject, witnesses: &[&Subject]) -> Trusted {
     if witnesses.is_empty() {
         return Trusted::default();
     }
@@ -268,8 +284,9 @@ fn trusted(subjects: &[Subject], index: usize) -> Trusted {
         .evidence
         .remotes
         .iter()
-        .filter_map(|tip| witnessed(&witnesses, &tip.branch))
+        .filter_map(|tip| witnessed(witnesses, &tip.branch))
         .collect();
+    tips.extend(confirmed(subject, witnesses));
     tips.sort_unstable();
     tips.dedup();
     Trusted { tips, witnesses: witnesses.iter().map(|witness| witness.path.clone()).collect() }

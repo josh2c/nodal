@@ -207,6 +207,12 @@ pub struct Machine {
     pub source: PathBuf,
     /// Nodal's state directory: the registry, every base, every home and the trash.
     pub state: PathBuf,
+    /// The bare repository the checkout calls `origin`, on the machines that have one.
+    ///
+    /// A local directory and never a server. It is what makes "the remote still has
+    /// this commit" a question with an answer a test can change, which the properties
+    /// about destructive uniqueness are all about.
+    pub remote: Option<PathBuf>,
 }
 
 impl InState for Machine {
@@ -322,6 +328,32 @@ impl Machine {
         Self::built(&Setup { forced, exclude, ..Setup::default() })
     }
 
+    /// A machine whose checkout has a bare `origin` beside it, with `main` pushed to it.
+    ///
+    /// Every base of this project is a clone of that bare repository, so every home
+    /// inherits it as `origin` and a `git push` from a home writes the home's own
+    /// `refs/remotes/origin/*`. That is what a property about a stale remote-tracking
+    /// ref needs: a remote whose refs a test can delete or rewrite under a home that
+    /// will never hear about it.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    pub fn with_remote() -> Self {
+        Self::built(&Setup { remote: true, ..Setup::default() })
+    }
+
+    /// The bare repository this machine's checkout pushes to.
+    ///
+    /// # Panics
+    ///
+    /// If this machine was not built with one.
+    #[must_use]
+    pub fn origin(&self) -> &Path {
+        self.remote.as_deref().expect("this machine was built without a remote")
+    }
+
     /// The fixture project as a repository, set up as `setup` asks.
     ///
     /// # Panics
@@ -358,10 +390,11 @@ impl Machine {
             git(&source, &["add", "--force", "--", path]);
         }
         git(&source, &["commit", "--quiet", "--message", "the fixture project"]);
+        let remote = setup.remote.then(|| publish(root.path(), &source));
 
         let search = if setup.sealed { tools.clone().into_os_string() } else { path(&tools) };
         let runner = Runner::new(binary(), &state, &source).with_env("PATH", search);
-        Self { _root: root, runner, source, state }
+        Self { _root: root, runner, source, state, remote }
     }
 
     /// `nodal` with this machine's state, run in the project.
@@ -527,12 +560,27 @@ struct Setup<'a> {
     sealed: bool,
     /// A package-manager pin written into the project's recipe.
     pin: Option<String>,
+    /// Whether the checkout gets a bare `origin` beside it, with `main` pushed to it.
+    remote: bool,
 }
 
 impl Default for Machine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Make a bare repository beside the checkout, call it `origin`, and push `main` to it.
+///
+/// A path and not a URL, so the whole of this machine stays on its own filesystem and
+/// no property here can reach a network however the host is configured.
+fn publish(root: &Path, source: &Path) -> PathBuf {
+    let bare = root.join("remote.git");
+    let named = bare.to_str().expect("a printable path");
+    git(root, &["init", "--quiet", "--bare", "--initial-branch", "main", named]);
+    git(source, &["remote", "add", "origin", named]);
+    git(source, &["push", "--quiet", "--set-upstream", "origin", "main"]);
+    bare
 }
 
 /// Add a `base.exclude` table to the fixture's own recipe, as a person would write it.

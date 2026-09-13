@@ -130,7 +130,7 @@ services/
 doctor/                what this machine has left behind; reads only, never removes
   mod.rs               survey(): the sections, and which one a path belongs to
   size.rs              logical bytes and newest modification of a directory (no writes)
-  unique.rs            what a clone is the only copy of, proved from the other clones and the freshest refs
+  unique.rs            what a clone is the only copy of, proved from the other clones and the freshest refs; believed() is that rule, and every destructive path calls it
   attribution.rs       whose a Docker resource is when its name is the only evidence
   branches.rs          local branches with no worktree, in three buckets by where their commits are
   worktrees.rs         checkouts from `git worktree list`; locked and prunable are read no further
@@ -198,6 +198,7 @@ lifecycle/             the only module that composes others; each op = plan() pu
   ops/
     new.rs · adopt.rs · sync.rs · merge.rs · reclaim.rs · gc.rs · done.rs · transfer.rs · doctor.rs
   uniqueness.rs        the single uniqueness_check
+  witness.rs           who may vouch for a home's remote-tracking refs, and who may not
   hooks.rs             recipe hooks: the six phases, the context, and approval by digest
   identity.rs          which project a directory belongs to: its remote first, its path second
   template.rs          the five values a hook command may name, and the substitution
