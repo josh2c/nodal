@@ -153,7 +153,10 @@ When you need it: `nodal doctor` reports what every tool left behind on this mac
 removes nothing; `nodal explain` says why a home is as it is; `nodal ps` names the unit a
 running process or bound port belongs to; `nodal base` lists and builds the warm bases;
 `nodal env` reports what a home carries; `nodal gc` empties the trash after its retention;
-`nodal uninstall` takes back everything Nodal put on the machine, file by file.
+`nodal uninstall` takes back the shell integration and the provider hooks, file by
+file, and leaves every unit home a standalone Git repository. `--state` is what removes
+the state directory and the unit homes in it, and it refuses while one holds work that
+exists nowhere else.
 
 Full surface and guarantees: [`docs/contracts.md`](docs/contracts.md).
 

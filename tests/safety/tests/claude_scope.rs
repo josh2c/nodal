@@ -12,7 +12,11 @@
 //! | never write into a tracked file | an `init` nobody asked leaves a file in a repository, and the next commit ships it | `an_init_that_was_not_asked_writes_no_hook_anywhere`, `the_hooks_go_in_the_persons_own_file_and_never_in_the_project` |
 //! | never delete unique work | the provider answers with a directory that already holds a session's work | `a_worktree_that_already_holds_work_is_never_answered_with` |
 //! | never an error without its reason | a session in a project with no recipe ends, or is moved, and nothing says why | `a_repository_with_no_recipe_is_told_what_happened_and_what_to_do` |
-//! | uninstall leaves plain repositories | a removal leaves bytes in the person's own settings that were not there before | `an_uninstall_leaves_the_persons_own_settings_byte_for_byte` |
+//! | an uninstall writes nobody's settings | a removal leaves bytes in the person's own settings that were not there before | `an_uninstall_leaves_the_persons_own_settings_byte_for_byte` |
+//!
+//! That last row is about one file and says so. What a default uninstall leaves on the
+//! rest of the machine — a unit home that is still a repository Git can read without
+//! Nodal — is a wider claim and is asserted in `tests/uninstall_repositories.rs`.
 //!
 //! Every command here is given a home directory of its own. `nodal init --claude-hooks`
 //! writes under it and `nodal uninstall` reads the shell start-up files under it, so a

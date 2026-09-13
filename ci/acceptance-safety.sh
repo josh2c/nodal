@@ -45,6 +45,11 @@
 #   - one clone at any worker count: a copy made on one, four, eight and sixteen workers
 #     is the same tree byte for byte and reports the same clone, on both backends, and a
 #     file nothing may read stops it with the same reason at every count.
+#   - a home after an uninstall: a default uninstall leaves the state directory and the
+#     unit homes in it, and a surviving home is a standalone Git repository — its own
+#     history reads, its tree is clean, `git fsck` passes, it borrows no objects, and
+#     nothing in its configuration names a path only Nodal puts on a machine. Every
+#     reading is taken with `nodal` off the search path.
 #
 # The suite is then run a second time with the temporary directory reached through a
 # symbolic link, as `ci/acceptance-list.sh` and `ci/acceptance-doctor.sh` do and for the
