@@ -14,6 +14,14 @@
 //! with somebody else's half-finished edit in it. So the base for the workspace comes
 //! first, and the create clones that.
 //!
+//! `--carry` is the one case where the checkout's uncommitted work is wanted, and it is
+//! still not a clone of the checkout. The home is made from the base exactly as any
+//! other home is, and one further step copies the work across ([`Carry`]): what was
+//! staged is staged, what was unstaged is unstaged, what was untracked is untracked, and
+//! what an ignore rule covered stays where it was, because that state is the base's. The
+//! checkout is read and never written, and the unit starts dirty rather than with a
+//! commit nobody wrote.
+//!
 //! Three rules decide the shape of it.
 //!
 //! The base is a **prerequisite, not a step**. Resolving it runs a plan of its own,
@@ -51,7 +59,7 @@ use crate::env::files;
 use crate::env::secrets::MachineSecrets;
 use crate::env::{Produced, StandIns, resolve as resolve_env};
 use crate::fingerprint;
-use crate::git::{Git, refs, scrub};
+use crate::git::{Git, carry, refs, scrub};
 use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Registered, Runner};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
@@ -88,6 +96,11 @@ pub(super) const RELOCATE: &str = "home.relocate";
 /// The key of the step that makes the clone, whose answer the report reads: which
 /// default exclusion rows yielded to a path the project tracks.
 pub(super) const MATERIALIZE: &str = "home.materialize";
+
+/// The key of the step that carries the checkout's uncommitted work in, read by the
+/// commit for the same reason [`RELOCATE`] is: the event it writes names a unit, and no
+/// unit row exists until the plan has run.
+pub(super) const CARRY: &str = "home.carry";
 
 /// Whether a base built for a create also runs the project's build command.
 ///
@@ -126,6 +139,13 @@ pub struct Request {
     pub parent_branch: Option<BranchName>,
     /// Whether the project's own hooks run. `false` is `--no-hooks`.
     pub hooks: bool,
+    /// Whether the unit starts with the checkout's uncommitted work in it. `true` is
+    /// `--carry`.
+    ///
+    /// It is a copy and never a move: the checkout is read and left exactly as it was.
+    /// It pins the start commit to the checkout's `HEAD`, so it cannot be combined with
+    /// `parent_branch` ([`Error::CarryFrom`]).
+    pub carry: bool,
 }
 
 impl Default for Request {
@@ -140,6 +160,7 @@ impl Default for Request {
             name: None,
             parent_branch: None,
             hooks: true,
+            carry: false,
         }
     }
 }
@@ -173,6 +194,18 @@ pub struct Params {
     /// did.
     #[serde(default)]
     pub checkout: PathBuf,
+    /// Whether the plan carries the checkout's uncommitted work into the home.
+    ///
+    /// A flag, and never the work itself. A plan is written to the journal and the
+    /// journal is a table in the registry, so parameters that held the patches would
+    /// put a person's unpushed edit — and any secret in it — in a database. The step
+    /// reads the checkout again when it runs, exactly as [`Activate`] asks its sources
+    /// at the moment it writes them.
+    ///
+    /// Defaulted when absent, so a plan rebuilt from a journal an older build wrote
+    /// still rebuilds: that build carried nothing.
+    #[serde(default)]
+    pub carry: bool,
     /// The unit row the operation ends by writing.
     pub unit: Unit,
     /// The environment row it writes beside it, before its ports are granted.
@@ -312,6 +345,7 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
     let git = Git::open(&request.source)?;
     git.ensure_no_operation_in_progress()?;
     let source = git.top_level()?;
+    refuse_uncarryable(&source, request)?;
     let effective = crate::recipe::load(&source)?;
     let project = ensure_project(store, &source, &effective.recipe)?;
     let block = ports::ensure_block(store, project.id)?;
@@ -345,10 +379,34 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
         base_path: base.base.path,
         checkout: source,
         state_dir,
+        carry: request.carry,
         unit,
         environment,
         block,
     })
+}
+
+/// Refuse a `--carry` the checkout cannot answer, before anything is built.
+///
+/// Every refusal a carry can make is made here, and every one of them is made before
+/// [`substrate::ensure`] is called, for the reason [`prepare`] gives: asking for a base
+/// may build one, and a build is minutes. The read is thrown away and the step reads the
+/// checkout again, because what it reads is content and a plan may not hold content.
+///
+/// A create without `--carry` reads nothing here and behaves exactly as it did.
+///
+/// # Errors
+/// [`Error::CarryFrom`] when `--from` names a second starting point, and whatever
+/// [`carry::read`] refused: an unmerged index, a `HEAD` that is not a branch with a
+/// commit, or a set over a ceiling.
+fn refuse_uncarryable(source: &Path, request: &Request) -> Result<()> {
+    if !request.carry {
+        return Ok(());
+    }
+    if let Some(branch) = &request.parent_branch {
+        return Err(Error::CarryFrom { branch: branch.as_str().to_owned() });
+    }
+    carry::read(source).map(drop)
 }
 
 /// The commit the unit's branch starts at, read out of the person's own checkout.
@@ -386,11 +444,19 @@ fn fork_point(git: &Git, checkout: &Path, from: Option<&BranchName>) -> Result<O
     })
 }
 
-/// The plan: eight steps in the home, then one registry write.
+/// The plan: eight steps in the home, a ninth when the create carries, then one
+/// registry write.
 ///
 /// The default exclusion rows that yielded to a path the project tracks are the clone
 /// step's own output ([`MATERIALIZE`]), because the report is written after the plan has
 /// run and the process that writes it may not be the one that made the clone.
+///
+/// The carry is last, after the home is finished and activated. Two things follow from
+/// that and both are wanted. A home that fails to receive the work is undone to nothing
+/// by the first step's undo, exactly as any other failed create is, so a person is never
+/// left with a unit holding half of their edit. And what the work lands on is a home a
+/// clean `nodal new` would have made, so a collision with a file Nodal itself wrote is a
+/// refusal with a name rather than a silent overwrite.
 ///
 /// # Errors
 /// [`Error::Render`] when the parameters cannot be written to the journal.
@@ -398,7 +464,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
     let home = params.environment.home.clone();
     let value = serde_json::to_value(params)
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
-    Ok(Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params))
+    let plan = Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params))
         .then(Materialize {
             base: params.base_path.clone(),
             home: home.clone(),
@@ -426,7 +492,15 @@ pub fn plan(params: &Params) -> Result<Plan> {
             recipe: params.recipe.clone(),
             block: params.block,
             state_dir: params.state_dir.clone(),
-        }))
+        });
+    if !params.carry {
+        return Ok(plan);
+    }
+    Ok(plan.then(Carry {
+        home: params.environment.home.clone(),
+        checkout: params.checkout.clone(),
+        start: params.unit.base_commit.clone(),
+    }))
 }
 
 /// The registry write that finishes a create.
@@ -450,6 +524,7 @@ fn commit_of(params: &Params) -> Commit {
         let granted = ports::allocate(tx, block, environment.id, &names)?;
         environments::set_ports(tx, environment.id, &granted)?;
         record_relocation(tx, unit.id, environment.id, outputs.read(RELOCATE)?.as_ref())?;
+        record_carry(tx, unit.id, environment.id, outputs.read(CARRY)?.as_ref())?;
         // The maker of a unit holds the write on it from the instant the row exists, so
         // a second actor entering the home a moment later is told rather than let in.
         //
@@ -487,6 +562,36 @@ pub(super) fn record_relocation(
             ("from", report.from.display().to_string()),
             ("to", report.to.display().to_string()),
             ("removed", report.removed.len().to_string()),
+        ],
+    )
+}
+
+/// Write down what a carry brought across, so that a person reading the unit later
+/// knows why it was dirty the moment it was made.
+///
+/// Counts and bytes, never content: an event is a row in the registry, and a person's
+/// unpushed edit does not belong in one. A create that carried nothing writes nothing,
+/// for the reason [`record_relocation`] gives.
+fn record_carry(
+    tx: &Transaction<'_>,
+    unit: UnitId,
+    environment: EnvId,
+    report: Option<&carry::Report>,
+) -> Result<()> {
+    let Some(report) = report.filter(|report| !report.carried_nothing()) else {
+        return Ok(());
+    };
+    events::note(
+        tx,
+        (unit, Some(environment)),
+        EventKind::Note,
+        report.describe(),
+        &[
+            ("staged", report.staged.to_string()),
+            ("unstaged", report.unstaged.to_string()),
+            ("untracked", report.untracked.to_string()),
+            ("files", report.files.to_string()),
+            ("bytes", report.bytes.to_string()),
         ],
     )
 }
@@ -719,6 +824,82 @@ impl Step for TakeBranch {
 
     /// Nothing, for the reason [`Scrub::undo`] gives: the branch exists only in the
     /// repository the first step's undo removes.
+    fn undo(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Copy the checkout's uncommitted work into the home.
+///
+/// The whole of `--carry`. What Git calls work has three parts — what is staged, what
+/// the working tree holds over that, and what Git has never heard of — and this brings
+/// all three across in the shape they were in ([`carry`]). The unit starts dirty, which
+/// is the point: it starts where the person was.
+///
+/// **It copies. It does not move.** The source checkout is read with three `git`
+/// processes and the bytes of its untracked files, and nothing else. It is not staged,
+/// stashed, committed, checked out or cleaned, and its index is never opened for writing
+/// — `GIT_OPTIONAL_LOCKS=0` is set on every invocation Nodal makes, so not even the stat
+/// cache a `git diff` refreshes is written back. A person who carries their work still
+/// has it.
+///
+/// **It manufactures nothing.** No commit is made, no ref is written, and no network is
+/// reached. The unit's branch stands at the same commit the checkout's `HEAD` stands at,
+/// and the work sits on top of it uncommitted, where the person can commit it as they
+/// meant to.
+pub(super) struct Carry {
+    /// The home the work is put into.
+    pub(super) home: PathBuf,
+    /// The checkout it is read out of, and left as it was.
+    pub(super) checkout: PathBuf,
+    /// The commit the unit's branch was started at, as [`fork_point`] read it. The
+    /// patches are against the checkout's `HEAD`, so a home standing anywhere else is a
+    /// home this must not write to.
+    pub(super) start: Option<CommitId>,
+}
+
+impl Step for Carry {
+    fn key(&self) -> String {
+        String::from(CARRY)
+    }
+
+    /// Read the checkout, then reproduce what it holds in the home.
+    ///
+    /// The checkout is read here rather than while the plan was built, for the reason
+    /// [`Params::carry`] gives: a patch is content and a plan is written to a database.
+    /// The refusals [`carry::read`] makes were already made in [`prepare`], before a
+    /// base could be built; making them again costs nothing and is what keeps this step
+    /// correct on its own.
+    ///
+    /// The start commit is checked against the checkout's `HEAD` before anything is
+    /// written. They agree on every path that reaches here, because both are the same
+    /// reading; a person who committed in the checkout between the plan and this step
+    /// gets a refusal rather than a patch applied to the wrong tree.
+    ///
+    /// Repeatable, and the same answer twice: a patch already applied is recognised and
+    /// not applied again, and an untracked file already in place is written with the
+    /// bytes it already has.
+    fn apply(&self) -> Result<Output> {
+        let work = carry::read(&self.checkout)?;
+        if self.start.as_ref().is_some_and(|start| start.as_str() != work.head.as_str()) {
+            return Err(Error::CarryUnanchored { repo: self.checkout.clone() });
+        }
+        let git = Git::open(&self.home)?;
+        let report = carry::reproduce(&work, &self.checkout, &self.home, &git.git_dir()?)?;
+        tracing::info!(
+            home = %self.home.display(),
+            files = report.files,
+            bytes = report.bytes,
+            "carried the checkout's uncommitted work into the home"
+        );
+        serde_json::to_value(report)
+            .map_err(|source| Error::Render { kind: "carry report", source })
+    }
+
+    /// Nothing, for the reason [`Scrub::undo`] gives: what this wrote is inside a
+    /// directory the first step's undo removes. That is also the whole of the rollback
+    /// a failed carry needs — the source was only ever read, so there is nothing on that
+    /// side to take back.
     fn undo(&self) -> Result<()> {
         Ok(())
     }

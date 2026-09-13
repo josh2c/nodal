@@ -201,7 +201,7 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 `schemas/v1/recipe.json`.
 
 ## CLI
-`init, new, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, run, ps, start, note, ask,
+`init, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, run, ps, start, note, ask,
 handoff, sync, done, merge, prune, reclaim, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
 `--json`; `status --watch` emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
@@ -272,6 +272,54 @@ reaches the network.
 It then prints the page a person opens the change on, for the host the remote names, and **opens no
 pull request**. There is no host API in Nodal and no client of one; a remote whose host Nodal has no
 compare page for is told so rather than guessed at. The unit moves to `review`.
+
+### `new --carry`
+
+`nodal new --carry` starts the unit at the checkout's `HEAD` and copies into it what no
+commit holds. The carried set is what Git calls work: **staged changes, unstaged changes to
+tracked files, and untracked files no ignore rule covers.** The distinction between staged
+and unstaged is preserved wherever Git can express it — a path that was staged *and* edited
+again on top arrives in both states, as it was.
+
+It is a **copy, never a move**. The source checkout is read with three `git` processes and
+the bytes of its untracked files, and nothing else: nothing is staged, stashed, committed,
+checked out or cleaned in it, and its index is never opened for writing — every invocation
+Nodal makes sets `GIT_OPTIONAL_LOCKS=0`, so not even the stat cache a `git diff` refreshes
+is written back. After a successful carry the checkout's working tree and its `.git/index`
+are byte for byte what they were.
+
+The unit **starts dirty**. Nodal manufactures no commit for the carried work, writes no
+ref, and makes no network call. The unit's branch stands at the same commit the checkout's
+`HEAD` stands at, and the work sits on top of it uncommitted, where the person commits it
+as they meant to.
+
+**Ignored state is not carried.** A path an ignore rule covers is dependency or build state,
+and the base already owns it; the home is a clone of the base and has it already. Carrying
+a second copy would be paying twice for what copy-on-write gave for nothing.
+
+`--carry` refuses rather than guess, and each refusal names which of these it was:
+
+| refused | why |
+|---|---|
+| an index with unresolved merge stages | Git can express neither stage in a patch, and a unit given one side of it would look resolved |
+| a `HEAD` that is detached or has no commit | the unit has nowhere to start and the work nothing to be a difference from |
+| a Git operation in progress — merge, rebase, cherry-pick, revert, bisect, `am` | the same rule every create is already held to |
+| `--from` | `--carry` pins the start to the checkout's `HEAD`, so a second starting point is a contradiction |
+| more than 5,000 paths or 64 MiB | a set that size is state a build left behind that no ignore rule covers, not an edit in progress |
+| a path the home already holds with other content | overwriting would lose one of the two silently |
+
+Every refusal leaves the checkout unchanged and no unit behind, and every one that can be
+made before a base is built is made there, so a `--carry` that cannot work does not first
+cost minutes. A failure *after* the home exists rolls the create back to nothing, exactly as
+any other failed create does, and still touches nothing in the checkout.
+
+The carry is the last step of the create, so what it lands on is a home a clean `nodal new`
+would have made. It is journalled like every other step, and the unit's log records how many
+paths of each kind it brought across — counts and bytes only, never content.
+
+`--carry` is a thing a person types. The Claude Code provider hook never passes it: a
+worktree an agent asked for is a place to start work, not somewhere to move a person's
+half-finished edit to.
 
 `adopt <branch-or-path>` makes a unit of work that is already here, in one of two forms. `adopt --all
 --in-place` does the same for every worktree of the project except the main checkout.

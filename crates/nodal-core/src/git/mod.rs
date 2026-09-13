@@ -9,6 +9,7 @@
 //! may run `git worktree remove` after the person confirms.
 
 pub mod branches;
+pub mod carry;
 pub mod cmd;
 pub mod history;
 pub mod host;

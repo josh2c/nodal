@@ -469,6 +469,71 @@ pub enum Error {
         expected: UnitId,
     },
 
+    /// `--carry` was asked for in a checkout with unresolved merge stages. Half of a
+    /// conflict is not work a second repository can be given: Git can express neither
+    /// stage in a patch, and a unit that received one side of it would look resolved.
+    #[error(
+        "{repo} has paths with unresolved merge stages; resolve them, then carry",
+        repo = repo.display()
+    )]
+    CarryUnmerged {
+        /// The checkout that was read.
+        repo: PathBuf,
+    },
+
+    /// `--carry` was asked for where `HEAD` is not a branch with a commit. The unit
+    /// starts at the checkout's `HEAD` and the work is a patch against that commit, so
+    /// a detached or unborn `HEAD` leaves the unit nowhere to start and the patch
+    /// nothing to apply to.
+    #[error(
+        "{repo} is not on a branch with a commit, so there is no commit a carried unit can start at",
+        repo = repo.display()
+    )]
+    CarryUnanchored {
+        /// The checkout that was read.
+        repo: PathBuf,
+    },
+
+    /// `--carry` and `--from` name two different commits for the unit to start at.
+    #[error(
+        "--carry starts the unit at the checkout's HEAD, so it cannot also take --from {branch}"
+    )]
+    CarryFrom {
+        /// The branch `--from` named.
+        branch: String,
+    },
+
+    /// The uncommitted set is over a ceiling. A set this size is state a build left
+    /// behind that no ignore rule covers, not an edit in progress.
+    #[error(
+        "{repo} has {files} uncommitted paths weighing {bytes} bytes, over the carry ceiling of {max_files} paths and {max_bytes} bytes; commit what belongs in the branch, or ignore what the base owns",
+        repo = repo.display(),
+        max_files = crate::git::carry::MAX_FILES,
+        max_bytes = crate::git::carry::MAX_BYTES,
+    )]
+    CarryTooLarge {
+        /// The checkout that was read.
+        repo: PathBuf,
+        /// How many paths it holds that no commit does.
+        files: usize,
+        /// What they weigh.
+        bytes: u64,
+    },
+
+    /// A carried untracked path is already in the home with other content. Overwriting
+    /// it would lose one of the two silently, so neither is written.
+    #[error(
+        "{home} already holds {path} with other content, so the carried copy was refused",
+        home = home.display(),
+        path = path.display()
+    )]
+    CarryCollision {
+        /// The path, relative to the repository root.
+        path: PathBuf,
+        /// The home it collided in.
+        home: PathBuf,
+    },
+
     /// Another open unit already holds the branch. The rule is the registry's partial
     /// unique index; this is the reading of it that can name the holder.
     #[error("branch {branch} is held by the open unit {slug} ({unit})")]

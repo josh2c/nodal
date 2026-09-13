@@ -132,6 +132,28 @@ runtime state, and memory.
 - **Cleanup that sorts by kind.** Unique work is kept, reconstructable state is
   reclaimed, runtime is stopped, shared state is left alone.
 
+### Starting a unit on work you have already begun
+
+```sh
+nodal new "fix the worker import" --carry
+```
+
+`--carry` starts the unit at your checkout's `HEAD` and copies what you had not committed
+into it: what was staged is staged, what was unstaged is unstaged, what was untracked is
+untracked. The unit starts dirty, in the shape you were already working in, and you commit
+it there as you meant to.
+
+It **copies**. Your checkout is read and left exactly as it was, index included, and
+nothing is stashed, staged, committed or cleaned in it. Nodal writes no commit, no ref and
+no network call to do it, so the unit's branch stands at the same commit yours does.
+
+What an ignore rule covers stays where it is — that state belongs to the base, which
+already has it. `--carry` refuses rather than guess: an index with unresolved merge stages,
+a `HEAD` that is not a branch with a commit, `--from` naming a second starting point, an
+uncommitted set over the ceiling, or a file it would have to overwrite in the new home.
+Every refusal says which of those it was, and leaves both your checkout and the unit that
+would have been made untouched.
+
 A base is rebuilt only when the inputs that define an environment move: lockfiles,
 toolchain, migrations, service definitions. An ordinary source commit moves nothing.
 
@@ -143,6 +165,7 @@ Everyday:
 | --- | --- |
 | `nodal` | the table above: every worktree and unit, what it is for, whether it is done |
 | `nodal new` | a unit from a warm base: branch, home, ports, environment |
+| `nodal new --carry` | the same, starting at your `HEAD` with your uncommitted work copied in |
 | `nodal adopt` | register a worktree or checkout where it stands, without moving it |
 | `nodal show` | one unit in full, and its memory rewritten |
 | `nodal shell`, `cd`, `run` | work inside a unit, and record what ran |
