@@ -40,7 +40,7 @@
 //! `main`, then `master`, and only where the repository really has one.
 //!
 //! **BEHIND is measured against that same branch**, and the row names it. The
-//! resolution is what carries the founder's answer here: `origin/HEAD` is preferred, so
+//! resolution is what carries the answer here: `origin/HEAD` is preferred, so
 //! the reference is the default branch's own upstream where the checkout has one, and
 //! the local branch only where it does not. The two are different claims — twelve
 //! commits behind a remote-tracking ref fetched this morning and twelve behind a local
