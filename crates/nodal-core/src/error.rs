@@ -812,6 +812,42 @@ pub enum Error {
         stderr: String,
     },
 
+    /// A recipe hook left a process group running and the phase it ran in has nowhere
+    /// durable to record one.
+    #[error(
+        "nodal has no row to attach a process group to at {phase}: {why}",
+        phase = phase.key()
+    )]
+    HookGroupUnattachable {
+        /// Which hook it is.
+        phase: Phase,
+        /// Why that phase holds no row a group can belong to.
+        why: &'static str,
+    },
+
+    /// A recipe hook left a process group running that Nodal could not write down, so
+    /// the group was stopped rather than left where nothing would ever find it.
+    #[error(
+        "the {phase} hook left process group {pgid} running and nodal could not record \
+         it: {reason}; {outcome}",
+        phase = phase.key(),
+        outcome = if *stopped {
+            "the group was stopped"
+        } else {
+            "the group would not stop and is still running"
+        }
+    )]
+    HookGroupUnowned {
+        /// Which hook it is.
+        phase: Phase,
+        /// The process group it left behind.
+        pgid: u32,
+        /// Why the group could not be recorded.
+        reason: String,
+        /// Whether the group had gone by the time the signals were done with it.
+        stopped: bool,
+    },
+
     /// A tool a base build ran exited non-zero.
     ///
     /// The message carries the tail of both streams, because which of the two a tool

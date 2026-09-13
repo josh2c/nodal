@@ -9,7 +9,8 @@
 //! a test that leaves a `sleep` behind leaves one on every run.
 
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// A child that is killed when the test ends, whichever way it ends.
 pub struct Sleeper(Child);
@@ -69,4 +70,72 @@ pub fn standing_in(home: &Path) -> Sleeper {
             .env_remove("NODAL_ID")
             .env_remove("NODAL_ROOT"),
     )
+}
+
+/// A sleeping process in a process group of its own, carrying no Nodal variable and
+/// standing nowhere a unit owns.
+///
+/// This is the bystander a stop must never reach. Nothing recorded it, nothing
+/// attributes it, and its group identifier is one no registry row holds — so a teardown
+/// that signalled it would be signalling by proximity rather than by record.
+///
+/// # Panics
+///
+/// As [`Sleeper::spawn`].
+#[must_use]
+pub fn in_a_group_of_its_own() -> Sleeper {
+    let mut command = Command::new("sleep");
+    command.arg("30").env_remove("NODAL_ID").env_remove("NODAL_ROOT");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    Sleeper::spawn(&mut command)
+}
+
+/// Whether a process is still there.
+///
+/// `kill -0` on one process id, rather than `/proc` and rather than a process group. A
+/// host with no process table still answers this, and `kill` is asked about a plain
+/// positive number, which every implementation of it reads the same way. A negative
+/// argument does not read the same way everywhere, so nothing here passes one.
+///
+/// # Panics
+///
+/// If `kill` could not be run at all, which is a host no property here can be asserted
+/// on.
+#[must_use]
+pub fn alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .expect("kill runs")
+        .success()
+}
+
+/// How long [`wait_for`] gives something to happen.
+pub const TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How often [`wait_for`] looks.
+const POLL: Duration = Duration::from_millis(10);
+
+/// Wait for something to become true, and insist that it does.
+///
+/// A signal is delivered rather than applied, so "the process is gone" is a claim about
+/// a moment shortly after the command returned and not about the instant it did.
+///
+/// # Panics
+///
+/// If it has not happened within [`TIMEOUT`], naming what did not happen.
+pub fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
+    let deadline = Instant::now() + TIMEOUT;
+    while Instant::now() < deadline {
+        if ready() {
+            return;
+        }
+        std::thread::sleep(POLL);
+    }
+    panic!("{what} did not happen within {TIMEOUT:?}");
 }

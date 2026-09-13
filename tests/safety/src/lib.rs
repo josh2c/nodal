@@ -46,6 +46,7 @@
 //! | tracked excludes | a copy leaves out a path the project tracks and is dirty at birth | `tests/tracked_exclude.rs` |
 //! | reclaim refusal | a reclaim removes a home holding work that exists nowhere else | `tests/reclaim_refusal.rs` |
 //! | reclaim scope | a reclaim signals a process that carries no unit identifier | `tests/reclaim_scope.rs` |
+//! | hook process ownership | a recipe hook leaves a process running that nothing on the machine can name or stop | `tests/hook_processes.rs` |
 //! | trash prune | the trash loses a path that holds work, or keeps a build a tool writes again | `tests/trash_prune.rs` |
 //! | a session's home | a file nodal wrote for an agent shows as the agent's work, and is merged as it | `tests/hook_home.rs` |
 //! | hook scope | an install nobody asked for leaves a file in a repository, or the provider ends a session in a project that is not Nodal's | `tests/claude_scope.rs` |

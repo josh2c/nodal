@@ -114,6 +114,13 @@ pub struct Options {
 /// the sweep.
 pub fn collect(store: &mut Store, now: Timestamp, options: &Options) -> Result<Swept> {
     let mut leftovers = Vec::new();
+    // Before anything is read, so that every reading after it is of rows that are still
+    // true. A recorded group whose processes have gone is not runtime and not an
+    // attachment, and a sweep that counted it would report a unit as held by somebody
+    // and never as idle.
+    let host = crate::model::HostName::current();
+    let gone = crate::runtime::sessions::close_dead_groups(store.conn(), &host, now)?;
+    tracing::debug!(gone, "recorded groups that had already ended");
     let retired = retire(store, now, options.hooks, &mut leftovers)?;
     let expired = trash::list_expired(store.conn(), now)?;
     let stopped = stop_absent(store.conn())?;

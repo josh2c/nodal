@@ -21,6 +21,12 @@
 #     identifier, it names that process and refuses to move the home over it, `--force`
 #     moves the home and still leaves the process running, and a sweep makes the same
 #     split;
+#   - hook process ownership: a recipe hook may background a process that carries no
+#     nodal variable and stands in no home, and a reclaim still names and stops it by the
+#     process group the registry recorded; a hook that leaves nothing running records no
+#     group; a failed hook and a group nothing can record leave no child alive; a
+#     recorded group that has ended gives its row up without anything being signalled;
+#     and a process group no row holds is never signalled;
 #   - doctor: the checkout, a worktree of that checkout that lives beside it rather than
 #     inside it, and the whole state directory are the same bytes afterwards;
 #   - a kept clone: an install that fails leaves the clone and the half-built base, and
@@ -64,4 +70,5 @@ TMPDIR="$work/by-another-name" cargo test --locked -p nodal-safety -- --nocaptur
 echo "acceptance (safety): two units of one project cannot reach each other, under a linked path too;"
 echo "acceptance (safety): a failed base build keeps its clone and says why it failed;"
 echo "acceptance (safety): a warm base runs the build where it hands the base over;"
-echo "acceptance (safety): a build that stopped is carried on with, whatever release stopped it"
+echo "acceptance (safety): a build that stopped is carried on with, whatever release stopped it;"
+echo "acceptance (safety): no process a recipe hook starts is left running that nothing owns"

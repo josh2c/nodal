@@ -66,7 +66,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::env::files;
 use crate::git::Git;
-use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Runner};
+use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Registered, Runner};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::ops::new;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
@@ -189,7 +189,7 @@ pub fn adopt(
     let params = prepare(store, request, progress)?;
     let environment = params.environment.id;
     let done = run(store, &plan(&params)?)?;
-    post_new(&params, request.hooks)?;
+    post_new(store, &params, request.hooks)?;
     let arrival = match params.source {
         Source::InPlace => Arrival::AdoptedInPlace,
         Source::Materialized { .. } => Arrival::Adopted,
@@ -272,7 +272,7 @@ fn same_tree(left: &Path, right: &Path) -> bool {
 /// by the time either form of adoption can be refused or not, the thing it would run
 /// ahead of has either already been there for weeks or is a clone with no decision left
 /// in it.
-fn post_new(params: &Params, enabled: bool) -> Result<()> {
+fn post_new(store: &Store, params: &Params, enabled: bool) -> Result<()> {
     if params.source == Source::InPlace {
         return Ok(());
     }
@@ -282,7 +282,8 @@ fn post_new(params: &Params, enabled: bool) -> Result<()> {
         approvals: Approvals::open(hooks::path_in(&params.state_dir))?,
         enabled,
     };
-    runner.run(Phase::PostNew, &params.environment.home, &context_of(params))?;
+    let owner = Registered { conn: store.conn() };
+    runner.run(Phase::PostNew, &params.environment.home, &context_of(params), &owner)?;
     Ok(())
 }
 
