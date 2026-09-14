@@ -207,6 +207,16 @@ pub struct Survey {
 /// directory answers for everything in it, and naming both would count the same bytes
 /// twice.
 ///
+/// That holds through a failed removal as well, and it is the one place where this
+/// classification changed what a sweep does. A directory answers for what is under it
+/// whether or not it goes, so a `node_modules` that would not be removed leaves the
+/// trash the whole of it rather than pieces of it. The alternative — descending into a
+/// directory whose own removal was refused — leaves a half-pruned tree that no report
+/// describes, to save bytes in the one case where a removal failed. `git ls-files
+/// --directory` collapses an ignored directory into one record and does not descend into
+/// it, so the shape this decides is one Git does not produce for a regenerable path
+/// anyway; it is stated because the behaviour has to be one thing and not an accident.
+///
 /// # Errors
 /// None. A home that is not there, a directory that is not a repository and a listing
 /// that failed are each a note, for the reason the module documentation gives.
@@ -214,7 +224,12 @@ pub struct Survey {
 pub fn survey(path: &Path) -> Survey {
     let mut surveyed = Survey::default();
     if !path.is_dir() {
-        surveyed.notes.push(format!("{} is not there, so nothing was pruned", path.display()));
+        // Said as a reading and not as an action, because two callers print it and only
+        // one of them removes anything. `nodal reclaim --check` prints the notes of this
+        // survey verbatim, and a read-only command must not report a prune it did not do.
+        surveyed
+            .notes
+            .push(format!("{} is not there, so no ignored state was read", path.display()));
         return surveyed;
     }
     let entries = match Git::open(path).and_then(|git| git.ignored_entries()) {
@@ -318,6 +333,16 @@ mod tests {
         let report = sweep(&missing);
         assert!(report.changed_nothing());
         assert!(report.notes[0].contains("gone"), "{:?}", report.notes);
+    }
+
+    /// The note is a reading, not a claim about an action, because `nodal reclaim
+    /// --check` prints these words and removes nothing.
+    #[test]
+    fn a_note_says_what_was_read_and_never_what_was_pruned() {
+        let root = tempfile::tempdir().unwrap();
+        let report = sweep(&root.path().join("gone"));
+        assert!(report.notes[0].contains("no ignored state was read"), "{:?}", report.notes);
+        assert!(!report.notes[0].contains("pruned"), "{:?}", report.notes);
     }
 
     #[test]
