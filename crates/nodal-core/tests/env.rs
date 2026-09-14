@@ -10,7 +10,7 @@
 //! 3. The per-machine file is created owner-only and refused when it is not.
 //! 4. No value reaches a manifest, a report, a log line or an error message.
 
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests fail by panicking")]
 
 use std::collections::BTreeMap;
 use std::path::Path;

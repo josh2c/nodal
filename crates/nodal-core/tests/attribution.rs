@@ -18,7 +18,7 @@
 //! without it each reports itself as skipped rather than failing, and claim 5 is what
 //! covers that host's behaviour.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};

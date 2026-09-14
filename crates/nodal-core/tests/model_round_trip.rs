@@ -5,7 +5,7 @@
 //! A sample of each record type is built once here and reused, so a field added to a
 //! type without a value here fails to compile rather than going untested.
 
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests fail by panicking")]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

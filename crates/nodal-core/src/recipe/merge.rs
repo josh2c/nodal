@@ -83,7 +83,7 @@ merge_fields!(Recipe {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
     use super::Merge;
     use crate::model::recipe::{CommandLine, PackageManager, Recipe};

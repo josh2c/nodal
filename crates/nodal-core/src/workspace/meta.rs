@@ -85,7 +85,7 @@ fn stamp(seconds: i64, nanoseconds: i64) -> libc::timespec {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 

@@ -13,7 +13,7 @@
 //!
 //! Run with `UPDATE_SNAPSHOTS=1` to rewrite the files after a deliberate change.
 
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, reason = "tests fail by panicking")]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

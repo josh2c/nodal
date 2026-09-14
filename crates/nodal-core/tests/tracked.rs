@@ -21,7 +21,7 @@
 //! list is missing every tracked file under the directory, and `git status` in it
 //! reports one deletion for each.
 
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests fail by panicking")]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

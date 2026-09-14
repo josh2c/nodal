@@ -32,7 +32,7 @@
 //! The third test is the part that lasts: nowhere else in these tests may name the
 //! binary, so a command built any other way cannot be added by accident.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
 mod state;
 

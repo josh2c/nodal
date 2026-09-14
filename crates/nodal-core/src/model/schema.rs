@@ -124,7 +124,7 @@ pub fn documents() -> Vec<SchemaDoc> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
+    #![allow(clippy::expect_used, reason = "tests fail by panicking")]
 
     use super::{SCHEMA_VERSION, catalog, documents, index};
 

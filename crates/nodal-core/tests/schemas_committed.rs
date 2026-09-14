@@ -5,7 +5,7 @@
 //! This test is the same check without writing anything, so a model change that was
 //! not exported fails at `cargo test` too, before it reaches CI.
 
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, reason = "tests fail by panicking")]
 
 use std::path::PathBuf;
 

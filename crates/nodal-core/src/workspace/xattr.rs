@@ -248,7 +248,7 @@ use unix::{names, read, write};
 #[cfg(test)]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
     use std::ffi::OsStr;
 

@@ -93,7 +93,7 @@ impl<'de> Deserialize<'de> for Timestamp {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
+    #![allow(clippy::expect_used, reason = "tests fail by panicking")]
 
     use super::Timestamp;
 

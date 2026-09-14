@@ -76,6 +76,9 @@ cognitive_complexity = "deny"
 too_many_lines = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
+# A suppression states the technical reason it is correct, so a reader knows whether the
+# reason still holds and a later change can remove the allow when it does not.
+allow_attributes_without_reason = "deny"
 
 [profile.release]
 strip = "symbols"

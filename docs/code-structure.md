@@ -261,3 +261,17 @@ commands/              one file per command, each ≤ 40 lines: parse args → c
   the registry rows a test writes by hand (`rows`), and what a state directory answers (`state`).
   A suite that needs one of those asks the kit; it never writes a second copy. The two crates that
   depend on the kit are the two it depends on, so the edge back is a dev-dependency.
+
+## Patterns the review flags
+
+A reviewer reads for these. The linter cannot see them, so a person must.
+
+- A clone that the code does not need. Borrow the value, or move it.
+- Two passes over one collection where one pass gives the same answer.
+- A function whose body a flag argument splits in two. Write two functions.
+- A state held as a string. Use an enumeration, so the compiler lists the states.
+- A wrapper that only calls through to the type it holds. Use the type.
+- A second parser for a format that the code already parses somewhere else.
+- A sleep used to wait for another task. Wait for the event, not for the clock.
+- A retry that does not say which failures it repeats and how many times.
+- Compatibility code for a version, a format or a path that nothing uses now.

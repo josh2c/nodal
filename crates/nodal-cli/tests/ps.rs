@@ -11,7 +11,7 @@
 //! The rows are read from `/proc`, so on a host without one each check reports itself as
 //! skipped. `crates/nodal-core/tests/attribution.rs` is what covers that host.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
 mod home;
 mod state;

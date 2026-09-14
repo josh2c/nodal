@@ -15,7 +15,7 @@
 //! put a row in the first section. `crates/nodal-core/tests/doctor.rs` is what covers
 //! every kind of leftover, the lock, the second section and the zero-writes claim.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
 mod home;
 mod state;

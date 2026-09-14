@@ -120,7 +120,7 @@ fn read_sorted(directory: &Path) -> Result<Vec<std::fs::DirEntry>> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
     use std::path::{Path, PathBuf};
 

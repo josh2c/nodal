@@ -5,7 +5,11 @@
 //! command looks up. This builds both in a temporary directory, so a test never reads
 //! or writes the machine's own Nodal home.
 
-#![allow(dead_code, clippy::unwrap_used)]
+#![allow(
+    dead_code,
+    clippy::unwrap_used,
+    reason = "tests fail by panicking, and each test file uses part of this module"
+)]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

@@ -207,16 +207,36 @@ importers=$(
 gate "files importing lifecycle" "$importers" 26 "files" "baseline 26; ratchet to 0"
 
 sinks=$(grep -r 'Arc<OnceLock' --include='*.rs' "$root/crates"/*/src | wc -l | tr -d ' ')
-# Baseline 13 mentions over 7 distinct sinks. A step cannot hand a value to the step
-# after it, and these are what four operations use instead. The step-output column takes
-# this to 0.
-gate "Arc<OnceLock> mentions in product src" "$sinks" 13 "mentions" \
-    "baseline 13 over 7 sinks; ratchet to 0"
+# The baseline was 13 mentions over 7 distinct sinks, when a step could not hand a value
+# to the step after it and four operations used a shared cell instead. The step-output
+# column replaced every one of them, so the measurement is 0 and the ceiling holds it
+# there: a new shared cell fails the build rather than starting a second backlog.
+gate "Arc<OnceLock> mentions in product src" "$sinks" 0 "mentions" \
+    "baseline 13 over 7 sinks; 0 since the step-output column landed"
 
 spawns=$(grep -r 'Command::new' --include='*.rs' "$root/crates"/*/src | wc -l | tr -d ' ')
 # Baseline 9 sites for 6 tools: git, docker, the hook shell, the user's shell twice, the
 # user's command, and the package manager. One spawn seam per tool is the rule.
 gate "Command::new sites in product src" "$spawns" 9 "sites" "baseline 9 for 6 tools"
+
+# Product code is each file's text before its first `#[cfg(test)]` line, which is the
+# definition `ci/duplication.py` states and uses. A sleep a test uses to hold a lock
+# still is not a sleep the product waits on, and the two must not share a ceiling.
+sleeps=$(
+    find "$root/crates"/*/src -name '*.rs' -exec awk '
+        FNR == 1 { tests = 0 }
+        /^[[:space:]]*#\[cfg\(test\)\]/ { tests = 1 }
+        tests { next }
+        /thread::sleep/ { print FILENAME ":" FNR }
+    ' {} + | wc -l | tr -d ' '
+)
+# Baseline 3 sites, each one a wait on a clock that the product has no event for: the
+# backoff between two attempts to open a locked registry, the interval between the passes
+# of `watch`, and the period between two checks that a stopped process is gone. Sleep is
+# not synchronisation. A fourth site must first show that no signal, no file event and no
+# process status can answer the same question.
+gate "thread::sleep sites in product src" "$sleeps" 3 "sites" \
+    "baseline 3; each new site needs a reason no event can replace it"
 
 asynchronous=$(grep -rE '\basync\b|\.await\b|\btokio\b' --include='*.rs' "$root/crates"/*/src | wc -l | tr -d ' ')
 # Baseline 0. Nodal is synchronous by decision.

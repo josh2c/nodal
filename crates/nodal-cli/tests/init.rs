@@ -5,7 +5,7 @@
 //! covers the seam the user meets — the arguments, the file appearing where it was
 //! promised, and the refusal to overwrite a recipe without being asked twice.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
 mod state;
 

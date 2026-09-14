@@ -824,7 +824,7 @@ pub fn exclude_dir(home: &Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
     use super::{dotenv, escape_dotenv, export, hide, unhide};
     use crate::env::{Activation, EnvVar, secrets};

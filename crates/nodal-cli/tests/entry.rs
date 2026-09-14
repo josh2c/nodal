@@ -15,7 +15,7 @@
 //! the file runs anywhere; the CI job installs bash, zsh, fish and direnv, which is what
 //! makes each check real.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
 mod home;
 mod state;

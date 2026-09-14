@@ -4,7 +4,7 @@
 //! under a temporary root with the bare remote. The survey names one group of three,
 //! the unpushed count, the dirty count, and it leaves every path as it found it.
 
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests fail by panicking")]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
