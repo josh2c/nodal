@@ -100,8 +100,8 @@ pub mod trash;
 pub mod units;
 pub mod worktrees;
 
-mod inspect;
-mod origin;
+pub mod inspect;
+pub mod origin;
 mod scan;
 pub mod unique;
 
