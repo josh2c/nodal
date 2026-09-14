@@ -645,6 +645,13 @@ pub enum Error {
         path: std::path::PathBuf,
     },
 
+    /// A handoff was stated with nothing in it.
+    #[error("the handoff for {slug:?} says nothing; give the text to leave for the next session")]
+    EmptyHandoff {
+        /// The unit the handoff was for.
+        slug: String,
+    },
+
     /// No unit of any project has the slug that was given.
     #[error("no unit is called {slug:?}")]
     UnitNotFound {

@@ -408,6 +408,7 @@ dependencies = [
  "nodal-core",
  "nodal-fixture",
  "nodal-safety",
+ "serde",
  "serde_json",
  "tempfile",
  "tracing",

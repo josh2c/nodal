@@ -1,0 +1,113 @@
+{
+  "tools": [
+    {
+      "description": "List every unit of the project: what each one needs next, its branch, its integration and who is in it.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "ls"
+    },
+    {
+      "description": "Report one unit in full: its work, its environment, what was recorded of its home, and its log.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "unit": {
+            "description": "The unit's handle. Defaults to the unit of the working directory.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "show"
+    },
+    {
+      "description": "Report what reclaiming a unit would take away, and do none of it: what is only here, what has another copy, and what is running.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "unit": {
+            "description": "The unit's handle. Defaults to the unit of the working directory.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "check"
+    },
+    {
+      "description": "Make a unit: a branch, a home cloned from the project, its own ports and its own environment.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "carry": {
+            "description": "Copy the checkout's uncommitted work into the new home.",
+            "type": "boolean"
+          },
+          "from": {
+            "description": "The branch to fork from. The project's own default when it is not said.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The handle to give it. Derived from the objective when it is not said.",
+            "type": "string"
+          },
+          "objective": {
+            "description": "What the unit is for.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "objective"
+        ],
+        "type": "object"
+      },
+      "name": "new"
+    },
+    {
+      "description": "Leave a note on a unit for whoever continues it, which the unit's memory carries to the next session.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "description": "What to leave for whoever continues the unit.",
+            "type": "string"
+          },
+          "unit": {
+            "description": "The unit's handle. Defaults to the unit of the working directory.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "handoff"
+    },
+    {
+      "description": "Push a unit's work for review and report where the change is opened. It sends the unit's branch and nothing else.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "remote": {
+            "description": "The remote to push to. `origin` when it is not said.",
+            "type": "string"
+          },
+          "unit": {
+            "description": "The unit's handle. Defaults to the unit of the working directory.",
+            "type": "string"
+          },
+          "wip": {
+            "description": "Send the work-in-progress snapshot as well as the branch.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "done"
+    }
+  ]
+}

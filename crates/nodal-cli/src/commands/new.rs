@@ -69,16 +69,40 @@ impl New {
     /// Nodal knows, whatever `--carry` refused, and whatever Git, the filesystem or the
     /// registry reported.
     pub fn run(&self, store: &mut Store, hooks: bool) -> nodal_core::Result<ExitCode> {
-        let progress: Arc<dyn Reporter> = substrate::sink(self.json);
-        let report = new::create(store, &self.request(hooks)?, &progress)?;
-        if let Some(environment) = &report.unit.environment {
-            context::refresh_at(store, &environment.home);
-        }
-        output::write(&report, Format::from_json_flag(self.json), &mut std::io::stdout())?;
-        if let Some(environment) = &report.unit.environment {
-            entry::ask_to_enter(&environment.home)?;
+        let (text, home) = self.made(store, hooks, Format::from_json_flag(self.json))?;
+        crate::commands::emit(&text)?;
+        if let Some(home) = home {
+            entry::ask_to_enter(&home)?;
         }
         Ok(ExitCode::SUCCESS)
+    }
+
+    /// Make the unit and render the report, without offering to enter the home.
+    ///
+    /// The offer is the one part of this command that speaks to a person at a terminal,
+    /// so it stays in [`Self::run`]. Everything else — the operation, the memory, and
+    /// the one rendering both surfaces print — is here, and the tool surface
+    /// `nodal mcp` answers on asks for the JSON form of it.
+    ///
+    /// The home comes back with the text so that the caller which does offer to enter it
+    /// has the path without reading the report again.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the create reported.
+    pub fn made(
+        &self,
+        store: &mut Store,
+        hooks: bool,
+        format: Format,
+    ) -> nodal_core::Result<(String, Option<PathBuf>)> {
+        let progress: Arc<dyn Reporter> = substrate::sink(self.json);
+        let report = new::create(store, &self.request(hooks)?, &progress)?;
+        let home = report.unit.environment.as_ref().map(|environment| environment.home.clone());
+        if let Some(home) = &home {
+            context::refresh_at(store, home);
+        }
+        Ok((output::render(&report, format)?, home))
     }
 
     /// The arguments as the values the operation takes.

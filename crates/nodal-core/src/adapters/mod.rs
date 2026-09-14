@@ -16,4 +16,5 @@
 //! wrote.
 
 pub mod claude_code;
+pub mod mcp;
 pub mod settings;

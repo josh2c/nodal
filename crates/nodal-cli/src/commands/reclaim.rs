@@ -73,12 +73,7 @@ impl Reclaim {
     /// machine has not approved, and whatever Git, the filesystem or the registry
     /// reported.
     pub fn run(&self, store: &mut Store, hooks: bool) -> nodal_core::Result<ExitCode> {
-        let request = Request {
-            target: self.unit.clone(),
-            force: self.force,
-            hooks,
-            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        };
+        let request = self.request(hooks);
         if self.check {
             return self.preflight(store, &request);
         }
@@ -109,10 +104,42 @@ impl Reclaim {
     /// Propagates a unit that was reclaimed already, a directory that belongs to
     /// another unit, and whatever Git or the registry reported.
     fn preflight(&self, store: &Store, request: &Request) -> nodal_core::Result<ExitCode> {
+        let (text, safe) = Self::checked(store, request, Format::from_json_flag(self.json))?;
+        crate::commands::emit(&text)?;
+        Ok(if safe { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+    }
+
+    /// What `--check` writes, and the verdict the exit code carries.
+    ///
+    /// The reading and one rendering. The tool surface `nodal mcp` answers on asks for
+    /// the JSON form here, so a preflight an agent reads and a preflight a person reads
+    /// are one answer.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the reading reported.
+    pub fn checked(
+        store: &Store,
+        request: &Request,
+        format: Format,
+    ) -> nodal_core::Result<(String, bool)> {
         let report = reclaim::check(store, request)?;
         let safe = report.safe_to_reclaim;
-        output::write(&report, Format::from_json_flag(self.json), &mut std::io::stdout())?;
-        Ok(if safe { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+        Ok((output::render(&report, format)?, safe))
+    }
+
+    /// The values a preflight is asked for, as the arguments give them.
+    ///
+    /// # Errors
+    ///
+    /// [`nodal_core::Error::Io`] when the working directory could not be read.
+    pub fn request(&self, hooks: bool) -> Request {
+        Request {
+            target: self.unit.clone(),
+            force: self.force,
+            hooks,
+            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        }
     }
 
     /// Run `git worktree remove` when the report offered it and the person agreed.

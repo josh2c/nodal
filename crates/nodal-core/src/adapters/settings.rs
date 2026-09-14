@@ -151,7 +151,7 @@ pub fn add(text: &str, hooks: &[Hook]) -> Result<Option<String>> {
         None => text.to_owned(),
     };
     let document = parse(&base)?;
-    let installed = splice(&base, &document, hooks);
+    let installed = splice(&base, &document, HOOKS, &members(hooks));
     Ok((installed != text).then_some(installed))
 }
 
@@ -161,7 +161,7 @@ pub fn add(text: &str, hooks: &[Hook]) -> Result<Option<String>> {
 /// re-rendering of the document where it is not.
 #[must_use]
 pub fn remove(text: &str, hooks: &[Hook]) -> Option<String> {
-    if let Some(exact) = cut(text, hooks) {
+    if let Some(exact) = cut(text, HOOKS, &members(hooks)) {
         return Some(exact);
     }
     if !holds_hooks(text) {
@@ -234,15 +234,20 @@ impl Ends {
 ///
 /// Into the `hooks` object the file already has, when it has one; into the top-level
 /// object otherwise; and into `{}` when there is no file yet.
-fn splice(text: &str, document: &Map<String, Value>, hooks: &[Hook]) -> String {
+fn splice(
+    text: &str,
+    document: &Map<String, Value>,
+    container: &str,
+    members: &[String],
+) -> String {
     let (before, after) = if text.trim().is_empty() { ("{", "}\n") } else { (text, "") };
-    let (at, region) = if let Some(at) = opening(before, HOOKS) {
-        let count = document.get(HOOKS).and_then(Value::as_object).map_or(0, Map::len);
-        (at, events(hooks, &indent_at(before, at, TWO_LEVELS), Ends::of(count)))
+    let (at, region) = if let Some(at) = opening(before, container) {
+        let count = document.get(container).and_then(Value::as_object).map_or(0, Map::len);
+        (at, inside(members, &indent_at(before, at, TWO_LEVELS), Ends::of(count)))
     } else {
         let at = opening_brace(before).unwrap_or(before.len());
         let indent = indent_at(before, at, ONE_LEVEL);
-        (at, object(hooks, &indent, Ends::of(document.len())))
+        (at, object(container, members, &indent, Ends::of(document.len())))
     };
     format!("{}{region}{}{after}", &before[..at], &before[at..])
 }
@@ -251,9 +256,10 @@ fn splice(text: &str, document: &Map<String, Value>, hooks: &[Hook]) -> String {
 ///
 /// Every region this module could have written is generated again and looked for.
 /// There are four: two places, and two endings.
-fn cut(text: &str, hooks: &[Hook]) -> Option<String> {
-    let region =
-        candidates(text, hooks).into_iter().find(|region| text.contains(region.as_str()))?;
+fn cut(text: &str, container: &str, members: &[String]) -> Option<String> {
+    let region = candidates(text, container, members)
+        .into_iter()
+        .find(|region| text.contains(region.as_str()))?;
     Some(text.replacen(&region, "", 1))
 }
 
@@ -262,40 +268,93 @@ fn cut(text: &str, hooks: &[Hook]) -> Option<String> {
 /// The whole `hooks` member is looked for before the members inside it, because a file
 /// that got the whole member holds the members too and taking only those out would
 /// leave an empty `hooks` object behind.
-fn candidates(text: &str, hooks: &[Hook]) -> Vec<String> {
+fn candidates(text: &str, container: &str, members: &[String]) -> Vec<String> {
     let mut found = Vec::new();
     if let Some(at) = opening_brace(text) {
         let indent = indent_at(text, at, ONE_LEVEL);
-        found.push(object(hooks, &indent, Ends::Comma));
-        found.push(object(hooks, &indent, Ends::Newline));
+        found.push(object(container, members, &indent, Ends::Comma));
+        found.push(object(container, members, &indent, Ends::Newline));
     }
-    if let Some(at) = opening(text, HOOKS) {
+    if let Some(at) = opening(text, container) {
         let indent = indent_at(text, at, TWO_LEVELS);
-        found.push(events(hooks, &indent, Ends::Comma));
-        found.push(events(hooks, &indent, Ends::Newline));
+        found.push(inside(members, &indent, Ends::Comma));
+        found.push(inside(members, &indent, Ends::Newline));
     }
     found
 }
 
-/// The region as one member per event, for an object that already exists.
-fn events(hooks: &[Hook], indent: &str, ends: Ends) -> String {
-    let members: Vec<String> =
-        hooks.iter().map(|hook| format!("{indent}{}", member(hook, indent))).collect();
-    format!("\n{}{}", members.join(",\n"), ends.text())
+/// The region as members of an object that already exists.
+fn inside(members: &[String], indent: &str, ends: Ends) -> String {
+    let written: Vec<String> =
+        members.iter().map(|member| format!("{indent}{}", reindent(member, indent))).collect();
+    format!("\n{}{}", written.join(",\n"), ends.text())
 }
 
-/// The region as the whole `hooks` member, for a file that has none.
-fn object(hooks: &[Hook], indent: &str, ends: Ends) -> String {
+/// The region as the whole container member, for a file that has none.
+fn object(container: &str, members: &[String], indent: &str, ends: Ends) -> String {
     let inner = format!("{indent}{STEP}");
-    let members: Vec<String> =
-        hooks.iter().map(|hook| format!("{inner}{}", member(hook, &inner))).collect();
-    format!("\n{indent}\"{HOOKS}\": {{\n{}\n{indent}}}{}", members.join(",\n"), ends.text())
+    let written: Vec<String> =
+        members.iter().map(|member| format!("{inner}{}", reindent(member, &inner))).collect();
+    format!("\n{indent}\"{container}\": {{\n{}\n{indent}}}{}", written.join(",\n"), ends.text())
 }
 
 /// One event's member: its name, and the one group Nodal installs for it.
-fn member(hook: &Hook, indent: &str) -> String {
+fn member(hook: &Hook) -> String {
     let groups = Value::Array(vec![group(hook)]);
-    format!("\"{}\": {}", hook.event, reindent(&pretty(&groups), indent))
+    format!("\"{}\": {}", hook.event, pretty(&groups))
+}
+
+/// One member of any object: a name and a value, as this module writes them.
+fn named(name: &str, value: &Value) -> String {
+    format!("\"{name}\": {}", pretty(value))
+}
+
+/// The members one set of hooks is written as.
+fn members(hooks: &[Hook]) -> Vec<String> {
+    hooks.iter().map(member).collect()
+}
+
+/// `text` with one named member of one named object spliced in, or `None` when it
+/// already reads that way.
+///
+/// The same region machinery the hooks use, asked for one member of another object.
+/// What that keeps is the property both callers need and neither could keep alone: the
+/// text Nodal adds is one contiguous region it can find again, so taking it out leaves
+/// the file byte for byte the file it was.
+///
+/// # Errors
+/// [`Error::InvalidValue`] when the file is not a JSON object.
+pub fn add_member(
+    text: &str,
+    container: &str,
+    name: &str,
+    value: &Value,
+) -> Result<Option<String>> {
+    let written = vec![named(name, value)];
+    let base = match cut(text, container, &written) {
+        Some(stripped) => stripped,
+        None => text.to_owned(),
+    };
+    let document = parse(&base)?;
+    let installed = splice(&base, &document, container, &written);
+    Ok((installed != text).then_some(installed))
+}
+
+/// `text` with that member taken out, or `None` when it is not there as Nodal wrote it.
+///
+/// The inverse of [`add_member`] byte for byte. A file somebody reformatted holds no
+/// region this recognises, and nothing is changed rather than the document being
+/// rewritten: the member is one entry of somebody's own configuration file, and a
+/// rewrite of that file is not Nodal's to make.
+#[must_use]
+pub fn remove_member(text: &str, container: &str, name: &str, value: &Value) -> Option<String> {
+    cut(text, container, &[named(name, value)])
+}
+
+/// Whether `text` holds that member exactly as [`add_member`] writes it.
+#[must_use]
+pub fn holds_member(text: &str, container: &str, name: &str, value: &Value) -> bool {
+    remove_member(text, container, name, value).is_some()
 }
 
 /// One group holding one command, in the shape Claude Code reads.

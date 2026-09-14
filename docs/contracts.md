@@ -201,9 +201,41 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 `schemas/v1/recipe.json`.
 
 ## CLI
-`init, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, run, ps, start, note, ask,
+`init, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, mcp, run, ps, start, note, ask,
 handoff, sync, done, merge, prune, reclaim, reclaim --check, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
 `--json`; `status --watch` emits newline-delimited JSON. Global `--store` and `--no-hooks`.
+
+`nodal handoff [--unit <unit>] "<text>"` records one stated handoff on a unit and prints it. It takes no
+lock, enters no home and writes no file in one: the unit's memory is compiled from the registry by the
+commands that read a unit. A handoff whose text is empty or blank is refused. The actor is read the way
+every event reads it, so a handoff an agent states is the agent's.
+
+## The tool surface
+`nodal mcp` answers an agent's tool calls as a model context protocol server. One JSON-RPC 2.0 message per
+line on standard input, one answer per line on standard output, synchronous: a request is read, answered and
+written before the next line is read. There is no runtime and no daemon, and stdio is the only transport.
+Standard output carries answers and nothing else; everything a command would say to a person goes to standard
+error.
+
+Methods: `initialize`, `tools/list`, `tools/call`, `ping`. A message with no `id` is a notification and is
+never answered.
+
+Tools: `ls`, `show`, `check`, `new`, `handoff`, `done`. **A tool result is the bytes the matching
+`nodal <verb> --json` writes.** The content is one text block holding that document. There is no second
+representation, and `ci/acceptance-mcp.sh` compares the two texts.
+
+`reclaim`, `merge`, `gc`, `uninstall` and `base` are not tools. They are absent from `tools/list`, and
+`tools/call` on one of them is refused by name with the reason and the command a person runs instead. A
+refusal of any kind is a JSON-RPC error carrying the sentence the command line prints for it.
+
+Each call opens the registry the way the matching command does, resolves what an interrupted operation left,
+and closes it again. A tool runs in the directory the server was started in; no tool takes a path to work in.
+
+`nodal init --claude-hooks` declares the server in the project's own `.mcp.json`, under `mcpServers.nodal`,
+naming the path of the binary that wrote it. It is one marked region, written the way the hooks are, so
+`nodal uninstall` takes it out and leaves the file byte for byte the file it was, with every other server
+somebody declared still in it. `nodal mcp --tools` prints the listing; the committed copy is
+`schemas/mcp/tools.json` and `ci/schema-diff.sh` fails on a change that is not committed with it.
 
 Nodal asks whether it shares file blocks under the state root **once**, when the state root is made. The
 command that makes that directory is the one that asks: the first registry open creates it, and `nodal init`

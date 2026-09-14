@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, ValueEnum};
+use nodal_core::adapters::mcp;
 use nodal_core::adapters::settings::Scope;
 use nodal_core::adapters::{claude_code, settings};
 use nodal_core::lifecycle::hooks;
@@ -232,6 +233,31 @@ impl Init {
             done.path.display(),
             done.scope.name()
         );
+        Self::declare(root)
+    }
+
+    /// Declare the tool server in the project's own `.mcp.json`.
+    ///
+    /// Always the project's file, whichever file the hooks went in: a server list is
+    /// per project, so a machine with three projects declares three servers and none of
+    /// them reaches another project.
+    ///
+    /// The hooks are one vendor's and this is not. Every agent that speaks the model
+    /// context protocol reads the same six tools from it (`nodal mcp`).
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading or writing `.mcp.json` reported.
+    fn declare(root: &Path) -> nodal_core::Result<()> {
+        let binary = mcp::binary()?;
+        let Some(file) = mcp::install(root, &binary)? else {
+            eprintln!(
+                "nodal: {} already declares the nodal tool server",
+                mcp::path(root).display()
+            );
+            return Ok(());
+        };
+        eprintln!("nodal: declared the nodal tool server in {}", file.display());
         Ok(())
     }
 }

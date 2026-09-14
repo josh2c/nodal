@@ -30,6 +30,8 @@ pub enum Kind {
     State,
     /// The hooks in one project's `.claude/settings.json`.
     ClaudeHooks,
+    /// The tool server declared in one project's `.mcp.json`.
+    ToolServer,
 }
 
 impl Kind {
@@ -41,6 +43,7 @@ impl Kind {
             Self::Shim => "shim",
             Self::State => "state",
             Self::ClaudeHooks => "claude hooks",
+            Self::ToolServer => "tool server",
         }
     }
 }
@@ -117,7 +120,8 @@ impl Uninstall {
         if self.items.is_empty() {
             return String::from("nothing; nodal has installed nothing on this machine");
         }
-        let counts = [Kind::RcBlock, Kind::Shim, Kind::ClaudeHooks, Kind::State].map(|kind| {
+        let kinds = [Kind::RcBlock, Kind::Shim, Kind::ClaudeHooks, Kind::ToolServer, Kind::State];
+        let counts = kinds.map(|kind| {
             let count = self.items.iter().filter(|item| item.kind == kind).count();
             (kind, count)
         });

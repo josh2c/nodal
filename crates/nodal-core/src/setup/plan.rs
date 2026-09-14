@@ -29,7 +29,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::adapters::{claude_code, settings};
+use crate::adapters::{claude_code, mcp, settings};
 use crate::lifecycle::uniqueness::{self, Uniqueness};
 use crate::model::Timestamp;
 use crate::output::view::setup::{Installed, Item, Kind, Uninstall};
@@ -167,6 +167,7 @@ pub fn apply(plan: &Uninstall) -> Result<Uninstall> {
             Kind::RcBlock => strip_block(&item.path)?,
             Kind::Shim => remove_file(&item.path)?,
             Kind::ClaudeHooks => drop(claude_code::uninstall(&item.path)?),
+            Kind::ToolServer => drop(mcp::uninstall(&item.path, &mcp::binary()?)?),
             Kind::State => remove_tree(&item.path)?,
         }
     }
@@ -271,8 +272,10 @@ fn claude_items(request: &Request, items: &mut Vec<Item>, notes: &mut Vec<String
 fn settings_files(request: &Request, notes: &mut Vec<String>) -> Result<Vec<Item>> {
     let mut found = Vec::new();
     found.extend(hooked(&settings::user_path(&request.home), notes));
+    let binary = mcp::binary()?;
     for root in project_roots(&request.state, request.project.as_deref())? {
         found.extend(hooked(&settings::path(&root), notes));
+        found.extend(declared(&mcp::path(&root), &binary, notes));
     }
     for (home, _) in homes(&request.state)? {
         if crate::env::files::tracked_of(&home).tracks(settings::FILE) {
@@ -281,6 +284,28 @@ fn settings_files(request: &Request, notes: &mut Vec<String>) -> Result<Vec<Item
         found.extend(hooked(&settings::path(&home), notes));
     }
     Ok(found)
+}
+
+/// The item for one project's `.mcp.json`, when it declares the server Nodal wrote.
+///
+/// The same rule as a settings file: a file that cannot be read is one note and no item,
+/// and a declaration that is not there exactly as Nodal wrote it is nothing to remove.
+fn declared(path: &Path, binary: &Path, notes: &mut Vec<String>) -> Option<Item> {
+    match mcp::declared(path, binary) {
+        Ok(true) => Some(Item {
+            kind: Kind::ToolServer,
+            path: path.to_path_buf(),
+            detail: String::from("the nodal tool server this project declares"),
+        }),
+        Ok(false) => None,
+        Err(error) => {
+            notes.push(format!(
+                "{} could not be read, so it was not checked: {error}",
+                path.display()
+            ));
+            None
+        }
+    }
 }
 
 /// The item for one settings file, when it holds hooks Nodal wrote and can be read.
