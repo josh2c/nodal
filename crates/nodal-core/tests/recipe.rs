@@ -351,3 +351,57 @@ fn inference_matches_the_recorded_reference_for_a_real_project() {
         .expect("gap keys serialise");
     assert_eq!(gaps, expected_gaps, "gaps differ from the reference");
 }
+
+/// The toolchain of a project, by the name each pin is recorded under.
+fn pins(root: &std::path::Path) -> BTreeMap<String, String> {
+    let opened = recipe::load(root).expect("a readable project");
+    opened.recipe.toolchain.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+/// A project whose only file is `relative`, with `contents` in it.
+fn project_of(relative: &str, contents: &str) -> (tempfile::TempDir, PathBuf) {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = directory.path().to_path_buf();
+    std::fs::write(root.join(relative), contents).expect("the file is written");
+    (directory, root)
+}
+
+/// A Python project states the interpreter it needs in `pyproject.toml`, which is the
+/// file every packaging backend reads, and often in no other file at all.
+#[test]
+fn a_pyproject_answers_the_toolchain_gap_with_its_requires_python() {
+    let (_directory, root) =
+        project_of("pyproject.toml", "[project]\nname = \"t\"\nrequires-python = \">=3.12\"\n");
+    assert_eq!(pins(&root).get("pyproject.python").map(String::as_str), Some(">=3.12"));
+}
+
+/// A Go module states its language version in the one directive `go.mod` has for it.
+#[test]
+fn a_go_module_answers_the_toolchain_gap_with_its_go_directive() {
+    let (_directory, root) = project_of("go.mod", "module example.com/m\n\ngo 1.23.4\n");
+    assert_eq!(pins(&root).get("gomod.go").map(String::as_str), Some("1.23.4"));
+}
+
+/// `rustup` reads either spelling of its file, and each may hold either form.
+///
+/// The table form is why this file cannot be read as a plain pin file: the first line
+/// of it is `[toolchain]`, which has the shape of a version without being one.
+#[test]
+fn either_spelling_of_the_rust_toolchain_file_is_read_in_either_form() {
+    for file in ["rust-toolchain", "rust-toolchain.toml"] {
+        let (_bare, root) = project_of(file, "1.88.0\n");
+        assert_eq!(pins(&root).get("rust").map(String::as_str), Some("1.88.0"), "{file} as a line");
+
+        let (_table, root) = project_of(file, "[toolchain]\nchannel = \"1.88.0\"\n");
+        assert_eq!(pins(&root).get("rust").map(String::as_str), Some("1.88.0"), "{file} as a table");
+    }
+}
+
+/// A table with no channel states no version, and a version is never invented from the
+/// text of a table header.
+#[test]
+fn a_rust_toolchain_table_without_a_channel_pins_nothing() {
+    let (_directory, root) =
+        project_of("rust-toolchain.toml", "[toolchain]\ncomponents = [\"clippy\"]\n");
+    assert_eq!(pins(&root).get("rust"), None);
+}
