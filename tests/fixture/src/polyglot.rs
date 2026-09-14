@@ -1,9 +1,9 @@
 //! A project of three ecosystems: a Rust binary, a Node CLI and a Python tool.
 //!
-//! The shape the three-day proof is run against, and the shape the single-manager
-//! inference was wrong about. A repository like this one carries three lockfiles, and a
-//! recipe that named one of them described a third of the tree: the base installed the
-//! Node dependencies and left the Rust and Python halves cold.
+//! A repository of four ecosystems, and the shape single-manager inference was wrong
+//! about. A repository like this one carries three lockfiles, and a recipe that named
+//! one of them described a third of the tree: the base installed the Node dependencies
+//! and left the Rust and Python halves cold.
 //!
 //! Every file here is evidence some source reads. The Cargo manifest and its lock name
 //! the Rust half and its minimum toolchain; `clippy.toml` is what makes `cargo clippy`

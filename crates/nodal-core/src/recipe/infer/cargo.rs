@@ -20,8 +20,10 @@ const MANIFEST: &str = "Cargo.toml";
 /// Where a project states that it lints with Clippy, as a file of its own.
 const CLIPPY_FILES: &[&str] = &["clippy.toml", ".clippy.toml"];
 
-/// Where a project states the same thing inside its manifest.
-const LINT_TABLES: &[&str] = &["lints", "workspace.lints"];
+/// Where a project states the same thing inside its manifest. The `clippy` subtable and
+/// not the table above it: `[lints.rust]` alone configures the compiler's own lints and
+/// says nothing about a component the toolchain may not have.
+const LINT_TABLES: &[&str] = &["lints.clippy", "workspace.lints.clippy"];
 
 /// The commands every Cargo tree has: the recipe key, the field it fills, and the line.
 const ALWAYS: &[(&str, SetCommand, &str)] = &[

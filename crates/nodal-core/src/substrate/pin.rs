@@ -161,12 +161,15 @@ const fn corepack_owns(manager: PackageManager) -> bool {
 ///
 /// `package_manager_pin` comes from a `packageManager` field, which names its own
 /// program, so it belongs to the manager it names. A repository whose primary is Cargo
-/// and whose `package.json` pins pnpm must not have that pin read as Cargo's.
+/// and whose `package.json` pins pnpm must not have that pin read as Cargo's. A pin
+/// that names no program is the primary manager's, for the reason the module doc gives.
 fn pinned(recipe: &Recipe, manager: PackageManager) -> Option<String> {
     let program = manager.program();
     if let Some(pin) = recipe.package_manager_pin.as_ref() {
         let text = pin.as_str();
-        if text.starts_with(&format!("{program}@")) || !text.contains('@') {
+        let named = text.starts_with(&format!("{program}@"));
+        let bare = !text.contains('@') && recipe.package_manager.first() == Some(&manager);
+        if named || bare {
             return Some(text.to_owned());
         }
     }
@@ -405,5 +408,41 @@ mod tests {
         };
         let refused = only(&recipe, &host).unwrap_err();
         assert!(refused.to_string().contains("needs uv 1.2.3"), "{refused}");
+    }
+
+    /// A pin that names no program says nothing about the managers behind the primary.
+    /// Read as every manager's, this recipe would refuse the whole build because the
+    /// host's Cargo is not version 11.
+    #[test]
+    fn a_pin_that_names_no_program_binds_to_the_primary_manager_only() {
+        let recipe = Recipe {
+            package_manager: vec![PackageManager::Pnpm, PackageManager::Cargo],
+            package_manager_pin: Some(ToolVersion::parse(String::from("11.7.0")).unwrap()),
+            ..Recipe::default()
+        };
+        let refused = installs(&recipe, &bare_host()).unwrap_err();
+        assert!(refused.to_string().contains("needs pnpm 11.7.0"), "the primary: {refused}");
+
+        let cargo_first = Recipe {
+            package_manager: vec![PackageManager::Cargo, PackageManager::Pnpm],
+            ..recipe.clone()
+        };
+        let resolved = installs(&cargo_first, &bare_host()).unwrap_err();
+        assert!(resolved.to_string().contains("needs cargo 11.7.0"), "{resolved}");
+    }
+
+    /// The same recipe with the pin removed installs both managers and refuses neither.
+    #[test]
+    fn a_manager_behind_the_primary_is_not_refused_over_the_primarys_bare_pin() {
+        let recipe = Recipe {
+            package_manager: vec![PackageManager::Pnpm, PackageManager::Cargo],
+            package_manager_pin: Some(ToolVersion::parse(String::from("10.4.1")).unwrap()),
+            ..Recipe::default()
+        };
+        // The host answers 10.4.1, so the primary's pin is satisfied and cargo, which
+        // the pin says nothing about, is installed rather than refused.
+        let resolved = installs(&recipe, &bare_host()).unwrap();
+        let argvs: Vec<Vec<String>> = resolved.iter().map(|one| one.argv.clone()).collect();
+        assert_eq!(argvs, [["pnpm", "install"], ["cargo", "fetch"]]);
     }
 }

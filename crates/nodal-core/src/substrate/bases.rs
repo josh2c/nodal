@@ -115,7 +115,25 @@ fn carried_on(
     key: &Key,
     progress: &Arc<dyn Reporter>,
 ) -> Result<Option<Outcome>> {
-    let Some(stopped) = stopped_at(store, key)? else { return Ok(None) };
+    let stopped = match stopped_at(store, key)? {
+        None => return Ok(None),
+        // A row this release cannot read is named rather than passed over. Nothing can
+        // be resumed from it, so the build starts again; what it says is where the
+        // earlier attempt's work is, so that a person can look at it or remove it
+        // rather than discover the directory months later with nothing to explain it.
+        Some(Attempt::Unreadable { destination, why }) => {
+            progress.line(&format!(
+                "an earlier build of this base was recorded by another version of nodal \
+                 and cannot be carried on: {why}"
+            ));
+            progress.line(&format!(
+                "starting again; what that build made is still at {kept}",
+                kept = build::kept_at(&destination).display()
+            ));
+            return Ok(None);
+        }
+        Some(Attempt::Resumable(stopped)) => stopped,
+    };
     progress.line(&format!(
         "an earlier build of this base stopped at the {step} step: {why}",
         step = stopped.step,
@@ -139,6 +157,21 @@ fn carried_on(
     }))
 }
 
+/// What a failed build of this base amounts to for the invocation that found it.
+enum Attempt {
+    /// Its parameters read back, so it can be carried on.
+    Resumable(Stopped),
+    /// Its parameters were written in a shape this release does not read. Nothing can
+    /// be rebuilt from them, and the directory the attempt left is named so that it is
+    /// not silently orphaned.
+    Unreadable {
+        /// Where that attempt was assembling its base.
+        destination: std::path::PathBuf,
+        /// Why the parameters could not be read.
+        why: String,
+    },
+}
+
 /// A failed build of the base this workspace wants, and where it got to.
 struct Stopped {
     /// The run, as the journal names it.
@@ -151,22 +184,50 @@ struct Stopped {
     why: String,
 }
 
+/// The three fields of a build's parameters that every release has written.
+///
+/// Read on their own, and before the whole, so that a row written in a shape this
+/// release does not read can still be recognised as this workspace's. Reading only the
+/// whole would make such a row invisible: it would be passed over as somebody else's,
+/// a new build would start, and the directory the earlier attempt left would stand
+/// there with nothing to say what it was.
+#[derive(serde::Deserialize)]
+struct Recognisable {
+    /// The workspace key the attempt was building for.
+    fingerprint: WorkspaceFp,
+    /// The platform it was building on.
+    platform: Platform,
+    /// Where it was assembling the base.
+    destination: std::path::PathBuf,
+}
+
 /// The newest failed build for this workspace key whose work is still on the disk.
 ///
 /// Still on the disk is half of the question. A person who removed what the attempt
 /// left by hand has answered it, and being asked about a directory that is not there
 /// would be a question with no good answer.
-fn stopped_at(store: &Store, key: &Key) -> Result<Option<Stopped>> {
+fn stopped_at(store: &Store, key: &Key) -> Result<Option<Attempt>> {
     for record in journal::failed(store.conn(), build::KIND)? {
-        let Ok(params) = serde_json::from_value::<Params>(record.params.clone()) else { continue };
-        if params.fingerprint != key.fingerprint || params.platform != key.platform {
+        let Ok(known) = serde_json::from_value::<Recognisable>(record.params.clone()) else {
+            continue;
+        };
+        if known.fingerprint != key.fingerprint || known.platform != key.platform {
             continue;
         }
-        if !build::unfinished(&params.destination) {
+        if !build::unfinished(&known.destination) {
             continue;
         }
+        let params = match serde_json::from_value::<Params>(record.params.clone()) {
+            Ok(params) => params,
+            Err(error) => {
+                return Ok(Some(Attempt::Unreadable {
+                    destination: known.destination,
+                    why: error.to_string(),
+                }));
+            }
+        };
         let Some((step, why)) = failing_step(store, record.id)? else { continue };
-        return Ok(Some(Stopped { operation: record.id, params, step, why }));
+        return Ok(Some(Attempt::Resumable(Stopped { operation: record.id, params, step, why })));
     }
     Ok(None)
 }

@@ -1,9 +1,9 @@
 //! Which package managers the project installs with, and the version it pins.
 //!
 //! The lockfile is the evidence: it is committed, it is the file CI installs from, and
-//! it names exactly one manager. A repository of one ecosystem carries one; the three
-//! day proof's project carries three, and every one of them has to be installed or the
-//! base is warm for a third of the tree.
+//! it names exactly one manager. A repository of one ecosystem carries one; a repository
+//! of a Rust binary, a Node CLI and a Python tool carries three, and every one of them
+//! has to be installed or the base is warm for a third of the tree.
 //!
 //! So every lockfile present is proposed, in the order below, and the first is the
 //! primary: the manager a bare script name resolves against. The order is the order of

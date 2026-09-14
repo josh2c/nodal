@@ -78,10 +78,12 @@ fn in_project(tree: &Path) -> bool {
 
 /// Whether the build command's own output directory is in the tree.
 ///
-/// Only Cargo names one that can be checked: the profile decides the subdirectory of
-/// `target`, and the command says which profile it asked for. A Node build writes
-/// wherever the project's own configuration sends it, so there is no directory to look
-/// for and the answer is unknown rather than invented.
+/// Only Cargo names one that can be checked, and only for the two profiles whose
+/// directory is part of the command: `cargo build` writes `target/debug` and
+/// `--release` writes `target/release`. A `--profile` names a directory of its own,
+/// which this does not read from the manifest, so that is unknown rather than reported
+/// cold at a path the build never wrote. A Node build writes wherever the project's own
+/// configuration sends it, so there is no directory to look for either.
 fn build(recipe: &Recipe, tree: &Path) -> State {
     let Some(command) = recipe.commands.build.as_ref() else {
         return State::Unknown { why: String::from("the project states no build command") };
@@ -93,6 +95,11 @@ fn build(recipe: &Recipe, tree: &Path) -> State {
     if *program != PackageManager::Cargo.program() {
         return State::Unknown {
             why: format!("a `{program}` build names no output directory this can check"),
+        };
+    }
+    if words.iter().any(|word| word.starts_with("--profile")) {
+        return State::Unknown {
+            why: String::from("the build names a profile whose output directory is not read here"),
         };
     }
     let profile = if words.contains(&"--release") { "release" } else { "debug" };
@@ -192,6 +199,17 @@ mod tests {
         let release = tree(&["target/release"]);
         let ready = of(&recipe(&[], Some("cargo build --release")), release.path()).build;
         assert_eq!(ready, State::Ready);
+    }
+
+    /// A named profile writes a directory of its own, which nothing here reads, so it
+    /// is unknown rather than reported cold at `target/debug`.
+    #[test]
+    fn a_build_under_a_named_profile_is_unknown_rather_than_cold_at_the_wrong_path() {
+        let root = tree(&["target/debug"]);
+        for line in ["cargo build --profile fast", "cargo build --profile=fast"] {
+            let state = of(&recipe(&[], Some(line)), root.path()).build;
+            assert!(matches!(state, State::Unknown { .. }), "{line}: {state:?}");
+        }
     }
 
     #[test]

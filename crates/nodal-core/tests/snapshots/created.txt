@@ -10,3 +10,4 @@
              no service answers on them; an adapter replaces them
   kept       test-results is excluded by default (test output), but the commit tracks it, so the copy keeps it
   not ready  dependencies: node_modules is not there; `pnpm` has not run here
+  not ready  build: a `pnpm` build names no output directory this can check

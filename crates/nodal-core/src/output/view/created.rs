@@ -164,8 +164,14 @@ impl Render for Created {
         if !self.kept.is_empty() {
             fields.push(Field::new("kept", kept_cell(&self.kept)));
         }
-        for (part, why) in self.readiness.cold() {
-            fields.push(Field::new("not ready", format!("{part}: {why}")));
+        // Every part a file did not prove, cold or unanswerable. An unknown part is
+        // not a fault and is still the difference between "this home is ready" and
+        // "nothing here could say", which is what a person needs before they wonder
+        // why a build behaves unlike the one they expected.
+        for (part, state) in self.readiness.parts() {
+            if let Some(why) = state.why() {
+                fields.push(Field::new("not ready", format!("{part}: {why}")));
+            }
         }
         let mut doc = Doc::from_iter([Block::fields(fields)]);
         // An adoption ends with a sentence, not with a column. The field above is read

@@ -484,3 +484,75 @@ fn wait_for_park(marker: &Path, child: &Owned) {
     }
     panic!("the child never reached the park");
 }
+
+// ---------------------------------------------------------------------------
+// A failed build this release cannot read is named, not passed over.
+// ---------------------------------------------------------------------------
+
+/// The parameters of a base build changed shape: one install became a list of them.
+///
+/// A journal row an older release wrote no longer deserialises. Read only as the whole,
+/// such a row would be passed over as somebody else's, a new build would start, and the
+/// directory the earlier attempt paid minutes for would stand there with nothing to say
+/// what it was. The three fields every release has written are read first, so the row
+/// is recognised as this workspace's and reported with its reason.
+#[test]
+fn a_failed_build_written_in_an_older_shape_is_named_rather_than_passed_over() {
+    let (_dir, world) = world();
+    let mut store = world.store();
+    let project = world.project(&mut store);
+
+    // Build once to learn what this workspace keys to, then take the base away so that
+    // the next call has to look at the failed attempts instead of finding it warm.
+    let progress: Arc<dyn Reporter> = Arc::new(Collector::default());
+    let built = substrate::ensure(&mut store, &world.request(&project), &progress).unwrap();
+    let fingerprint = built.fingerprint.0.to_string();
+    let platform = built.base.platform.to_string();
+    substrate::evict(&mut store, built.base.id, progress.as_ref()).unwrap();
+
+    // What the older release left: a directory at the base's name with the mark beside
+    // it, and a failed row whose parameters carry `install` where this release writes
+    // `installs`.
+    let destination = world.home().join("older-shape-base");
+    std::fs::create_dir_all(&destination).unwrap();
+    write(&nodal_core::substrate::build::mark_of(&destination), "still being built\n");
+    let params = serde_json::json!({
+        "base": "01J9X0000000000000000000AB",
+        "project": project.id.to_string(),
+        "fingerprint": fingerprint,
+        "platform": platform,
+        "commit": "a".repeat(40),
+        "destination": destination.to_str().unwrap(),
+        "state_dir": world.home().to_str().unwrap(),
+        "origin": { "clone": { "url": "https://example.invalid/repo.git" } },
+        "objects": world.checkout().to_str().unwrap(),
+        "excludes": [],
+        "install": ["pnpm", "install"],
+        "install_env": [],
+        "warm": [],
+        "planned_at": 0,
+    });
+    store
+        .conn()
+        .execute(
+            "INSERT INTO operation (id, kind, subject, params, recovery, state, host, pid, \
+             started_at, ended_at) VALUES (?, 'base build', 'older', ?, 'resume', 'failed', \
+             'host', 1, 0, 1)",
+            rusqlite::params!["01J9X0000000000000000000AC", params.to_string()],
+        )
+        .unwrap();
+
+    let collector = Arc::new(Collector::default());
+    let watching: Arc<dyn Reporter> = collector.clone();
+    substrate::ensure(&mut store, &world.request(&project), &watching).unwrap();
+
+    let said = collector.lines().join("\n");
+    assert!(
+        said.contains("cannot be carried on"),
+        "the unreadable row was passed over in silence: {said}"
+    );
+    assert!(
+        said.contains(destination.to_str().unwrap()),
+        "the report does not say where that build's work is: {said}"
+    );
+}
