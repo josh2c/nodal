@@ -258,7 +258,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{Finding, SAMPLE, Uniqueness};
-    use crate::git::status::{Change, Entry, State};
+    use crate::git::status::{Change, Entry, State, Submodule};
 
     fn sample(count: usize) -> Finding {
         Finding::Untracked {
@@ -287,13 +287,19 @@ mod tests {
             path: PathBuf::from(".claude/settings.json"),
             state: State::Tracked { index: Change::Unmodified, worktree: Change::Modified },
             origin: None,
+            submodule: Submodule::No,
         };
         assert!(!super::is_nodals_own(&tracked));
     }
 
     /// An entry as `git status` reports an untracked path.
     fn untracked(path: &str) -> Entry {
-        Entry { path: PathBuf::from(path), state: State::Untracked, origin: None }
+        Entry {
+            path: PathBuf::from(path),
+            state: State::Untracked,
+            origin: None,
+            submodule: Submodule::No,
+        }
     }
 
     #[test]

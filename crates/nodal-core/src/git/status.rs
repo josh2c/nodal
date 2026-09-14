@@ -75,6 +75,70 @@ pub enum State {
     Ignored,
 }
 
+/// What a record's `<sub>` field says about the path it names.
+///
+/// Git writes `N...` for a path that is not a submodule, and `S<c><m><u>` for one that
+/// is: `c` when the commit the superproject records for it has moved, `m` when the
+/// submodule's own working tree holds modified tracked files, and `u` when it holds
+/// untracked ones. Each letter is a dot when it does not apply.
+///
+/// The three are not one answer, because two of them travel and one does not. A moved
+/// commit is a gitlink, which is in the superproject's own index and reaches a patch
+/// like any other change; modified and untracked content is inside a repository the
+/// superproject does not hold and reaches nothing. That is the distinction
+/// [`Submodule::holds_work`] is about.
+///
+/// **What Git reports here depends on how it was asked.** `submodule.<name>.ignore` and
+/// `diff.ignoreSubmodules` can hide any of the three, and a reading that wants all of
+/// them has to pass `--ignore-submodules=none`
+/// ([`super::Git::status_of_submodules_too`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Submodule {
+    /// The path is not a submodule. Every `?`, `!` and `N...` record.
+    #[default]
+    No,
+    /// The path is a submodule, and this is what the record said about it.
+    Yes {
+        /// Whether the commit the superproject records for it has moved.
+        commit_moved: bool,
+        /// Whether its own working tree holds modified tracked files.
+        modified: bool,
+        /// Whether its own working tree holds untracked files.
+        untracked: bool,
+    },
+}
+
+impl Submodule {
+    /// Read one `<sub>` field. Anything that is not a four-letter `S` record is not a
+    /// submodule.
+    #[must_use]
+    pub fn parse(field: &str) -> Self {
+        let letters: Vec<char> = field.chars().collect();
+        let ['S', commit, modified, untracked] = letters[..] else { return Self::No };
+        Self::Yes {
+            commit_moved: commit == 'C',
+            modified: modified == 'M',
+            untracked: untracked == 'U',
+        }
+    }
+
+    /// Whether the path is a submodule at all.
+    #[must_use]
+    pub fn is_one(self) -> bool {
+        matches!(self, Self::Yes { .. })
+    }
+
+    /// Whether the submodule's own working tree holds work no commit of its own holds.
+    ///
+    /// This is what nothing in the superproject can reproduce: it lives in a repository
+    /// the superproject only records a commit of. A moved commit is not it — that is a
+    /// gitlink, and a gitlink is in the superproject's own index.
+    #[must_use]
+    pub fn holds_work(self) -> bool {
+        matches!(self, Self::Yes { modified: true, .. } | Self::Yes { untracked: true, .. })
+    }
+}
+
 /// One entry of a status listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
@@ -84,6 +148,9 @@ pub struct Entry {
     pub origin: Option<PathBuf>,
     /// What is different about it.
     pub state: State,
+    /// What the record said about a submodule at this path. Never one for an untracked
+    /// or ignored path, which Git reports without the field.
+    pub submodule: Submodule,
 }
 
 impl Entry {
@@ -215,11 +282,12 @@ pub(super) fn parse(args: &[String], records: &[&str]) -> Result<Summary> {
     })
 }
 
-/// Split the `XY <fields…> <path>` tail of a v2 record into its `XY` field and the path.
-fn split_fields(args: &[String], body: &str, fields: usize) -> Result<(State, PathBuf)> {
+/// Split the `XY <sub> <fields…> <path>` tail of a v2 record into the three parts of it
+/// this module keeps: the `XY` field, the `<sub>` field, and the path.
+fn split_fields(args: &[String], body: &str, fields: usize) -> Result<(State, Submodule, PathBuf)> {
     let malformed = || Error::GitParse { args: args.to_vec(), record: body.to_owned() };
     let parts: Vec<&str> = body.splitn(fields + 1, ' ').collect();
-    let [codes, .., path] = parts.as_slice() else { return Err(malformed()) };
+    let [codes, sub, .., path] = parts.as_slice() else { return Err(malformed()) };
     if parts.len() != fields + 1 || path.is_empty() {
         return Err(malformed());
     }
@@ -228,32 +296,32 @@ fn split_fields(args: &[String], body: &str, fields: usize) -> Result<(State, Pa
         return Err(malformed());
     };
     let state = State::Tracked { index: Change::parse(index), worktree: Change::parse(worktree) };
-    Ok((state, PathBuf::from(path)))
+    Ok((state, Submodule::parse(sub), PathBuf::from(path)))
 }
 
 /// `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>`
 fn ordinary(args: &[String], body: &str) -> Result<Entry> {
-    let (state, path) = split_fields(args, body, 7)?;
-    Ok(Entry { path, origin: None, state })
+    let (state, submodule, path) = split_fields(args, body, 7)?;
+    Ok(Entry { path, origin: None, state, submodule })
 }
 
 /// `2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <Xscore> <path>` with the origin path next.
 fn renamed(args: &[String], body: &str, origin: Option<&str>) -> Result<Entry> {
-    let (state, path) = split_fields(args, body, 8)?;
+    let (state, submodule, path) = split_fields(args, body, 8)?;
     let origin =
         origin.ok_or_else(|| Error::GitParse { args: args.to_vec(), record: body.to_owned() })?;
-    Ok(Entry { path, origin: Some(PathBuf::from(origin)), state })
+    Ok(Entry { path, origin: Some(PathBuf::from(origin)), state, submodule })
 }
 
 /// `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`
 fn unmerged(args: &[String], body: &str) -> Result<Entry> {
-    let (_, path) = split_fields(args, body, 9)?;
-    Ok(Entry { path, origin: None, state: State::Unmerged })
+    let (_, submodule, path) = split_fields(args, body, 9)?;
+    Ok(Entry { path, origin: None, state: State::Unmerged, submodule })
 }
 
-/// `? <path>` and `! <path>`
+/// `? <path>` and `! <path>`, which carry no `<sub>` field.
 fn plain(body: &str, state: State) -> Entry {
-    Entry { path: PathBuf::from(body), origin: None, state }
+    Entry { path: PathBuf::from(body), origin: None, state, submodule: Submodule::No }
 }
 
 #[cfg(test)]
@@ -261,9 +329,51 @@ fn plain(body: &str, state: State) -> Entry {
 mod tests {
     use std::path::Path;
 
-    use super::{Change, Head, State, parse};
+    use super::{Change, Head, State, Submodule, parse};
 
     const OID: &str = "1e2f3a4b5c6d7e8f90112233445566778899aabb";
+
+    #[test]
+    fn reads_what_a_record_says_about_a_submodule() {
+        assert_eq!(Submodule::parse("N..."), Submodule::No);
+        assert_eq!(Submodule::parse(""), Submodule::No);
+        assert_eq!(Submodule::parse("S"), Submodule::No, "a truncated field is not a reading");
+        assert_eq!(
+            Submodule::parse("SC.."),
+            Submodule::Yes { commit_moved: true, modified: false, untracked: false }
+        );
+        assert_eq!(
+            Submodule::parse("S.MU"),
+            Submodule::Yes { commit_moved: false, modified: true, untracked: true }
+        );
+    }
+
+    #[test]
+    fn only_a_submodules_own_working_tree_counts_as_work_it_holds() {
+        // A moved commit is a gitlink, which is in the superproject's own index and
+        // travels in a patch. The other two are in a repository the superproject does
+        // not hold, and travel nowhere.
+        assert!(!Submodule::No.holds_work());
+        assert!(!Submodule::parse("SC..").holds_work());
+        assert!(Submodule::parse("S.M.").holds_work());
+        assert!(Submodule::parse("S..U").holds_work());
+        assert!(Submodule::parse("SCMU").holds_work());
+        assert!(Submodule::parse("SCMU").is_one());
+        assert!(!Submodule::No.is_one());
+    }
+
+    #[test]
+    fn a_submodule_record_is_read_out_of_the_field_git_puts_it_in() {
+        let records = [
+            format!("# branch.oid {OID}"),
+            "# branch.head main".to_owned(),
+            format!("1 .M S..U 160000 160000 160000 {OID} {OID} vendor/lib"),
+        ];
+        let borrowed: Vec<&str> = records.iter().map(String::as_str).collect();
+        let summary = parse(&[], &borrowed).unwrap();
+        assert_eq!(summary.entries[0].path, Path::new("vendor/lib"));
+        assert!(summary.entries[0].submodule.holds_work());
+    }
 
     #[test]
     fn reads_branch_upstream_and_divergence() {
@@ -316,6 +426,10 @@ mod tests {
         assert_eq!(summary.entries[3].path, Path::new("untracked d.rs"));
         assert_eq!(summary.entries[4].state, State::Ignored);
         assert!(summary.has_conflicts());
+        assert!(
+            summary.entries.iter().all(|entry| entry.submodule == Submodule::No),
+            "`N...` is not a submodule, and an untracked or ignored record has no field at all"
+        );
         assert!(!summary.is_clean());
         assert_eq!(summary.uncommitted().count(), 4);
     }

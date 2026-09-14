@@ -420,11 +420,47 @@ impl World {
             base_path: self.base.clone(),
             checkout: self.source.clone(),
             state_dir: self.state.clone(),
+            carry: false,
             unit: self.unit(),
             environment: self.environment(),
             block: PortBlock { project_id: id('1'), first: 20_000, last: 20_099 },
             ports: vec!["app".parse().unwrap()],
         }
+    }
+
+    /// The parameters of a create that carries the checkout's uncommitted work, with
+    /// that work planted in the checkout first.
+    ///
+    /// The unit's start commit is the checkout's `HEAD`, which is what `--carry`
+    /// pins it to and what the patches are against.
+    pub fn carry_params(&self) -> new::Params {
+        self.dirty_source();
+        let mut params = self.create_params();
+        params.carry = true;
+        params.unit.base_commit = Some(git(&self.source, &["rev-parse", "HEAD"]).parse().unwrap());
+        params
+    }
+
+    /// Put work in the checkout of every kind a carry has to tell apart, once.
+    ///
+    /// `staged.txt` is staged and nothing else. `README.md` is staged *and* edited
+    /// again on top, which is what `git add -p` leaves and the one case a carry that
+    /// flattened the two would get wrong. `loose.txt` is untracked. `heavy/` is
+    /// ignored by an ignore file that is itself untracked, so the rule is in force in
+    /// both repositories without the first commit having to carry it.
+    pub fn dirty_source(&self) {
+        if self.source.join("loose.txt").exists() {
+            return;
+        }
+        std::fs::write(self.source.join("staged.txt"), "staged\n").unwrap();
+        std::fs::write(self.source.join("README.md"), "a project\nstaged line\n").unwrap();
+        git_ok(&self.source, &["add", "--", "staged.txt", "README.md"]);
+        std::fs::write(self.source.join("README.md"), "a project\nstaged line\nloose line\n")
+            .unwrap();
+        std::fs::write(self.source.join("loose.txt"), "never added\n").unwrap();
+        std::fs::write(self.source.join(".gitignore"), "heavy/\n").unwrap();
+        std::fs::create_dir_all(self.source.join("heavy")).unwrap();
+        std::fs::write(self.source.join("heavy").join("blob.bin"), "the base owns this\n").unwrap();
     }
 
     /// The parameters of an adopt that materialises a home, which is a create with the

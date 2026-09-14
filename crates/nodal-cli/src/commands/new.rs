@@ -29,6 +29,12 @@ pub struct New {
     #[arg(long, value_name = "BRANCH")]
     pub from: Option<String>,
 
+    /// Start the unit at this checkout's HEAD with its uncommitted work copied in:
+    /// staged as staged, unstaged as unstaged, untracked as untracked. The checkout is
+    /// left exactly as it was.
+    #[arg(long, conflicts_with = "from")]
+    pub carry: bool,
+
     /// A directory in the project. Defaults to the working directory.
     #[arg(long, value_name = "PATH")]
     pub path: Option<PathBuf>,
@@ -50,10 +56,18 @@ impl New {
     /// standard error while it works, so that the wait is accounted for rather than
     /// silent.
     ///
+    /// `--carry` adds one thing and changes nothing else: the unit starts at this
+    /// checkout's `HEAD` with the work the person had not committed copied into it. The
+    /// checkout is read and left as it was, and the unit starts dirty rather than with a
+    /// commit Nodal wrote. It refuses rather than guess — an unmerged index, a `HEAD`
+    /// that is not a branch with a commit, a set over the ceiling, or a file it would
+    /// have to overwrite — and every refusal is made before a base can be built.
+    ///
     /// # Errors
     ///
     /// Propagates a branch another open unit holds, a home that would overlap a tree
-    /// Nodal knows, and whatever Git, the filesystem or the registry reported.
+    /// Nodal knows, whatever `--carry` refused, and whatever Git, the filesystem or the
+    /// registry reported.
     pub fn run(&self, store: &mut Store, hooks: bool) -> nodal_core::Result<ExitCode> {
         let progress: Arc<dyn Reporter> = substrate::sink(self.json);
         let report = new::create(store, &self.request(hooks)?, &progress)?;
@@ -76,6 +90,7 @@ impl New {
             name: self.name.as_deref().map(Slug::parse).transpose()?,
             parent_branch: self.from.as_deref().map(BranchName::parse).transpose()?,
             hooks,
+            carry: self.carry,
         })
     }
 }

@@ -20,15 +20,18 @@
 
 mod support;
 
+use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
+use nodal_core::git::carry;
 use nodal_core::lifecycle;
 use nodal_core::lifecycle::journal::{self, State, StepRecord, StepState};
 use nodal_core::lifecycle::ops::new::{self, Params};
 use nodal_core::lifecycle::{Action, guard, marker, ops};
 use nodal_core::model::{OperationId, Timestamp};
 use nodal_core::store::{Store, bases, environments, projects, units};
+use nodal_safety::git::{self, git_ok, git_text as git};
 use serde_json::Value;
 use support::World;
 
@@ -222,6 +225,164 @@ fn a_home_is_refused_inside_a_project_or_another_units_home() {
     let inside_home = params.environment.home.join("packages").join("web");
     let refused = guard::placement(store.conn(), &inside_home, Path::new("/nowhere")).unwrap_err();
     assert!(refused.to_string().contains(guard::HOME), "{refused}");
+}
+
+// ---------------------------------------------------------------------------
+// `--carry`: the checkout's uncommitted work, in a unit that starts where it starts.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_carry_reproduces_staged_unstaged_and_untracked_work_and_leaves_out_the_ignored() {
+    let fixture = World::plain();
+    let params = fixture.carry_params();
+    let home = params.environment.home.clone();
+
+    let plan = new::plan(&params).unwrap();
+    let steps = &plan.steps;
+    for step in steps.iter().take(steps.len() - 1) {
+        step.apply().unwrap();
+    }
+    let refs_before = (refs_of(&home), refs_of(&fixture.source));
+    steps.last().unwrap().apply().unwrap();
+    assert_eq!(
+        (refs_of(&home), refs_of(&fixture.source)),
+        refs_before,
+        "the carry writes no ref, in the unit or in the checkout"
+    );
+
+    // Staged as staged, unstaged as unstaged. `README.md` is both, which is the case a
+    // carry that flattened the two into one dirty tree would get wrong.
+    assert_eq!(
+        git(&home, &["diff", "--cached", "--name-only"]).lines().collect::<Vec<_>>(),
+        ["README.md", "staged.txt"],
+        "what the checkout had staged is staged in the unit"
+    );
+    assert_eq!(
+        git(&home, &["diff", "--name-only"]).lines().collect::<Vec<_>>(),
+        ["README.md"],
+        "and what it held over the index is unstaged in the unit"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("README.md")).unwrap(),
+        "a project\nstaged line\nloose line\n",
+        "the working tree is the working tree the person had"
+    );
+
+    // Untracked as untracked, and the ignored heavy state left where the base owns it.
+    assert_eq!(std::fs::read_to_string(home.join("loose.txt")).unwrap(), "never added\n");
+    assert!(
+        git(&home, &["status", "--porcelain"]).contains("?? loose.txt"),
+        "an untracked file arrives untracked, not staged"
+    );
+    assert!(
+        !home.join("heavy").exists(),
+        "what an ignore rule covered is the base's, not the work"
+    );
+
+    // Repeatable: a step may be applied again against a world it has already changed.
+    let once = git::untouched(&home);
+    steps.last().unwrap().apply().unwrap();
+    once.assert_unchanged(&git::untouched(&home), "carrying the same work twice changes nothing");
+
+    // No commit, no ref: the unit starts dirty, at the commit the checkout was on.
+    assert_eq!(
+        git(&home, &["rev-parse", "HEAD"]).trim(),
+        git(&fixture.source, &["rev-parse", "HEAD"]).trim(),
+        "the branch stands where the checkout stands; nothing was committed for it"
+    );
+    assert_eq!(
+        git(&home, &["rev-list", "--count", "HEAD"]).trim(),
+        git(&fixture.source, &["rev-list", "--count", "HEAD"]).trim()
+    );
+}
+
+/// Every ref of a repository and where it stands.
+fn refs_of(repo: &Path) -> String {
+    git(repo, &["for-each-ref", "--format=%(refname) %(objectname)"])
+}
+
+#[test]
+fn a_carry_leaves_the_checkout_byte_for_byte_and_index_for_index_as_it_was() {
+    let fixture = World::plain();
+    let params = fixture.carry_params();
+    let before = git::untouched(&fixture.source);
+
+    for step in &new::plan(&params).unwrap().steps {
+        step.apply().unwrap();
+    }
+
+    before.assert_unchanged(
+        &git::untouched(&fixture.source),
+        "the carry copied the work; it did not move it",
+    );
+}
+
+#[test]
+fn a_carry_that_fails_at_the_destination_leaves_the_checkout_alone() {
+    let fixture = World::plain();
+    let params = fixture.carry_params();
+    let plan = new::plan(&params).unwrap();
+    let steps = &plan.steps;
+    for step in steps.iter().take(steps.len() - 1) {
+        step.apply().unwrap();
+    }
+    // A file the home already holds where an untracked file of the checkout's wants to
+    // be, with other bytes in it: the one collision a carry must never resolve itself.
+    std::fs::write(params.environment.home.join("loose.txt"), "the home wrote this\n").unwrap();
+    let before = git::untouched(&fixture.source);
+
+    let carry = steps.last().expect("the carry is the last step of a carrying plan");
+    assert_eq!(carry.key(), "home.carry");
+    let refused = carry.apply().expect_err("a collision is refused rather than overwritten");
+    assert!(refused.to_string().contains("loose.txt"), "{refused}");
+
+    before.assert_unchanged(
+        &git::untouched(&fixture.source),
+        "a failed carry changed nothing in the checkout",
+    );
+    assert_eq!(
+        std::fs::read_to_string(params.environment.home.join("loose.txt")).unwrap(),
+        "the home wrote this\n",
+        "nor did it overwrite what it refused"
+    );
+    for step in plan.steps.iter().rev() {
+        step.undo().unwrap();
+    }
+    assert!(!params.environment.home.exists(), "and the rollback took the home away");
+}
+
+#[test]
+fn a_carry_of_an_unmerged_or_unanchored_checkout_is_refused_by_name() {
+    let fixture = World::plain();
+    fixture.dirty_source();
+
+    let detached = git(&fixture.source, &["rev-parse", "HEAD"]);
+    git_ok(&fixture.source, &["checkout", "--quiet", "--detach", detached.trim()]);
+    let refused = carry::read(&fixture.source).unwrap_err();
+    assert!(refused.to_string().contains("not on a branch with a commit"), "{refused}");
+    git_ok(&fixture.source, &["checkout", "--quiet", "main"]);
+
+    // An unmerged index, written by hand: `git update-index` is what puts a path in two
+    // stages without a conflict having to be produced first.
+    stage_conflict(&fixture.source, "README.md");
+    let refused = carry::read(&fixture.source).unwrap_err();
+    assert!(refused.to_string().contains("unresolved merge stages"), "{refused}");
+}
+
+/// Put `path` in the index at two stages, which is what a conflict leaves behind.
+fn stage_conflict(repo: &Path, path: &str) {
+    let blob = git(repo, &["rev-parse", "HEAD:README.md"]);
+    let blob = blob.trim();
+    for stage in [2, 3] {
+        let record = format!("100644 {blob} {stage}\t{path}");
+        let mut child = std::process::Command::new("git")
+            .args(["-C", &repo.display().to_string(), "update-index", "--index-info"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(record.as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success(), "the stage entry was written");
+    }
 }
 
 /// Journal a run of this plan as started by a process that is no longer there.

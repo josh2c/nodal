@@ -36,7 +36,8 @@ use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 use nodal_core::model::{Epistemic, Event, EventKind};
-use nodal_safety::git::{git_ok, git_text as git};
+use nodal_safety::git::{self, git_ok, git_text as git};
+use nodal_safety::process;
 use nodal_safety::project::Layout;
 use nodal_safety::text::stdout;
 use nodal_safety::{InState as _, Workspace};
@@ -242,6 +243,291 @@ fn the_second_unit_of_a_workspace_reuses_the_base_the_first_one_paid_for() {
     // Both units hold the base, which is what stops a sweep taking it away.
     let listed = stdout(&workspace.nodal(&["base", "ls", "--json"]));
     assert!(listed.contains("\"pins\": 2"), "{listed}");
+}
+
+// ---------------------------------------------------------------------------
+// `nodal new --carry`.
+// ---------------------------------------------------------------------------
+
+/// Put work in the checkout of every kind a carry has to tell apart.
+///
+/// `staged.txt` is staged and nothing else; `app/main.txt` is staged *and* edited again
+/// on top, which is what `git add -p` leaves behind and the one case a carry that
+/// flattened the two would get wrong; `scratch.txt` was never added; and
+/// `node_modules/` is what the project's ignore file already covers.
+fn dirty(workspace: &Workspace) {
+    std::fs::write(workspace.source.join("staged.txt"), "staged\n").unwrap();
+    std::fs::write(workspace.source.join("app").join("main.txt"), "shared\nstaged\n").unwrap();
+    git_ok(&workspace.source, &["add", "--", "staged.txt", "app/main.txt"]);
+    std::fs::write(workspace.source.join("app").join("main.txt"), "shared\nstaged\nloose\n")
+        .unwrap();
+    std::fs::write(workspace.source.join("scratch.txt"), "notes to self\n").unwrap();
+    write_bulk(&workspace.source.join("node_modules"), 3);
+}
+
+#[test]
+fn a_carried_unit_starts_dirty_in_the_shape_the_checkout_was_in() {
+    let workspace = Workspace::new(state::BINARY);
+    dirty(&workspace);
+
+    let report = stdout(&workspace.nodal(&["new", "worker import", "--carry"]));
+    assert!(report.contains("worker-import"), "{report}");
+    let home = workspace.one_home();
+
+    // Staged as staged, unstaged as unstaged. The distinction is the point: one file is
+    // in both, and a carry that committed or flattened the work would lose that.
+    assert_eq!(
+        git(&home, &["diff", "--cached", "--name-only"]).lines().collect::<Vec<_>>(),
+        ["app/main.txt", "staged.txt"]
+    );
+    assert_eq!(git(&home, &["diff", "--name-only"]).lines().collect::<Vec<_>>(), ["app/main.txt"]);
+    assert_eq!(
+        std::fs::read_to_string(home.join("app").join("main.txt")).unwrap(),
+        "shared\nstaged\nloose\n",
+        "the working tree is the working tree the person had"
+    );
+
+    // Untracked as untracked, and the state an ignore rule covers left to the base.
+    assert_eq!(std::fs::read_to_string(home.join("scratch.txt")).unwrap(), "notes to self\n");
+    assert!(
+        git(&home, &["status", "--porcelain"]).contains("?? scratch.txt"),
+        "a file that was never added arrives never added"
+    );
+    assert!(
+        !home.join("node_modules").exists(),
+        "what the project ignores is the base's state, and the base owns it"
+    );
+
+    // No commit, no ref, no synthetic anything: the branch stands where the checkout
+    // stands and the work sits on top of it, uncommitted.
+    assert_eq!(
+        git(&home, &["rev-parse", "HEAD"]),
+        git(&workspace.source, &["rev-parse", "HEAD"]),
+        "the unit starts at the checkout's HEAD"
+    );
+    assert_eq!(
+        git(&home, &["rev-list", "--count", "HEAD"]).trim(),
+        "1",
+        "nothing was committed for it"
+    );
+
+    let noted = workspace.events();
+    assert!(
+        noted.iter().any(|event| event.body.contains("carried 3 uncommitted paths")),
+        "the unit's log says why it was dirty the moment it was made: {noted:?}"
+    );
+}
+
+#[test]
+fn a_carry_leaves_the_checkout_byte_for_byte_and_index_for_index_as_it_was() {
+    let workspace = Workspace::new(state::BINARY);
+    dirty(&workspace);
+    let before = git::untouched(&workspace.source);
+
+    drop(stdout(&workspace.nodal(&["new", "worker import", "--carry"])));
+
+    // The tree byte for byte, the index byte for byte, and every ref where it stood: a
+    // carry reads the checkout and writes nothing at all in it.
+    before.assert_unchanged(&git::untouched(&workspace.source), "a carry copies; it does not move");
+    assert_eq!(
+        git(&workspace.source, &["status", "--porcelain"]),
+        "MM app/main.txt\nA  staged.txt\n?? scratch.txt\n",
+        "the work is still there, in the state it was in"
+    );
+}
+
+#[test]
+fn a_carry_that_cannot_be_made_is_refused_by_name_and_leaves_nothing_behind() {
+    let workspace = Workspace::new(state::BINARY);
+    dirty(&workspace);
+    let before = git::untouched(&workspace.source);
+
+    // Two starting points at once. The unit starts at HEAD when it carries, so a second
+    // one is a contradiction rather than a preference.
+    let refused = workspace.nodal(&["new", "both", "--carry", "--from", "main"]);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("--from"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+
+    // A HEAD that is not a branch with a commit: the unit would have nowhere to start
+    // and the work nothing to be a difference from.
+    let head = git(&workspace.source, &["rev-parse", "HEAD"]).trim().to_owned();
+    git_ok(&workspace.source, &["checkout", "--quiet", "--detach", &head]);
+    let refused = workspace.nodal(&["new", "detached", "--carry"]);
+    let told = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(!refused.status.success());
+    assert!(told.contains("not on a branch with a commit"), "{told}");
+    git_ok(&workspace.source, &["checkout", "--quiet", "main"]);
+
+    assert!(workspace.homes().is_empty(), "no refusal left a home behind");
+    assert!(workspace.bases().is_empty(), "and none of them built a base first");
+    before.assert_unchanged(&git::untouched(&workspace.source), "nor did one change the checkout");
+}
+
+/// How long a carry that must not block is given before the test fails it.
+///
+/// A create against this fixture is over in well under a second; a minute is a deadline
+/// only a process that is waiting on something could reach.
+const BOUND: Duration = Duration::from_secs(60);
+
+#[test]
+fn a_carry_refuses_a_submodule_that_holds_work_of_its_own() {
+    let workspace = Workspace::new(state::BINARY);
+    let library = workspace.root().join("library");
+    std::fs::create_dir_all(&library).unwrap();
+    std::fs::write(library.join("lib.txt"), "v1\n").unwrap();
+    git::init(&library, "main");
+    git::commit(&library, "the library");
+    git::submodule(&workspace.source, &library, "vendor/lib");
+
+    // Work inside the submodule, of both kinds: an edit to a file it tracks and a file
+    // it does not. Neither is in the superproject's objects, so neither patch can hold
+    // it, and the diffs pass `--ignore-submodules=dirty` so neither would even mention
+    // it. A carry that went ahead would make a unit missing work it said it had copied.
+    let nested = workspace.source.join("vendor").join("lib");
+    std::fs::write(nested.join("lib.txt"), "v2\n").unwrap();
+    std::fs::write(nested.join("scratch.txt"), "notes\n").unwrap();
+    std::fs::write(workspace.source.join("scratch.txt"), "top-level notes\n").unwrap();
+    let before = git::untouched(&workspace.source);
+    let nested_before = git::untouched(&nested);
+
+    let refused = workspace.nodal(&["new", "worker import", "--carry"]);
+    let told = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(!refused.status.success(), "{told}");
+    assert!(told.contains("vendor/lib"), "the refusal names the submodule: {told}");
+    assert!(told.contains("cannot reach"), "{told}");
+
+    assert!(workspace.homes().is_empty(), "the refusal left no home");
+    assert!(workspace.bases().is_empty(), "and did not first pay for a base");
+    before.assert_unchanged(&git::untouched(&workspace.source), "the checkout is as it was");
+    nested_before
+        .assert_unchanged(&git::untouched(&nested), "and so is the submodule's own repository");
+
+    // Hiding it is not the same as it not being there: a person who told Git to ignore
+    // the submodule still has the work, so the reading forces it into view.
+    git_ok(&workspace.source, &["config", "submodule.vendor/lib.ignore", "all"]);
+    let refused = workspace.nodal(&["new", "worker import", "--carry"]);
+    let told = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(!refused.status.success(), "an ignore setting does not make the work go away: {told}");
+    assert!(told.contains("vendor/lib"), "{told}");
+
+    // A submodule with nothing of its own in it is no obstacle, and the work above it
+    // still carries.
+    git_ok(&workspace.source, &["config", "--unset", "submodule.vendor/lib.ignore"]);
+    std::fs::remove_file(nested.join("scratch.txt")).unwrap();
+    git_ok(&nested, &["checkout", "--quiet", "--", "lib.txt"]);
+    drop(stdout(&workspace.nodal(&["new", "worker import", "--carry"])));
+    let home = workspace.one_home();
+    assert_eq!(std::fs::read_to_string(home.join("scratch.txt")).unwrap(), "top-level notes\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn a_carry_refuses_a_named_pipe_and_reaches_the_refusal_without_opening_it() {
+    let workspace = Workspace::new(state::BINARY);
+    // A tracked file replaced by a named pipe. This is the shape that actually occurs:
+    // Git's own scan never lists a pipe as untracked, but it reports one standing where
+    // a tracked file was as an ordinary modification, and `git diff` then stops on it.
+    let tracked = workspace.source.join("app").join("main.txt");
+    std::fs::remove_file(&tracked).unwrap();
+    nodal_safety::tree::fifo(&tracked);
+    let before = git::untouched(&workspace.source);
+
+    // Bounded, because the property is about time. A reader of a pipe waits for a writer
+    // that may never come, so "it answered without opening it" is only proved by an
+    // answer that arrived.
+    let refused =
+        process::within(&mut workspace.command(&["new", "worker import", "--carry"]), BOUND);
+    let told = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(!refused.status.success(), "{told}");
+    assert!(told.contains("main.txt"), "the refusal names the path: {told}");
+    assert!(told.contains("a named pipe"), "and says what it is: {told}");
+    assert!(!told.contains("cannot hash"), "before git ever tried to read it: {told}");
+
+    assert!(workspace.homes().is_empty(), "the refusal left no home");
+    before.assert_unchanged(&git::untouched(&workspace.source), "nor changed the checkout");
+}
+
+#[test]
+fn a_carry_refuses_an_embedded_repository_rather_than_copying_somebody_elses_clone() {
+    let workspace = Workspace::new(state::BINARY);
+    let embedded = workspace.source.join("embedded");
+    std::fs::create_dir_all(&embedded).unwrap();
+    std::fs::write(embedded.join("a.txt"), "theirs\n").unwrap();
+    git::init(&embedded, "main");
+    git::commit(&embedded, "their own first commit");
+    let before = git::untouched(&workspace.source);
+
+    // Git does not descend into a repository it does not own, so the whole clone arrives
+    // as one untracked path with a trailing separator: a directory, not a file.
+    let refused =
+        process::within(&mut workspace.command(&["new", "worker import", "--carry"]), BOUND);
+    let told = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(!refused.status.success(), "{told}");
+    assert!(told.contains("embedded"), "{told}");
+    assert!(told.contains("a directory"), "{told}");
+
+    assert!(workspace.homes().is_empty(), "the refusal left no home");
+    before.assert_unchanged(&git::untouched(&workspace.source), "nor changed the checkout");
+}
+
+#[test]
+fn a_carry_from_a_linked_worktree_leaves_its_own_index_alone() {
+    let workspace = Workspace::new(state::BINARY);
+    let worktree = workspace.root().join("worktree");
+    git::worktree(&workspace.source, &worktree, "side-work");
+    git::identity(&worktree);
+
+    // The same three kinds of work, in the worktree rather than in the main checkout.
+    std::fs::write(worktree.join("staged.txt"), "staged\n").unwrap();
+    git_ok(&worktree, &["add", "--", "staged.txt"]);
+    std::fs::write(worktree.join("app").join("main.txt"), "shared\nloose\n").unwrap();
+    std::fs::write(worktree.join("scratch.txt"), "notes to self\n").unwrap();
+
+    // A linked worktree keeps its index in the per-worktree Git directory, and its `.git`
+    // is a file naming that directory. The reading has to find the real one: a reading
+    // of `<root>/.git/index` finds nothing there and would assert nothing at all.
+    assert!(worktree.join(".git").is_file(), "this is a linked worktree, not a clone");
+    let before = git::untouched(&worktree);
+    let refused = workspace.nodal_in(&worktree, &["new", "both", "--carry", "--from", "main"]);
+    assert!(!refused.status.success(), "a refusal first, so both directions are covered");
+    before.assert_unchanged(&git::untouched(&worktree), "a refused carry changed nothing");
+
+    drop(stdout(&workspace.nodal_in(&worktree, &["new", "worker import", "--carry"])));
+    before.assert_unchanged(&git::untouched(&worktree), "and a carry that ran changed nothing");
+
+    let home = workspace.one_home();
+    assert_eq!(
+        git(&home, &["diff", "--cached", "--name-only"]).lines().collect::<Vec<_>>(),
+        ["staged.txt"]
+    );
+    assert_eq!(git(&home, &["diff", "--name-only"]).lines().collect::<Vec<_>>(), ["app/main.txt"]);
+    assert_eq!(std::fs::read_to_string(home.join("scratch.txt")).unwrap(), "notes to self\n");
+    assert_eq!(
+        git(&home, &["rev-parse", "HEAD"]),
+        git(&worktree, &["rev-parse", "HEAD"]),
+        "the unit starts where the worktree stands"
+    );
+}
+
+#[test]
+fn a_create_without_carry_still_carries_nothing() {
+    let workspace = Workspace::new(state::BINARY);
+    dirty(&workspace);
+
+    drop(stdout(&workspace.nodal(&["new", "worker import"])));
+    let home = workspace.one_home();
+
+    assert_eq!(
+        git(&home, &["status", "--porcelain", "--untracked-files=all"]),
+        "",
+        "the default create is what it was: a clean unit from a base"
+    );
+    assert!(!home.join("staged.txt").exists());
+    assert!(!home.join("scratch.txt").exists());
 }
 
 #[test]

@@ -326,6 +326,10 @@ pub fn worktree_create(store: &mut Store, payload: &Payload) -> Result<PathBuf> 
         name: payload.slug(),
         parent_branch: None,
         hooks: true,
+        // No carry. A provider hook answers a worktree request, and a worktree Claude
+        // asked for is a place to start work rather than somewhere to move the person's
+        // half-finished edit to. `--carry` is a thing a person types.
+        carry: false,
     };
     let progress: Arc<dyn substrate::Reporter> = substrate::sink(false);
     let report = new::create(store, &request, &progress)?;

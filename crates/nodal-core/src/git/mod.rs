@@ -9,6 +9,7 @@
 //! may run `git worktree remove` after the person confirms.
 
 pub mod branches;
+pub mod carry;
 pub mod cmd;
 pub mod history;
 pub mod host;
@@ -178,13 +179,37 @@ impl Git {
 
     /// Read the working tree's status, untracked files included, ignored files excluded.
     ///
+    /// Submodules are reported however this repository is configured to report them,
+    /// which is what every reading of "is this tree dirty" wants: a person who told Git
+    /// to ignore a submodule has said what they mean by dirty.
+    ///
     /// # Errors
     /// [`Error::Git`] when `git status` failed, [`Error::GitParse`] on an unreadable record.
     pub fn status(&self) -> Result<status::Summary> {
-        let output = cmd::run_ok(
-            &self.root,
-            &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
-        )?;
+        self.status_reading(&[])
+    }
+
+    /// The same, with every submodule reported whatever the configuration says to ignore
+    /// about it.
+    ///
+    /// One caller: [`carry`], which is not asking whether the tree is dirty but whether
+    /// it can reproduce everything the tree holds. A submodule hidden by
+    /// `submodule.<name>.ignore` or `diff.ignoreSubmodules` still holds the work it
+    /// holds, and a carry that could not see it would claim to have copied work it had
+    /// silently left behind. `--ignore-submodules=none` on the command line overrides
+    /// both settings, which is the only way to ask this question.
+    ///
+    /// # Errors
+    /// As [`Git::status`].
+    pub fn status_of_submodules_too(&self) -> Result<status::Summary> {
+        self.status_reading(&["--ignore-submodules=none"])
+    }
+
+    /// One `git status`, with whatever the caller adds to the flags every reading uses.
+    fn status_reading(&self, extra: &[&str]) -> Result<status::Summary> {
+        let mut args = vec!["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"];
+        args.extend_from_slice(extra);
+        let output = cmd::run_ok(&self.root, &args)?;
         status::parse(&output.args, &output.records()?)
     }
 

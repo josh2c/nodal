@@ -9,6 +9,17 @@
 # SIGKILL twice — once while it makes a home, once while it builds its base — and runs
 # the next `nodal`, which has to take the first back to nothing and finish the second.
 #
+# It covers `--carry` beside the default: a carried unit starts dirty in the shape the
+# checkout was in — staged as staged, unstaged as unstaged, untracked as untracked, and
+# the ignored state left to the base — while the checkout comes out byte for byte and
+# index for index as it went in, with no ref written on either side and no commit made
+# for the work, and the same holds when the checkout is a linked worktree, whose real
+# index lives somewhere else. Each refusal a carry can make is checked to name its reason
+# and to leave neither a home nor a changed checkout behind, including the three it must
+# never answer by copying part of the work: a submodule holding work of its own, an
+# embedded clone, and a named pipe — the last under a deadline, because "it answered
+# without opening the path" is a claim about time.
+#
 # It also covers the cache step of the same operation: a unit made from a base that
 # holds build caches carries the ones that move and none of the ones that record the
 # path they were made at, and the removal is one line of the unit's own log.
@@ -21,4 +32,4 @@ set -eu
 cargo test --locked -p nodal-core --test create
 cargo test --locked -p nodal-core --lib workspace::relocate
 cargo test --locked -p nodal-cli --test new
-echo "acceptance (new): a unit is clean, alone and independent, made from a base, carries no cache keyed to it, and a killed create resolves"
+echo "acceptance (new): a unit is clean, alone and independent, made from a base, carries no cache keyed to it, carries the checkout's uncommitted work only when asked and without changing it, refuses what it could not faithfully reproduce, and a killed create resolves"
