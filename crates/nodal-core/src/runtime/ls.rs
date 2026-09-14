@@ -76,7 +76,9 @@ use crate::git::Integration;
 use crate::lifecycle::{assess, guard, witness};
 use crate::model::{ActorName, HostName, Lock, Needs, Project, Timestamp, UnitId};
 use crate::output::notice::{self, Notice};
-use crate::output::view::{EnvLine, Holder, ToolSessions, UnitList, UnitRow, WorkTree};
+use crate::output::view::{
+    EnvLine, Holder, HolderState, ToolSessions, UnitList, UnitRow, WorkTree,
+};
 use crate::runtime::processes::{Processes, Running};
 use crate::runtime::{sessions, stop};
 
@@ -203,6 +205,9 @@ fn row(subject: &Snapshot, seen: &Seen, held: &Held, remote: Reading) -> UnitRow
     row.holder = held.of_unit(subject.unit.id);
     let Some(environment) = subject.home.as_ref() else { return row };
     row.sessions = seen.attached.of(&environment.home);
+    if let Some(holder) = row.holder.as_mut() {
+        still_there(holder, &row.sessions);
+    }
     row.last_active = Some(environment.last_active);
     row.environment = Some(EnvLine::from_environment(environment));
     row.work = subject.work.as_ref().map(work_tree);
@@ -214,6 +219,24 @@ fn row(subject: &Snapshot, seen: &Seen, held: &Held, remote: Reading) -> UnitRow
     };
     row.needs = needs(subject.work.as_ref(), seen.blocked(&environment.home), reading);
     row
+}
+
+/// A hold belongs to an actor, and an actor outlives any one process of theirs.
+///
+/// The identifier a lock row carries is the command that entered the home, and that
+/// command has usually ended long before anybody reads the list: `nodal new` writes its
+/// own identifier and exits. Reading that alone would report every unit as held by
+/// somebody who is gone, which is a different untruth from the one this replaced.
+///
+/// So a hold whose recorded process is gone is read once more, against the same scan the
+/// WHO column is built from: where a process of that actor stands in the home, the actor
+/// is there and the hold is live. A hold with neither is the case the three-day proof
+/// found — an agent killed, nothing of it left in the home — and it is the only one
+/// reported as gone.
+fn still_there(holder: &mut Holder, sessions: &[ToolSessions]) {
+    if holder.state == HolderState::Gone && sessions.iter().any(|seen| seen.tool == holder.actor) {
+        holder.state = HolderState::Live;
+    }
 }
 
 /// What this machine knows about the project's remote, for one row.

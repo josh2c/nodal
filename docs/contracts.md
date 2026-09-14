@@ -432,9 +432,16 @@ did not integrate. A reclaim that refuses leaves the unit where it is. The merge
 done, and the report says so.
 
 `doctor` reads and never writes. It reports worktrees, stale build caches, exited containers,
-unreferenced volumes, orphan databases and a project over the open-unit threshold, each with a size, in two
+unreferenced volumes, orphan databases, a project over the open-unit threshold, and the unit homes that
+hold work no other copy has, each with a size, in two
 sections: this project, and a separate section for another project's leftovers that carries names and sizes
-only. A worktree another tool holds a lock on is reported as locked and read no further. Removal of
+only.
+
+A unit home is read the way a reclaim reads it (`reclaim --check`, one evaluator), and the row says how
+many of its commits are only here and how many nothing has checked. The row carries the unit's
+objective as its intent. A home that could not be read is a row too. So the closing sentence of the
+first section — nothing of this project is left behind — is printed only where every home of the
+project read clean, and it is never the answer for a machine holding the only copy of a morning. A worktree another tool holds a lock on is reported as locked and read no further. Removal of
 unmanaged state is a later command.
 
 The report opens with one line about the state root, in every case. Doctor reads the record and writes
@@ -555,6 +562,14 @@ recipe and opens no registry. This is the state of every project between `init` 
 A checkout with neither a recipe nor a registry row gets the verdict on its worktrees (see The
 verdict). A directory that is not a checkout either is in no project, and `nodal ls` refuses. A bare
 `nodal` prints the help for that fourth state only.
+
+**What a home holds is a walk of it, and a list does not take one.** The `disk` of a unit is either
+what a walk found or the reason nothing walked it, and it is never an empty column. `nodal ls` and a
+bare `nodal` say `not measured`; `nodal show` walks the home and states apparent bytes. The figure is
+the one `nodal reclaim --check` prints for the same kind of claim: apparent bytes, whether the walk
+read everything, and the sentence that a home shares blocks with the base it was copied from, so this
+is not what a removal gives back. The two commands do not print one number: `nodal show` measures the
+whole home, and the preflight measures the paths a reclaim has an opinion about.
 
 ## The verdict
 `nodal`, in a checkout Nodal holds no row for, prints one row for each other worktree of the
@@ -734,6 +749,16 @@ that machine's to release.
 
 The process that took a hold is recorded and reported. Nothing signals it. No hold is released because
 the process is gone: a lock names an actor, and an actor outlives any one shell.
+
+A report says whether that actor is still there, and it says `holds` for nothing else. The holder
+carries a `state`: `live`, `gone`, or `unknown` with the reason it could not be read — the hold is on
+another machine, the row records no process, or this host has no process table. The reading is the
+process table and never a signal. It is two questions in this order: whether a process of that actor
+stands in the home, and whether the recorded process is still there. The first is the one that
+matters, because the identifier a row carries is the command that entered the home and that command
+ends; a hold both readings answer no for is a session that is gone. `nodal show` states the process
+and the reason under the WHO line. The state changes no refusal: a held unit refuses the write verbs
+until the hold lapses or `--take` moves it, whatever became of the process.
 
 A lock row written before locks carried an actor names a host and holds nobody. It refuses no one, and
 the next entry into that home rewrites it.

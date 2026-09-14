@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 
 use nodal_core::git::Git;
 use nodal_core::model::{
-    Actor, ActorKind, ActorName, Digest, HostName, Lock, Project, ProjectId, ProjectName, Timestamp,
-    UnitId,
+    Actor, ActorKind, ActorName, Digest, HostName, Lock, Project, ProjectId, ProjectName,
+    Timestamp, UnitId,
 };
 use nodal_core::output::Render;
 use nodal_core::output::view::{Disk, HolderState, Unknowable, Unmeasured};
@@ -355,13 +355,7 @@ fn hold(fixture: &Fixture, branch: &str, host: HostName, pid: Option<u32>) -> Un
 
 /// The WHO cell of one unit, as a person reads it.
 fn who(list: &nodal_core::output::view::UnitList, branch: &str) -> String {
-    let line = list
-        .doc()
-        .lines()
-        .into_iter()
-        .find(|line| line.contains(branch))
-        .expect("the unit has a row");
-    line
+    list.doc().lines().into_iter().find(|line| line.contains(branch)).expect("the unit has a row")
 }
 
 /// The finding this pins is F-A of the three-day proof: an agent was killed and the
@@ -372,8 +366,8 @@ fn a_hold_whose_process_is_gone_is_never_reported_as_held() {
     let fixture = Fixture::build();
     let (unit, home) = fixture.units["ahead"].clone();
     hold(&fixture, "ahead", HostName::current(), Some(4_294_967_000));
-    // The table holds one process of this unit and it is not the one that took the hold.
-    let table = Table(vec![running(11, &unit, &home, &[("CLAUDECODE", "1")])]);
+    // Somebody else's shell stands in the home. Nothing of the actor that holds it does.
+    let table = Table(vec![running(11, &unit, &home, &[("USER", "josh")])]);
 
     let list = fixture.list(&table);
     let row = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
@@ -396,6 +390,25 @@ fn a_hold_whose_process_is_running_is_reported_as_held() {
     let pid = 4_120;
     hold(&fixture, "ahead", HostName::current(), Some(pid));
     let table = Table(vec![running(pid, &unit, &home, &[("CLAUDECODE", "1")])]);
+
+    let list = fixture.list(&table);
+    let row = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
+
+    assert_eq!(row.holder.as_ref().unwrap().state, HolderState::Live);
+    assert!(who(&list, "ahead").contains("claude-code holds"), "{}", who(&list, "ahead"));
+    drop(fixture.directory);
+}
+
+/// A hold belongs to an actor, not to one process of theirs. The identifier a lock row
+/// carries is the command that entered the home, and that command ends; the session it
+/// belonged to does not. So a hold whose recorded process is gone is live while a process
+/// of the same actor is still in the home.
+#[test]
+fn a_hold_is_live_while_the_actor_is_in_the_home_whatever_became_of_the_process() {
+    let fixture = Fixture::build();
+    let (unit, home) = fixture.units["ahead"].clone();
+    hold(&fixture, "ahead", HostName::current(), Some(4_294_967_000));
+    let table = Table(vec![running(11, &unit, &home, &[("CLAUDECODE", "1")])]);
 
     let list = fixture.list(&table);
     let row = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();

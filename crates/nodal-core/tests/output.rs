@@ -33,11 +33,9 @@ use nodal_core::output::view::verdict::{Behind, RowKind, Verdict, WorktreeRow};
 use nodal_core::output::view::{
     Arrival, BaseList, BaseRow, Created, Done, EnvLine, EventLog, Exclusion, Explained, Freshness,
     Holder, HolderState, InitReport, Invalidation, Origin, PortLine, Ps, Remote, Running,
-    SharedResource,
-    StandInLine, Status, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
+    SharedResource, StandInLine, Status, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
 };
-use nodal_core::output::view::{Disk, Unknowable, Unmeasured,
-};
+use nodal_core::output::view::{Disk, Unmeasured};
 use nodal_core::output::{Format, Render, render, watch};
 use nodal_core::recipe::gap::{Gap, GapKey};
 use nodal_core::runtime::attribute::{Attributed, Confidence, Kind, Note, Source};

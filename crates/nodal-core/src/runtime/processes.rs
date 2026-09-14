@@ -132,8 +132,22 @@ impl Processes for Live {
         scan_this_host()
     }
 
+    /// On Linux the kernel publishes a directory per process, and the directory is there
+    /// whichever account owns the process. So this answers for a process a scan cannot
+    /// read, which is the case that matters: a lock row written by another engineer on a
+    /// host two people share. Nothing is opened and nothing is signalled. An identifier
+    /// that has come round again reads as present, which keeps a hold rather than
+    /// dropping one, and that is the safe side of the trade.
     fn holds(&self, pid: u32) -> Result<bool> {
-        holds_on_this_host(pid)
+        #[cfg(target_os = "linux")]
+        {
+            Ok(linux::holds(pid))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            Err(crate::Error::ProcessScanUnsupported { host: std::env::consts::OS })
+        }
     }
 }
 
@@ -144,24 +158,6 @@ fn scan_this_host() -> Result<Vec<Running>> {
 
 #[cfg(not(target_os = "linux"))]
 fn scan_this_host() -> Result<Vec<Running>> {
-    Err(crate::Error::ProcessScanUnsupported { host: std::env::consts::OS })
-}
-
-/// Whether this host's process table holds a process with this identifier.
-///
-/// On Linux the kernel publishes a directory per process, and the directory is there
-/// whichever account owns the process. So this answers for a process a scan cannot read,
-/// which is the case that matters: a lock row written by another engineer on a shared
-/// host. Nothing is opened, nothing is signalled, and a number that has come round again
-/// reads as present, which keeps a hold rather than dropping one.
-#[cfg(target_os = "linux")]
-fn holds_on_this_host(pid: u32) -> Result<bool> {
-    Ok(linux::holds(pid))
-}
-
-/// Without a readable process table, liveness is not a question this host can answer.
-#[cfg(not(target_os = "linux"))]
-fn holds_on_this_host(_pid: u32) -> Result<bool> {
     Err(crate::Error::ProcessScanUnsupported { host: std::env::consts::OS })
 }
 

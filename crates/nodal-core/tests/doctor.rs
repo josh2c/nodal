@@ -33,6 +33,7 @@ use nodal_core::services::docker::{Docker, Output};
 use nodal_core::store::Store;
 use nodal_core::workspace::sharing::Sharing;
 use nodal_safety::git::{self, git_ok as git};
+use nodal_safety::rows;
 
 /// The container the fake daemon reports as exited, with a writable layer of 120 MB.
 const EXITED: &str = concat!(
@@ -875,4 +876,121 @@ fn a_prunable_worktree_is_never_reported_as_merely_not_a_checkout() {
         row.state
     );
     assert!(row.bytes.is_some(), "a hollow shell is still directories on this disk: {row:?}");
+}
+
+// ------------------------------------------------ work that exists in one place only
+
+/// A project with one unit home, cloned from a checkout that has a remote.
+///
+/// The home is a clone rather than a worktree, which is what a unit home is: its own
+/// object store, so a commit made in it is in one object store and nowhere else until
+/// something pushes it.
+struct Project {
+    /// Holds the machine; dropping it removes it.
+    directory: tempfile::TempDir,
+    /// The project's checkout, where the command is run.
+    checkout: PathBuf,
+    /// The unit's home.
+    home: PathBuf,
+    /// The registry, with the project, the unit and the home in it.
+    store: Store,
+    /// Nodal's state directory.
+    state: PathBuf,
+}
+
+impl Project {
+    /// A checkout with a remote, and one unit home cloned from it.
+    fn plant() -> Self {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let root = directory.path();
+        let checkout = root.join("code/app");
+        let state = root.join("state");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+
+        git(&checkout, &["init", "--quiet", "."]);
+        write(&checkout.join("README.md"), "# app\n");
+        commit(&checkout, "the project");
+        let remote = root.join("remote.git");
+        git(root, &["init", "--quiet", "--bare", remote.to_str().unwrap()]);
+        git(&checkout, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&checkout, &["push", "--quiet", "origin", "HEAD"]);
+
+        let home = root.join("homes/one");
+        git(root, &["clone", "--quiet", checkout.to_str().unwrap(), home.to_str().unwrap()]);
+
+        let store = Store::open(state.join("registry.db")).unwrap();
+        let project = rows::project(
+            nodal_core::model::ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap(),
+            nodal_core::lifecycle::guard::resolve(&checkout),
+            "app",
+            Timestamp::now(),
+        );
+        nodal_core::store::projects::insert(store.conn(), &project).unwrap();
+        rows::record(
+            &store,
+            project.id,
+            &rows::Row {
+                index: 1,
+                slug: "one",
+                branch: "nodal/one",
+                home: &home,
+                host: rows::host(),
+            },
+        );
+        Self { directory, checkout, home, store, state }
+    }
+
+    /// The report this machine produces.
+    fn report(&self) -> Doctor {
+        let machine = Machine::here(&self.checkout, &self.state, None, None);
+        doctor::survey(
+            &doctor::Registry::Open(self.store.conn()),
+            &NoDocker,
+            &machine,
+            Timestamp::now(),
+        )
+        .expect("a machine doctor can read")
+    }
+
+    /// The rows about unit homes holding work nothing else has.
+    fn unique(&self) -> Vec<Finding> {
+        self.report().here.into_iter().filter(|finding| finding.kind == Kind::UniqueWork).collect()
+    }
+}
+
+/// The finding this pins is F-D of the three-day proof. Doctor printed "nothing of this
+/// project is left behind" while two unit homes held three commits that exist in no
+/// other object store and on no remote. The sentence was true of leftovers and was read
+/// as an answer about unique work.
+#[test]
+fn a_unit_home_that_holds_the_only_copy_of_a_commit_is_named() {
+    let planted = Project::plant();
+    write(&planted.home.join("rotate.rs"), "fn rotate() {}\n");
+    git(&planted.home, &["add", "--all"]);
+    commit(&planted.home, "rotate the keys");
+
+    let rows = planted.unique();
+
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].what, "one");
+    assert!(
+        rows[0].state.iter().any(|said| said.contains("commit")),
+        "the row does not say what is only here: {:?}",
+        rows[0].state
+    );
+    assert!(rows[0].bytes.is_some_and(|bytes| bytes > 0), "{:?}", rows[0].bytes);
+    drop(planted.directory);
+}
+
+/// The other side of it: a home whose every commit the checkout already reaches earns
+/// no row, so the closing sentence is still printed for a machine that is clean.
+#[test]
+fn a_home_that_holds_nothing_of_its_own_earns_no_row() {
+    let planted = Project::plant();
+
+    let rows = planted.unique();
+
+    assert!(rows.is_empty(), "{rows:?}");
+    drop(planted.directory);
 }

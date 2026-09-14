@@ -775,9 +775,9 @@ fn hold_cell(holder: Option<&Holder>) -> Option<String> {
     let named = holder.pid.map_or_else(|| String::from("the process"), |pid| format!("pid {pid}"));
     match &holder.state {
         HolderState::Live => None,
-        HolderState::Gone => Some(format!(
-            "{named} is not on this host any more; the hold stands until it lapses"
-        )),
+        HolderState::Gone => {
+            Some(format!("{named} is not on this host any more; the hold stands until it lapses"))
+        }
         HolderState::Unknown { why } => Some(format!("liveness not read: {}", why.why())),
     }
 }

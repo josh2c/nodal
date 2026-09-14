@@ -264,12 +264,17 @@ fn the_list_names_the_writer_before_what_the_process_table_saw() {
     let listed = workspace.nodal(&["ls"]);
     assert!(listed.status.success(), "{}", stderr(&listed));
     let said = stdout(&listed);
-    assert!(said.contains(&format!("{FIRST} holds")), "the list names no writer: {said}");
+    // "gone" and not "holds", and that is the reading rather than a defect: the process
+    // that took this hold was the `nodal new` that made the unit, and it ended when the
+    // command ended. The hold is still the actor's until it lapses; what the column says
+    // is that nothing of that actor is in the home now.
+    assert!(said.contains(&format!("{FIRST} gone")), "the list names no writer: {said}");
 
     let json = workspace.nodal(&["ls", "--json"]);
     let document: serde_json::Value = serde_json::from_str(&stdout(&json)).unwrap();
     let row = &document["units"][0];
     assert_eq!(row["holder"]["actor"], FIRST, "--json carries no holder: {row}");
+    assert_eq!(row["holder"]["state"], "gone", "--json carries no liveness: {row}");
     assert!(row["holder"]["expires_at"].is_string(), "the holder carries no expiry: {row}");
     assert!(row["sessions"].is_array(), "--json lost the process attribution: {row}");
 }

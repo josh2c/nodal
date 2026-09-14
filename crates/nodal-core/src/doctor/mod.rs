@@ -95,6 +95,7 @@ pub mod containers;
 pub mod databases;
 pub mod intent;
 pub mod machine;
+pub mod onlyhere;
 pub mod size;
 pub mod trash;
 pub mod units;
@@ -352,7 +353,8 @@ pub fn survey(
 /// What the registry-reading sources answered: the rows, and what could not be read.
 type Registered = (Vec<(Section, Finding)>, Vec<Note>);
 
-/// The three sources that read the registry: containers, databases and unit counts.
+/// The four sources that read the registry: containers, databases, unit counts, and the
+/// unit homes that hold work no other copy has.
 ///
 /// They are together because they share one condition. Each of them answers "whose is
 /// this?" out of the registry, so a machine whose registry could not be opened has no
@@ -361,6 +363,7 @@ fn registered(conn: &Connection, docker: &dyn Docker, scope: &Scope) -> Result<R
     let (mut found, note) = containers::find(conn, docker, scope)?;
     found.extend(databases::find(conn, scope)?);
     found.extend(units::find(conn, scope)?);
+    found.extend(onlyhere::find(conn, scope)?);
     Ok((found, note.into_iter().collect()))
 }
 
