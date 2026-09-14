@@ -277,7 +277,7 @@ fn report(resolutions: &[Resolution]) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
     use clap::CommandFactory;
 

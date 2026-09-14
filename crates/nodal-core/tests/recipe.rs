@@ -17,7 +17,7 @@
 //! check is for a developer holding the reference, and it is a plain equality against
 //! the serialised recipe, so a drift anywhere shows up as a diff.
 
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, reason = "tests fail by panicking")]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

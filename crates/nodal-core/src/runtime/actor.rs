@@ -86,7 +86,7 @@ fn name_or_unknown(text: &str) -> Result<ActorName> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
     use std::collections::BTreeMap;
 

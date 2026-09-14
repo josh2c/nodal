@@ -20,7 +20,7 @@
 //! before the report and compares them after it. A report that changed one byte of the
 //! machine fails here.
 
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests fail by panicking")]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

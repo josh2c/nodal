@@ -5,7 +5,7 @@
 //! standard output, that `--json` keeps the answer alone on standard output, that `ls`
 //! shows what was built, and that `gc` removes it.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
 mod state;
 

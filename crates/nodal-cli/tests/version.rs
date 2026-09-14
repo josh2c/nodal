@@ -3,7 +3,7 @@
 //! CI runs the same assertion against the downloaded release artifact through
 //! `ci/acceptance-version.sh`, so a binary that only works in the build tree fails.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
 mod state;
 

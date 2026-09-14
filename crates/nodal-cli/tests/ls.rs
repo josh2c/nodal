@@ -15,7 +15,7 @@
 //! 5. A project that `nodal init` has just written a recipe for is a project the list
 //!    answers about, with no units in it.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
 mod state;
 

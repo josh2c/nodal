@@ -175,7 +175,7 @@ fn fish_assignment(name: &str, value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
     use super::{DIALECTS, EXPORTED, Shell, assignments};
     use crate::model::EnvName;

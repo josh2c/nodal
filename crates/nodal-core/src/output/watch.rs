@@ -139,7 +139,7 @@ pub fn run<S: Source, W: Write>(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
+    #![allow(clippy::expect_used, reason = "tests fail by panicking")]
 
     use std::time::Duration;
 

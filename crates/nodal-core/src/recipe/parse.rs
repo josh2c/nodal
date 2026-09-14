@@ -25,7 +25,7 @@ pub fn parse(text: &str, path: impl AsRef<Path>) -> Result<Recipe> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
     use super::parse;
     use crate::model::recipe::{Backend, PackageManager};

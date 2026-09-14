@@ -25,7 +25,7 @@
 //! The word `worktree` heads the first column and `unit` appears nowhere in the table,
 //! because not one of these rows is a home Nodal made.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

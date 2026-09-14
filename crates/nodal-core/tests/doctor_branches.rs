@@ -22,7 +22,7 @@
 //! because one `rev-list` per ref is the cost this design accepts and a number is the
 //! only way to hold it.
 
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests fail by panicking")]
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

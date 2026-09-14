@@ -9,7 +9,7 @@
 //! env` ships what each one reads. The direnv route needs direnv, so it reports itself
 //! as skipped on a machine that has none rather than failing there.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
 mod state;
 

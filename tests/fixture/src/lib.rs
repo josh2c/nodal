@@ -158,7 +158,7 @@ pub fn paths() -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
     use super::{FILES, RECIPE, paths, try_write};
 

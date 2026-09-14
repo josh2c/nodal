@@ -4,7 +4,7 @@
 //! variable in a wrapper script. Read literally it means "no directives", which hides
 //! errors as well as progress, so Nodal treats blank as unset.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
 mod state;
 

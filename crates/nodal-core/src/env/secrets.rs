@@ -342,7 +342,7 @@ fn unquote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
     use super::{Origin, REDACTED, SecretSource, UnitGenerated, Value, parse, resolve};
     use crate::model::EnvName;

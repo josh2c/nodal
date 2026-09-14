@@ -7,7 +7,7 @@
 //!    is ended once that process is gone. Nothing reports either event.
 //! 3. A session of an environment on another host is left alone by this machine.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
