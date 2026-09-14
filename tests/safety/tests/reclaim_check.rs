@@ -8,10 +8,22 @@
 //! **It must agree with the operation.** A preflight that said safe where the reclaim
 //! refuses is worse than no preflight at all, because a person stops checking. There is
 //! one evaluator under both ([`nodal_core::lifecycle::assess`]), and every refusing case
-//! below asserts both answers. A refused reclaim changes nothing, so asking it is a
-//! reading and not a destructive act. The safe cases are not put to the operation:
-//! reclaiming a proof unit is out of scope for this sprint, and the agreement that can
-//! be shown without it is shown.
+//! below puts the same unit to `nodal reclaim` and asserts that it refuses too — with
+//! two stated exceptions, and no others:
+//!
+//! * `the_check_changes_nothing_and_runs_no_hook` does not, because a second command is
+//!   the one thing it is asserting did not happen.
+//! * `check_refuses_force_and_yes` is about the flags and reaches no verdict at all.
+//!
+//! A reclaim refused over work is free to ask: the uniqueness check runs before the
+//! first hook and before any plan, so nothing has happened by the time it raises. A
+//! reclaim refused over a **bystander** is not free — the teardown has already stopped
+//! what carries the unit's identifier — so that one comparison is made last, after every
+//! reading it could disturb.
+//!
+//! The safe cases are not put to the operation, because the only way to compare them is
+//! to let the reclaim go through — and a unit that has been reclaimed is no longer there
+//! to assert anything about. What can be shown without ending it is shown.
 //!
 //! **It must do nothing.** No hook runs, no signal is sent, no container is touched, no
 //! port comes back, no snapshot is taken, nothing moves to the trash, no registry row is
@@ -36,7 +48,8 @@
 //! | the remote on this disk is read directly | `a_remote_that_is_this_disk_is_read_directly` |
 //! | squash-absorbed objects are a keep | `squash_absorbed_work_whose_objects_are_only_here_is_a_keep` |
 //! | heavy ignored state is reconstructable | `heavy_ignored_state_is_reconstructable_and_priced_as_apparent` |
-//! | owned runtime and the bystander that blocks | `owned_runtime_is_named_and_only_a_bystander_blocks` |
+//! | owned runtime is named and does not block | `owned_runtime_is_named_and_is_not_a_reason_to_refuse` |
+//! | a bystander blocks, and so it does for the reclaim | `a_bystander_blocks_the_move_and_the_reclaim_refuses_the_same_way` |
 //! | it changes nothing | `the_check_changes_nothing_and_runs_no_hook` |
 //! | one value, two renderings | `the_human_form_and_the_json_are_one_value` |
 //! | it is not a way to force anything | `check_refuses_force_and_yes` |
@@ -335,13 +348,18 @@ fn a_remote_that_is_this_disk_is_read_directly() {
         kind == &Value::from("direct") || kind == &Value::from("no_remote"),
         "the remote question was not settled: {kind}"
     );
+
+    reclaim_also_refuses(&machine, SLUG, "commits on no remote (1)");
     intact(&machine, &home, &tip);
 }
 
-/// The case the sprint exists for. A reviewer squash-merged the branch, so its content
-/// is on `main` and its commit objects are in this home and nowhere else. The content is
-/// safe; the objects are not, and the objects are what a removal takes. So the answer is
-/// a keep, and it says which of the two it is about.
+/// A squash merge leaves the content on `main` and the commit objects in this home and
+/// nowhere else. The content is safe; the objects are not, and the objects are what a
+/// removal takes. So the answer is a keep, and it says which of the two it is about.
+///
+/// This is the case a reader is most likely to think is finished, which is why it is a
+/// test: the branch reads as merged everywhere a person looks, and removing its home
+/// still loses something no other tree on this machine holds.
 ///
 /// The size of the loss is not priced: there is no portable way to say what a set of
 /// commit objects holds that nothing else does, so the report says how many commits and
@@ -412,21 +430,14 @@ fn heavy_ignored_state_is_reconstructable_and_priced_as_apparent() {
     assert!(home.join(".env.local").exists(), "the check removed local state");
 }
 
-/// The two levels attribution has, and only one of them stops a reclaim.
-///
-/// A process carrying the unit's identifier is the unit's to stop, so it is named as
-/// something a reclaim would stop and is not a reason to refuse. A process matched by
-/// its working directory alone is a tmux pane or a teammate's shell, so it is named,
-/// never signalled, and is exactly what a reclaim would refuse to move the home under.
+/// A process carrying the unit's identifier is the unit's to stop. It is named as
+/// something a reclaim would stop, it is not a reason to refuse, and reading it is not
+/// signalling it.
 #[test]
-fn owned_runtime_is_named_and_only_a_bystander_blocks() {
-    if !nodal_safety::platform::reads_process_table("the runtime half of the preflight") {
+fn owned_runtime_is_named_and_is_not_a_reason_to_refuse() {
+    let Some((machine, home, owned)) = attributed_unit("owned runtime is named") else {
         return;
-    }
-    let machine = machine();
-    let home = machine.unit(SLUG);
-    let id = std::fs::read_to_string(home.join(".nodal/id")).unwrap();
-    let owned = nodal_safety::process::carrying(id.trim(), &home);
+    };
 
     let answer = check(&machine, SLUG);
     let processes = answer["runtime"]["processes"].as_array().unwrap();
@@ -437,8 +448,25 @@ fn owned_runtime_is_named_and_only_a_bystander_blocks() {
     assert!(answer["runtime"]["bystanders"].as_array().unwrap().is_empty(), "{answer:#}");
     assert_eq!(answer["safe_to_reclaim"], Value::Bool(true), "owned runtime blocked: {answer:#}");
     assert!(nodal_safety::process::alive(owned.pid()), "the check signalled what it read");
+    assert!(home.is_dir(), "the check moved the home");
+}
 
+/// A process matched by its working directory alone is a tmux pane or a teammate's
+/// shell. It is named, it is never signalled, and it is exactly what a reclaim would
+/// refuse to move the home out from under.
+///
+/// The comparison with the real `nodal reclaim` is made last, and that is not tidiness.
+/// The teardown runs before the move, so a reclaim that refuses over a bystander has
+/// already stopped what carries the unit's identifier (`docs/contracts.md`, Reclaim).
+/// Every reading it could disturb is taken before it.
+#[test]
+fn a_bystander_blocks_the_move_and_the_reclaim_refuses_the_same_way() {
+    let Some((machine, home, _owned)) = attributed_unit("the bystander half of the preflight")
+    else {
+        return;
+    };
     let bystander = nodal_safety::process::standing_in(&home);
+
     let answer = check(&machine, SLUG);
     let standing = answer["runtime"]["bystanders"].as_array().unwrap();
     assert!(
@@ -448,6 +476,30 @@ fn owned_runtime_is_named_and_only_a_bystander_blocks() {
     assert_eq!(answer["safe_to_reclaim"], Value::Bool(false), "a bystander did not block");
     assert_eq!(answer["reasons"][0]["needs"], Value::from("blocking_runtime"), "{answer:#}");
     assert!(nodal_safety::process::alive(bystander.pid()), "the check signalled a bystander");
+
+    let refused = machine.nodal(&["reclaim", SLUG]);
+    assert!(!refused.status.success(), "a bystander did not refuse the reclaim");
+    let told = stderr(&refused);
+    assert!(told.contains("still has work standing in its home"), "{told}");
+    assert!(told.contains(&bystander.pid().to_string()), "the refusal does not name it: {told}");
+    assert!(home.is_dir(), "the refusal moved the home");
+    assert!(machine.trashed().is_empty(), "the refusal trashed the home");
+}
+
+/// A unit with one process carrying its identifier, or nothing on a host with no process
+/// table to read.
+///
+/// A host that cannot make the reading says which claim it is not making rather than
+/// passing quietly ([`nodal_safety::platform`]).
+fn attributed_unit(claim: &str) -> Option<(Machine, PathBuf, nodal_safety::process::Owned)> {
+    if !nodal_safety::platform::reads_process_table(claim) {
+        return None;
+    }
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    let id = std::fs::read_to_string(home.join(".nodal/id")).unwrap();
+    let owned = nodal_safety::process::carrying(id.trim(), &home);
+    Some((machine, home, owned))
 }
 
 /// The whole of the read-only promise, asserted on a machine that has something to lose.
@@ -456,6 +508,15 @@ fn owned_runtime_is_named_and_only_a_bystander_blocks() {
 /// `tests/doctor_writes_nothing.rs` states: every command that opens it finishes an
 /// interrupted operation first, and SQLite writes its own sidecars on every open. The
 /// rows are what a command would have changed, and they are the same rows.
+///
+/// The home's **index** is watched byte for byte, and the home is left in the one state
+/// that would move it ([`stale_index`]). A `git status` that finds the index's cached
+/// stat information out of date refreshes it and writes the file back, which would be a
+/// read command changing the file the person's own `git` is about to use. What stops it
+/// is `GIT_OPTIONAL_LOCKS=0`, which [`nodal_core::git`] sets on every invocation it
+/// makes and which Git documents as equivalent to `--no-optional-locks`. That is a
+/// property of the one spawn seam rather than of this command, and this is where the
+/// preflight's share of it is held: drop the variable and these bytes move.
 ///
 /// The hook is the other half. The project declares a `pre_reclaim` that would write a
 /// file, and this machine has never approved it — so a command that reached the hook
@@ -467,6 +528,7 @@ fn the_check_changes_nothing_and_runs_no_hook() {
     declare_unapproved_hook(&machine, &marker);
     let (home, tip) = pushed(&machine, SLUG);
     std::fs::write(home.join(ONLY), "and something uncommitted beside it\n").unwrap();
+    stale_index(&home);
 
     let checkout = untouched(&machine.source);
     let before = untouched(&home);
@@ -489,6 +551,25 @@ fn the_check_changes_nothing_and_runs_no_hook() {
     assert!(!marker.exists(), "the check ran the project's hook");
     assert!(machine.trashed().is_empty(), "the check trashed something");
     intact(&machine, &home, &tip);
+}
+
+/// Leave the home's index out of date with the working tree, without changing a byte of
+/// content.
+///
+/// This is the state a `git status` writes in. The index caches each tracked file's stat
+/// information, and a status that finds the cache out of date refreshes it and writes
+/// the file back — an ordinary read command changing the file the person's own `git` is
+/// about to use. Rewriting a tracked file with the bytes it already holds moves its
+/// modification time and nothing else, which is exactly the condition.
+///
+/// Nothing here runs `git`. A `git status` of any kind would refresh the cache itself and
+/// leave the assertion with nothing to catch.
+fn stale_index(home: &Path) {
+    let tracked = home.join(TRACKED);
+    let file = std::fs::File::options().write(true).open(&tracked).unwrap();
+    let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    file.set_times(std::fs::FileTimes::new().set_modified(long_ago)).unwrap();
+    file.sync_all().unwrap();
 }
 
 /// Declare a `pre_reclaim` this machine has not approved, so that reaching it refuses.
@@ -542,6 +623,8 @@ fn the_human_form_and_the_json_are_one_value() {
 
     let answer = check(&machine, SLUG);
     assert_eq!(count(commits(&answer, "not_checked")), 1, "{answer:#}");
+
+    reclaim_also_refuses(&machine, SLUG, "commits no current reading proves a remote has (1)");
     intact(&machine, &home, &tip);
 }
 
