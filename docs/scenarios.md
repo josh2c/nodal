@@ -55,15 +55,33 @@ Both dev servers run at once on different ports against different databases on t
 
 ```
 $ nodal
-  UNIT            STATE  BRANCH                        MAIN     REMOTE  WHO            AGE     OBJECTIVE
-  worker-import   open   nodal/worker-import *3 +1 ?2  open +2  ^2      claude-code 1  2 h     worker import: handle missing supervisor_id
-  payroll-export  open   nodal/payroll-export          open +1  —       codex 1        12 min  payroll export CSV
+  UNIT            NEEDS        STATE  BRANCH                        MAIN     REMOTE  WHO            AGE     OBJECTIVE
+  worker-import   unique loss  open   nodal/worker-import *3 +1 ?2  open +2  ^2      claude-code 1  2 h     worker import: handle missing supervisor_id
+  payroll-export  review       open   nodal/payroll-export          open +1  —       codex 1        12 min  payroll export CSV
 ```
 
-The list answers one question: which unit needs you next. `MAIN` is what merging the branch
-would do, and how far it has moved from the branch it merges into. `REMOTE` is what the
-upstream has and what it does not. `nodal status` is where disk, ports and running processes
-are:
+The list answers one question: which unit needs you next. `NEEDS` says why, ranked: possible
+unique loss, blocking runtime, stale or unknown evidence, a conflict or a base that has moved,
+review, then nothing. `MAIN` is what merging the branch would do, and how far it has moved from
+the branch it merges into. `REMOTE` is what the upstream has and what it does not.
+
+`NEEDS` is decided from what the list already read, so it costs no extra `git`. What it would
+actually take to end a unit is one command away, and that command does none of it:
+
+```
+$ nodal reclaim worker-import --check
+  unit     worker-import
+  verdict  refuse — a reclaim would stop and change nothing
+  because  unique loss: uncommitted changes (3)
+  commits  proved on the remote (2): 9f2ab41c, 3d80c5e7 — removing this home does not lose it
+  files    uncommitted changes (3): apps/web/app/page.tsx, … — no commit holds it
+  state    build output and installed dependencies (2): node_modules, .next, 1.4 GB apparent
+  runtime  would stop: 0 recorded groups · 1 process by id · 0 containers
+  trash    would move to ~/.nodal/project/trash/01J9X2K4; nothing was moved
+  this command changed nothing
+```
+
+`nodal status` is where disk, ports and running processes are:
 
 ```
 $ nodal status

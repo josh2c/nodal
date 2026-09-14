@@ -18,6 +18,7 @@ pub mod ids;
 pub mod lease;
 pub mod lock;
 pub mod manifest;
+pub mod needs;
 pub mod port;
 pub mod project;
 pub mod recipe;
@@ -41,6 +42,7 @@ pub use crate::model::ids::{
 pub use crate::model::lease::{Lease, ResourceKey};
 pub use crate::model::lock::{DEFAULT_IDLE_HOURS, Lock};
 pub use crate::model::manifest::{Manifest, Missing, Origin, Want};
+pub use crate::model::needs::Needs;
 pub use crate::model::port::{PortAllocation, PortBlock};
 pub use crate::model::project::{Project, ProjectName, RemoteUrl};
 pub use crate::model::recipe::{

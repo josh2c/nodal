@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::git::integration::{Divergence, Integration};
 use crate::model::{
     ActorName, BranchName, EnvId, EnvState, Environment, Epistemic, Event, FingerprintPart,
-    HostName, Lock, Objective, Ports, ProjectName, Slug, Timestamp, Unit, UnitId, UnitStatus,
+    HostName, Lock, Needs, Objective, Ports, ProjectName, Slug, Timestamp, Unit, UnitId,
+    UnitStatus,
 };
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, NONE, Table};
@@ -190,6 +191,20 @@ pub struct UnitRow {
     pub objective_epistemic: Option<Epistemic>,
     /// How current its environment is.
     pub freshness: Freshness,
+    /// Why this unit needs a person, ranked ([`Needs`]).
+    ///
+    /// The same enum `nodal reclaim --check` answers with, so the word in this column
+    /// and the word in that report mean one thing. A list must not start a per-unit
+    /// survey to fill it in, so it is decided from the readings the list has already
+    /// taken; the proof behind `unique loss` and `unknown` is the preflight's, and this
+    /// says which unit to point it at.
+    ///
+    /// `None` is **not computed**, which every producer but the list is. It is not
+    /// [`Needs::Nothing`], and a report must not print it as one: a create has not
+    /// asked, and answering "nothing" for a question nobody put is the one thing this
+    /// column must not do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs: Option<Needs>,
     /// What Git says about the branch, when it was asked.
     pub work: Option<WorkTree>,
     /// Its environment, when it has one.
@@ -217,6 +232,7 @@ impl UnitRow {
             objective: unit.objective.clone(),
             objective_epistemic: unit.objective_epistemic,
             freshness: Freshness::Unknown,
+            needs: None,
             work: None,
             environment: None,
             created_at: unit.created_at,
@@ -311,8 +327,8 @@ const COLUMNS: [&str; 7] = ["unit", "state", "branch", "main", "disk", "running"
 /// The list answers one question: which unit needs a person next. So it carries what
 /// Git says about each branch rather than what each home occupies, and `nodal status`
 /// keeps the disk and runtime columns.
-const LIST_COLUMNS: [&str; 8] =
-    ["unit", "state", "branch", "main", "remote", "who", "age", "objective"];
+const LIST_COLUMNS: [&str; 9] =
+    ["unit", "needs", "state", "branch", "main", "remote", "who", "age", "objective"];
 
 /// The columns of a list that holds worktrees as well as units.
 ///
@@ -324,8 +340,8 @@ const LIST_COLUMNS: [&str; 8] =
 /// A project whose repository names no other worktrees prints [`LIST_COLUMNS`] and is
 /// unchanged by any of this. A column whose every cell reads `unit` tells a person
 /// nothing and costs them the width.
-const MIXED_COLUMNS: [&str; 9] =
-    ["kind", "name", "state", "branch", "main", "remote", "who", "age", "objective"];
+const MIXED_COLUMNS: [&str; 10] =
+    ["kind", "name", "needs", "state", "branch", "main", "remote", "who", "age", "objective"];
 
 /// The table `nodal ls` prints: every unit, and every worktree of the project's
 /// repository that is not one.
@@ -335,6 +351,7 @@ pub(crate) fn list_table(list: &UnitList) -> Table {
     for unit in &list.units {
         let mut cells = vec![
             unit.slug.to_string(),
+            unit.needs.map_or(NONE, Needs::label).to_owned(),
             state_cell(unit),
             branch_cell(unit),
             main_cell(unit),
@@ -375,6 +392,7 @@ fn worktree_cells(found: &WorktreeRow, now: Timestamp) -> Vec<String> {
     vec![
         RowKind::Worktree.label().to_owned(),
         found.name.clone(),
+        String::from(NONE),
         found.note.clone().unwrap_or_else(|| String::from(NONE)),
         format!("{branch}{dirty}"),
         found.done.label(),
@@ -408,6 +426,7 @@ fn detail_fields(unit: &UnitRow, now: Timestamp) -> Vec<Field> {
         Field::new("unit", format!("{}  ({})", unit.slug, status_label(unit.status))),
         Field::new("objective", objective_cell(unit)),
         Field::new("branch", branch_cell(unit)),
+        Field::new("needs", needs_cell(unit)),
         Field::new("freshness", freshness_cell(&unit.freshness)),
     ];
     fields.push(Field::new("main", main_cell(unit)));
@@ -466,6 +485,23 @@ fn state_cell(unit: &UnitRow) -> String {
     match &unit.freshness {
         Freshness::Stale(_) => format!("{status} · {}", freshness_cell(&unit.freshness)),
         Freshness::Unknown | Freshness::Fresh => status.to_owned(),
+    }
+}
+
+/// What the unit needs next, said in words rather than in the column's one label.
+///
+/// The detail has room for the sentence, and the sentence says where the whole answer
+/// is. A ranked word is enough to pick a unit out of a list of eight; it is not enough
+/// to act on, and the command that is enough to act on is named.
+fn needs_cell(unit: &UnitRow) -> String {
+    match unit.needs {
+        None => String::from(NONE),
+        Some(Needs::Nothing) => String::from("nothing"),
+        Some(needs) => format!(
+            "{} — nodal reclaim {} --check says what a reclaim would take",
+            needs.label(),
+            unit.slug
+        ),
     }
 }
 

@@ -657,6 +657,29 @@ The order is the answer to "which unit needs a person next". Units the base carr
 are last. The rest come first, the one the base has moved furthest under at the top. Units
 that tie are ordered by slug, so one list of one registry is always the same list.
 
+**`NEEDS` says why**, in the words `nodal reclaim --check` uses, so one word means one thing in
+both places. It is ranked, and the first that applies is the one printed:
+
+| rank | value | what it is |
+|---|---|---|
+| 1 | `unique loss` | the working tree holds changed, staged or untracked paths |
+| 2 | `blocked` | something Nodal did not start is standing in the home |
+| 3 | `unknown` | the unit is ahead of the base, the project has a remote, and nothing here has read that remote since the home last wrote its own record of it |
+| 4 | `diverged` | merging would conflict, or the base has moved under the branch |
+| 5 | `review` | the work is on the base, or the branch is ahead and clean |
+| 6 | `nothing` | none of the above |
+
+A row shows `—` where nothing computed it. Every producer but the list is in that state, and
+`—` is not `nothing`: one says the question was not put and the other says it was answered.
+
+The column costs the list no extra `git`. The counts, the verdict and the divergence come from
+the survey the list already takes; the bystander comes from the one process-table read that WHO
+already needs; and the staleness of the remote evidence is read with `stat` — the checkout's own
+newest reading of the remote once for the whole list, compared against each home. That is the
+cheap necessary half of the witness rule and not the rule: `unknown` marks a row whose remote
+evidence **cannot** be current, and whether a current reading actually reaches the commits is
+what `nodal reclaim --check` costs a few processes to answer.
+
 Who is attached to each unit comes from the process table, by the same signals `nodal ps`
 reads. A host whose process table Nodal cannot read still lists every unit and says under the
 table that it could not see.

@@ -13,6 +13,7 @@
       "freshness": {
         "state": "fresh"
       },
+      "needs": "unique_loss",
       "work": {
         "dirty": 3,
         "staged": 1,
@@ -69,6 +70,7 @@
           "schema"
         ]
       },
+      "needs": "diverged",
       "work": {
         "dirty": 0,
         "staged": 0,

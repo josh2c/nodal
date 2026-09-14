@@ -26,6 +26,25 @@
 //! attached to each home. It is not a question about a repository and no home is asked
 //! it.
 //!
+//! **NEEDS is decided from what has already been read.** The column says why a unit
+//! wants a person, ranked, in the words `nodal reclaim --check` uses
+//! ([`crate::lifecycle::assess::Needs`]), so that one word means one thing in both
+//! places. What it must not do is start a survey of its own: the list is the command a
+//! person types most and it is held to a git-process budget per row (`ci/measure.sh`).
+//!
+//! So every input is one the list already holds. The counts, the verdict and the
+//! divergence come from the survey. The bystander comes from the one process scan below,
+//! which is read for WHO anyway. The staleness of the remote evidence is the one new
+//! reading, and it is `stat` and never `git`: the checkout's own newest reading of the
+//! remote is taken once for the whole list, and each home is compared against it
+//! ([`crate::lifecycle::witness::read_since`]).
+//!
+//! That reading is the cheap necessary half of the witness rule and not the rule. A row
+//! it marks `unknown` is a row whose remote evidence **cannot** be current; whether a
+//! reading that is current actually reaches the commits is a question with a cost, and
+//! `nodal reclaim --check` is where it is paid. The column points at the unit; the
+//! preflight answers about it.
+//!
 //! **WHO is two readings, in this order.** The lock rows first, then the process table.
 //! The order is not a preference: the process table is `/proc`, which does not cross
 //! Linux accounts, so on a host two engineers share it cannot see the other person at
@@ -44,18 +63,22 @@
 //! [`crate::context::compile`]. This module writes nothing at all, which is what makes
 //! that sentence true of module boundaries and not only of what `nodal ls` does.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use rusqlite::Connection;
 
 use crate::Result;
 use crate::context::survey::{self, Snapshot, Work};
-use crate::model::{ActorName, Lock, Project, Timestamp, UnitId};
+use crate::doctor::unique;
+use crate::git::Integration;
+use crate::lifecycle::{guard, witness};
+use crate::model::{ActorName, Lock, Needs, Project, Timestamp, UnitId};
 use crate::output::notice::{self, Notice};
 use crate::output::view::{EnvLine, Holder, ToolSessions, UnitList, UnitRow, WorkTree};
-use crate::runtime::processes::Processes;
-use crate::runtime::sessions;
+use crate::runtime::processes::{Processes, Running};
+use crate::runtime::{sessions, stop};
 
 /// Every unit of a project, with what Git and the process table say about each.
 ///
@@ -115,13 +138,21 @@ pub fn rows(
     now: Timestamp,
 ) -> UnitList {
     let mut notices = Vec::new();
-    let attached = attached_by_home(processes, &mut notices);
+    let homes: Vec<PathBuf> = surveyed
+        .iter()
+        .filter_map(|subject| subject.home.as_ref())
+        .map(|env| env.home.clone())
+        .collect();
+    let seen = scan(processes, &homes, &mut notices);
+    // One reading of the checkout for the whole list, and two `stat` calls per home
+    // against it. Asking `git` per row is what the budget in `ci/measure.sh` forbids.
+    let heard = unique::heard(&project.root);
     let mut units = Vec::new();
     for subject in surveyed {
         notices.extend(
             subject.notes.iter().map(|cause| Notice::about(subject.unit.slug.to_string(), cause)),
         );
-        units.push(row(subject, &attached, held));
+        units.push(row(subject, &seen, held, heard));
     }
     order(&mut units);
     // One line per cause, however many units reported it. A list of eight units whose
@@ -151,18 +182,61 @@ pub fn order(rows: &mut [UnitRow]) {
 }
 
 /// One row: the registry's facts about a unit, and the survey's.
-fn row(subject: &Snapshot, attached: &Attached, held: &Held) -> UnitRow {
+fn row(subject: &Snapshot, seen: &Seen, held: &Held, heard: Option<SystemTime>) -> UnitRow {
     let mut row = UnitRow::from_unit(&subject.unit);
     // The writer is a fact about the unit and not about its home, so it is set before
     // the row gives up on a unit that has none. A unit whose home was reclaimed holds
     // nothing, because the reclaim released it.
     row.holder = held.of_unit(subject.unit.id);
     let Some(environment) = subject.home.as_ref() else { return row };
-    row.sessions = attached.of(&environment.home);
+    row.sessions = seen.attached.of(&environment.home);
     row.last_active = Some(environment.last_active);
     row.environment = Some(EnvLine::from_environment(environment));
     row.work = subject.work.as_ref().map(work_tree);
+    // Resolved, because `read_since` reads `.git` under the path it is given and a
+    // state directory reached through a symbolic link is the ordinary shape on macOS.
+    let current = witness::read_since(&guard::resolve(&environment.home), heard);
+    row.needs = Some(needs(subject.work.as_ref(), seen.blocked(&environment.home), current));
     row
+}
+
+/// Why this unit needs a person, most actionable first.
+///
+/// The order of [`Needs`] is the ranking and the first match wins, so a unit with
+/// uncommitted work and a conflict is reported as the first of the two. Every branch
+/// here is decided from a reading the list already took.
+fn needs(work: Option<&Work>, blocked: bool, current: bool) -> Needs {
+    let Some(work) = work else { return Needs::Nothing };
+    if work.dirty + work.staged + work.untracked > 0 {
+        return Needs::UniqueLoss;
+    }
+    if blocked {
+        return Needs::BlockingRuntime;
+    }
+    if stale(work, current) {
+        return Needs::UnknownEvidence;
+    }
+    if work.integration == Integration::Conflict || work.divergence.is_behind() {
+        return Needs::Diverged;
+    }
+    if work.integration.is_integrated() || work.divergence.ahead > 0 {
+        return Needs::Review;
+    }
+    Needs::Nothing
+}
+
+/// Whether this unit has work whose remote evidence cannot be current.
+///
+/// Three things have to hold. The unit is ahead of the base, so it has something to
+/// lose. The project has a remote, so there is a claim about one to go stale. And
+/// nothing on this machine has read that remote since the home last wrote its own record
+/// of it — which is the reading a home makes when it pushes and never corrects
+/// afterwards ([`witness`]).
+///
+/// A unit with nothing of its own is not marked, however old the reading is. There is
+/// nothing about it a stale ref could get wrong.
+const fn stale(work: &Work, current: bool) -> bool {
+    work.divergence.ahead > 0 && work.remote.is_some() && !current
 }
 
 /// What the survey read of one home, as the list shows it.
@@ -201,26 +275,192 @@ impl Attached {
     }
 }
 
-/// Read the process table once and count who is in each home.
+/// What one reading of the process table said about the project's homes.
+///
+/// Two answers out of one scan, because they are two questions about one table and
+/// reading it twice would double the cost of the column that is cheapest to get wrong.
+#[derive(Debug, Default)]
+struct Seen {
+    /// Who is attached to each home, counted by tool. This is WHO.
+    attached: Attached,
+    /// The homes something Nodal did not start is standing in.
+    ///
+    /// A process matched by working directory alone: a tmux pane, an editor server over
+    /// SSH, a teammate's shell. Nothing signals one, and it is what a reclaim would
+    /// refuse to move the home out from under
+    /// ([`crate::lifecycle::assess`]).
+    bystanders: BTreeSet<PathBuf>,
+}
+
+impl Seen {
+    /// Whether something Nodal did not start is standing in this home.
+    fn blocked(&self, home: &Path) -> bool {
+        self.bystanders.contains(home)
+    }
+}
+
+/// Read the process table once, for who is attached to each home and for what is
+/// standing in one.
 ///
 /// A host whose process table Nodal cannot read gets a note and an empty answer, for the
 /// reason `docs/contracts.md` gives: a note is the difference between "nothing is
-/// attached" and "I could not see".
-fn attached_by_home(processes: &dyn Processes, notices: &mut Vec<Notice>) -> Attached {
-    let derived = processes.scan().and_then(|running| sessions::derive(&running));
-    let running = match derived {
+/// attached" and "I could not see". A row's NEEDS is then decided without the runtime
+/// half, which understates and never overstates.
+///
+/// The two processes a stop spares ([`stop::spared`]) are left out. A person who typed
+/// `nodal ls` inside a home is standing in it, and their own command must not be the
+/// reason their unit reads as blocked.
+fn scan(processes: &dyn Processes, homes: &[PathBuf], notices: &mut Vec<Notice>) -> Seen {
+    let running = match processes.scan() {
         Ok(running) => running,
         Err(error) => {
             // About the run, not about a unit: the table is read once for the whole
             // list, so the reason it could not be read is one line whatever the list
             // holds.
             notices.push(Notice::general(format!("who: {error}")));
+            return Seen::default();
+        }
+    };
+    let mut seen = Seen { attached: attached(&running, notices), ..Seen::default() };
+    let placed: Vec<(PathBuf, PathBuf)> =
+        homes.iter().map(|home| (guard::resolve(home), home.clone())).collect();
+    let spared = stop::spared();
+    for process in &running {
+        if process.var(crate::env::vars::ID).is_some() || spared.contains(&process.pid) {
+            continue;
+        }
+        let Some(cwd) = process.cwd.as_deref() else { continue };
+        for (resolved, home) in &placed {
+            if cwd.starts_with(resolved) {
+                seen.bystanders.insert(home.clone());
+            }
+        }
+    }
+    seen
+}
+
+/// Who is attached to each home, counted by tool, from the one scan.
+fn attached(running: &[Running], notices: &mut Vec<Notice>) -> Attached {
+    let derived = match sessions::derive(running) {
+        Ok(derived) => derived,
+        Err(error) => {
+            notices.push(Notice::general(format!("who: {error}")));
             return Attached::default();
         }
     };
     let mut homes: BTreeMap<PathBuf, BTreeMap<ActorName, u32>> = BTreeMap::new();
-    for process in running {
+    for process in derived {
         *homes.entry(process.root).or_default().entry(process.actor.name).or_default() += 1;
     }
     Attached(homes)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
+
+    use super::{Needs, needs};
+    use crate::context::survey::Work;
+    use crate::git::{Divergence, Integration};
+    use crate::output::view::Remote;
+
+    /// A unit that has committed one thing, pushed it, and has a clean tree.
+    fn clean() -> Work {
+        Work {
+            base: String::from("refs/remotes/origin/main"),
+            base_commit: None,
+            forked_at: None,
+            divergence: Divergence { ahead: 1, behind: 0 },
+            integration: Integration::Open,
+            dirty: 0,
+            staged: 0,
+            untracked: 0,
+            detached: false,
+            remote: Some(Remote {
+                upstream: String::from("origin/nodal/worker-import"),
+                divergence: Divergence { ahead: 0, behind: 0 },
+            }),
+            uncommitted: Vec::new(),
+            touched: Vec::new(),
+            commits: Vec::new(),
+            gained: Vec::new(),
+        }
+    }
+
+    /// The ranking, asserted where it decides: a unit that is several of these at once
+    /// is reported as the most actionable of them, and nothing else.
+    #[test]
+    fn the_most_actionable_reason_is_the_one_reported() {
+        let mut work = clean();
+        work.dirty = 3;
+        work.integration = Integration::Conflict;
+        work.divergence.behind = 4;
+        assert_eq!(needs(Some(&work), true, false), Needs::UniqueLoss);
+
+        work.dirty = 0;
+        assert_eq!(needs(Some(&work), true, false), Needs::BlockingRuntime);
+        assert_eq!(needs(Some(&work), false, false), Needs::UnknownEvidence);
+        assert_eq!(needs(Some(&work), false, true), Needs::Diverged);
+    }
+
+    /// Staged and untracked paths are work no commit holds, exactly as changed ones are.
+    #[test]
+    fn every_kind_of_uncommitted_path_is_possible_unique_loss() {
+        for set in [
+            |w: &mut Work| w.dirty = 1,
+            |w: &mut Work| w.staged = 1,
+            |w: &mut Work| {
+                w.untracked = 1;
+            },
+        ] {
+            let mut work = clean();
+            set(&mut work);
+            assert_eq!(needs(Some(&work), false, true), Needs::UniqueLoss);
+        }
+    }
+
+    /// A unit whose remote evidence cannot be current is `unknown` and never `nothing`.
+    /// A unit with nothing of its own is not marked, however old the reading is: there
+    /// is nothing about it a stale ref could get wrong.
+    #[test]
+    fn an_unreadable_remote_is_unknown_only_where_the_unit_has_something_to_lose() {
+        let work = clean();
+        assert_eq!(needs(Some(&work), false, false), Needs::UnknownEvidence);
+        assert_eq!(needs(Some(&work), false, true), Needs::Review);
+
+        let mut nothing_of_its_own = clean();
+        nothing_of_its_own.divergence.ahead = 0;
+        assert_eq!(needs(Some(&nothing_of_its_own), false, false), Needs::Nothing);
+    }
+
+    /// A project with no remote has no remote reading to be stale, so the age of one
+    /// says nothing about it.
+    #[test]
+    fn a_project_with_no_remote_is_never_marked_unknown() {
+        let mut work = clean();
+        work.remote = None;
+        assert_eq!(needs(Some(&work), false, false), Needs::Review);
+    }
+
+    /// Work the base already carries is a unit somebody should end, and it is the lowest
+    /// rank that says anything at all.
+    #[test]
+    fn integrated_work_reads_as_review_and_a_quiet_unit_as_nothing() {
+        let mut integrated = clean();
+        integrated.integration = Integration::Integrated(crate::git::integration::Reason::Ancestor);
+        integrated.divergence.ahead = 0;
+        assert_eq!(needs(Some(&integrated), false, true), Needs::Review);
+
+        let mut quiet = clean();
+        quiet.divergence.ahead = 0;
+        assert_eq!(needs(Some(&quiet), false, true), Needs::Nothing);
+    }
+
+    /// A home Git could not be asked about is not a home with nothing in it, and the
+    /// column says nothing rather than inventing an answer. The note under the table is
+    /// where the reason goes ([`crate::context::survey`]).
+    #[test]
+    fn a_home_that_could_not_be_read_is_not_reported_as_needing_anything() {
+        assert_eq!(needs(None, true, false), Needs::Nothing);
+    }
 }

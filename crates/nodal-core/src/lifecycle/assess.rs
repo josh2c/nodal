@@ -95,7 +95,7 @@ use crate::git::status::{Entry, State, Summary};
 use crate::git::{Git, Oid};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
 use crate::lifecycle::{guard, witness};
-use crate::model::UnitId;
+use crate::model::{Needs, UnitId};
 use crate::runtime::attribute::{Note, Source, Standing};
 use crate::runtime::processes;
 use crate::runtime::stop;
@@ -161,57 +161,6 @@ impl<'a> Input<'a> {
 // ---------------------------------------------------------------------------
 // Why a unit needs a person.
 // ---------------------------------------------------------------------------
-
-/// Why a unit needs a person, most actionable first.
-///
-/// The order of the variants is the ranking, and [`Ord`] is derived from it, so "the top
-/// reason" is `min` and nothing anywhere sorts these by hand.
-///
-/// One enum serves two readers. The preflight emits the first three, which are the three
-/// a reclaim refuses over; `nodal ls` emits all six, because its question is which unit
-/// to open next rather than which unit is safe to end. A reader that saw two enums here
-/// would have to be told that `unique_loss` in one is `unique_loss` in the other.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Needs {
-    /// Work that may exist only here: uncommitted paths, or commits nothing else holds.
-    UniqueLoss,
-    /// Something Nodal did not start is standing in the home, so the home cannot move.
-    BlockingRuntime,
-    /// Nothing on this machine read the remote, so what it has is not known.
-    UnknownEvidence,
-    /// Merging would conflict, or the base has moved a long way under the branch.
-    Diverged,
-    /// The work is done, or is out for review, and the unit is a person's to end.
-    Review,
-    /// Nothing.
-    #[default]
-    Nothing,
-}
-
-impl Needs {
-    /// The word a report prints for it.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::UniqueLoss => "unique loss",
-            Self::BlockingRuntime => "blocked",
-            Self::UnknownEvidence => "unknown",
-            Self::Diverged => "diverged",
-            Self::Review => "review",
-            Self::Nothing => "—",
-        }
-    }
-
-    /// Whether a reclaim refuses rather than going ahead for this reason.
-    ///
-    /// The three that do are the three a reclaim already refuses over today: the
-    /// uniqueness check's findings, and a process standing in the home it would move.
-    #[must_use]
-    pub const fn refuses(self) -> bool {
-        matches!(self, Self::UniqueLoss | Self::BlockingRuntime | Self::UnknownEvidence)
-    }
-}
 
 /// One reason, ranked, in the words a report prints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

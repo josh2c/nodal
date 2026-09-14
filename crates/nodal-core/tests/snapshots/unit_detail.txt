@@ -1,6 +1,7 @@
   unit       worker-import  (open)
   objective  worker import: handle missing supervisor_id
   branch     nodal/worker-import *3 +1 ?2
+  needs      unique loss — nodal reclaim worker-import --check says what a reclaim would take
   freshness  fresh
   main       open +2
   remote     ^2

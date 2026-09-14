@@ -111,6 +111,24 @@ impl Fixture {
         serde_json::from_slice(&output.stdout).expect("--json is one document")
     }
 
+    /// The home of one unit of this fixture.
+    fn home(&self, slug: &str) -> PathBuf {
+        self.directory.path().join("homes").join(slug)
+    }
+
+    /// What one row says it needs.
+    fn needs(&self, slug: &str) -> String {
+        self.answer()["units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["slug"] == slug)
+            .unwrap_or_else(|| panic!("no row for {slug}"))["needs"]
+            .as_str()
+            .unwrap_or("absent")
+            .to_owned()
+    }
+
     /// The slugs of the list, in the order the list put them in.
     fn slugs(&self) -> Vec<String> {
         self.answer()["units"]
@@ -219,6 +237,40 @@ fn assert_squash_merge_is_done(row: &serde_json::Value) {
     assert!(work["main"]["behind"].as_u64().unwrap() > 0);
     assert!(row["created_at"].is_string());
     assert!(row["sessions"].is_array());
+}
+
+/// The column says why a unit needs a person, in the words `nodal reclaim --check`
+/// uses, and it is filled in from what the list already read.
+///
+/// A file written into one home is work no commit holds, which is the top of the
+/// ranking, and it is the row that changes. Every other row is unaffected, because the
+/// column is a fact about a unit and not about the run.
+#[test]
+fn the_needs_column_names_the_most_actionable_reason_for_each_unit() {
+    let fixture = Fixture::new();
+    let subject = fixture.slugs().into_iter().next().unwrap();
+    let before = fixture.needs(&subject);
+    assert_ne!(before, "absent", "the column was not computed at all");
+    assert_ne!(before, "unique_loss", "the unit already holds uncommitted work");
+
+    std::fs::write(fixture.home(&subject).join("scratch.txt"), "not committed\n").unwrap();
+
+    assert_eq!(fixture.needs(&subject), "unique_loss");
+    let text = fixture.text(&["ls"]);
+    assert!(text.contains("NEEDS"), "the table has no such column: {text}");
+    assert!(text.contains("unique loss"), "{text}");
+}
+
+/// A unit the list never read a home for has no answer, and the row says so with the
+/// placeholder rather than claiming the unit needs nothing.
+#[test]
+fn a_row_with_no_reading_behind_it_prints_the_placeholder_and_not_nothing() {
+    let fixture = Fixture::new();
+    let answer = fixture.answer();
+    let worktrees = answer["worktrees"].as_array().unwrap();
+    for row in worktrees {
+        assert!(row["needs"].is_null(), "a worktree was given a needs: {row}");
+    }
 }
 
 #[test]
