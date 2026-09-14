@@ -239,6 +239,19 @@ jobs:
       - name: dirty is refused, a reclaimed unit leaves only its trash entry, gc removes it
         run: ci/acceptance-reclaim.sh
 
+  # Linux only: the scan reads the environment of every process, which macOS does not
+  # publish. The script fails rather than passes on a host that cannot answer, so a second
+  # leg here would be a job that went green having asserted nothing.
+  acceptance-process-hygiene:
+    name: acceptance (process hygiene)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: the whole suite leaves no process of its own running
+        run: ci/acceptance-process-hygiene.sh
+
   acceptance-tether:
     name: acceptance (tether)
     runs-on: ${{ matrix.os }}

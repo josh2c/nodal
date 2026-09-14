@@ -123,6 +123,11 @@ impl Runner {
     pub fn command(&self, args: &[&str]) -> Command {
         let mut command = isolated(&self.binary, &self.state);
         command.env(nodal_core::adapters::settings::CONFIG_DIR_VAR, &self.config);
+        // The marker goes on here rather than on the processes a test starts itself,
+        // because what the product backgrounds — a tether, a recipe hook's own child —
+        // inherits the environment of the command that started it, and the sentinel has
+        // to be able to see those too.
+        crate::process::mark(&mut command);
         command.args(args).current_dir(&self.cwd);
         for (name, value) in &self.extra {
             command.env(name, value);

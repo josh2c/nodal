@@ -32,12 +32,12 @@
 mod state;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use nodal_core::model::{Epistemic, Event, EventKind};
 use nodal_safety::git::{self, git_ok, git_text as git};
-use nodal_safety::process;
+use nodal_safety::process::{self, Owned};
 use nodal_safety::project::Layout;
 use nodal_safety::text::stdout;
 use nodal_safety::{InState as _, Workspace};
@@ -540,14 +540,9 @@ fn a_killed_create_leaves_nothing_once_the_next_invocation_resolves_it() {
     let base = workspace.bases().pop().unwrap();
     write_bulk(&base.join("node_modules"), BULK_FILES);
 
-    let mut child = workspace
-        .command(&["new", "worker import"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let half_made = wait_for_a_home(&workspace, &mut child);
-    kill(&mut child);
+    let mut child = create(&workspace);
+    let half_made = wait_for_a_home(&workspace, &child);
+    child.reclaim();
     assert!(half_made.exists(), "the killed run left the home it was building");
 
     // What a person does next. The preamble resolves the interrupted run before this
@@ -571,14 +566,9 @@ fn a_killed_create_leaves_nothing_once_the_next_invocation_resolves_it() {
 #[test]
 fn a_create_killed_while_its_base_builds_keeps_the_base_and_finishes_it_next_time() {
     let workspace = Workspace::with_bulk();
-    let mut child = workspace
-        .command(&["new", "worker import"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    wait_for_a_base_directory(&workspace, &mut child);
-    kill(&mut child);
+    let mut child = create(&workspace);
+    wait_for_a_base_directory(&workspace, &child);
+    child.reclaim();
     assert!(workspace.homes().is_empty(), "the kill landed before any home was made");
 
     // What a person does next. The base build is resumed rather than taken back, and
@@ -600,18 +590,15 @@ fn a_create_killed_while_its_base_builds_keeps_the_base_and_finishes_it_next_tim
 ///
 /// The kill lands while the operation is inside that directory — cloning it, scrubbing
 /// it, or writing its files — which is the state the next invocation has to cope with.
-fn wait_for_a_home(workspace: &Workspace, child: &mut Child) -> PathBuf {
+fn wait_for_a_home(workspace: &Workspace, child: &Owned) -> PathBuf {
     let deadline = Instant::now() + REACH_TIMEOUT;
     while Instant::now() < deadline {
         if let Some(home) = workspace.homes().pop() {
             return home;
         }
-        if let Some(status) = child.try_wait().unwrap() {
-            panic!("the create finished before it could be killed: {status}");
-        }
+        assert!(!child.exited(), "the create finished before it could be killed");
         std::thread::sleep(POLL);
     }
-    let _ = child.kill();
     panic!("no home appeared within {REACH_TIMEOUT:?}");
 }
 
@@ -620,7 +607,7 @@ fn wait_for_a_home(workspace: &Workspace, child: &mut Child) -> PathBuf {
 /// The directory being waited for is the one the build assembles in, not the one a
 /// base ends up under: the rename between them is what makes a base either whole or
 /// absent, so waiting for the finished name would be waiting for the step to be over.
-fn wait_for_a_base_directory(workspace: &Workspace, child: &mut Child) {
+fn wait_for_a_base_directory(workspace: &Workspace, child: &Owned) {
     let deadline = Instant::now() + REACH_TIMEOUT;
     while Instant::now() < deadline {
         if workspace.segment("b").is_some_and(|path| {
@@ -628,19 +615,20 @@ fn wait_for_a_base_directory(workspace: &Workspace, child: &mut Child) {
         }) {
             return;
         }
-        if let Some(status) = child.try_wait().unwrap() {
-            panic!("the create finished before it could be killed: {status}");
-        }
+        assert!(!child.exited(), "the create finished before it could be killed");
         std::thread::sleep(POLL);
     }
-    let _ = child.kill();
     panic!("no base directory appeared within {REACH_TIMEOUT:?}");
 }
 
 /// `SIGKILL`, so that nothing of the child's own runs afterwards.
-fn kill(child: &mut Child) {
-    child.kill().unwrap();
-    child.wait().unwrap();
+/// A create started in a process group of its own, so that what it is half way through —
+/// the `git` of a clone, the build command of a base — is reclaimed with it rather than
+/// left running against a temporary tree the test is about to remove.
+fn create(workspace: &Workspace) -> Owned {
+    let mut command = workspace.command(&["new", "worker import"]);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    Owned::spawn(&mut command)
 }
 
 #[test]

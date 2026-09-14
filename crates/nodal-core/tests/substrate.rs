@@ -23,7 +23,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -37,6 +37,7 @@ use nodal_core::substrate::progress::{Collector, Reporter};
 use nodal_core::substrate::{self, BaseBuild, Origin, Request};
 use nodal_core::{Error, lifecycle, recipe};
 use nodal_safety::git::{git, identity};
+use nodal_safety::process::Owned;
 use tempfile::TempDir;
 
 /// The environment variable the child reads its root from.
@@ -418,8 +419,8 @@ fn a_build_killed_between_steps_is_finished_by_the_next_invocation() {
     let (_dir, world) = world();
     let marker = world.root.join("parked");
     let mut child = spawn_child(&world, &marker);
-    wait_for_park(&marker, &mut child);
-    kill(&mut child);
+    wait_for_park(&marker, &child);
+    child.reclaim();
 
     let mut store = world.store();
     let project = world.project(&mut store);
@@ -444,36 +445,38 @@ fn a_build_killed_between_steps_is_finished_by_the_next_invocation() {
     assert!(lifecycle::resolve(&mut store, &[&BaseBuild]).unwrap().is_empty());
 }
 
-/// Re-execute this test binary, running only the child test.
-fn spawn_child(world: &World, marker: &Path) -> Child {
+/// Re-execute this test binary, running only the child test, and own what it starts.
+///
+/// The child is not one process. It builds a base for real, which runs the project's build
+/// command, which is a shell that parks in a loop forking one `sleep` a second. A handle on
+/// the child reaches the child; it does not reach the family the child started.
+///
+/// So the child is started in a process group of its own and owned as that group
+/// ([`Owned`]), which is reclaimed when this test ends whichever way it ends.
+/// [`nodal_safety::process`] says what that costs and what it is worth.
+fn spawn_child(world: &World, marker: &Path) -> Owned {
     let binary = std::env::current_exe().expect("a test binary has a path");
-    Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .args([CHILD_TEST, "--exact", "--ignored", "--nocapture", "--test-threads=1"])
         .env(ROOT_VAR, &world.root)
         .env(PARK_VAR, marker)
-        .stdout(Stdio::null())
-        .spawn()
-        .expect("the test binary can be run again")
+        .stdout(std::process::Stdio::null());
+    Owned::spawn(&mut command)
 }
 
 /// Wait until the child says it has reached the park.
-fn wait_for_park(marker: &Path, child: &mut Child) {
+///
+/// The owner is left to reclaim the group on the way out of a failure, so nothing here
+/// signals anything: a panic unwinds through it.
+fn wait_for_park(marker: &Path, child: &Owned) {
     let deadline = Instant::now() + PARK_TIMEOUT;
     while Instant::now() < deadline {
         if marker.exists() {
             return;
         }
-        if let Some(status) = child.try_wait().expect("the child can be polled") {
-            panic!("the child exited before it parked: {status}");
-        }
+        assert!(!child.exited(), "the child exited before it parked");
         std::thread::sleep(POLL);
     }
-    kill(child);
     panic!("the child never reached the park");
-}
-
-/// Kill the child outright and reap it, so no code of its own runs afterwards.
-fn kill(child: &mut Child) {
-    child.kill().expect("the child can be killed");
-    child.wait().expect("the child can be reaped");
 }

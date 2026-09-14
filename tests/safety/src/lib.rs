@@ -14,12 +14,18 @@
 //! | [`rows`] | the registry rows a test writes by hand |
 //! | [`activation`] | one activated home: the three files a shell reads |
 //! | [`checkout`] | a checkout Nodal holds nothing about, and the readings a verdict takes of one |
-//! | [`process`] | a process a test starts, and the two shapes it starts one in |
+//! | [`process`] | a process group a test owns, the shapes it starts one in, and bounded readings of the machine |
 //!
 //! Each of those was written out again in every file that wanted it. The binary runner
 //! stood in nineteen test files and the `git` runner in sixteen, so a fix to one of them
 //! reached one suite. They are one implementation now, and each module says what its
 //! callers had in common.
+//!
+//! [`process`] is the one of those a property was found in rather than a duplication.
+//! A fixture that starts a process starts a family, and killing the one process a fixture
+//! has a handle on leaves the rest of that family running — on every run, for as long as
+//! the machine stays up. So a fixture owns a process group there, and
+//! `ci/acceptance-process-hygiene.sh` asks the machine afterwards whether it left anything.
 //!
 //! The safety suite is the rest of this crate, and the paragraphs below are about it.
 //!
@@ -48,6 +54,7 @@
 //! | reclaim scope | a reclaim signals a process that carries no unit identifier | `tests/reclaim_scope.rs` |
 //! | fresh uniqueness | a stale remote-tracking ref makes a reclaim or a sweep call the only copy of a commit safe to remove | `tests/reclaim_fresh_uniqueness.rs` |
 //! | hook process ownership | a recipe hook leaves a process running that nothing on the machine can name or stop | `tests/hook_processes.rs` |
+//! | a fixture owns what it starts | a test leaves a process running, on every run, standing in a temporary tree that has been removed underneath it | `tests/fixture_processes.rs` |
 //! | trash prune | the trash loses a path that holds work, or keeps a build a tool writes again | `tests/trash_prune.rs` |
 //! | a session's home | a file nodal wrote for an agent shows as the agent's work, and is merged as it | `tests/hook_home.rs` |
 //! | hook scope | an install nobody asked for leaves a file in a repository, or the provider ends a session in a project that is not Nodal's | `tests/claude_scope.rs` |

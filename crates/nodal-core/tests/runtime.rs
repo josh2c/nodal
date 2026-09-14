@@ -18,7 +18,7 @@ use nodal_core::model::{
 use nodal_core::runtime::processes::{Processes, Running};
 use nodal_core::runtime::sessions::{self, Attached};
 use nodal_core::store::{Store, environments, projects, sessions as session_rows, units};
-use nodal_safety::rows;
+use nodal_safety::{process, rows};
 
 /// The unit every row in this file belongs to.
 const UNIT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -151,21 +151,20 @@ fn a_process_started_with_a_homes_environment_is_seen_on_this_machine() {
     let store = registry(directory.path(), &home, &host);
     let environment = EnvId::parse(ENVIRONMENT).unwrap();
 
-    let mut child = std::process::Command::new("sleep")
-        .arg("30")
-        .env("NODAL_ID", UNIT)
-        .env("NODAL_ROOT", &home)
-        .spawn()
-        .unwrap();
+    let mut child = process::carrying(UNIT, &home);
 
     let live = nodal_core::runtime::processes::Live;
-    let opened = sessions::observe(store.conn(), &live, &host, Timestamp::now()).unwrap();
-    assert_eq!(opened.opened, 1, "the process table did not show the process");
+    // Asked again until the machine answers. A process exists before it has replaced itself
+    // with the program it was started for, and a scan taken in that instant reads the
+    // environment this test binary had rather than the one the test gave the process.
+    process::until("the scan to open a session for the process", || {
+        let change = sessions::observe(store.conn(), &live, &host, Timestamp::now()).unwrap();
+        (change.opened == 1).then_some(())
+    });
     let open = session_rows::list_open(store.conn(), environment).unwrap();
-    assert_eq!(open[0].pid, Some(child.id()));
+    assert_eq!(open[0].pid, Some(child.pid()));
 
-    child.kill().unwrap();
-    child.wait().unwrap();
+    child.reclaim();
     let ended = sessions::observe(store.conn(), &live, &host, Timestamp::now()).unwrap();
     assert_eq!(ended.ended, 1);
 }

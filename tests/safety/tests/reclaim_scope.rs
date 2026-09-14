@@ -56,7 +56,7 @@ fn environment(machine: &Machine) -> EnvId {
 /// every home. A file written inside the home would be untracked work, and the
 /// uniqueness check would refuse the reclaim, which is that check doing its job and
 /// nothing to do with this property.
-fn tether(machine: &Machine, home: &Path, record: &Path) -> u32 {
+fn tether(machine: &Machine, home: &Path, record: &Path) -> process::Owned {
     let line = format!("sleep 300 >/dev/null 2>&1 & printf %s \"$!\" > {}", record.display());
     let ran = machine
         .command(&["run", "--tether", "sh", "-c", &line])
@@ -73,7 +73,10 @@ fn tether(machine: &Machine, home: &Path, record: &Path) -> u32 {
 
     let pid: u32 = std::fs::read_to_string(record).unwrap().trim().parse().unwrap();
     assert!(alive(pid), "the tethered command left a process behind");
-    pid
+    // Adopted, so that an assertion failing before the one about the reclaim stopping it
+    // cannot leave a `sleep 300` standing in a home this test is about to remove. What is
+    // asserted is still that Nodal stopped it.
+    process::Owned::adopt(pid)
 }
 
 /// A process standing in the home is never signalled, and the refusal names it.
@@ -105,7 +108,7 @@ fn a_bystander_standing_in_the_home_survives_a_reclaim_and_is_named() {
     assert_eq!(machine.homes(), vec![home.clone()], "the home is still the project's");
     assert!(machine.trashed().is_empty(), "the refusal put something in the trash");
 
-    wait_for("the tether to go", || !alive(tethered));
+    wait_for("the tether to go", || !alive(tethered.pid()));
 }
 
 /// The refusal is recoverable by the route it names, and by that route alone.
@@ -172,7 +175,7 @@ fn a_reclaim_with_no_bystander_stops_its_tether_and_takes_the_home() {
     let reclaimed = machine.nodal(&["reclaim", UNIT]);
 
     assert!(reclaimed.status.success(), "{}", stderr(&reclaimed));
-    wait_for("the tether to go", || !alive(tethered));
+    wait_for("the tether to go", || !alive(tethered.pid()));
     assert!(!home.exists(), "the home is not where it was");
     assert_eq!(machine.trashed().len(), 1, "the trash holds it");
 }
