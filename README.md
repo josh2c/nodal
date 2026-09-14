@@ -149,10 +149,11 @@ no network call to do it, so the unit's branch stands at the same commit yours d
 
 What an ignore rule covers stays where it is — that state belongs to the base, which
 already has it. `--carry` refuses rather than guess: an index with unresolved merge stages,
-a `HEAD` that is not a branch with a commit, `--from` naming a second starting point, an
+a `HEAD` that is not a branch with a commit, `--from` naming a second starting point, a
+submodule holding work of its own, a path that is not a regular file or a symbolic link, an
 uncommitted set over the ceiling, or a file it would have to overwrite in the new home.
 Every refusal says which of those it was, and leaves both your checkout and the unit that
-would have been made untouched.
+would have been made untouched. It never claims to have copied work it left behind.
 
 A base is rebuilt only when the inputs that define an environment move: lockfiles,
 toolchain, migrations, service definitions. An ordinary source commit moves nothing.

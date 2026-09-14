@@ -520,6 +520,41 @@ pub enum Error {
         bytes: u64,
     },
 
+    /// A submodule's own working tree holds work, which neither patch can carry. The
+    /// gitlink travels; the files inside the submodule are in a repository the
+    /// superproject does not hold.
+    #[error(
+        "{repo} has uncommitted work inside the {what} {paths}, which a carry cannot reach; \
+         commit or stash it there first",
+        repo = repo.display(),
+        what = if paths.len() == 1 { "submodule" } else { "submodules" },
+        paths = paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", ")
+    )]
+    CarrySubmoduleWork {
+        /// The checkout that was read.
+        repo: PathBuf,
+        /// The submodules holding work, in the order Git listed them.
+        paths: Vec<PathBuf>,
+    },
+
+    /// A carried path is neither a regular file nor a symbolic link. A copy reproduces
+    /// those two and nothing else, and the kind is read without opening the path so that
+    /// one that would block a reader never reaches one.
+    #[error(
+        "{repo} holds {path}, which is {kind}; a carry reproduces regular files and symbolic \
+         links, so ignore it or move it aside and carry again",
+        repo = repo.display(),
+        path = path.display()
+    )]
+    CarryUnsupportedKind {
+        /// The checkout that was read.
+        repo: PathBuf,
+        /// The path, relative to the repository root.
+        path: PathBuf,
+        /// What it is, in the words the message uses.
+        kind: &'static str,
+    },
+
     /// A carried untracked path is already in the home with other content. Overwriting
     /// it would lose one of the two silently, so neither is written.
     #[error(

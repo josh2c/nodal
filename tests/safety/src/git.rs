@@ -6,7 +6,9 @@
 //! of them reached one suite. These are that runner, once.
 //!
 //! [`untouched`] is the other direction over the same seam: the three readings of a
-//! repository that together say it was only read.
+//! repository that together say it was only read. It finds the index through the
+//! product's own layout reading, so it states the same property in a linked worktree
+//! that it states in an ordinary clone.
 //!
 //! Every call here shuts the global and the system configuration out and refuses a
 //! terminal prompt. A test must hold whatever the person running it keeps in their own
@@ -27,6 +29,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+
+use nodal_core::git::layout;
 
 /// The identity a test repository commits under.
 ///
@@ -120,6 +124,43 @@ pub fn identity(directory: impl AsRef<Path>) {
     }
 }
 
+/// Add `source` as a submodule of `superproject` at `at`, and commit it.
+///
+/// `protocol.file.allow=always` is set for this call and no other. Git refuses to clone
+/// a submodule over a local path by default, because a repository whose `.gitmodules`
+/// names a path on the machine cloning it is an attack on somebody who clones it. A
+/// fixture that makes both repositories itself is the one case where that is exactly
+/// what is wanted, and saying so here keeps the exception to the one command that needs
+/// it.
+///
+/// # Panics
+///
+/// As [`git`].
+pub fn submodule(superproject: impl AsRef<Path>, source: impl AsRef<Path>, at: &str) {
+    let superproject = superproject.as_ref();
+    let source = source.as_ref().display().to_string();
+    git_ok(
+        superproject,
+        &["-c", "protocol.file.allow=always", "submodule", "add", "--quiet", "--", &source, at],
+    );
+    identity(superproject.join(at));
+    commit(superproject, "add the submodule");
+}
+
+/// Add a linked worktree of `repo` at `path`, on a new branch.
+///
+/// A worktree is the checkout a person most often has a second piece of work in, and it
+/// is the one whose `.git` is a file rather than a directory. Everything a test asserts
+/// about "the repository was only read" has to hold there too.
+///
+/// # Panics
+///
+/// As [`git`].
+pub fn worktree(repo: impl AsRef<Path>, path: impl AsRef<Path>, branch: &str) {
+    let path = path.as_ref().display().to_string();
+    git_ok(repo.as_ref(), &["worktree", "add", "--quiet", "-b", branch, &path]);
+}
+
 /// Commit everything a directory holds, as a person working in it would.
 ///
 /// # Panics
@@ -163,8 +204,10 @@ fn command(directory: &Path, args: &[&str]) -> Command {
 pub struct Untouched {
     /// Everything outside `.git`, with the permission bits and the link targets.
     tree: crate::tree::Snapshot,
-    /// `.git/index`, byte for byte. Empty where the repository has none yet.
+    /// The repository's own index file, byte for byte. Empty where it has none yet.
     index: Vec<u8>,
+    /// Where that index was read from, so a message can name it.
+    index_path: PathBuf,
     /// Every ref and the object it names.
     refs: String,
     /// The repository, for a message.
@@ -173,17 +216,27 @@ pub struct Untouched {
 
 /// Take the three readings of `repo`.
 ///
+/// The index is found through [`layout::dir`] rather than at `<root>/.git/index`,
+/// because those are not the same file in every checkout. In a linked worktree `.git`
+/// is a file holding a `gitdir:` line, the index lives in the per-worktree directory it
+/// names, and `<root>/.git/index` does not exist at all — so the naive reading holds
+/// empty bytes, compares equal to empty bytes, and asserts nothing. A worktree is
+/// exactly the kind of checkout a person runs `nodal new --carry` in, so the invariant
+/// has to be real there.
+///
 /// # Panics
 ///
 /// If the repository could not be read, or `git` refused `for-each-ref`.
 #[must_use]
 pub fn untouched(repo: impl AsRef<Path>) -> Untouched {
     let repo = repo.as_ref();
+    let index_path = layout::dir(repo).unwrap_or_else(|| repo.join(".git")).join("index");
     Untouched {
         tree: crate::tree::Snapshot::of_except(repo, |path| {
             path.file_name().is_some_and(|name| name == ".git")
         }),
-        index: std::fs::read(repo.join(".git").join("index")).unwrap_or_default(),
+        index: std::fs::read(&index_path).unwrap_or_default(),
+        index_path,
         refs: git(repo, &["for-each-ref", "--format=%(refname) %(objectname)"]),
         root: repo.to_path_buf(),
     }
@@ -197,11 +250,16 @@ impl Untouched {
     /// Naming the reading that differs, and for the tree every path it disagrees about.
     pub fn assert_unchanged(&self, later: &Self, claim: &str) {
         self.tree.assert_unchanged(&later.tree, claim);
+        assert!(
+            !self.index.is_empty(),
+            "{claim}: no index was found at {}, so this reading proves nothing",
+            self.index_path.display()
+        );
         assert_eq!(
             self.index,
             later.index,
-            "{claim}: the index of {} was written to",
-            self.root.display()
+            "{claim}: {} was written to",
+            self.index_path.display()
         );
         assert_eq!(self.refs, later.refs, "{claim}: a ref of {} moved", self.root.display());
     }

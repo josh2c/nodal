@@ -305,8 +305,30 @@ a second copy would be paying twice for what copy-on-write gave for nothing.
 | a `HEAD` that is detached or has no commit | the unit has nowhere to start and the work nothing to be a difference from |
 | a Git operation in progress — merge, rebase, cherry-pick, revert, bisect, `am` | the same rule every create is already held to |
 | `--from` | `--carry` pins the start to the checkout's `HEAD`, so a second starting point is a contradiction |
+| a **submodule holding work of its own** — modified tracked files, or untracked ones | that work is in a repository the superproject does not hold, so neither patch can reach it |
+| a carried path that is **not a regular file or a symbolic link** — a directory, a named pipe, a socket, a device | a copy reproduces those two kinds and nothing else |
 | more than 5,000 paths or 64 MiB | a set that size is state a build left behind that no ignore rule covers, not an edit in progress |
 | a path the home already holds with other content | overwriting would lose one of the two silently |
+
+**Submodules.** A submodule's recorded commit is a gitlink in the superproject's own
+index, and it travels in the patch like any other change. What does not travel is
+anything inside the submodule's own working tree, and the diffs pass
+`--ignore-submodules=dirty` so that a patch never carries the unusable `-dirty` rendering
+of it. `--carry` therefore refuses while a submodule holds work, rather than making a unit
+that silently lacks part of what the person had. The reading that decides this passes
+`--ignore-submodules=none`, which overrides `submodule.<name>.ignore` and
+`diff.ignoreSubmodules`: hiding the work from `git status` does not make it something a
+carry could reproduce. Carrying a submodule's work recursively is not something `--carry`
+does.
+
+**Path kinds.** Every path in the carried set is classified by one `lstat` before any of
+them is opened, and before the first `git diff` runs. A named pipe has no end of file, so
+a reader of one waits for a writer that may never come; answering from the kind rather
+than the content is what makes the refusal reachable at all. A directory reaches this list
+through the case that actually occurs: Git does not descend into a repository it does not
+own, so a clone made inside the project arrives as one untracked path, and copying it
+would put a second copy of somebody's repository in the unit. A broken symbolic link is
+carried like any other link — what travels is the target's name, not the target.
 
 Every refusal leaves the checkout unchanged and no unit behind, and every one that can be
 made before a base is built is made there, so a `--carry` that cannot work does not first

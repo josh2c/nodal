@@ -14,6 +14,10 @@
 //! [`copy`] is the other direction over the same shape: a second copy of a tree, made
 //! from its content rather than from its metadata, for a test that needs two of
 //! something the fixture only writes once.
+//!
+//! [`fifo`] plants the one thing in a tree that a reader must never open. It is here
+//! because it is a shape a test puts on a disk, and because the one `unsafe` call it
+//! takes belongs in one place rather than in each suite that wants one.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +31,16 @@ enum Entry {
     Link(PathBuf),
     /// A directory, which is held so that an emptied one is still a difference.
     Directory,
+    /// Anything else — a named pipe, a socket, a device — held by its kind and its
+    /// permission bits and never by its content.
+    ///
+    /// **Nothing here opens one.** A named pipe has no end of file: a reader of one
+    /// waits for a writer that may never come, so a snapshot that read it would not fail,
+    /// it would hang, and the suite would be killed by whatever was watching the job.
+    /// A test plants one precisely to assert that a command did not open it
+    /// ([`fifo`]), and a snapshot taken before and after is how that is asserted — so
+    /// the snapshot must not be the thing that opens it.
+    Special(&'static str, u32),
 }
 
 impl Entry {
@@ -36,8 +50,34 @@ impl Entry {
             Self::File(..) => "file",
             Self::Link(_) => "link",
             Self::Directory => "directory",
+            Self::Special(kind, _) => kind,
         }
     }
+}
+
+/// What a path is, in the word a difference is reported with.
+///
+/// Portable: a host with no such file types answers the general phrase, and a tree there
+/// holds none of them anyway.
+fn kind_of(kind: std::fs::FileType) -> &'static str {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt as _;
+        if kind.is_fifo() {
+            return "named pipe";
+        }
+        if kind.is_socket() {
+            return "socket";
+        }
+        if kind.is_block_device() {
+            return "block device";
+        }
+        if kind.is_char_device() {
+            return "character device";
+        }
+    }
+    let _ = kind;
+    "special file"
 }
 
 /// Everything under a directory, keyed by the path relative to its root.
@@ -145,6 +185,9 @@ fn difference(path: &Path, before: &Entry, after: &Entry) -> String {
                 )
             }
         }
+        (Entry::Special(kind, mode), Entry::Special(_, later_mode)) => {
+            format!("mode {mode:o} became {later_mode:o}: {where_} (a {kind})")
+        }
         (Entry::Link(target), Entry::Link(later)) => {
             format!(
                 "link now points at {} rather than {}: {where_}",
@@ -198,6 +241,16 @@ fn copy_into(from: &Path, to: &Path) {
         } else if kind.is_dir() {
             copy_into(&path, &target);
         } else {
+            // Refused rather than read, for the reason [`Entry::Special`] gives: opening
+            // a named pipe here would hang the suite instead of failing it. No fixture
+            // this copies holds one, and one that did would be saying something a copy
+            // cannot carry anyway.
+            assert!(
+                kind.is_file(),
+                "{} is a {}, which a copy cannot carry",
+                path.display(),
+                kind_of(kind)
+            );
             let Some(content) = gone_or(&path, std::fs::read(&path)) else { continue };
             std::fs::write(&target, content)
                 .unwrap_or_else(|error| panic!("{}: {error}", target.display()));
@@ -261,10 +314,13 @@ fn walk(
         } else if kind.is_dir() {
             entries.insert(relative, Entry::Directory);
             walk(root, &path, skip, entries);
-        } else {
+        } else if kind.is_file() {
             let content =
                 std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
             entries.insert(relative, Entry::File(mode_of(&path), content));
+        } else {
+            // The kind is read from the listing, so nothing here has opened the path.
+            entries.insert(relative, Entry::Special(kind_of(kind), mode_of(&path)));
         }
     }
 }
@@ -283,6 +339,30 @@ fn mode_of(path: &Path) -> u32 {
 #[cfg(not(unix))]
 const fn mode_of(_path: &Path) -> u32 {
     0
+}
+
+/// Make a named pipe at `path`.
+///
+/// A test that plants one is asserting that nothing opened it: a reader of a pipe waits
+/// for a writer that may never come, so a command that reached the end of a tree holding
+/// one did so by reading the kind rather than the content.
+///
+/// Unix only, because a named pipe is. A suite that wants one guards the call with
+/// `#[cfg(unix)]`; the refusal it is testing is portable and needs no guard.
+///
+/// # Panics
+///
+/// If the pipe could not be made, naming where it was wanted.
+#[cfg(unix)]
+pub fn fifo(path: impl AsRef<Path>) {
+    let path = path.as_ref();
+    let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .expect("a path with no interior NUL");
+    // SAFETY: `mkfifo` takes a NUL-terminated path and a mode, reads neither beyond its
+    // own call, and reports failure through its return value. The path is a `CString`
+    // this function owns for the length of the call.
+    let made = unsafe { libc::mkfifo(name.as_ptr(), 0o644) };
+    assert_eq!(made, 0, "no named pipe could be made at {}", path.display());
 }
 
 #[cfg(test)]

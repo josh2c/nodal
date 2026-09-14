@@ -164,19 +164,29 @@ impl Report {
 ///
 /// The refusals are here rather than at the destination so that a `nodal new --carry`
 /// that cannot work says so before it builds anything: an unmerged index, a `HEAD` that
-/// is not a branch with a commit, and a set over either ceiling.
+/// is not a branch with a commit, a submodule holding work of its own, a path whose kind
+/// a copy cannot reproduce, and a set over either ceiling.
+///
+/// Every one of them is made before the first `git diff` is run, which is what bounds
+/// this: the classification is `lstat` and nothing else, so no path is opened by
+/// anything here until it is known to be a regular file or a symbolic link.
 ///
 /// # Errors
 /// [`Error::CarryUnmerged`] when a path has unresolved merge stages,
 /// [`Error::CarryUnanchored`] when `HEAD` is detached or has no commit yet,
-/// [`Error::CarryTooLarge`] when the set is over a ceiling, and whatever `git` reported.
+/// [`Error::CarrySubmoduleWork`] when a submodule's own working tree holds work,
+/// [`Error::CarryUnsupportedKind`] when a carried path is neither a regular file nor a
+/// symbolic link, [`Error::CarryTooLarge`] when the set is over a ceiling, and whatever
+/// `git` reported.
 pub fn read(repo: &Path) -> Result<Work> {
     let git = super::Git::at(repo);
-    let summary = git.status()?;
+    let summary = git.status_of_submodules_too()?;
     refuse_unmerged(repo)?;
     let Some((_, head)) = git.head_position()? else {
         return Err(Error::CarryUnanchored { repo: repo.to_path_buf() });
     };
+    refuse_submodules_holding_work(repo, &summary)?;
+    refuse_unsupported_kinds(repo, &summary)?;
     let staged = diff(repo, &["--cached", head.as_str()])?;
     let unstaged = diff(repo, &[])?;
     let untracked = untracked_in(&summary);
@@ -190,6 +200,105 @@ pub fn read(repo: &Path) -> Result<Work> {
         });
     }
     Ok(Work { head, staged, unstaged, untracked, report })
+}
+
+/// Refuse a submodule whose own working tree holds work, because nothing here can carry
+/// it.
+///
+/// A submodule is a second repository, and the superproject records only the commit it
+/// stands at. That gitlink is in the superproject's own index and travels like any other
+/// change; the modified and untracked files inside the submodule are in objects and a
+/// working tree the superproject does not hold, and reach neither patch. The diffs here
+/// pass `--ignore-submodules=dirty` precisely so a patch never carries the unusable
+/// `-dirty` rendering of that state — which means the state would be left behind in
+/// silence unless this says so.
+///
+/// So it is a refusal rather than a warning. `--carry` says the unit starts with the
+/// work the person has, and a unit that quietly started without part of it would be
+/// worse than one that was never made. Carrying a submodule's work recursively is a
+/// larger thing than this operation, and a person who wants the unit anyway commits or
+/// stashes inside the submodule first, which is what the message says.
+///
+/// The reading this acts on is [`super::Git::status_of_submodules_too`], so a submodule
+/// hidden by `submodule.<name>.ignore` or `diff.ignoreSubmodules` is still seen.
+fn refuse_submodules_holding_work(repo: &Path, summary: &Summary) -> Result<()> {
+    let holding: Vec<PathBuf> = summary
+        .uncommitted()
+        .filter(|entry| entry.submodule.holds_work())
+        .map(|entry| entry.path.clone())
+        .collect();
+    if holding.is_empty() {
+        return Ok(());
+    }
+    Err(Error::CarrySubmoduleWork { repo: repo.to_path_buf(), paths: holding })
+}
+
+/// Refuse a carried path whose kind a copy cannot reproduce, before anything opens it.
+///
+/// Every path in the carried set is classified by `symlink_metadata` — one `lstat`,
+/// which opens nothing and blocks on nothing. That ordering is the property: a named
+/// pipe has no end of file and a reader of one waits for a writer that may never come,
+/// so the answer has to be reached without reading. `git diff` refuses such a path too
+/// (`cannot hash`), but it refuses it *after* this would have, and it says it in Git's
+/// words rather than in a reason a person can act on.
+///
+/// Regular files and symbolic links are what a carry reproduces, a broken link included:
+/// a link is recreated from its target's name, which is there whether the target is.
+///
+/// A directory is on this list and it is the case that actually occurs. Git does not
+/// descend into a repository it does not own, so an embedded clone — a `git clone` run
+/// inside the project — is reported as one untracked path with a trailing separator.
+/// Copying it would make a second copy of somebody's repository inside the unit.
+///
+/// A submodule is skipped, because a submodule is a directory and its gitlink is what
+/// travels rather than its tree. [`refuse_submodules_holding_work`] has already had the
+/// only say about those, and it runs first.
+fn refuse_unsupported_kinds(repo: &Path, summary: &Summary) -> Result<()> {
+    for entry in summary.uncommitted().filter(|entry| !entry.submodule.is_one()) {
+        let path = repo.join(&entry.path);
+        // A path that is not there is not a kind. A tracked file deleted in the working
+        // tree is ordinary work, and the patch that records the deletion is what carries
+        // it.
+        let Ok(about) = path.symlink_metadata() else { continue };
+        if about.is_file() || about.is_symlink() {
+            continue;
+        }
+        return Err(Error::CarryUnsupportedKind {
+            repo: repo.to_path_buf(),
+            path: entry.path.clone(),
+            kind: kind_of(&about),
+        });
+    }
+    Ok(())
+}
+
+/// What a path is, in the words a refusal uses.
+///
+/// Portable: a build for a platform with no such file types answers the general phrase,
+/// and the refusal is the same refusal. The specific names are there because "a named
+/// pipe" tells a person what to go and look for and "not a file" does not.
+fn kind_of(about: &std::fs::Metadata) -> &'static str {
+    if about.is_dir() {
+        return "a directory";
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt as _;
+        let kind = about.file_type();
+        if kind.is_fifo() {
+            return "a named pipe";
+        }
+        if kind.is_socket() {
+            return "a socket";
+        }
+        if kind.is_block_device() {
+            return "a block device";
+        }
+        if kind.is_char_device() {
+            return "a character device";
+        }
+    }
+    "neither a regular file nor a symbolic link"
 }
 
 /// Refuse an index that holds a path at more than one stage.
@@ -383,12 +492,14 @@ fn weigh(repo: &Path, untracked: &[PathBuf], patches: usize) -> u64 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "tests fail by panicking")]
+#[allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 mod tests {
     use std::path::PathBuf;
 
-    use super::{Report, count, untracked_in};
-    use crate::git::status::{Change, Entry, Head, State, Summary};
+    use super::{
+        Report, count, refuse_submodules_holding_work, refuse_unsupported_kinds, untracked_in,
+    };
+    use crate::git::status::{Change, Entry, Head, State, Submodule, Summary};
 
     fn summary(entries: Vec<Entry>) -> Summary {
         Summary {
@@ -401,7 +512,7 @@ mod tests {
     }
 
     fn entry(path: &str, state: State) -> Entry {
-        Entry { path: PathBuf::from(path), origin: None, state }
+        Entry { path: PathBuf::from(path), origin: None, state, submodule: Submodule::No }
     }
 
     #[test]
@@ -431,6 +542,77 @@ mod tests {
             ),
         ]));
         assert_eq!(listed, [PathBuf::from("notes.txt")]);
+    }
+
+    /// The status reading a classification test acts on: one entry per path.
+    fn tracked(path: &str) -> Entry {
+        entry(path, State::Tracked { index: Change::Unmodified, worktree: Change::Modified })
+    }
+
+    #[test]
+    fn a_path_that_is_not_a_file_or_a_link_is_refused_and_named() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::write(root.join("ordinary.txt"), "work\n").unwrap();
+        std::fs::create_dir(root.join("embedded")).unwrap();
+        std::os::unix::fs::symlink("ordinary.txt", root.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink("nowhere.txt", root.join("broken.txt")).unwrap();
+
+        let carried = summary(vec![
+            tracked("ordinary.txt"),
+            entry("link.txt", State::Untracked),
+            entry("broken.txt", State::Untracked),
+            entry("gone.txt", State::Tracked { index: Change::Deleted, worktree: Change::Deleted }),
+        ]);
+        refuse_unsupported_kinds(root, &carried).expect("files and links, one of them broken");
+
+        let refused =
+            refuse_unsupported_kinds(root, &summary(vec![entry("embedded", State::Untracked)]))
+                .expect_err("an embedded repository arrives as one untracked directory");
+        assert!(refused.to_string().contains("embedded"), "{refused}");
+        assert!(refused.to_string().contains("a directory"), "{refused}");
+    }
+
+    /// A named pipe is the case the classification is bounded for: it is read with
+    /// `lstat`, which answers whatever is at the other end of the pipe and whether
+    /// anybody is there at all.
+    #[test]
+    #[cfg(unix)]
+    fn a_named_pipe_is_refused_without_anything_opening_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        nodal_safety::tree::fifo(root.join("tail.fifo"));
+
+        // The pipe stands where a tracked file used to be, which is the shape a person
+        // actually reaches: `git status` reports it as an ordinary modification and
+        // `git diff` would stop on it with `cannot hash`, after this has already
+        // answered.
+        let refused = refuse_unsupported_kinds(root, &summary(vec![tracked("tail.fifo")]))
+            .expect_err("a named pipe is not something a carry reproduces");
+        assert!(refused.to_string().contains("tail.fifo"), "{refused}");
+        assert!(refused.to_string().contains("a named pipe"), "{refused}");
+    }
+
+    #[test]
+    fn a_submodule_is_refused_for_its_own_work_and_never_for_being_a_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::create_dir(root.join("vendor")).unwrap();
+
+        // A submodule whose recorded commit moved is a gitlink: it travels in the patch,
+        // and the directory it happens to be is nothing the classification may refuse.
+        let mut moved = tracked("vendor");
+        moved.submodule = Submodule::parse("SC..");
+        let carried = summary(vec![moved]);
+        refuse_submodules_holding_work(root, &carried).expect("a moved commit is carryable");
+        refuse_unsupported_kinds(root, &carried).expect("and its directory is skipped");
+
+        let mut dirty = tracked("vendor");
+        dirty.submodule = Submodule::parse("S.MU");
+        let refused = refuse_submodules_holding_work(root, &summary(vec![dirty]))
+            .expect_err("work inside a submodule reaches neither patch");
+        assert!(refused.to_string().contains("vendor"), "{refused}");
+        assert!(refused.to_string().contains("cannot reach"), "{refused}");
     }
 
     #[test]

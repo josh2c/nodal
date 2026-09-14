@@ -7,6 +7,9 @@
 //!
 //! A process a test starts is killed when the test ends, whichever way it ends, because
 //! a test that leaves a `sleep` behind leaves one on every run.
+//!
+//! [`within`] is the other side of the same care: a command a test insists must finish,
+//! so that a property about not blocking fails rather than hangs.
 
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -117,6 +120,45 @@ pub fn alive(pid: u32) -> bool {
 
 /// How long [`wait_for`] gives something to happen.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Run a command and insist that it finishes within `limit`, killing it when it does
+/// not.
+///
+/// `Command::output` waits for as long as the process takes, so a test of "this does not
+/// block" written with it does not fail — it hangs, and the suite is killed by whatever
+/// is watching the job. This is the bounded form: the process is polled, and a deadline
+/// it passes is a named failure with the command in it.
+///
+/// One caller so far: `nodal new --carry` against a checkout holding a named pipe. A
+/// reader of a pipe waits for a writer that may never come, so "the refusal is reached
+/// without opening it" is a claim about time and has to be asserted as one.
+///
+/// Both streams are pipes, which is safe for a command whose whole output is a refusal
+/// and a report. A command that filled a pipe buffer would block on the write and be
+/// killed here as though it had hung, so this is not the runner for a chatty one.
+///
+/// # Panics
+///
+/// If the command could not be started, or had not finished within `limit`.
+pub fn within(command: &mut Command, limit: Duration) -> std::process::Output {
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the command starts");
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        match child.try_wait().expect("the child can be waited on") {
+            Some(_) => {
+                return child.wait_with_output().expect("the output is readable");
+            }
+            None => std::thread::sleep(POLL),
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("{command:?} had not finished within {limit:?}");
+}
 
 /// How often [`wait_for`] looks.
 const POLL: Duration = Duration::from_millis(10);
