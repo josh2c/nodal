@@ -496,7 +496,7 @@ fn state_cell(unit: &UnitRow) -> String {
 fn needs_cell(unit: &UnitRow) -> String {
     match unit.needs {
         None => String::from(NONE),
-        Some(Needs::Nothing) => String::from("nothing"),
+        Some(Needs::Nothing) => Needs::Nothing.label().to_owned(),
         Some(needs) => format!(
             "{} — nodal reclaim {} --check says what a reclaim would take",
             needs.label(),

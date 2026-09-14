@@ -145,14 +145,17 @@ pub fn rows(
         .collect();
     let seen = scan(processes, &homes, &mut notices);
     // One reading of the checkout for the whole list, and two `stat` calls per home
-    // against it. Asking `git` per row is what the budget in `ci/measure.sh` forbids.
-    let heard = unique::heard(&project.root);
+    // against it. Asking `git` per row is what the budget in `ci/measure.sh` forbids, and
+    // whether the project has a remote is a column of its registry row rather than a
+    // question for Git at all.
+    let remote =
+        Reading { exists: project.remote_url.is_some(), heard: unique::heard(&project.root) };
     let mut units = Vec::new();
     for subject in surveyed {
         notices.extend(
             subject.notes.iter().map(|cause| Notice::about(subject.unit.slug.to_string(), cause)),
         );
-        units.push(row(subject, &seen, held, heard));
+        units.push(row(subject, &seen, held, remote));
     }
     order(&mut units);
     // One line per cause, however many units reported it. A list of eight units whose
@@ -182,7 +185,7 @@ pub fn order(rows: &mut [UnitRow]) {
 }
 
 /// One row: the registry's facts about a unit, and the survey's.
-fn row(subject: &Snapshot, seen: &Seen, held: &Held, heard: Option<SystemTime>) -> UnitRow {
+fn row(subject: &Snapshot, seen: &Seen, held: &Held, remote: Reading) -> UnitRow {
     let mut row = UnitRow::from_unit(&subject.unit);
     // The writer is a fact about the unit and not about its home, so it is set before
     // the row gives up on a unit that has none. A unit whose home was reclaimed holds
@@ -195,9 +198,34 @@ fn row(subject: &Snapshot, seen: &Seen, held: &Held, heard: Option<SystemTime>) 
     row.work = subject.work.as_ref().map(work_tree);
     // Resolved, because `read_since` reads `.git` under the path it is given and a
     // state directory reached through a symbolic link is the ordinary shape on macOS.
-    let current = witness::read_since(&guard::resolve(&environment.home), heard);
-    row.needs = Some(needs(subject.work.as_ref(), seen.blocked(&environment.home), current));
+    let reading = Remote {
+        exists: remote.exists,
+        current: witness::read_since(&guard::resolve(&environment.home), remote.heard),
+    };
+    row.needs = needs(subject.work.as_ref(), seen.blocked(&environment.home), reading);
     row
+}
+
+/// What this machine knows about the project's remote, for one row.
+///
+/// Read once for the whole list and asked of each home: whether the project has a remote
+/// at all, and when anything here last heard from it. Both are the registry and `stat`;
+/// neither costs a `git`.
+#[derive(Debug, Clone, Copy)]
+struct Reading {
+    /// Whether the project row names a remote.
+    exists: bool,
+    /// When the project's checkout last heard from it, `None` when nothing says.
+    heard: Option<SystemTime>,
+}
+
+/// The same, once it has been compared with one home.
+#[derive(Debug, Clone, Copy)]
+struct Remote {
+    /// Whether the project has a remote for this machine to be out of date about.
+    exists: bool,
+    /// Whether anything here read it after this home wrote its own record of it.
+    current: bool,
 }
 
 /// Why this unit needs a person, most actionable first.
@@ -205,38 +233,48 @@ fn row(subject: &Snapshot, seen: &Seen, held: &Held, heard: Option<SystemTime>) 
 /// The order of [`Needs`] is the ranking and the first match wins, so a unit with
 /// uncommitted work and a conflict is reported as the first of the two. Every branch
 /// here is decided from a reading the list already took.
-fn needs(work: Option<&Work>, blocked: bool, current: bool) -> Needs {
-    let Some(work) = work else { return Needs::Nothing };
+fn needs(work: Option<&Work>, blocked: bool, remote: Remote) -> Option<Needs> {
+    // A home Git could not answer for has no ranking, and `Nothing` would be the wrong
+    // answer rather than a cautious one. The top of the ranking is the working tree, so
+    // a reading that could not see the working tree cannot say that the top is empty.
+    // The note under the table is where the reason goes ([`crate::context::survey`]).
+    let work = work?;
     if work.dirty + work.staged + work.untracked > 0 {
-        return Needs::UniqueLoss;
+        return Some(Needs::UniqueLoss);
     }
     if blocked {
-        return Needs::BlockingRuntime;
+        return Some(Needs::BlockingRuntime);
     }
-    if stale(work, current) {
-        return Needs::UnknownEvidence;
+    if stale(work, remote.exists, remote.current) {
+        return Some(Needs::UnknownEvidence);
     }
     if work.integration == Integration::Conflict || work.divergence.is_behind() {
-        return Needs::Diverged;
+        return Some(Needs::Diverged);
     }
     if work.integration.is_integrated() || work.divergence.ahead > 0 {
-        return Needs::Review;
+        return Some(Needs::Review);
     }
-    Needs::Nothing
+    Some(Needs::Nothing)
 }
 
 /// Whether this unit has work whose remote evidence cannot be current.
 ///
 /// Three things have to hold. The unit is ahead of the base, so it has something to
-/// lose. The project has a remote, so there is a claim about one to go stale. And
-/// nothing on this machine has read that remote since the home last wrote its own record
-/// of it — which is the reading a home makes when it pushes and never corrects
+/// lose. The **project** has a remote, so there is a remote for this machine to be out of
+/// date about. And nothing here has read that remote since the home last wrote its own
+/// record of it — which is the reading a home makes when it pushes and never corrects
 /// afterwards ([`witness`]).
+///
+/// The middle one is about the project and not about the unit, and the difference is a
+/// whole class of unit. A branch nobody has pushed has no upstream at all, and reading
+/// that as "no remote question" would call it `review` while `nodal reclaim` refuses it:
+/// its commits are on no remote and nothing here proved otherwise. A unit with no
+/// upstream is the case with the most to lose, not the least.
 ///
 /// A unit with nothing of its own is not marked, however old the reading is. There is
 /// nothing about it a stale ref could get wrong.
-const fn stale(work: &Work, current: bool) -> bool {
-    work.divergence.ahead > 0 && work.remote.is_some() && !current
+const fn stale(work: &Work, has_remote: bool, current: bool) -> bool {
+    work.divergence.ahead > 0 && has_remote && !current
 }
 
 /// What the survey read of one home, as the list shows it.
@@ -359,10 +397,17 @@ fn attached(running: &[Running], notices: &mut Vec<Notice>) -> Attached {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
-    use super::{Needs, needs};
+    use super::{Needs, Remote, needs};
     use crate::context::survey::Work;
     use crate::git::{Divergence, Integration};
-    use crate::output::view::Remote;
+    use crate::output::view::Remote as Upstream;
+
+    /// A project with a remote that this machine has read since the home last wrote its
+    /// own record of it: the state in which the remote evidence is worth something.
+    const CURRENT: Remote = Remote { exists: true, current: true };
+
+    /// The same project, where nothing here has read the remote since.
+    const STALE: Remote = Remote { exists: true, current: false };
 
     /// A unit that has committed one thing, pushed it, and has a clean tree.
     fn clean() -> Work {
@@ -376,7 +421,7 @@ mod tests {
             staged: 0,
             untracked: 0,
             detached: false,
-            remote: Some(Remote {
+            remote: Some(Upstream {
                 upstream: String::from("origin/nodal/worker-import"),
                 divergence: Divergence { ahead: 0, behind: 0 },
             }),
@@ -395,12 +440,12 @@ mod tests {
         work.dirty = 3;
         work.integration = Integration::Conflict;
         work.divergence.behind = 4;
-        assert_eq!(needs(Some(&work), true, false), Needs::UniqueLoss);
+        assert_eq!(needs(Some(&work), true, STALE), Some(Needs::UniqueLoss));
 
         work.dirty = 0;
-        assert_eq!(needs(Some(&work), true, false), Needs::BlockingRuntime);
-        assert_eq!(needs(Some(&work), false, false), Needs::UnknownEvidence);
-        assert_eq!(needs(Some(&work), false, true), Needs::Diverged);
+        assert_eq!(needs(Some(&work), true, STALE), Some(Needs::BlockingRuntime));
+        assert_eq!(needs(Some(&work), false, STALE), Some(Needs::UnknownEvidence));
+        assert_eq!(needs(Some(&work), false, CURRENT), Some(Needs::Diverged));
     }
 
     /// Staged and untracked paths are work no commit holds, exactly as changed ones are.
@@ -415,7 +460,7 @@ mod tests {
         ] {
             let mut work = clean();
             set(&mut work);
-            assert_eq!(needs(Some(&work), false, true), Needs::UniqueLoss);
+            assert_eq!(needs(Some(&work), false, CURRENT), Some(Needs::UniqueLoss));
         }
     }
 
@@ -425,21 +470,35 @@ mod tests {
     #[test]
     fn an_unreadable_remote_is_unknown_only_where_the_unit_has_something_to_lose() {
         let work = clean();
-        assert_eq!(needs(Some(&work), false, false), Needs::UnknownEvidence);
-        assert_eq!(needs(Some(&work), false, true), Needs::Review);
+        assert_eq!(needs(Some(&work), false, STALE), Some(Needs::UnknownEvidence));
+        assert_eq!(needs(Some(&work), false, CURRENT), Some(Needs::Review));
 
         let mut nothing_of_its_own = clean();
         nothing_of_its_own.divergence.ahead = 0;
-        assert_eq!(needs(Some(&nothing_of_its_own), false, false), Needs::Nothing);
+        assert_eq!(needs(Some(&nothing_of_its_own), false, STALE), Some(Needs::Nothing));
     }
 
-    /// A project with no remote has no remote reading to be stale, so the age of one
-    /// says nothing about it.
+    /// A branch nobody has pushed has no upstream, and that is the case with the most to
+    /// lose rather than the least. What decides the question is whether the **project**
+    /// has a remote, because that is what this machine can be out of date about.
+    ///
+    /// Reading it the other way put a never-pushed unit under `review` while `nodal
+    /// reclaim` refuses it, which is the one direction this column must not be wrong in.
+    #[test]
+    fn a_unit_that_was_never_pushed_is_unknown_and_not_review() {
+        let mut never_pushed = clean();
+        never_pushed.remote = None;
+        assert_eq!(needs(Some(&never_pushed), false, STALE), Some(Needs::UnknownEvidence));
+    }
+
+    /// A project with no remote at all has no remote reading to be stale, so the age of
+    /// one says nothing about it.
     #[test]
     fn a_project_with_no_remote_is_never_marked_unknown() {
         let mut work = clean();
         work.remote = None;
-        assert_eq!(needs(Some(&work), false, false), Needs::Review);
+        let no_remote = Remote { exists: false, current: false };
+        assert_eq!(needs(Some(&work), false, no_remote), Some(Needs::Review));
     }
 
     /// Work the base already carries is a unit somebody should end, and it is the lowest
@@ -449,18 +508,22 @@ mod tests {
         let mut integrated = clean();
         integrated.integration = Integration::Integrated(crate::git::integration::Reason::Ancestor);
         integrated.divergence.ahead = 0;
-        assert_eq!(needs(Some(&integrated), false, true), Needs::Review);
+        assert_eq!(needs(Some(&integrated), false, CURRENT), Some(Needs::Review));
 
         let mut quiet = clean();
         quiet.divergence.ahead = 0;
-        assert_eq!(needs(Some(&quiet), false, true), Needs::Nothing);
+        assert_eq!(needs(Some(&quiet), false, CURRENT), Some(Needs::Nothing));
     }
 
-    /// A home Git could not be asked about is not a home with nothing in it, and the
-    /// column says nothing rather than inventing an answer. The note under the table is
-    /// where the reason goes ([`crate::context::survey`]).
+    /// A home Git could not be asked about has no ranking at all, and the column prints
+    /// the placeholder rather than `nothing`.
+    ///
+    /// The top of the ranking is the working tree, so a reading that could not see the
+    /// working tree cannot say the top of it is empty. The two words are different
+    /// answers and the contract forbids printing one for the other.
     #[test]
-    fn a_home_that_could_not_be_read_is_not_reported_as_needing_anything() {
-        assert_eq!(needs(None, true, false), Needs::Nothing);
+    fn a_home_that_could_not_be_read_has_no_ranking_and_is_not_nothing() {
+        assert_eq!(needs(None, true, STALE), None);
+        assert_ne!(Needs::Nothing.label(), crate::output::human::NONE);
     }
 }

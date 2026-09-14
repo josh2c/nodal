@@ -40,6 +40,10 @@ pub enum Needs {
 
 impl Needs {
     /// The word a report prints for it.
+    ///
+    /// Never the placeholder a column prints for a row nothing computed. "Nothing needs
+    /// doing" and "nobody asked" are different answers, and a reader who cannot tell them
+    /// apart is being told the first when the second is true.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -48,7 +52,7 @@ impl Needs {
             Self::UnknownEvidence => "unknown",
             Self::Diverged => "diverged",
             Self::Review => "review",
-            Self::Nothing => "—",
+            Self::Nothing => "nothing",
         }
     }
 

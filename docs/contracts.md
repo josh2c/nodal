@@ -665,12 +665,21 @@ both places. It is ranked, and the first that applies is the one printed:
 | 1 | `unique loss` | the working tree holds changed, staged or untracked paths |
 | 2 | `blocked` | something Nodal did not start is standing in the home |
 | 3 | `unknown` | the unit is ahead of the base, the project has a remote, and nothing here has read that remote since the home last wrote its own record of it |
+
 | 4 | `diverged` | merging would conflict, or the base has moved under the branch |
 | 5 | `review` | the work is on the base, or the branch is ahead and clean |
 | 6 | `nothing` | none of the above |
 
-A row shows `—` where nothing computed it. Every producer but the list is in that state, and
-`—` is not `nothing`: one says the question was not put and the other says it was answered.
+Row 3 asks whether the **project** has a remote, not whether the unit has an upstream, and the
+difference is a whole class of unit. A branch nobody has pushed has no upstream at all; reading
+that as "no remote question" would put it under `review` while `nodal reclaim` refuses it. A
+unit with no upstream has the most to lose, not the least.
+
+A row shows `—` where nothing computed it: a unit with no home, and a home Git could not answer
+for. `—` is not `nothing`, and no value ever prints as the other: one says the question was not
+put, the other says it was answered. A reading that could not see the working tree cannot say
+the top of the ranking is empty, so it ranks nothing at all and the note under the table says
+why.
 
 The column costs the list no extra `git`. The counts, the verdict and the divergence come from
 the survey the list already takes; the bystander comes from the one process-table read that WHO
@@ -1024,6 +1033,19 @@ table says which are regenerable.
 | uncommitted changes, untracked files | `must_survive` | refuses |
 | ignored state no tool writes again | `must_survive` | trashes it; `nodal gc` is what takes it |
 | build output and installed dependencies | `reconstructable` | drops it from the trashed copy |
+
+Only the first refuses, and what makes that safe is the retention. A reclaim **moves** a home
+to `<state>/<project>/trash/<id>` and `nodal gc` removes it once `reclaim.trash_retention` days
+have passed — fourteen by default, stamped on the trash row at the moment of the move, so a
+recipe edited later cannot shorten it. Ignored state no tool writes again is therefore still
+readable for that window, at the path the report names. Refusing over it instead would refuse
+every reclaim of every home that ever held an `.env.local`, and the person would use `--force`,
+which is worse for them than the window is.
+
+A directory the exclusion table calls regenerable answers for everything under it, and it goes
+on answering when its own removal is refused: the trash keeps the whole of it and the sweep
+removes nothing under it. Descending into a directory whose removal failed would leave a
+half-pruned tree that no report describes.
 
 Sizes are **apparent bytes** and the answer says so. A home shares blocks with the base it was copied
 from, so what a removal gives back is not the sum of the file sizes, and no portable call says what it
