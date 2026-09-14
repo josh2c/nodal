@@ -128,6 +128,17 @@ fn stranded(machine: &Machine, slug: &str) -> (PathBuf, String) {
     (home, tip)
 }
 
+/// The checkout as the registry names it, which is the name every report uses.
+///
+/// Resolved, because that is what a project row holds. On a machine whose temporary
+/// directory is reached through a symbolic link — which macOS gives every test for free,
+/// and `ci/acceptance-safety.sh` makes on Linux — the path a test built and the path a
+/// report prints are two names for one directory.
+fn checkout(machine: &Machine) -> Value {
+    let resolved = std::fs::canonicalize(&machine.source).unwrap();
+    Value::from(resolved.to_str().unwrap())
+}
+
 /// Insist that the home is where it was and plain Git still reaches the commit.
 fn intact(machine: &Machine, home: &Path, tip: &str) {
     assert!(home.is_dir(), "the check moved the home");
@@ -215,7 +226,7 @@ fn a_commit_this_disk_holds_twice_is_a_second_local_copy() {
     assert_eq!(count(commits(&answer, "second_local_copy")), 1, "{answer:#}");
     assert_eq!(count(commits(&answer, "remote_proved")), 0, "the remote proved nothing here");
     let held_by = &commits(&answer, "second_local_copy").unwrap()["copies"]["held_by"];
-    assert_eq!(held_by, &Value::from(machine.source.to_str().unwrap()));
+    assert_eq!(held_by, &checkout(&machine));
     intact(&machine, &home, &tip);
 }
 
@@ -232,7 +243,7 @@ fn a_commit_a_current_reading_reaches_is_proved_on_the_remote() {
     assert_eq!(count(commits(&answer, "remote_proved")), 1, "{answer:#}");
     let witness = &commits(&answer, "remote_proved").unwrap()["copies"]["witness"];
     assert_eq!(witness["kind"], Value::from("checked"));
-    assert_eq!(witness["by"][0], Value::from(machine.source.to_str().unwrap()));
+    assert_eq!(witness["by"][0], checkout(&machine));
     intact(&machine, &home, &tip);
 }
 
