@@ -14,6 +14,7 @@ pub mod lifecycle;
 pub mod logging;
 pub mod model;
 pub mod output;
+pub mod paths;
 pub mod recipe;
 pub mod runtime;
 pub mod services;

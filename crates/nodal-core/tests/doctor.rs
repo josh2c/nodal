@@ -104,14 +104,12 @@ impl Planted {
     /// The worktree beside the checkout, as the report names it: by its whole path,
     /// resolved, because it is not inside the checkout to be named relative to.
     fn beside(&self) -> String {
-        nodal_core::lifecycle::guard::resolve(&self.root().join("code/beside"))
-            .display()
-            .to_string()
+        nodal_core::paths::resolve(&self.root().join("code/beside")).display().to_string()
     }
 
     /// The worktree nowhere near the checkout, named the same way.
     fn away(&self) -> String {
-        nodal_core::lifecycle::guard::resolve(&self.root().join("far/away")).display().to_string()
+        nodal_core::paths::resolve(&self.root().join("far/away")).display().to_string()
     }
 
     /// The report this machine produces, from a daemon that answers.
@@ -235,7 +233,7 @@ fn plant() -> Planted {
 /// already followed. On a host whose temporary directory is a link this is not the path
 /// this test built, which is the whole reason the symlink test below exists.
 fn session(sessions: &Path, worktree: &Path) {
-    let worktree = nodal_core::lifecycle::guard::resolve(worktree);
+    let worktree = nodal_core::paths::resolve(worktree);
     write(
         &sessions.join("projects").join(doctor::intent::encode(&worktree)).join("s.jsonl"),
         &format!(
@@ -840,7 +838,7 @@ fn a_worktree_git_calls_prunable_is_reported_as_prunable_in_both_shapes() {
     let report = machine.report();
 
     for path in [&gone, &hollow] {
-        let name = nodal_core::lifecycle::guard::resolve(path).display().to_string();
+        let name = nodal_core::paths::resolve(path).display().to_string();
         let row = one(&report.here, Kind::Worktree, &name);
         assert_eq!(
             row.state.first().map(String::as_str),
@@ -865,7 +863,7 @@ fn a_worktree_git_calls_prunable_is_reported_as_prunable_in_both_shapes() {
 fn a_prunable_worktree_is_never_reported_as_merely_not_a_checkout() {
     let machine = plant();
     let hollow = reaped(&machine, "hollow", true);
-    let name = nodal_core::lifecycle::guard::resolve(&hollow).display().to_string();
+    let name = nodal_core::paths::resolve(&hollow).display().to_string();
 
     let report = machine.report();
     let row = one(&report.here, Kind::Worktree, &name);
@@ -922,7 +920,7 @@ impl Project {
         let store = Store::open(state.join("registry.db")).unwrap();
         let project = rows::project(
             nodal_core::model::ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAW").unwrap(),
-            nodal_core::lifecycle::guard::resolve(&checkout),
+            nodal_core::paths::resolve(&checkout),
             "app",
             Timestamp::now(),
         );

@@ -67,7 +67,7 @@
 //! So every path is resolved once, at the edge: on the way into [`Scope`], and in
 //! [`Scope::section`] on the way in from a tool. Past that edge every path in this
 //! module is the name the filesystem itself uses, and `starts_with` means what it reads
-//! as. The resolver is [`guard::resolve`], which is the one place in Nodal a path is
+//! as. The resolver is [`paths::resolve`], which is the one place in Nodal a path is
 //! normalised before it is compared with another; doctor does not have a rule of its
 //! own about this.
 //!
@@ -112,9 +112,9 @@ use rusqlite::Connection;
 
 use crate::Result;
 use crate::git::Git;
-use crate::lifecycle::guard;
 use crate::model::{Project, Timestamp};
 use crate::output::view::doctor::{Branches, Checkout, Doctor, Finding, Note};
+use crate::paths;
 use crate::services::docker::Docker;
 use crate::store::projects;
 use crate::workspace::home;
@@ -201,7 +201,7 @@ pub enum Section {
 pub struct Known {
     /// The row, for its name and its identifier.
     pub project: Project,
-    /// Its root, resolved by [`guard::resolve`], which is what every comparison uses.
+    /// Its root, resolved by [`paths::resolve`], which is what every comparison uses.
     pub root: PathBuf,
 }
 
@@ -239,7 +239,7 @@ impl Scope {
     /// name one directory two ways.
     #[must_use]
     pub fn section(&self, path: &Path) -> Section {
-        let path = guard::resolve(path);
+        let path = paths::resolve(path);
         if self.owned_elsewhere.iter().any(|owned| path.starts_with(owned)) {
             Section::Elsewhere
         } else {
@@ -255,7 +255,7 @@ impl Scope {
     /// standing in this project's own tree ([`containers`]).
     #[must_use]
     pub fn owns(&self, path: &Path) -> bool {
-        let path = guard::resolve(path);
+        let path = paths::resolve(path);
         self.root.as_ref().is_some_and(|root| path.starts_with(root))
     }
 }
@@ -410,16 +410,16 @@ fn largest_first(findings: &mut [Finding]) {
 /// one [`Scope::section`] already documents: "I cannot say whose this is" is the first
 /// section, never the second.
 fn scope_of(conn: Option<&Connection>, machine: &Machine<'_>) -> Result<Scope> {
-    let state_dir = guard::resolve(machine.state_dir);
+    let state_dir = paths::resolve(machine.state_dir);
     let root =
-        Git::open(machine.cwd).and_then(|git| git.toplevel()).ok().map(|top| guard::resolve(&top));
+        Git::open(machine.cwd).and_then(|git| git.toplevel()).ok().map(|top| paths::resolve(&top));
     let listed = match conn {
         Some(conn) => projects::list(conn)?,
         None => Vec::new(),
     };
     let projects: Vec<Known> = listed
         .into_iter()
-        .map(|project| Known { root: guard::resolve(&project.root), project })
+        .map(|project| Known { root: paths::resolve(&project.root), project })
         .collect();
     let mut others = Vec::new();
     let mut owned_elsewhere = Vec::new();
@@ -437,7 +437,7 @@ fn scope_of(conn: Option<&Connection>, machine: &Machine<'_>) -> Result<Scope> {
         others,
         owned_elsewhere,
         state_dir,
-        sessions: machine.sessions.map(guard::resolve),
+        sessions: machine.sessions.map(paths::resolve),
     })
 }
 

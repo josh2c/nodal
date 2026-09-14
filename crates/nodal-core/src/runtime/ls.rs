@@ -73,12 +73,13 @@ use crate::Result;
 use crate::context::survey::{self, Snapshot, Work};
 use crate::doctor::unique;
 use crate::git::Integration;
-use crate::lifecycle::{assess, guard, witness};
+use crate::lifecycle::{assess, witness};
 use crate::model::{ActorName, HostName, Lock, Needs, Project, Timestamp, UnitId};
 use crate::output::notice::{self, Notice};
 use crate::output::view::{
     EnvLine, Holder, HolderState, ToolSessions, UnitList, UnitRow, WorkTree,
 };
+use crate::paths;
 use crate::runtime::processes::{Processes, Running};
 use crate::runtime::{sessions, stop};
 
@@ -215,7 +216,7 @@ fn row(subject: &Snapshot, seen: &Seen, held: &Held, remote: Reading) -> UnitRow
     // state directory reached through a symbolic link is the ordinary shape on macOS.
     let reading = Remote {
         exists: remote.exists,
-        current: witness::read_since(&guard::resolve(&environment.home), remote.heard),
+        current: witness::read_since(&paths::resolve(&environment.home), remote.heard),
     };
     row.needs = needs(subject.work.as_ref(), seen.blocked(&environment.home), reading);
     row
@@ -399,7 +400,7 @@ fn scan(processes: &dyn Processes, homes: &[(UnitId, PathBuf)], notices: &mut Ve
     // Resolved once for the whole list, because that is the form the predicate asks for
     // and the kernel's own reading of a working directory has the links taken out.
     let placed: Vec<(UnitId, PathBuf, PathBuf)> =
-        homes.iter().map(|(unit, home)| (*unit, guard::resolve(home), home.clone())).collect();
+        homes.iter().map(|(unit, home)| (*unit, paths::resolve(home), home.clone())).collect();
     let spared = stop::spared();
     for process in &running {
         for (unit, resolved, home) in &placed {

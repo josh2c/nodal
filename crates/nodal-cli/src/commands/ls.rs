@@ -7,12 +7,12 @@ use std::process::ExitCode;
 use clap::Args;
 use nodal_core::context::survey::{self, Snapshot};
 use nodal_core::doctor::intent;
-use nodal_core::lifecycle::guard;
 use nodal_core::lifecycle::ops::new;
 use nodal_core::lifecycle::states;
 use nodal_core::model::{Project, ProjectName, Timestamp};
 use nodal_core::output::view::{UnitList, Verdict, WorktreeRow};
 use nodal_core::output::{self, Format};
+use nodal_core::paths;
 use nodal_core::runtime::{entry, lock, ls, processes, verdict};
 use nodal_core::store::Store;
 
@@ -241,7 +241,7 @@ impl Ls {
         let homes: HashSet<PathBuf> = surveyed
             .iter()
             .filter_map(|subject| subject.home.as_ref())
-            .map(|environment| guard::resolve(&environment.home))
+            .map(|environment| paths::resolve(&environment.home))
             .collect();
         seen.rows.into_iter().filter(|row| !homes.contains(&row.path)).collect()
     }

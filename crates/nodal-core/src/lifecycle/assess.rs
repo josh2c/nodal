@@ -95,8 +95,9 @@ pub use crate::doctor::size::Bytes;
 use crate::git::status::{Entry, State, Summary};
 use crate::git::{Git, Oid, union};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
-use crate::lifecycle::{guard, witness};
+use crate::lifecycle::witness;
 use crate::model::{Needs, UnitId};
+use crate::paths;
 use crate::runtime::attribute::{Note, Source, Standing};
 use crate::runtime::processes;
 use crate::runtime::stop;
@@ -494,7 +495,7 @@ fn labelled(containers: Vec<docker::Container>, unit: UnitId) -> Vec<String> {
 /// Whatever the process table reported, which on a host that has none is
 /// [`Error::ProcessScanUnsupported`].
 pub fn scan(unit: UnitId, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)> {
-    let placed: Vec<PathBuf> = homes.iter().map(|home| guard::resolve(home)).collect();
+    let placed: Vec<PathBuf> = homes.iter().map(|home| paths::resolve(home)).collect();
     let spared = stop::spared();
     let mut certain = Vec::new();
     let mut standing = Vec::new();
@@ -521,7 +522,7 @@ pub fn scan(unit: UnitId, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)
 /// the home out from under it. That is a bystander by every part of the definition, and
 /// both readings now say so.
 ///
-/// `placed` must already be resolved ([`guard::resolve`]), because the working directory
+/// `placed` must already be resolved ([`paths::resolve`]), because the working directory
 /// the kernel reports has every symbolic link on the way to it taken out. A home reached
 /// through a link — macOS reaches everything under `/var` that way, and so does anyone
 /// whose state directory is a link — would otherwise match no process at all.

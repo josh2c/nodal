@@ -70,6 +70,7 @@ use crate::model::{
     Timestamp, Unit, UnitId, UnitStatus,
 };
 use crate::output::view::{Arrival, Created};
+use crate::paths;
 use crate::services::ports;
 use crate::store::{Store, environments, events, projects, units};
 use crate::substrate::{self, Reporter, warmth};
@@ -270,7 +271,7 @@ pub fn create(
 ///
 /// **The path is resolved first, and the answer is the registry's.** Claude Code sends
 /// an absolute `cwd`, but an empty one means the directory Nodal is running in, and a
-/// relative path has no ancestors worth walking. [`guard::resolve`] turns either into
+/// relative path has no ancestors worth walking. [`paths::resolve`] turns either into
 /// the real directory before the walk, so a session started in a home with `cwd` unset
 /// is still a session in a home. What comes back is the path the row holds, because a
 /// directory can have two names and only one of them is the one Nodal prints.
@@ -282,7 +283,7 @@ pub fn create(
 /// # Errors
 /// [`Error::Store`] when the registry could not be read.
 pub fn containing_home(conn: &Connection, start: &Path) -> Result<Option<(PathBuf, UnitId)>> {
-    let resolved = guard::resolve(start);
+    let resolved = paths::resolve(start);
     for directory in resolved.ancestors() {
         let Ok(Some(unit)) = marker::read(directory) else { continue };
         if let Some(home) = home_of(conn, unit, directory)? {
@@ -304,7 +305,7 @@ fn home_of(conn: &Connection, unit: UnitId, directory: &Path) -> Result<Option<P
     }
     Ok(environments::list_for_unit(conn, unit)?
         .into_iter()
-        .find(|environment| guard::resolve(&environment.home) == directory)
+        .find(|environment| paths::resolve(&environment.home) == directory)
         .map(|environment| environment.home))
 }
 
@@ -996,7 +997,7 @@ pub(super) fn remove_tree(path: &Path) -> Result<()> {
 /// one would let a merge fast-forward a branch in somebody else's checkout, which is
 /// not something one engineer's command may do to another's working copy.
 ///
-/// The root is recorded with its symbolic links resolved ([`guard::resolve`]), because
+/// The root is recorded with its symbolic links resolved ([`paths::resolve`]), because
 /// a project is a tree and not a name for one. A command run in the project reaches the
 /// row by the name the operating system gives a running process, which on macOS is the
 /// resolved one whatever the person typed.
@@ -1005,7 +1006,7 @@ pub(super) fn remove_tree(path: &Path) -> Result<()> {
 /// [`Error::Render`] when the recipe could not be digested, and whatever the registry
 /// reports.
 pub fn ensure_project(store: &mut Store, root: &Path, recipe: &Recipe) -> Result<Project> {
-    let root = guard::resolve(root);
+    let root = paths::resolve(root);
     let root = root.as_path();
     let remote = identity::remote_of(root);
     if let Some(found) = find(store.conn(), root, remote.as_ref())? {

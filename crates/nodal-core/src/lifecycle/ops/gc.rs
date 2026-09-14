@@ -416,10 +416,10 @@ fn seen(
 fn vacated(conn: &Connection) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for environment in environments::list_by_state(conn, EnvState::Absent)? {
-        paths.push(crate::lifecycle::guard::resolve(&environment.home));
+        paths.push(crate::paths::resolve(&environment.home));
     }
     for entry in trash::list(conn)? {
-        paths.push(crate::lifecycle::guard::resolve(&entry.path));
+        paths.push(crate::paths::resolve(&entry.path));
     }
     Ok(paths)
 }
