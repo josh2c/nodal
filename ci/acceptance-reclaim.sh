@@ -13,6 +13,13 @@
 # runnable; and `nodal gc` removes a trashed home once its retention has run out and
 # leaves the one whose has not.
 #
+# `nodal reclaim --check` is the same suite asked what it would do. It answers the same
+# way the operation does — every case the check refuses is a case the reclaim refuses,
+# with the same reading behind both — and it performs no part of a reclaim: no hook, no
+# signal, no port release, no snapshot, no trash move, no registry row and no remote.
+# `tests/safety/tests/reclaim_check.rs` holds that, byte for byte, on a machine that has
+# something to lose.
+#
 # It also kills a reclaim with SIGKILL while it is stopping a process that ignores being
 # asked, and runs the next `nodal`, which has to take the run back and leave the unit
 # there to be reclaimed properly.
@@ -35,6 +42,8 @@ set -eu
 
 cargo test --locked -p nodal-cli --test reclaim
 cargo test --locked -p nodal-core --lib lifecycle::uniqueness
+cargo test --locked -p nodal-core --lib lifecycle::assess
+cargo test --locked -p nodal-core --lib output::view::check
 cargo test --locked -p nodal-core --lib lifecycle::hooks
 cargo test --locked -p nodal-core --lib runtime::stop
 cargo test --locked -p nodal-core --lib lifecycle::ops::gc

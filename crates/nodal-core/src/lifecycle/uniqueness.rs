@@ -153,7 +153,12 @@ impl Witness {
     /// Nothing for a project with no remote: there is nowhere to push, and the label
     /// says the whole of it. The other two are the two ways a remote goes unproved, and
     /// a person deciding what to do next needs to know which one they have.
-    fn because(&self) -> String {
+    ///
+    /// Public because the preflight prints the same clause over the same commits
+    /// ([`crate::output::view::check`]). A person who reads one and then the other must
+    /// not be given two accounts of one reading.
+    #[must_use]
+    pub fn because(&self) -> String {
         match self {
             Self::NoRemote | Self::Direct { .. } => String::new(),
             Self::Checked { by } => format!(
@@ -162,6 +167,16 @@ impl Witness {
             ),
             Self::Unchecked => format!("; {UNREAD}"),
         }
+    }
+
+    /// Whether this reading settled the remote question, rather than leaving it open.
+    ///
+    /// Settled means there is no remote to ask, or the remote is on this disk and was
+    /// read. Anything else is a reading of a copy, and a copy can only say what it last
+    /// saw, so what it does not reach is unproved rather than absent.
+    #[must_use]
+    pub const fn settled(&self) -> bool {
+        matches!(self, Self::NoRemote | Self::Direct { .. })
     }
 
     /// Which case this is, for a home with these remotes and this reading of them.

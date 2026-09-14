@@ -115,10 +115,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::survey::Bases;
 use crate::git::{Git, refs};
+use crate::lifecycle::assess::{self, Assessment, Seen, attributed, scan};
 use crate::lifecycle::hooks::{
     self, Approvals, Context, Ownership, Phase, Ran, Registered, Runner,
 };
-use crate::lifecycle::assess::{Seen, attributed, scan};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::uniqueness::{self, Finding};
@@ -127,7 +127,7 @@ use crate::model::{
     EnvId, EnvState, Environment, EventKind, Project, Recipe, Timestamp, Trashed, Unit, UnitId,
     UnitStatus, expiry,
 };
-use crate::output::view::{Leftover, Pruned, Reclaimed};
+use crate::output::view::{Leftover, Preflight, Pruned, Reclaimed};
 use crate::runtime::attribute::{Note, Source, Standing};
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
 use crate::services::docker;
@@ -226,6 +226,79 @@ pub fn reclaim(store: &mut Store, request: &Request) -> Result<Reclaimed> {
         &Registered { conn: store.conn() },
     )?);
     report(&prepared, &done, hooks_ran, pruned, verify(store, params)?)
+}
+
+/// Answer what a reclaim of this unit would do, and do none of it.
+///
+/// The read-only preflight. It resolves the unit the way [`reclaim`] does — the same
+/// registry rows, the same [`placement`] rule, the same recorded process groups — and
+/// then makes the one reading ([`assess`]) with everything switched on. There is no
+/// plan, no hook, no signal, no snapshot, no move and no remote.
+///
+/// A home the registry names that is not on disk has nothing to read, so the answer is
+/// the identity of the unit and a note saying the directory is gone. That is not a
+/// failure: a reclaim of it would close its rows and there would be nothing to lose.
+///
+/// # Errors
+/// [`Error::AlreadyReclaimed`] when the unit has been reclaimed already,
+/// [`Error::HomeMarkedFor`] when the directory the registry names belongs to another
+/// unit, and whatever Git or the registry reported.
+pub fn check(store: &Store, request: &Request) -> Result<Preflight> {
+    let unit =
+        crate::runtime::entry::unit_named(store.conn(), request.target.as_deref(), &request.cwd)?;
+    let environment = latest(store.conn(), &unit)?;
+    let project = project_of(store.conn(), &unit)?;
+    let placed = placement(&environment)?;
+    let groups = tethers(store.conn(), environment.id)?;
+    let assessment = read(&placed, &project, &environment, (unit.id, &groups))?;
+    let trash = would_trash(&placed, &project, &environment)?;
+    Ok(Preflight::new(Timestamp::now(), unit.slug.to_string(), trash, assessment))
+}
+
+/// The one reading, for a home that is there, and an empty one for a home that is not.
+fn read(
+    placed: &Placement,
+    project: &Project,
+    environment: &Environment,
+    unit: (UnitId, &[u32]),
+) -> Result<Assessment> {
+    let (id, groups) = unit;
+    let Some(home) = placed.path() else {
+        return Ok(Assessment {
+            home: environment.home.clone(),
+            managed: environment.managed,
+            notes: vec![format!(
+                "{} is not there, so there is nothing in it to lose",
+                environment.home.display()
+            )],
+            ..Assessment::default()
+        });
+    };
+    assess::assess(&assess::Input {
+        home,
+        checkout: Some(&project.root),
+        managed: environment.managed,
+        state: true,
+        runtime: Some(assess::Attribution { unit: id, groups }),
+    })
+}
+
+/// Where the home would go, for a home Nodal made.
+///
+/// The same arithmetic the reclaim itself does, so the path a person is shown is the
+/// path a reclaim would use. Nothing is created by working it out.
+///
+/// # Errors
+/// [`Error::NoHomeDirectory`] when nothing says where the state directory is.
+fn would_trash(
+    placed: &Placement,
+    project: &Project,
+    environment: &Environment,
+) -> Result<Option<PathBuf>> {
+    if !matches!(placed, Placement::Managed(_)) {
+        return Ok(None);
+    }
+    Ok(Some(home::trashed(&home::directory()?, &project.name, environment.id)))
 }
 
 /// Delete Nodal's own refs for this unit on the remote, and never the branch.

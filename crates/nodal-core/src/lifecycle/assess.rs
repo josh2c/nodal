@@ -90,17 +90,17 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::Result;
 use crate::git::status::{Entry, State, Summary};
 use crate::git::{Git, Oid};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
 use crate::lifecycle::{guard, witness};
 use crate::model::UnitId;
 use crate::runtime::attribute::{Note, Source, Standing};
-use crate::runtime::stop;
 use crate::runtime::processes;
+use crate::runtime::stop;
 use crate::services::docker;
 use crate::workspace::prune;
-use crate::Result;
 
 /// The label a unit's containers carry, which is how they are found again.
 pub const UNIT_LABEL: &str = "nodal.unit";
@@ -262,13 +262,30 @@ pub enum Copies {
 
 impl Copies {
     /// The words a report prints over the group.
+    ///
+    /// "Only here" over a settled reading is a fact: there is no remote to ask, or the
+    /// remote is on this disk and was read. Over a witness's reading it is the best this
+    /// machine can say and no more, and the words say which, for the reason
+    /// [`Finding::label`] draws the same line: a clone can only say what it last saw.
     #[must_use]
     pub const fn label(&self) -> &'static str {
         match self {
-            Self::OnlyHere { .. } => "only here",
+            Self::OnlyHere { witness } if witness.settled() => "only here",
+            Self::OnlyHere { .. } => "only here by the newest reading",
             Self::SecondLocalCopy { .. } => "second local copy",
             Self::RemoteProved { .. } => "proved on the remote",
             Self::NotChecked { .. } => "not checked",
+        }
+    }
+
+    /// The reading that stands behind the disposition, when one does.
+    #[must_use]
+    pub const fn witness(&self) -> Option<&Witness> {
+        match self {
+            Self::OnlyHere { witness }
+            | Self::RemoteProved { witness }
+            | Self::NotChecked { witness } => Some(witness),
+            Self::SecondLocalCopy { .. } => None,
         }
     }
 
@@ -400,7 +417,12 @@ impl Bytes {
 }
 
 /// The paths of one home under one disposition.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The disposition and the sentence that justifies it are written out by
+/// [`PathGroup`]'s own [`Serialize`], read off [`Held`] rather than stored beside it. A
+/// reader of `--json` gets `disposition` and `why` without this value being able to hold
+/// a disposition that disagrees with what it is a group of.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PathGroup {
     /// What they are, which is what decides their disposition.
     pub held: Held,
@@ -411,6 +433,26 @@ pub struct PathGroup {
     /// What they hold, when they were measured. `None` for working-tree paths, which
     /// are read for what they are and not for what they weigh.
     pub bytes: Option<Bytes>,
+}
+
+impl Serialize for PathGroup {
+    /// The group, with the disposition and the reason for it written out.
+    ///
+    /// Both are read off [`Held`] here rather than kept in the struct, which is what
+    /// makes it impossible for a stored disposition to drift away from the paths it is
+    /// about. [`Deserialize`] ignores the two derived keys and reads the rest.
+    fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+
+        let mut group = out.serialize_struct("PathGroup", 6)?;
+        group.serialize_field("held", &self.held)?;
+        group.serialize_field("disposition", &self.held.survival())?;
+        group.serialize_field("why", self.held.why())?;
+        group.serialize_field("count", &self.count)?;
+        group.serialize_field("sample", &self.sample)?;
+        group.serialize_field("bytes", &self.bytes)?;
+        group.end()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -593,10 +635,12 @@ impl Assessment {
         findings.extend(self.path_finding(Held::Uncommitted, |count, sample| {
             Finding::Uncommitted { count, sample }
         }));
-        findings.extend(self.path_finding(Held::Untracked, |count, sample| Finding::Untracked {
-            count,
-            sample,
-        }));
+        findings.extend(
+            self.path_finding(Held::Untracked, |count, sample| Finding::Untracked {
+                count,
+                sample,
+            }),
+        );
         findings.extend(self.unpushed());
         findings
     }
@@ -671,9 +715,8 @@ pub fn assess(input: &Input<'_>) -> Result<Assessment> {
 
 /// The paths of the working tree that carry work, in the two kinds they come in.
 fn working(status: &Summary) -> Vec<PathGroup> {
-    let tracked = paths_where(status, |entry| {
-        matches!(entry.state, State::Tracked { .. } | State::Unmerged)
-    });
+    let tracked =
+        paths_where(status, |entry| matches!(entry.state, State::Tracked { .. } | State::Unmerged));
     let untracked = paths_where(status, |entry| entry.state == State::Untracked);
     [group(Held::Uncommitted, tracked), group(Held::Untracked, untracked)]
         .into_iter()
@@ -758,19 +801,20 @@ fn measured(held: Held, candidates: Vec<prune::Candidate>) -> Option<PathGroup> 
 /// Three `rev-list` runs at worst, and each answers for the whole history at once.
 ///
 /// The first fixes the denominator: the commits reachable from `HEAD` that the project's
-/// own checkout does not reach by a ref of its own. Everything the checkout already has
-/// is the project's history rather than this unit's work, and grouping it would print
-/// ninety thousand commits under `remote_proved` and hide the three that matter.
+/// own checkout does not reach from a branch, a tag or a stash of its own
+/// ([`witness::Elsewhere::own`]). Everything it already reaches is the project's history
+/// rather than this unit's work, and grouping it would print ninety thousand commits
+/// under `remote_proved` and hide the three that matter.
 ///
-/// The second takes out what a witnessed reading of the remote proves. What it removes
-/// is [`Copies::RemoteProved`]; with no witness it removes nothing, because a home's own
-/// remote-tracking refs are the record of a push it made and not a reading of anything
-/// ([`witness`]).
+/// The second takes out what a witnessed reading of the remote proves. With no witness it
+/// takes out nothing, because a home's own remote-tracking refs are the record of a push
+/// it made and not a reading of anything ([`witness`]).
 ///
-/// The third is asked only of what is left, and it is the one question that needs no ref
-/// at all: does the checkout's object store hold the commit anyway? A commit fetched into
-/// a repository by identifier sits there with no ref on it, and a person rescuing work
-/// out of a home makes exactly one of those.
+/// The third takes out what the checkout holds without a ref of its own on it: a commit
+/// under an unvouched-for `origin/*`, or one fetched by identifier and named by nothing.
+///
+/// What survives all three is a commit this machine cannot find a second copy of, and how
+/// it is reported turns on whether the remote question was ever asked ([`unreached`]).
 fn history(
     git: &Git,
     home: &Path,
@@ -778,19 +822,29 @@ fn history(
 ) -> Result<(Vec<CommitGroup>, Vec<String>)> {
     let remotes = git.remotes()?;
     let found = witness::elsewhere(home, checkout);
-    let ours = git.commits_outside("HEAD", &found.local)?;
+    let ours = git.commits_outside("HEAD", &found.own)?;
     if ours.is_empty() {
         return Ok((Vec::new(), remotes));
     }
     let witness = Witness::of(&remotes, &found);
+    let off_remote = git.commits_outside("HEAD", &joined(&found.own, &found.remote))?;
     let unproved = git.commits_outside("HEAD", &found.tips())?;
-    let proved = difference(&ours, &unproved);
-    let (second, only) = local_copies(checkout, unproved);
+    let proved = difference(&ours, &off_remote);
+    let second = difference(&off_remote, &unproved);
+    let (fetched, only) = local_copies(checkout, unproved);
     let mut groups = Vec::new();
     groups.extend(commit_group(Copies::RemoteProved { witness: witness.clone() }, proved));
-    groups.extend(second_group(checkout, second));
+    groups.extend(second_group(checkout, joined(&second, &fetched)));
     groups.extend(commit_group(unreached(&witness), only));
     Ok((groups, remotes))
+}
+
+/// Two sets of tips as one, for the exclusion a `rev-list` is given.
+fn joined(left: &[Oid], right: &[Oid]) -> Vec<Oid> {
+    let mut all: Vec<Oid> = left.iter().chain(right).cloned().collect();
+    all.sort_unstable();
+    all.dedup();
+    all
 }
 
 /// How the commits nothing proved are reported: as only here, or as not checked.
@@ -866,10 +920,15 @@ fn running(asked: Attribution<'_>, home: &Path) -> Runtime {
 
 /// Why a person is needed, ranked, most actionable first.
 ///
+/// Public so that a caller which assembles an [`Assessment`] from parts — a test, and
+/// `nodal ls`, which reads the cheap half of this for every unit at once — reaches the
+/// one ranking rather than writing a second one.
+///
 /// Every reason a reclaim refuses over is made here, from the same groups the refusal is
 /// projected from, which is what makes [`Assessment::safe_to_reclaim`] agree with what
 /// the operation would actually do.
-fn reasons(assessment: &Assessment) -> Vec<Reason> {
+#[must_use]
+pub fn reasons(assessment: &Assessment) -> Vec<Reason> {
     let mut reasons = Vec::new();
     reasons.extend(assessment.paths.iter().filter(|group| group.held.refuses()).map(|group| {
         Reason::new(Needs::UniqueLoss, format!("{} ({})", group.held.label(), group.count))
@@ -892,8 +951,7 @@ fn reasons(assessment: &Assessment) -> Vec<Reason> {
 /// it as blocking would refuse a reclaim the operation itself would not refuse.
 fn blocked(assessment: &Assessment) -> Option<Reason> {
     let runtime = assessment.runtime.as_ref().filter(|_| assessment.managed)?;
-    let named: Vec<String> =
-        runtime.bystanders.iter().take(SAMPLE).map(Standing::label).collect();
+    let named: Vec<String> = runtime.bystanders.iter().take(SAMPLE).map(Standing::label).collect();
     (!named.is_empty()).then(|| Reason::new(Needs::BlockingRuntime, named.join(", ")))
 }
 
@@ -1033,9 +1091,7 @@ mod tests {
     /// removal without a reason would be asking to be believed.
     #[test]
     fn every_disposition_gives_a_reason() {
-        for held in
-            [Held::Uncommitted, Held::Untracked, Held::LocalState, Held::Generated]
-        {
+        for held in [Held::Uncommitted, Held::Untracked, Held::LocalState, Held::Generated] {
             assert!(!held.why().is_empty(), "{held:?}");
             assert!(!held.label().is_empty(), "{held:?}");
         }

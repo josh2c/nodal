@@ -10,6 +10,7 @@
 
 pub mod adopt;
 pub mod base;
+pub mod check;
 pub mod created;
 pub mod doctor;
 pub mod done;
@@ -28,6 +29,7 @@ pub mod verdict;
 
 pub use crate::output::view::adopt::{AdoptOutcome, AdoptedAll, AdoptedRow};
 pub use crate::output::view::base::{BaseBuild, BaseList, BaseRow, BaseSweep};
+pub use crate::output::view::check::Preflight;
 pub use crate::output::view::created::{Arrival, Created};
 pub use crate::output::view::doctor::{Checkout, Doctor, Finding, Kind, Note};
 pub use crate::output::view::done::Done;

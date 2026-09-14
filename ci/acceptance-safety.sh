@@ -27,6 +27,11 @@
 #     group; a failed hook and a group nothing can record leave no child alive; a
 #     recorded group that has ended gives its row up without anything being signalled;
 #     and a process group no row holds is never signalled;
+#   - reclaim preflight: `--check` says refuse wherever the reclaim refuses, names which
+#     of the four dispositions each commit is in, calls only what the trash prune would
+#     drop reconstructable, names the runtime a reclaim would stop apart from the
+#     bystander that would block it, and leaves the checkout, the home, the whole state
+#     directory and the registry's rows exactly as it found them;
 #   - doctor: the checkout, a worktree of that checkout that lives beside it rather than
 #     inside it, and the whole state directory are the same bytes afterwards;
 #   - a kept clone: an install that fails leaves the clone and the half-built base, and

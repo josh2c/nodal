@@ -92,10 +92,11 @@
 //!
 //! Nothing here writes, and nothing here reaches a network.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::doctor::unique::{Evidence, RemoteTip, Subject, believed};
+use crate::doctor::unique::{Evidence, RemoteTip, Subject, Trusted, believed};
 use crate::doctor::{inspect, origin};
 use crate::git::{Git, Oid};
 
@@ -108,21 +109,38 @@ const ORIGIN: &str = "origin";
 /// Where a repository keeps its own branches.
 const HEADS: &str = "refs/heads/";
 
+/// Where a repository keeps its reading of somewhere else.
+const REMOTES: &str = "refs/remotes/";
+
 /// What this machine can prove already exists outside one home.
 ///
-/// The two kinds of tip are kept apart, and that is the whole of what a report can say
-/// beyond safe or unsafe. A commit a second object store on this disk holds survives the
-/// removal of this home whatever any remote has; a commit only a witnessed reading of
-/// the remote reaches survives it only as long as the remote keeps the branch. Both make
-/// a reclaim safe and they are different answers to "where else is my work", so a check
-/// that merged them could report neither ([`crate::lifecycle::assess`]).
+/// Three lists, because "somewhere else" is three different answers and a person deciding
+/// whether to remove a home wants to know which one they have.
+///
+/// [`Elsewhere::own`] is the denominator of every question below it. The commits a home
+/// has that the checkout's own branches already reach are the project's history rather
+/// than this unit's work, and a report that grouped ninety thousand of them would bury
+/// the three that matter.
+///
+/// The other two both make a removal safe and they are not the same promise.
+/// [`Elsewhere::remote`] survives losing this laptop and stops surviving if somebody
+/// deletes the branch; [`Elsewhere::copies`] is the other way about. Neither is worth
+/// anything as a name alone, so every tip in all three is looked for in the object store
+/// it was read out of before it counts ([`holds`]).
 #[derive(Debug, Clone, Default)]
 pub struct Elsewhere {
-    /// Commits the project's own checkout holds, by a ref of its own.
+    /// Commits the checkout reaches from a ref of its own: a branch, a tag, a stash.
     ///
     /// A tip and not a history. Every commit behind a tip is held wherever the tip is,
     /// so one `rev-list` in the home answers for all of them at once.
-    pub local: Vec<Oid>,
+    pub own: Vec<Oid>,
+    /// Commits the checkout holds under a reading of a remote that nothing vouched for,
+    /// or with no ref on them at all.
+    ///
+    /// Objects on this disk, and no statement about any server. A commit fetched into a
+    /// checkout by identifier is one of these, and a person rescuing work out of a home
+    /// makes exactly one.
+    pub copies: Vec<Oid>,
     /// Commits a witnessed reading of the remote proves the remote still holds.
     ///
     /// Empty where nothing here read the remote, which is not the same as the remote
@@ -140,11 +158,35 @@ pub struct Elsewhere {
     pub direct: bool,
 }
 
+impl Elsewhere {
+    /// Every commit another object store on this machine holds, however it names it.
+    #[must_use]
+    pub fn local(&self) -> Vec<Oid> {
+        joined(&self.own, &self.copies)
+    }
+
+    /// Every tip, for the caller that only asks whether a commit is somewhere else at
+    /// all and does not care which evidence says so.
+    #[must_use]
+    pub fn tips(&self) -> Vec<Oid> {
+        joined(&self.local(), &self.remote)
+    }
+}
+
 /// Everything this machine can say about where `home`'s commits also live.
 ///
 /// `checkout` is the project's own, when this machine still has one. A checkout that is
 /// not there, or is no longer a repository, is simply not asked: the answer is then the
 /// stricter one, which is the safe direction to be wrong in.
+///
+/// One reading of the checkout's object store covers all three lists. The split that
+/// follows is made from the names, because asking the same store three times would cost
+/// two more processes to learn what the first answer already held.
+///
+/// The split is by **ref** and never by commit, and that matters where it looks like it
+/// would not: a checkout whose `main` and whose `origin/main` stand at one commit is the
+/// ordinary case, and reading that commit as the remote's would take the whole of the
+/// project's history out of the denominator and report it back as this unit's work.
 #[must_use]
 pub fn elsewhere(home: &Path, checkout: Option<&Path>) -> Elsewhere {
     let Some(path) = checkout else {
@@ -154,30 +196,45 @@ pub fn elsewhere(home: &Path, checkout: Option<&Path>) -> Elsewhere {
     if evidence.unreadable.is_some() || evidence.shallow {
         return Elsewhere::default();
     }
-    // Every tip of the checkout, whatever it is a checkout of. A commit two trees both
-    // hold survives the removal of either one, and that is true of a checkout that may
-    // not answer for the remote at all.
-    let mine = evidence.tips.clone();
     let relation = relation(home, path);
-    let Some(witness) = witness(home, path, relation, evidence) else {
-        return Elsewhere { local: holds(path, &mine), ..Elsewhere::default() };
-    };
-    let subject = Subject { path: home.to_path_buf(), evidence: inspect::evidence(home) };
-    let trusted = believed(&subject, &[&witness]);
-    // One reading of the object store for both kinds of tip, and the split is made
-    // afterwards from the names. Asking twice would cost a second `rev-list` in the
-    // checkout to answer a question the first one already answered.
-    let (local, remote) = split(&holds(path, &joined(&mine, &trusted.tips)), &mine);
-    Elsewhere { local, remote, witnesses: trusted.witnesses, direct: relation == Relation::IsTheRemote }
+    let trusted = vouched(home, path, relation, evidence.clone());
+    let held = holds(path, &joined(&evidence.tips, &trusted.tips));
+    let carried: BTreeSet<&Oid> = held.iter().collect();
+    let own: Vec<Oid> = mine(path).into_iter().filter(|oid| carried.contains(oid)).collect();
+    let remote: Vec<Oid> =
+        trusted.tips.iter().filter(|oid| carried.contains(oid)).cloned().collect();
+    let named: BTreeSet<&Oid> = own.iter().chain(&remote).collect();
+    let copies: Vec<Oid> = held.iter().filter(|oid| !named.contains(oid)).cloned().collect();
+    Elsewhere {
+        own,
+        copies,
+        remote,
+        witnesses: trusted.witnesses,
+        direct: relation == Relation::IsTheRemote,
+    }
 }
 
-impl Elsewhere {
-    /// Every tip, for the caller that only asks whether a commit is somewhere else at
-    /// all and does not care which evidence says so.
-    #[must_use]
-    pub fn tips(&self) -> Vec<Oid> {
-        joined(&self.local, &self.remote)
-    }
+/// What a witness will vouch for, and nothing at all when there is no witness.
+fn vouched(home: &Path, checkout: &Path, relation: Relation, evidence: Evidence) -> Trusted {
+    let Some(witness) = witness(home, checkout, relation, evidence) else {
+        return Trusted::default();
+    };
+    let subject = Subject { path: home.to_path_buf(), evidence: inspect::evidence(home) };
+    believed(&subject, &[&witness])
+}
+
+/// The tips of a repository's own refs: its branches, its tags, its stash.
+///
+/// Everything under `refs/remotes/` is left out. Those are a reading of somewhere else,
+/// and the question this answers is what this repository holds of its own accord.
+fn mine(repo: &Path) -> Vec<Oid> {
+    Git::at(repo)
+        .all_refs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|reference| !reference.name.starts_with(REMOTES))
+        .map(|reference| reference.oid)
+        .collect()
 }
 
 /// Two sets of tips as one sorted set with no repeats.
@@ -186,16 +243,6 @@ fn joined(left: &[Oid], right: &[Oid]) -> Vec<Oid> {
     all.sort_unstable();
     all.dedup();
     all
-}
-
-/// Sort proved tips into the checkout's own and the remote's, by which set named them.
-///
-/// A commit both name is the checkout's: a second object store on this disk is the
-/// stronger of the two proofs, and reporting it as the weaker one would tell a person
-/// their work depends on a branch staying on a server when it does not.
-fn split(proved: &[Oid], mine: &[Oid]) -> (Vec<Oid>, Vec<Oid>) {
-    let mine: std::collections::BTreeSet<&Oid> = mine.iter().collect();
-    proved.iter().cloned().partition(|oid| mine.contains(oid))
 }
 
 /// The checkout as a witness for this home's `origin`, in whichever relation it has to it.

@@ -1,0 +1,443 @@
+//! What `nodal reclaim --check` answers with: what a reclaim would take away.
+//!
+//! One value, two renderings, and neither of them does any part of a reclaim. The
+//! command runs no hook, sends no signal, touches no container, releases no port, takes
+//! no snapshot, moves nothing to the trash, writes no registry row and reaches no
+//! remote. It reads, and it prints what it read.
+//!
+//! The verdict is the line to read first, and it is not a second opinion. It is
+//! [`Assessment::safe_to_reclaim`], which is read off the same reasons a `nodal reclaim`
+//! refuses with, produced by the same evaluator ([`crate::lifecycle::assess`]). A
+//! preflight that said safe where the reclaim refuses would be worse than no preflight
+//! at all, because a person would stop checking.
+//!
+//! What the answer says that a refusal cannot:
+//!
+//! | line | the question it answers |
+//! |---|---|
+//! | `commits` | what is only here, what this disk has twice, what a reading proves the remote has, and what nothing checked |
+//! | `files` | what a person wrote that no commit holds |
+//! | `state` | what a tool writes again, and what it does not |
+//! | `runtime` | what the reclaim would stop, and what would make it refuse |
+//! | `trash` | where the home would go, and that nothing went there |
+//!
+//! A count is exact and a sample is a sample. A person deciding what to do next is not
+//! helped by forty file names, and is misled by a list that looks complete and is not,
+//! so every group prints its count and then as much of itself as fits.
+
+use std::path::PathBuf;
+
+use serde::Serialize;
+
+use crate::lifecycle::assess::{Assessment, Bytes, CommitGroup, PathGroup, Runtime};
+use crate::lifecycle::uniqueness::Witness;
+use crate::model::Timestamp;
+use crate::output::Render;
+use crate::output::human::{self, Block, Doc, Field, JOIN, NONE};
+use crate::runtime::attribute::{Source, Standing};
+
+/// How many names a line prints before it says how many more there are.
+const NAMED: usize = 6;
+
+/// What one reclaim would do, without doing any of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Preflight {
+    /// The instant the answer was taken.
+    pub now: Timestamp,
+    /// The unit's handle.
+    pub slug: String,
+    /// Whether a reclaim run now would go ahead rather than refuse.
+    ///
+    /// Read off [`Preflight::assessment`], whose reasons are made by the predicates the
+    /// operation itself refuses on. It is written out here because it is the field a
+    /// script gates on, and a script must not have to re-derive a verdict.
+    pub safe_to_reclaim: bool,
+    /// Where the home would go, for a home Nodal made. `None` for a checkout adopted in
+    /// place, which a reclaim unregisters and leaves exactly where it is.
+    ///
+    /// Nothing is moved there by this command.
+    pub trash: Option<PathBuf>,
+    /// The reading itself.
+    #[serde(flatten)]
+    pub assessment: Assessment,
+}
+
+impl Preflight {
+    /// The answer for one unit, from one reading of its home.
+    #[must_use]
+    pub fn new(
+        now: Timestamp,
+        slug: String,
+        trash: Option<PathBuf>,
+        assessment: Assessment,
+    ) -> Self {
+        Self { now, slug, safe_to_reclaim: assessment.safe_to_reclaim(), trash, assessment }
+    }
+}
+
+impl Render for Preflight {
+    const KIND: &'static str = "reclaim preflight";
+
+    fn doc(&self) -> Doc {
+        let mut fields = vec![
+            Field::new("unit", self.slug.clone()),
+            Field::new("home", self.assessment.home.display().to_string()),
+            Field::new("verdict", self.verdict_cell()),
+            Field::new("because", self.because_cell()),
+            Field::new("commits", self.commits_cell()),
+            Field::new("files", self.paths_cell(false)),
+            Field::new("state", self.paths_cell(true)),
+            Field::new("runtime", self.runtime_cell()),
+            Field::new("trash", self.trash_cell()),
+        ];
+        fields.retain(|field| !field.value.is_empty());
+        let mut doc = Doc::from_iter([Block::fields(fields)]);
+        for note in &self.assessment.notes {
+            doc.push(Block::line(note.clone()));
+        }
+        for note in self.assessment.runtime.iter().flat_map(|runtime| &runtime.notes) {
+            doc.push(Block::line(format!("{}: {}", note.signal.label(), note.why)));
+        }
+        doc.push(Block::line(String::from("this command changed nothing")));
+        doc
+    }
+}
+
+impl Preflight {
+    /// Safe or refuse, in the words of the operation it is about.
+    fn verdict_cell(&self) -> String {
+        if self.safe_to_reclaim {
+            String::from("safe — a reclaim would go ahead")
+        } else {
+            String::from("refuse — a reclaim would stop and change nothing")
+        }
+    }
+
+    /// Every reason, ranked, most actionable first.
+    fn because_cell(&self) -> String {
+        if self.assessment.reasons.is_empty() {
+            return String::from("nothing that is only here, and nothing standing in the home");
+        }
+        self.assessment
+            .reasons
+            .iter()
+            .map(|reason| format!("{}: {}", reason.needs.label(), reason.detail))
+            .collect::<Vec<String>>()
+            .join("\n")
+    }
+
+    /// One line per commit disposition, with what it means for the work.
+    fn commits_cell(&self) -> String {
+        if self.assessment.commits.is_empty() {
+            return String::from("none this checkout does not already hold");
+        }
+        self.assessment.commits.iter().map(commit_line).collect::<Vec<String>>().join("\n")
+    }
+
+    /// The working tree, or the ignored state, whichever was asked for.
+    ///
+    /// Two lines of one table, split because they answer different questions. What a
+    /// person wrote is work; what a tool wrote is weight.
+    fn paths_cell(&self, ignored: bool) -> String {
+        let lines: Vec<String> = self
+            .assessment
+            .paths
+            .iter()
+            .filter(|group| group.bytes.is_some() == ignored)
+            .map(path_line)
+            .collect();
+        lines.join("\n")
+    }
+
+    /// What would be stopped, and what would stop the reclaim.
+    fn runtime_cell(&self) -> String {
+        let Some(runtime) = &self.assessment.runtime else {
+            return String::new();
+        };
+        let mut lines = vec![owned_line(runtime)];
+        if runtime.bystanders.is_empty() {
+            lines.push(String::from(if unread(runtime, Source::Environment) {
+                "nothing was found standing in the home, and the process table could not be read"
+            } else {
+                "nothing else is standing in the home"
+            }));
+        } else {
+            lines.push(format!(
+                "standing in the home, never signalled: {}{}",
+                named(&runtime.bystanders.iter().map(Standing::label).collect::<Vec<String>>()),
+                if self.assessment.managed {
+                    "; a reclaim would refuse to move the home"
+                } else {
+                    "; the home is not moved, so it stops nothing"
+                }
+            ));
+        }
+        lines.join("\n")
+    }
+
+    /// Where the home would go, and that it did not go there.
+    fn trash_cell(&self) -> String {
+        match &self.trash {
+            Some(path) => format!("would move to {}; nothing was moved", path.display()),
+            None => String::from("the home is a checkout adopted in place; a reclaim leaves it"),
+        }
+    }
+}
+
+/// One commit disposition as a line: how many, which, and what it means.
+fn commit_line(group: &CommitGroup) -> String {
+    let sample = named(
+        &group
+            .sample
+            .iter()
+            .map(|oid| oid.as_str().chars().take(8).collect())
+            .collect::<Vec<String>>(),
+    );
+    let more = group.count.saturating_sub(group.sample.len());
+    let tail = if more == 0 { String::new() } else { format!(" and {more} more") };
+    let means = if group.copies.survives() {
+        "removing this home does not lose it"
+    } else {
+        "a reclaim keeps this home"
+    };
+    // The same clause a refusal prints, from the same value, so a person who reads the
+    // preflight and then the refusal is given one account of one reading.
+    let because = group.copies.witness().map(Witness::because).unwrap_or_default();
+    format!("{} ({}): {sample}{tail} — {means}{because}", group.copies.label(), group.count)
+}
+
+/// One path disposition as a line: how many, which, what it holds, and why.
+fn path_line(group: &PathGroup) -> String {
+    let names: Vec<String> = group.sample.iter().map(|path| path.display().to_string()).collect();
+    let more = group.count.saturating_sub(group.sample.len());
+    let tail = if more == 0 { String::new() } else { format!(" and {more} more") };
+    let weight = group.bytes.as_ref().map_or_else(String::new, weight_of);
+    format!(
+        "{} ({}): {}{tail}{weight} — {}",
+        group.held.label(),
+        group.count,
+        named(&names),
+        group.held.why()
+    )
+}
+
+/// What a group holds, and the one thing that figure is not.
+fn weight_of(bytes: &Bytes) -> String {
+    let floor = if bytes.complete { "" } else { " at least" };
+    format!(",{floor} {} apparent", human::bytes(bytes.apparent))
+}
+
+/// What a reclaim would stop, counted by the record that names it.
+///
+/// A count only where the signal answered. "0 processes by id" and "I could not read the
+/// process table" are different claims, and printing the first for the second is the one
+/// thing a preflight must not do.
+fn owned_line(runtime: &Runtime) -> String {
+    let parts = [
+        plural(runtime.groups.len(), "recorded group", "recorded groups"),
+        counted(
+            runtime,
+            Source::Environment,
+            runtime.processes.len(),
+            "process by id",
+            "processes by id",
+        ),
+        counted(runtime, Source::Docker, runtime.containers.len(), "container", "containers"),
+    ];
+    format!("would stop: {}", parts.join(JOIN))
+}
+
+/// The count a signal produced, or the fact that the signal could not be read.
+fn counted(runtime: &Runtime, signal: Source, count: usize, one: &str, many: &str) -> String {
+    if unread(runtime, signal) {
+        return format!("{} could not be read", signal.label());
+    }
+    plural(count, one, many)
+}
+
+/// Whether one signal went unread for this unit.
+fn unread(runtime: &Runtime, signal: Source) -> bool {
+    runtime.notes.iter().any(|note| note.signal == signal)
+}
+
+/// The first [`NAMED`] of these, and how many more there are.
+fn named(items: &[String]) -> String {
+    if items.is_empty() {
+        return String::from(NONE);
+    }
+    if items.len() <= NAMED {
+        return items.join(", ");
+    }
+    format!("{}, and {} more", items[..NAMED].join(", "), items.len() - NAMED)
+}
+
+/// A count with the word that goes with it, so a report never says `1 processes`.
+fn plural(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
+
+    use std::path::PathBuf;
+
+    use super::Preflight;
+    use crate::lifecycle::assess::{
+        Assessment, Bytes, CommitGroup, Copies, Held, PathGroup, Runtime,
+    };
+    use crate::lifecycle::uniqueness::Witness;
+    use crate::model::Timestamp;
+    use crate::output::Render;
+    use crate::runtime::attribute::{Note, Source, Standing};
+
+    /// A preflight over one assessment, at a fixed instant.
+    fn preflight(assessment: Assessment) -> Preflight {
+        Preflight::new(
+            Timestamp::parse("2026-09-07T09:00:00Z").unwrap(),
+            String::from("worker-import"),
+            Some(PathBuf::from("/state/project/trash/E1")),
+            assessment,
+        )
+    }
+
+    /// A home with nothing in it that a reclaim would stop for.
+    fn clear() -> Assessment {
+        Assessment {
+            home: PathBuf::from("/state/project/e/E1"),
+            managed: true,
+            ..Assessment::default()
+        }
+    }
+
+    /// The value's own words say it did nothing, on the run where it found nothing and
+    /// on the run where it found everything. A person who reads this and then finds
+    /// their home moved has been lied to.
+    #[test]
+    fn every_answer_says_that_the_command_changed_nothing() {
+        let safe = preflight(clear());
+        assert!(safe.safe_to_reclaim);
+        let lines = safe.doc().lines().join("\n");
+        assert!(lines.contains("this command changed nothing"), "{lines}");
+        assert!(lines.contains("nothing was moved"), "{lines}");
+
+        let mut refusing = clear();
+        refusing.paths.push(group(Held::Untracked));
+        refusing.reasons = crate::lifecycle::assess::reasons(&refusing);
+        let lines = preflight(refusing).doc().lines().join("\n");
+        assert!(lines.contains("this command changed nothing"), "{lines}");
+        assert!(lines.contains("refuse"), "{lines}");
+    }
+
+    /// One path group of one path.
+    fn group(held: Held) -> PathGroup {
+        PathGroup { held, count: 1, sample: vec![PathBuf::from("scratch.md")], bytes: None }
+    }
+
+    /// The verdict word and the exit code a script reads are one value, and the reasons
+    /// under it are what the same reclaim would refuse with.
+    #[test]
+    fn the_verdict_says_which_way_the_reclaim_would_go() {
+        assert!(preflight(clear()).doc().lines().join("\n").contains("safe — a reclaim would go"));
+        let mut refusing = clear();
+        refusing.paths.push(group(Held::Uncommitted));
+        refusing.reasons = crate::lifecycle::assess::reasons(&refusing);
+        let report = preflight(refusing);
+        assert!(!report.safe_to_reclaim);
+        assert!(report.doc().lines().join("\n").contains("refuse — a reclaim would stop"));
+    }
+
+    /// Four dispositions, four lines, and each says what it means for the work rather
+    /// than leaving a person to work it out from a word.
+    #[test]
+    fn each_commit_disposition_says_what_it_means_for_the_work() {
+        let mut assessment = clear();
+        let by = vec![PathBuf::from("/w/project")];
+        for copies in [
+            Copies::RemoteProved { witness: Witness::Checked { by: by.clone() } },
+            Copies::SecondLocalCopy { held_by: PathBuf::from("/w/project") },
+            Copies::OnlyHere { witness: Witness::NoRemote },
+            Copies::NotChecked { witness: Witness::Unchecked },
+        ] {
+            assessment.commits.push(CommitGroup {
+                copies,
+                count: 1,
+                sample: vec![crate::git::Oid::parse(&"ab".repeat(20)).unwrap()],
+            });
+        }
+        let lines = preflight(assessment).doc().lines().join("\n");
+        for label in ["proved on the remote", "second local copy", "only here", "not checked"] {
+            assert!(lines.contains(label), "{label} is missing: {lines}");
+        }
+        assert!(lines.contains("removing this home does not lose it"), "{lines}");
+        assert!(lines.contains("a reclaim keeps this home"), "{lines}");
+    }
+
+    /// The bytes are apparent and the line says so. A person clearing a disk who reads
+    /// twelve gigabytes and gets back four has been given a number, not an answer.
+    #[test]
+    fn a_size_says_that_it_is_apparent_and_why_that_is_not_what_comes_back() {
+        let mut assessment = clear();
+        assessment.paths.push(PathGroup {
+            held: Held::Generated,
+            count: 1,
+            sample: vec![PathBuf::from("target")],
+            bytes: Some(Bytes {
+                apparent: 4096,
+                complete: true,
+                exclusive_unknown: String::from("shared blocks"),
+            }),
+        });
+        let report = preflight(assessment);
+        assert!(report.doc().lines().join("\n").contains("apparent"), "{:?}", report.doc().lines());
+        let written = serde_json::to_string(&report).unwrap();
+        assert!(written.contains("exclusive_unknown"), "{written}");
+        assert!(written.contains("\"disposition\":\"reconstructable\""), "{written}");
+    }
+
+    /// A host that could not look is never told that nothing is running.
+    #[test]
+    fn a_signal_that_could_not_be_read_is_never_printed_as_a_zero() {
+        let mut assessment = clear();
+        assessment.runtime = Some(Runtime {
+            notes: vec![Note::new(
+                Source::Environment,
+                "a process scan reads /proc, which macos does not have",
+            )],
+            ..Runtime::default()
+        });
+        let lines = preflight(assessment).doc().lines().join("\n");
+        assert!(lines.contains("env could not be read"), "{lines}");
+        assert!(!lines.contains("0 processes by id"), "{lines}");
+        assert!(lines.contains("the process table could not be read"), "{lines}");
+    }
+
+    /// A bystander is named, and the line says what a reclaim would do about it.
+    #[test]
+    fn a_bystander_is_named_and_the_line_says_the_home_would_not_move() {
+        let mut assessment = clear();
+        assessment.runtime = Some(Runtime {
+            bystanders: vec![Standing::new(4711, Some(String::from("tmux")))],
+            ..Runtime::default()
+        });
+        assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+        let lines = preflight(assessment).doc().lines().join("\n");
+        assert!(lines.contains("tmux (pid 4711)"), "{lines}");
+        assert!(lines.contains("never signalled"), "{lines}");
+        assert!(lines.contains("would refuse to move the home"), "{lines}");
+    }
+
+    /// The human form and `--json` are two renderings of one value: the verdict a person
+    /// reads is the field a script reads.
+    #[test]
+    fn the_two_renderings_carry_one_verdict() {
+        let mut assessment = clear();
+        assessment.paths.push(group(Held::Untracked));
+        assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+        let report = preflight(assessment);
+        let written: serde_json::Value = serde_json::to_value(&report).unwrap();
+        assert_eq!(written["safe_to_reclaim"], serde_json::json!(false));
+        assert_eq!(written["reasons"][0]["needs"], serde_json::json!("unique_loss"));
+        assert!(report.doc().lines().join("\n").contains("refuse"));
+    }
+}
