@@ -59,6 +59,22 @@
     ],
     "last_active": "2026-09-06T14:10:00Z"
   },
+  "snapshots": [
+    {
+      "ref": "refs/nodal/01J9X2K4Q7QW8QG4M2N5B3T6HP/pre/01J9X4A1B2C3D4E5F6G7H8J9K0",
+      "commit": "3c1d9a7b5e2f4086ab19cd37e5f0a2b4c6d8e0f1",
+      "taken_at": "2026-09-06T11:02:00Z",
+      "taken_by": "operation",
+      "operation": "01J9X4A1B2C3D4E5F6G7H8J9K0",
+      "op": "merge"
+    },
+    {
+      "ref": "refs/nodal/01J9X2K4Q7QW8QG4M2N5B3T6HP/wip",
+      "commit": "9b4e7c2a1d5f8360be27ac41f9e0d3b5a7c9e1f2",
+      "taken_at": "2026-09-06T13:40:00Z",
+      "taken_by": "work_in_progress"
+    }
+  ],
   "history": [
     {
       "id": "01J9X2K4Q7QW8QG4M2N5B3T700",

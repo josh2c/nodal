@@ -463,6 +463,47 @@ impl Render for UnitList {
     }
 }
 
+/// One commit of a home that Nodal made before it changed something, as a report lists
+/// it.
+///
+/// A snapshot is a ref in the home and nowhere else. Nothing pushes one, and there is no
+/// verb that restores one: `docs/contracts.md` states the two `git` commands that do,
+/// which work in the home and in the trashed copy of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// The ref the commit is on.
+    #[serde(rename = "ref")]
+    pub reference: String,
+    /// The commit itself.
+    pub commit: String,
+    /// When it was taken.
+    pub taken_at: Timestamp,
+    /// What took it.
+    #[serde(flatten)]
+    pub taken_by: Taker,
+}
+
+/// What wrote a snapshot ref.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "taken_by", rename_all = "snake_case")]
+pub enum Taker {
+    /// The runner, before one operation's first step.
+    Operation {
+        /// The run, as the journal identifies it.
+        operation: String,
+        /// Which operation it was, as the journal recorded it. `None` where the row is
+        /// no longer there: the ref outlives the registry row it was named after.
+        op: Option<String>,
+    },
+    /// The work-in-progress ref `nodal done` and a forced reclaim write.
+    WorkInProgress,
+    /// The branch as it stood before a merge squashed it.
+    PreMerge,
+    /// A ref of the unit's namespace that is not one of Nodal's snapshots: the copies a
+    /// home takes of the checkout's branches, and the ref a merge fetches its target on.
+    Other,
+}
+
 /// One unit in full: what `nodal show` answers with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnitDetail {
@@ -470,6 +511,9 @@ pub struct UnitDetail {
     pub now: Timestamp,
     /// The unit itself.
     pub unit: UnitRow,
+    /// What Nodal recorded of the home before it changed it, oldest first.
+    #[serde(default)]
+    pub snapshots: Vec<Snapshot>,
     /// What has happened in it, most recent last.
     pub history: Vec<Event>,
 }
@@ -479,11 +523,46 @@ impl Render for UnitDetail {
 
     fn doc(&self) -> Doc {
         let mut doc = Doc::from_iter([Block::fields(detail_fields(&self.unit, self.now))]);
+        if !self.snapshots.is_empty() {
+            doc.push(Block::blank());
+            doc.push(Block::table(snapshot_table(&self.snapshots, self.now)));
+        }
         if !self.history.is_empty() {
             doc.push(Block::blank());
             doc.push(Block::table(event::table(&self.history, self.now)));
         }
         doc
+    }
+}
+
+/// The columns of the snapshot table.
+const SNAPSHOT_COLUMNS: [&str; 3] = ["taken", "what it records", "ref"];
+
+/// What Nodal recorded of the home, oldest first.
+///
+/// The ref is printed whole, because the ref is what a person hands to `git` to read one
+/// back. Nothing here offers to restore anything: that is two `git` commands in
+/// `docs/contracts.md` and not a verb.
+fn snapshot_table(snapshots: &[Snapshot], now: Timestamp) -> Table {
+    let mut table = Table::new(&SNAPSHOT_COLUMNS);
+    for snapshot in snapshots {
+        table.push(vec![
+            human::since(now, snapshot.taken_at),
+            taker_cell(&snapshot.taken_by),
+            snapshot.reference.clone(),
+        ]);
+    }
+    table
+}
+
+/// What a snapshot records, in the words the operation is called by.
+fn taker_cell(taker: &Taker) -> String {
+    match taker {
+        Taker::Operation { op: Some(kind), .. } => format!("the home before {kind}"),
+        Taker::Operation { op: None, .. } => String::from("the home before an operation"),
+        Taker::WorkInProgress => String::from("the home, work in progress"),
+        Taker::PreMerge => String::from("the branch before a squash"),
+        Taker::Other => String::from("a ref of this unit"),
     }
 }
 

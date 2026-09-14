@@ -31,6 +31,13 @@ const UNIT: &str = "worker-import";
 /// `target` and large enough that no other content in the home can account for it.
 const BUILD_BYTES: usize = 100 * 1024 * 1024;
 
+/// How much of the record the runner takes before a reclaim this test allows for.
+///
+/// One commit of the work in the home, which the build output and the installed
+/// dependencies are not part of: an ignore rule covers them, so `git` does not record
+/// them. A megabyte is far more than that commit and far less than what was dropped.
+const RECORD_SLACK: u64 = 1024 * 1024;
+
 /// The local state a person goes back into the trash for.
 const LOCAL: [&str; 2] = [".env.local", "dev.sqlite"];
 
@@ -98,8 +105,12 @@ fn the_trash_holds_the_home_without_its_build_output() {
     let trash = trashed(&machine);
     assert!(!trash.join("target").exists(), "the trash kept the build output");
     assert!(!trash.join("node_modules").exists(), "the trash kept the installed dependencies");
+    // The trashed copy also carries the record the runner wrote before the reclaim moved
+    // anything (`docs/contracts.md`, Snapshots), which is git objects for the work and
+    // never for what an ignore rule covers. It is kilobytes against a hundred megabytes,
+    // and the slack here is what says so.
     assert!(
-        bytes_of(&trash) < before - BUILD_BYTES as u64,
+        bytes_of(&trash) < before - BUILD_BYTES as u64 + RECORD_SLACK,
         "the trashed copy is not smaller than the home was by what was dropped"
     );
     assert!(trash.join("apps/web/app/page.tsx").is_file(), "the work is in the trash");

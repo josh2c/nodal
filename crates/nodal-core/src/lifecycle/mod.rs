@@ -196,6 +196,7 @@ pub fn run(store: &mut Store, plan: &Plan) -> Result<Done> {
     let id = OperationId::from_ulid(ulid::Ulid::new());
     let owner = Owner::current();
     journal::start(store.conn(), id, plan, &owner, Timestamp::now())?;
+    record(plan, id)?;
     let mut outputs = Outputs::new();
     for (position, step) in plan.steps.iter().enumerate() {
         let position = position_of(position)?;
@@ -228,6 +229,32 @@ pub fn run(store: &mut Store, plan: &Plan) -> Result<Done> {
             Err(source)
         }
     }
+}
+
+/// Commit the home a mutating plan is about, before the plan touches it.
+///
+/// The record is one commit on a ref of this run's own,
+/// `refs/nodal/<unit>/pre/<operation>`, built in an index of its own so that the
+/// person's staged work is not touched ([`crate::git::snapshot`]). It is taken after the
+/// journal has opened the run, because the run is what names the ref, and before the
+/// first step, because a step is what changes the home.
+///
+/// Three things are not a failure and take no record: a plan that says it changes no
+/// home, a home that is not on the disk any more, and a directory Git cannot open. A
+/// home with no commit yet has nothing to build a commit on and answers the same way.
+///
+/// Anything else is a failure of the run, raised here where nothing has been done yet.
+/// A safety net that quietly did not run is worse than an operation that stopped.
+fn record(plan: &Plan, id: OperationId) -> Result<()> {
+    let Some(records) = &plan.records else { return Ok(()) };
+    if !records.home.is_dir() {
+        return Ok(());
+    }
+    let Ok(git) = crate::git::Git::open(&records.home) else { return Ok(()) };
+    let reference = crate::git::refs::pre(&records.unit.to_string(), &id.to_string());
+    let message = format!("nodal: the home before {}", plan.kind);
+    git.snapshot(&reference, &message)?;
+    Ok(())
 }
 
 /// Write down what a failed step reported, and close the run as `failed`.

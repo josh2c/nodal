@@ -1012,6 +1012,35 @@ somebody else installed still in it. A file that was reformatted since the insta
 re-rendering of the document instead, which is the only path that is not byte-identical. A file holding
 nothing but Nodal's hooks is removed, and `.claude/` goes with it when that empties the directory.
 
+## Snapshots
+Nodal records a unit's home before it changes it. The runner takes one commit before the first step of
+any operation that changes a unit's tree or its refs: `merge`, an `adopt` of a checkout that is already
+here, and `reclaim`. The commit goes on `refs/nodal/<unit>/pre/<operation>`, named by the run in the
+journal, so a second run never writes over the record of the first. `nodal done` and
+`nodal reclaim --force` write the work-in-progress ref `refs/nodal/<unit>/wip` as before.
+
+The commit is built in an index file of its own, so the person's staged work is untouched and no
+tracked file is written. A home with no commit yet has nothing to build on and is not recorded, which
+is not a failure. A home that is not on the disk, and a directory Git cannot open, are not recorded
+either. Any other failure stops the operation before its first step.
+
+A snapshot is a ref in the home and it never leaves this machine. Nothing pushes one. `nodal done
+--wip` sends the work-in-progress ref, by name, and sends nothing else of the namespace.
+
+`nodal show --json` lists them as `snapshots`: the ref, the commit, when it was taken, and what took
+it — the operation, with the kind the journal recorded, or the work-in-progress ref.
+
+There is no restore verb. Reading one back is `git`, in the home or in the trashed copy of it:
+
+```
+git fetch <path-to-home> refs/nodal/<unit>/pre/<operation>
+git checkout FETCH_HEAD            # look at it
+git restore --source FETCH_HEAD -- <path>   # take one file back
+```
+
+A reclaim moves the home to the trash, and the refs go with it; `nodal gc` removing that home is what
+finally lets go of them.
+
 ## Reclaim, trash and gc
 Every destructive path calls one uniqueness check. It reports three things: uncommitted changes,
 untracked files that no ignore rule covers, and commits that no remote and no other tree on this

@@ -58,6 +58,19 @@ pub fn wip(unit_id: &str) -> String {
     format!("{NAMESPACE}{unit_id}/wip")
 }
 
+/// Where a unit's pre-operation snapshots live, under its own namespace.
+pub const PRE: &str = "pre/";
+
+/// The ref one operation's pre-operation snapshot is written to.
+///
+/// One ref per run, named by the run, so a second `nodal merge` never writes over the
+/// record of the first. `operation` is the journal's identifier for the run, which is
+/// what ties the ref to the row that says what the run was.
+#[must_use]
+pub fn pre(unit_id: &str, operation: &str) -> String {
+    format!("{NAMESPACE}{unit_id}/{PRE}{operation}")
+}
+
 /// The ref that holds a unit's branch as it was before a merge squashed it.
 ///
 /// The one place the commits a squash folded stay reachable. It is written before the

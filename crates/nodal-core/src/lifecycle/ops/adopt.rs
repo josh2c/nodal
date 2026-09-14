@@ -382,7 +382,11 @@ pub fn plan(params: &Params) -> Result<Plan> {
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
     let plan = Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params));
     let plan = match &params.source {
-        Source::InPlace => plan,
+        // A checkout that is already here is work somebody has. It is taken over where it
+        // stands, so the home is recorded before the first step touches it
+        // (`crate::lifecycle::run`). A materialised adoption makes a home instead of
+        // changing one, and there is nothing yet to record.
+        Source::InPlace => plan.recording(params.unit.id, home.clone()),
         Source::Materialized { base_path, from } => plan
             .then(new::Materialize {
                 base: base_path.clone(),

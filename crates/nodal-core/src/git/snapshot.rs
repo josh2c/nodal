@@ -1,14 +1,21 @@
 //! The work-in-progress snapshot: one commit that holds everything a home has, made
 //! without touching the index the person is using.
 //!
-//! `nodal reclaim --force` is the only caller. A person who forces a reclaim past the
-//! uniqueness check is saying they accept losing the home, not that they want the work
-//! destroyed, so the work is committed to a ref first and the ref goes to trash with
-//! the home. Recovering it is `git fetch <trash path> refs/nodal/<id>/wip`.
+//! There are two callers and they take the same kind of commit for two reasons.
+//! `nodal done` and `nodal reclaim --force` write the work-in-progress ref: a person who
+//! forces a reclaim past the uniqueness check is saying they accept losing the home, not
+//! that they want the work destroyed, so the work is committed to a ref first and the
+//! ref goes to trash with the home.
 //!
-//! This is the minimal form of the snapshot. The full feature — snapshots on a
-//! schedule, a `nodal` command that restores one — is a later task; what is here is
-//! the safety net a destructive flag must not be shipped without.
+//! The other caller is the runner ([`crate::lifecycle::run`]). Every operation that
+//! changes a unit's tree or its refs — a merge, an adoption of a checkout that is
+//! already here, an ordinary reclaim — records the home as it was before its first step
+//! runs, on a ref named by the run: `refs/nodal/<unit>/pre/<operation>`. One ref per run,
+//! so a second merge never writes over the record of the first.
+//!
+//! Recovering either is `git`, in the home or in the trashed copy of it:
+//! `git fetch <path> refs/nodal/<id>/pre/<operation>` and then `git checkout FETCH_HEAD`
+//! (`docs/contracts.md`). There is no restore verb, and a snapshot is never pushed.
 //!
 //! **Why a temporary index.** `git add -A` writes the repository's index, which is a
 //! person's staged work. A snapshot that stages every file has changed the state of the
@@ -86,6 +93,53 @@ pub fn take(
     let had_changes = tree != tree_of(repo, &head)?;
     super::refs::write(repo, reference, &commit, REASON)?;
     Ok(Some(Snapshot { reference: reference.to_owned(), commit, had_changes }))
+}
+
+/// One snapshot this repository holds, as a report lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Taken {
+    /// The ref it is on.
+    pub reference: String,
+    /// The commit.
+    pub commit: Oid,
+    /// When the commit was made, which is when the snapshot was taken.
+    pub taken_at: crate::model::Timestamp,
+}
+
+/// Every snapshot of a unit this repository holds, oldest first.
+///
+/// One `for-each-ref` over the unit's own namespace. The instant is the commit's own,
+/// because a snapshot commit is written once and never moved, so the commit dates the
+/// ref exactly.
+///
+/// # Errors
+/// [`crate::Error::Git`] when `git for-each-ref` failed, and
+/// [`crate::Error::GitParse`] on a record this cannot read.
+pub fn list(repo: &Path, unit_id: &str) -> Result<Vec<Taken>> {
+    let prefix = format!("{}{unit_id}/", super::refs::NAMESPACE);
+    let output = cmd::run_ok(
+        repo,
+        &[
+            "for-each-ref",
+            "--sort=committerdate",
+            "--format=%(objectname) %(committerdate:unix) %(refname)",
+            &prefix,
+        ],
+    )?;
+    output.lines()?.iter().map(|line| read_record(line, &output.args)).collect::<Result<Vec<_>>>()
+}
+
+/// One `for-each-ref` record: the object, the instant, and the name.
+fn read_record(line: &str, args: &[String]) -> Result<Taken> {
+    let unreadable = || crate::Error::GitParse { args: args.to_vec(), record: line.to_owned() };
+    let (commit, rest) = line.split_once(' ').ok_or_else(unreadable)?;
+    let (seconds, name) = rest.split_once(' ').ok_or_else(unreadable)?;
+    let taken_at = seconds
+        .parse::<i64>()
+        .ok()
+        .and_then(|seconds| crate::model::Timestamp::from_unix_seconds(seconds).ok())
+        .ok_or_else(unreadable)?;
+    Ok(Taken { reference: name.to_owned(), commit: Oid::parse(commit)?, taken_at })
 }
 
 /// The commit `HEAD` names, `None` when the branch has none yet.

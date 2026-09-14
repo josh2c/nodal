@@ -377,11 +377,16 @@ pub fn plan(params: &Params) -> Result<Plan> {
     let value = serde_json::to_value(params)
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
     let commit = commit_of(params);
-    let plan = Plan::new(KIND, params.unit.slug.to_string(), value, commit).then(StopRuntime {
-        unit: params.unit.id,
-        environment: params.environment.clone(),
-        tethers: params.tethers.clone(),
-    });
+    // The home as it was, before anything is stopped or moved
+    // (`crate::lifecycle::run`). `--force` takes its own work-in-progress ref as well,
+    // and this is the record an ordinary reclaim leaves.
+    let plan = Plan::new(KIND, params.unit.slug.to_string(), value, commit)
+        .recording(params.unit.id, params.environment.home.clone())
+        .then(StopRuntime {
+            unit: params.unit.id,
+            environment: params.environment.clone(),
+            tethers: params.tethers.clone(),
+        });
     let Some(entry) = &params.entry else {
         if params.environment.managed {
             return Ok(plan);

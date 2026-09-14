@@ -6,12 +6,14 @@
 //! and undone step by step (`docs/code-structure.md`).
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use rusqlite::Transaction;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::model::UnitId;
 use crate::{Error, Result};
 
 /// What one step hands to the registry write that ends the operation.
@@ -178,6 +180,25 @@ pub struct Plan {
     pub steps: Vec<Box<dyn Step>>,
     /// The registry rows the operation adds, written once at the end.
     pub commit: Commit,
+    /// The home to record before the first step runs, for an operation that changes
+    /// one. `None` for an operation that adds a home rather than changing one.
+    pub records: Option<Records>,
+}
+
+/// The home a mutating plan records before it touches anything.
+///
+/// A merge rewrites a branch, an adoption in place takes a checkout over, and a reclaim
+/// moves a home away. Each of them is a change to work a person has, and the runner
+/// commits the home to a ref of its own before the first step ([`crate::lifecycle::run`],
+/// [`crate::git::snapshot`]). The ref is named by the run, so nothing writes over the
+/// record of an earlier one.
+#[derive(Debug, Clone)]
+pub struct Records {
+    /// The unit whose namespace the ref goes in.
+    pub unit: UnitId,
+    /// The home to commit. A path that is not a repository is nothing to record, which
+    /// is not a failure.
+    pub home: PathBuf,
 }
 
 impl Plan {
@@ -185,13 +206,32 @@ impl Plan {
     /// operation wants.
     #[must_use]
     pub fn new(kind: &'static str, subject: String, params: Value, commit: Commit) -> Self {
-        Self { kind, subject, params, recovery: Recovery::RollBack, steps: Vec::new(), commit }
+        Self {
+            kind,
+            subject,
+            params,
+            recovery: Recovery::RollBack,
+            steps: Vec::new(),
+            commit,
+            records: None,
+        }
     }
 
     /// Add a step to the end of the plan.
     #[must_use]
     pub fn then(mut self, step: impl Step + 'static) -> Self {
         self.steps.push(Box::new(step));
+        self
+    }
+
+    /// Record this home before the first step of the plan runs.
+    ///
+    /// Said by the operation rather than worked out by the runner from the kind of it:
+    /// the operation is what knows whether it changes a home and which home that is, and
+    /// a runner that matched on names would be a second place the answer lived.
+    #[must_use]
+    pub fn recording(mut self, unit: UnitId, home: PathBuf) -> Self {
+        self.records = Some(Records { unit, home });
         self
     }
 
