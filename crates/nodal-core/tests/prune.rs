@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use nodal_core::workspace::prune::sweep;
+use nodal_core::workspace::prune::{survey, sweep};
 
 /// A home with a build directory, a dependency tree under a second package, a
 /// committed directory whose name the table also holds, and the local state a
@@ -124,4 +124,63 @@ fn the_report_says_what_went() {
     let body = sweep(root.path()).describe();
     assert!(body.contains("Dropped 2 directories"), "{body}");
     assert!(body.contains("target"), "{body}");
+}
+
+/// A directory the exclusion table calls regenerable answers for everything under it,
+/// and it goes on answering when its own removal is refused: the report keeps the whole
+/// of it, and the sweep removes nothing under it afterwards.
+///
+/// This is the one place the read-only classification changed what a sweep does, and it
+/// is stated rather than left to chance. `survey` names a regenerable directory once and
+/// never a path under it, so there is nothing under it for a sweep to fall back to —
+/// where the older code, which recorded the directory only after removing it, would have
+/// gone on to consider its children.
+///
+/// What the report says is the guarantee, not what a half-finished `remove_dir_all` left
+/// on disk. The removal is refused here by sealing the home, which is the shape a real
+/// refusal takes — a directory Nodal may read and may not unlink from — and the standard
+/// library may have emptied the directory before it failed on the last step.
+/// [`nodal_core::workspace::remove::tree`] opens read-only directories and retries, so
+/// sealing the directory itself does not refuse anything at all.
+#[test]
+#[cfg(unix)]
+fn a_directory_that_would_not_go_is_kept_whole() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = home();
+    let path = root.path();
+    let listed = survey(path);
+    assert!(
+        listed.candidates.iter().any(|entry| entry.path == Path::new("target")),
+        "{:?}",
+        listed.candidates
+    );
+    assert!(
+        listed
+            .candidates
+            .iter()
+            .all(|entry| entry.path == Path::new("target") || !entry.path.starts_with("target")),
+        "the directory did not answer for what is under it: {:?}",
+        listed.candidates
+    );
+
+    let held = std::fs::metadata(path).unwrap().permissions();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let report = sweep(path);
+    std::fs::set_permissions(path, held).unwrap();
+
+    assert!(
+        report.notes.iter().any(|note| note.contains("target")),
+        "the refusal is not a note: {report:?}"
+    );
+    assert!(
+        report.removed.iter().all(|gone| !gone.path.starts_with("target")),
+        "the sweep removed something under a directory it could not remove: {report:?}"
+    );
+    let kept = report.kept.iter().find(|kept| kept.path == Path::new("target"));
+    assert_eq!(
+        kept.map(|kept| kept.bytes),
+        Some(4096),
+        "the whole directory is not reported as kept: {report:?}"
+    );
 }

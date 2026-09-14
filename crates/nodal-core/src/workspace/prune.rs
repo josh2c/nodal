@@ -95,6 +95,13 @@ pub struct Report {
 }
 
 impl Report {
+    /// Record a path the trash kept, whether the table never offered it or a removal of
+    /// it was refused.
+    fn keep(&mut self, path: PathBuf, bytes: u64) {
+        self.kept_bytes += bytes;
+        self.kept.push(Kept { path, bytes });
+    }
+
     /// Whether the prune left the home as it found it.
     #[must_use]
     pub const fn changed_nothing(&self) -> bool {
@@ -141,55 +148,112 @@ impl Report {
 /// the module documentation gives.
 #[must_use]
 pub fn sweep(path: &Path) -> Report {
-    let mut report = Report::default();
-    if !path.is_dir() {
-        report.notes.push(format!("{} is not there, so nothing was pruned", path.display()));
-        return report;
-    }
-    let git = match Git::open(path) {
-        Ok(git) => git,
-        Err(why) => {
-            report.notes.push(why.to_string());
-            return report;
-        }
-    };
-    let entries = match git.ignored_entries() {
-        Ok(entries) => entries,
-        Err(why) => {
-            report.notes.push(why.to_string());
-            return report;
-        }
-    };
-    let mut taken: Vec<PathBuf> = Vec::new();
-    for entry in &entries {
-        if taken.iter().any(|gone| entry.relative.starts_with(gone)) {
-            continue;
-        }
-        let reason = entry.directory.then(|| reason_for(&entry.relative)).flatten();
-        let Some(reason) = reason else {
-            if !holds_another(&entries, &entry.relative) && !nodal_wrote(path, &entry.relative) {
-                let bytes = size::measure(&path.join(&entry.relative)).bytes;
-                report.kept_bytes += bytes;
-                report.kept.push(Kept { path: entry.relative.clone(), bytes });
-            }
+    let surveyed = survey(path);
+    let mut report = Report { notes: surveyed.notes, ..Report::default() };
+    for candidate in surveyed.candidates {
+        let Some(reason) = candidate.reason else {
+            report.keep(candidate.path, candidate.bytes);
             continue;
         };
-        let bytes = size::measure(&path.join(&entry.relative)).bytes;
-        if let Err(why) = remove::tree(&path.join(&entry.relative)) {
+        if let Err(why) = remove::tree(&path.join(&candidate.path)) {
             report.notes.push(why.to_string());
-            report.kept_bytes += bytes;
-            report.kept.push(Kept { path: entry.relative.clone(), bytes });
+            report.keep(candidate.path, candidate.bytes);
             continue;
         }
-        taken.push(entry.relative.clone());
-        report.bytes += bytes;
+        report.bytes += candidate.bytes;
         report.removed.push(Removal {
-            path: entry.relative.clone(),
-            bytes,
+            path: candidate.path,
+            bytes: candidate.bytes,
             reason: reason.to_owned(),
         });
     }
     report
+}
+
+/// One path an ignore rule covers, and what the same contract says may become of it.
+///
+/// The reason is the whole of the classification: `Some` is a directory the exclusion
+/// table calls regenerable, so a tool writes it again from the tree that is still there;
+/// `None` is state that exists nowhere else and is the reason a person opens the trash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    /// Where it is, relative to the home.
+    pub path: PathBuf,
+    /// What it holds, as the sum of the file sizes under it.
+    pub bytes: u64,
+    /// Why the trash need not keep it, `None` when the table does not call it
+    /// regenerable.
+    pub reason: Option<&'static str>,
+}
+
+/// What the ignored state of one home is, before anything is done about it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Survey {
+    /// The paths, in the order Git listed them.
+    pub candidates: Vec<Candidate>,
+    /// What could not be read, and why. A note is never a failure here.
+    pub notes: Vec<String>,
+}
+
+/// Classify the ignored state at `path` and change nothing.
+///
+/// This is the read-only half of [`sweep`], and it is the whole of the two gates: an
+/// ignore rule has to cover a path for it to be here at all, and
+/// [`super::exclude::regenerable`] is what says which of those a tool writes again.
+/// `nodal reclaim --check` answers with this classification and `sweep` acts on it, so
+/// the preflight and the prune cannot disagree about what a reclaim would drop.
+///
+/// A candidate under a directory already classed as regenerable is left out: the
+/// directory answers for everything in it, and naming both would count the same bytes
+/// twice.
+///
+/// That holds through a failed removal as well, and it is the one place where this
+/// classification changed what a sweep does. A directory answers for what is under it
+/// whether or not it goes, so a `node_modules` that would not be removed leaves the
+/// trash the whole of it rather than pieces of it. The alternative — descending into a
+/// directory whose own removal was refused — leaves a half-pruned tree that no report
+/// describes, to save bytes in the one case where a removal failed. `git ls-files
+/// --directory` collapses an ignored directory into one record and does not descend into
+/// it, so the shape this decides is one Git does not produce for a regenerable path
+/// anyway; it is stated because the behaviour has to be one thing and not an accident.
+///
+/// # Errors
+/// None. A home that is not there, a directory that is not a repository and a listing
+/// that failed are each a note, for the reason the module documentation gives.
+#[must_use]
+pub fn survey(path: &Path) -> Survey {
+    let mut surveyed = Survey::default();
+    if !path.is_dir() {
+        // Said as a reading and not as an action, because two callers print it and only
+        // one of them removes anything. `nodal reclaim --check` prints the notes of this
+        // survey verbatim, and a read-only command must not report a prune it did not do.
+        surveyed
+            .notes
+            .push(format!("{} is not there, so no ignored state was read", path.display()));
+        return surveyed;
+    }
+    let entries = match Git::open(path).and_then(|git| git.ignored_entries()) {
+        Ok(entries) => entries,
+        Err(why) => {
+            surveyed.notes.push(why.to_string());
+            return surveyed;
+        }
+    };
+    let mut regenerable: Vec<PathBuf> = Vec::new();
+    for entry in &entries {
+        if regenerable.iter().any(|whole| entry.relative.starts_with(whole)) {
+            continue;
+        }
+        let reason = entry.directory.then(|| reason_for(&entry.relative)).flatten();
+        if reason.is_some() {
+            regenerable.push(entry.relative.clone());
+        } else if holds_another(&entries, &entry.relative) || nodal_wrote(path, &entry.relative) {
+            continue;
+        }
+        let bytes = size::measure(&path.join(&entry.relative)).bytes;
+        surveyed.candidates.push(Candidate { path: entry.relative.clone(), bytes, reason });
+    }
+    surveyed
 }
 
 /// Whether everything at `relative` is a file Nodal wrote into the home.
@@ -269,6 +333,16 @@ mod tests {
         let report = sweep(&missing);
         assert!(report.changed_nothing());
         assert!(report.notes[0].contains("gone"), "{:?}", report.notes);
+    }
+
+    /// The note is a reading, not a claim about an action, because `nodal reclaim
+    /// --check` prints these words and removes nothing.
+    #[test]
+    fn a_note_says_what_was_read_and_never_what_was_pruned() {
+        let root = tempfile::tempdir().unwrap();
+        let report = sweep(&root.path().join("gone"));
+        assert!(report.notes[0].contains("no ignored state was read"), "{:?}", report.notes);
+        assert!(!report.notes[0].contains("pruned"), "{:?}", report.notes);
     }
 
     #[test]

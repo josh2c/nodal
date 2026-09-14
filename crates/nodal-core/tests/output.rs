@@ -22,9 +22,9 @@ use std::time::Duration;
 use nodal_core::git::integration::{Divergence, Integration, Reason};
 use nodal_core::model::{
     Actor, ActorKind, ActorName, Base, BaseId, BranchName, CommitId, Digest, EnvId, EnvName,
-    EnvState, Epistemic, Event, EventId, EventKind, FingerprintPart, HostName, Missing, Objective,
-    Platform, PortName, Ports, ProjectId, ProjectName, Slug, Timestamp, UnitId, UnitStatus, Want,
-    WorkspaceFp,
+    EnvState, Epistemic, Event, EventId, EventKind, FingerprintPart, HostName, Missing, Needs,
+    Objective, Platform, PortName, Ports, ProjectId, ProjectName, Slug, Timestamp, UnitId,
+    UnitStatus, Want, WorkspaceFp,
 };
 use nodal_core::output::view::verdict::{Behind, RowKind, Verdict, WorktreeRow};
 use nodal_core::output::view::{
@@ -107,6 +107,9 @@ fn units() -> Vec<UnitRow> {
                 Objective::parse("worker import: handle missing supervisor_id").expect("one line"),
             ),
             objective_epistemic: Some(Epistemic::Stated),
+            // Three changed paths, one staged and two untracked: work no commit holds,
+            // which is the top of the ranking.
+            needs: Some(Needs::UniqueLoss),
             freshness: Freshness::Fresh,
             work: Some(WorkTree {
                 dirty: 3,
@@ -144,6 +147,9 @@ fn units() -> Vec<UnitRow> {
             // Recovered rather than stated: this is the unit `nodal adopt` made of a
             // worktree another tool left behind, and every rendering has to say so.
             objective_epistemic: Some(Epistemic::Observed),
+            // Nothing uncommitted and nothing standing in the home, but the base has
+            // moved four commits under the branch.
+            needs: Some(Needs::Diverged),
             freshness: Freshness::Stale(vec![
                 FingerprintPart::Dependencies,
                 FingerprintPart::Schema,
@@ -186,6 +192,9 @@ fn unmeasured_unit() -> UnitRow {
         branch: BranchName::parse("feature/auth-refresh").expect("a branch"),
         objective: None,
         objective_epistemic: None,
+        // Not computed, which is what every producer but the list is, and which the
+        // renderer must print as the placeholder rather than as "nothing".
+        needs: None,
         freshness: Freshness::Unknown,
         work: None,
         environment: None,

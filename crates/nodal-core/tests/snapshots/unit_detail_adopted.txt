@@ -1,6 +1,7 @@
   unit       payroll-export  (open)
   objective  payroll export CSV (recovered)
   branch     nodal/payroll-export
+  needs      diverged — nodal reclaim payroll-export --check says what a reclaim would take
   freshness  stale (deps, schema)
   main       open +1 -4
   remote     —

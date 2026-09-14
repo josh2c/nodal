@@ -15,6 +15,7 @@
         "schema"
       ]
     },
+    "needs": "diverged",
     "work": {
       "dirty": 0,
       "staged": 0,

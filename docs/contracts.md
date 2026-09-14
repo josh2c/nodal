@@ -202,7 +202,7 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 
 ## CLI
 `init, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, run, ps, start, note, ask,
-handoff, sync, done, merge, prune, reclaim, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
+handoff, sync, done, merge, prune, reclaim, reclaim --check, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
 `--json`; `status --watch` emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
 Nodal asks whether it shares file blocks under the state root **once**, when the state root is made. The
@@ -657,6 +657,38 @@ The order is the answer to "which unit needs a person next". Units the base carr
 are last. The rest come first, the one the base has moved furthest under at the top. Units
 that tie are ordered by slug, so one list of one registry is always the same list.
 
+**`NEEDS` says why**, in the words `nodal reclaim --check` uses, so one word means one thing in
+both places. It is ranked, and the first that applies is the one printed:
+
+| rank | value | what it is |
+|---|---|---|
+| 1 | `unique loss` | the working tree holds changed, staged or untracked paths |
+| 2 | `blocked` | something Nodal did not start is standing in the home |
+| 3 | `unknown` | the unit is ahead of the base, the project has a remote, and nothing here has read that remote since the home last wrote its own record of it |
+
+| 4 | `diverged` | merging would conflict, or the base has moved under the branch |
+| 5 | `review` | the work is on the base, or the branch is ahead and clean |
+| 6 | `nothing` | none of the above |
+
+Row 3 asks whether the **project** has a remote, not whether the unit has an upstream, and the
+difference is a whole class of unit. A branch nobody has pushed has no upstream at all; reading
+that as "no remote question" would put it under `review` while `nodal reclaim` refuses it. A
+unit with no upstream has the most to lose, not the least.
+
+A row shows `—` where nothing computed it: a unit with no home, and a home Git could not answer
+for. `—` is not `nothing`, and no value ever prints as the other: one says the question was not
+put, the other says it was answered. A reading that could not see the working tree cannot say
+the top of the ranking is empty, so it ranks nothing at all and the note under the table says
+why.
+
+The column costs the list no extra `git`. The counts, the verdict and the divergence come from
+the survey the list already takes; the bystander comes from the one process-table read that WHO
+already needs; and the staleness of the remote evidence is read with `stat` — the checkout's own
+newest reading of the remote once for the whole list, compared against each home. That is the
+cheap necessary half of the witness rule and not the rule: `unknown` marks a row whose remote
+evidence **cannot** be current, and whether a current reading actually reaches the commits is
+what `nodal reclaim --check` costs a few processes to answer.
+
 Who is attached to each unit comes from the process table, by the same signals `nodal ps`
 reads. A host whose process table Nodal cannot read still lists every unit and says under the
 table that it could not see.
@@ -960,6 +992,73 @@ Every destructive path calls one uniqueness check. It reports three things: unco
 untracked files that no ignore rule covers, and commits that no remote and no other tree on this
 machine has. A hit refuses the operation and names the paths. `--force` does not skip the check.
 It first commits the whole home to `refs/nodal/<unit>/wip`, then goes on.
+
+### `reclaim --check`
+`nodal reclaim UNIT --check` answers what a reclaim would do and does none of it. It runs no hook,
+sends no signal, touches no container, gives back no port, takes no snapshot, moves nothing to the
+trash, writes no registry row and reaches no remote. It cannot be given `--force` or `--yes`. The
+exit code is the verdict: success where a reclaim would go ahead, failure where it would refuse.
+
+The check and the reclaim read the machine with one evaluator, so a check that says safe over a home
+the reclaim refuses is a bug in one place rather than a disagreement between two. The check asks for
+more of the same reading: the operation asks only what its refusal rests on, and the check asks for
+the ignored state and the runtime as well.
+
+**A commit is in one of four dispositions**, drawn from the commits the home has that the project's
+checkout does not reach from a branch, a tag or a stash of its own. Every commit of the project's
+history is on the remote, and reporting all of it would bury the few that are not.
+
+| disposition | what it means | does removing the home lose it |
+|---|---|---|
+| `remote_proved` | a witnessed reading of the remote reaches it | no, while the remote keeps the branch |
+| `second_local_copy` | another object store on this disk holds it | no, and no server is involved |
+| `not_checked` | nothing here read the remote, and nothing here holds it | unknown, so it is kept |
+| `only_here` | the reading was taken and it is still nowhere else | yes |
+
+`not_checked` is not zero and it is not safe. A home's own `refs/remotes/origin/*` is the record of a
+push it made, so the remote is proved only where a witness confirms it, and a ref name with no object
+behind it proves nothing at all. `only_here` says which reading stands behind it: a settled one —
+there is no remote, or the remote is on this disk and was read — or the newest reading of a clone,
+which can only say what it last saw. A branch a reviewer squash-merged is `only_here`: the content is
+on the base and the commit objects are in this home, and the objects are what a removal takes. The
+loss is not priced in bytes, because no portable call says what a set of commit objects holds that
+nothing else does.
+
+**A path is in one of three dispositions**, over the same two gates the trash prune uses. `git
+ls-files --others` supplies the candidates, so no path a commit holds is ever one, and the exclusion
+table says which are regenerable.
+
+| what it holds | disposition | what a reclaim does |
+|---|---|---|
+| uncommitted changes, untracked files | `must_survive` | refuses |
+| ignored state no tool writes again | `must_survive` | trashes it; `nodal gc` is what takes it |
+| build output and installed dependencies | `reconstructable` | drops it from the trashed copy |
+
+Only the first refuses, and what makes that safe is the retention. A reclaim **moves** a home
+to `<state>/<project>/trash/<id>` and `nodal gc` removes it once `reclaim.trash_retention` days
+have passed — fourteen by default, stamped on the trash row at the moment of the move, so a
+recipe edited later cannot shorten it. Ignored state no tool writes again is therefore still
+readable for that window, at the path the report names. Refusing over it instead would refuse
+every reclaim of every home that ever held an `.env.local`, and the person would use `--force`,
+which is worse for them than the window is.
+
+A directory the exclusion table calls regenerable answers for everything under it, and it goes
+on answering when its own removal is refused: the trash keeps the whole of it and the sweep
+removes nothing under it. Descending into a directory whose removal failed would leave a
+half-pruned tree that no report describes.
+
+Sizes are **apparent bytes** and the answer says so. A home shares blocks with the base it was copied
+from, so what a removal gives back is not the sum of the file sizes, and no portable call says what it
+is. Nodal prints the figure it has with the reason it is not the other one, and never relabels a
+logical size as a physical one.
+
+**The runtime is split the way the reclaim splits it.** The recorded process groups, the processes
+carrying the unit's identifier and the labelled containers are what a reclaim would stop; a process
+matched by working directory alone is named, never signalled, and is what would make the reclaim
+refuse to move the home. Whether a recorded group is still running is not asked, because the portable
+way to ask is to signal it. A signal that could not be read is a note and never a zero. A bystander
+blocks only a home that would move: a checkout adopted in place is left where it is, so nothing is
+moved out from under anybody.
 
 A reclaim stops what the unit runs. It sends three signals in order, with a grace period between
 each pair: `SIGINT`, then `SIGTERM`, then `SIGKILL`. A process that stops on one signal never gets

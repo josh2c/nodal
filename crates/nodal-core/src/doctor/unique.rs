@@ -73,6 +73,16 @@ pub struct Evidence {
     pub head: Option<Oid>,
     /// Every ref tip. Each one is a commit this object store holds.
     pub tips: Vec<Oid>,
+    /// The tips of the refs this clone holds of its own accord: a branch, a tag, a stash.
+    ///
+    /// A subset of [`Evidence::tips`], with everything under `refs/remotes/` left out,
+    /// because a remote-tracking ref is a reading of somewhere else rather than something
+    /// this clone has to say.
+    ///
+    /// It is split off where the names are. One `git for-each-ref` fills both, and a
+    /// caller given `tips` alone has the commits with the names already dropped — so it
+    /// ran `for-each-ref` again to read back what the first answer held.
+    pub own: Vec<Oid>,
     /// The remote-tracking refs, which say what this clone last saw of a remote.
     pub remotes: Vec<RemoteTip>,
     /// When this clone last heard from a remote, `None` when that cannot be read.
@@ -419,6 +429,7 @@ mod tests {
         Evidence {
             head: Some(oid(seed)),
             tips: vec![oid(seed)],
+            own: vec![oid(seed)],
             remotes: vec![RemoteTip { branch: branch.to_owned(), oid: oid(seed) }],
             heard: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)),
             complete: true,

@@ -92,12 +92,13 @@
 //!
 //! Nothing here writes, and nothing here reaches a network.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::doctor::unique::{Evidence, RemoteTip, Subject, believed};
+use crate::doctor::unique::{Evidence, RemoteTip, Subject, Trusted, believed};
 use crate::doctor::{inspect, origin};
-use crate::git::{Git, Oid};
+use crate::git::{Git, Oid, union};
 
 /// The remote a home's uniqueness question is about.
 ///
@@ -109,14 +110,39 @@ const ORIGIN: &str = "origin";
 const HEADS: &str = "refs/heads/";
 
 /// What this machine can prove already exists outside one home.
+///
+/// Three lists, because "somewhere else" is three different answers and a person deciding
+/// whether to remove a home wants to know which one they have.
+///
+/// [`Elsewhere::own`] is the denominator of every question below it. The commits a home
+/// has that the checkout's own branches already reach are the project's history rather
+/// than this unit's work, and a report that grouped ninety thousand of them would bury
+/// the three that matter.
+///
+/// The other two both make a removal safe and they are not the same promise.
+/// [`Elsewhere::remote`] survives losing this laptop and stops surviving if somebody
+/// deletes the branch; [`Elsewhere::copies`] is the other way about. Neither is worth
+/// anything as a name alone, so every tip in all three is looked for in the object store
+/// it was read out of before it counts ([`holds`]).
 #[derive(Debug, Clone, Default)]
 pub struct Elsewhere {
-    /// Commits something outside this home is known to hold: a tip of another tree on
-    /// this machine, or a remote-tracking ref a witness confirmed.
+    /// Commits the checkout reaches from a ref of its own: a branch, a tag, a stash.
     ///
     /// A tip and not a history. Every commit behind a tip is held wherever the tip is,
     /// so one `rev-list` in the home answers for all of them at once.
-    pub tips: Vec<Oid>,
+    pub own: Vec<Oid>,
+    /// Commits the checkout holds under a reading of a remote that nothing vouched for,
+    /// or with no ref on them at all.
+    ///
+    /// Objects on this disk, and no statement about any server. A commit fetched into a
+    /// checkout by identifier is one of these, and a person rescuing work out of a home
+    /// makes exactly one.
+    pub copies: Vec<Oid>,
+    /// Commits a witnessed reading of the remote proves the remote still holds.
+    ///
+    /// Empty where nothing here read the remote, which is not the same as the remote
+    /// holding nothing: [`Elsewhere::witnesses`] is what tells the two apart.
+    pub remote: Vec<Oid>,
     /// The repositories whose reading of the remote was used. Empty means nothing on
     /// this machine read the remote, so nothing about the remote is proved.
     pub witnesses: Vec<PathBuf>,
@@ -129,11 +155,38 @@ pub struct Elsewhere {
     pub direct: bool,
 }
 
+impl Elsewhere {
+    /// Every commit another object store on this machine holds, however it names it.
+    #[must_use]
+    pub fn local(&self) -> Vec<Oid> {
+        union(&self.own, &self.copies)
+    }
+
+    /// Every tip, for the caller that only asks whether a commit is somewhere else at
+    /// all and does not care which evidence says so.
+    #[must_use]
+    pub fn tips(&self) -> Vec<Oid> {
+        union(&self.local(), &self.remote)
+    }
+}
+
 /// Everything this machine can say about where `home`'s commits also live.
 ///
 /// `checkout` is the project's own, when this machine still has one. A checkout that is
 /// not there, or is no longer a repository, is simply not asked: the answer is then the
 /// stricter one, which is the safe direction to be wrong in.
+///
+/// One reading of the checkout's object store covers all three lists, and one reading of
+/// its refs covers the split between them. The split is made from the names, and the
+/// names arrive with the evidence ([`Evidence::own`]) rather than being read again: the
+/// `for-each-ref` that listed the tips already knew which of them were a reading of
+/// somewhere else, and asking the same repository twice would cost a process to learn
+/// what the first answer held.
+///
+/// The split is by **ref** and never by commit, and that matters where it looks like it
+/// would not: a checkout whose `main` and whose `origin/main` stand at one commit is the
+/// ordinary case, and reading that commit as the remote's would take the whole of the
+/// project's history out of the denominator and report it back as this unit's work.
 #[must_use]
 pub fn elsewhere(home: &Path, checkout: Option<&Path>) -> Elsewhere {
     let Some(path) = checkout else {
@@ -143,24 +196,31 @@ pub fn elsewhere(home: &Path, checkout: Option<&Path>) -> Elsewhere {
     if evidence.unreadable.is_some() || evidence.shallow {
         return Elsewhere::default();
     }
-    // Every tip of the checkout, whatever it is a checkout of. A commit two trees both
-    // hold survives the removal of either one, and that is true of a checkout that may
-    // not answer for the remote at all.
-    let mut tips = evidence.tips.clone();
     let relation = relation(home, path);
-    let Some(witness) = witness(home, path, relation, evidence) else {
-        return Elsewhere { tips: holds(path, &tips), ..Elsewhere::default() };
-    };
-    let subject = Subject { path: home.to_path_buf(), evidence: inspect::evidence(home) };
-    let trusted = believed(&subject, &[&witness]);
-    tips.extend(trusted.tips);
-    tips.sort_unstable();
-    tips.dedup();
+    let trusted = vouched(home, path, relation, evidence.clone());
+    let held = holds(path, &union(&evidence.tips, &trusted.tips));
+    let carried: BTreeSet<&Oid> = held.iter().collect();
+    let own: Vec<Oid> = evidence.own.iter().filter(|oid| carried.contains(oid)).cloned().collect();
+    let remote: Vec<Oid> =
+        trusted.tips.iter().filter(|oid| carried.contains(oid)).cloned().collect();
+    let named: BTreeSet<&Oid> = own.iter().chain(&remote).collect();
+    let copies: Vec<Oid> = held.iter().filter(|oid| !named.contains(oid)).cloned().collect();
     Elsewhere {
-        tips: holds(path, &tips),
+        own,
+        copies,
+        remote,
         witnesses: trusted.witnesses,
         direct: relation == Relation::IsTheRemote,
     }
+}
+
+/// What a witness will vouch for, and nothing at all when there is no witness.
+fn vouched(home: &Path, checkout: &Path, relation: Relation, evidence: Evidence) -> Trusted {
+    let Some(witness) = witness(home, checkout, relation, evidence) else {
+        return Trusted::default();
+    };
+    let subject = Subject { path: home.to_path_buf(), evidence: inspect::evidence(home) };
+    believed(&subject, &[&witness])
 }
 
 /// The checkout as a witness for this home's `origin`, in whichever relation it has to it.
@@ -230,7 +290,24 @@ fn holds(repo: &Path, tips: &[Oid]) -> Vec<Oid> {
 /// An unknown date on either side, and an equal one, witness nothing. A comparison that
 /// cannot be made is not a comparison that passed.
 fn later(checkout: &Evidence, home: &Path) -> bool {
-    match (checkout.heard, wrote_origin(home)) {
+    read_since(home, checkout.heard)
+}
+
+/// Whether a repository that last heard from the remote at `heard` heard from it after
+/// `home` last wrote its own record of that remote.
+///
+/// The half of the witness rule that costs no process at all: both sides are read with
+/// `stat`. It is not the whole rule — [`witness`] also requires that the checkout fetch
+/// every branch, which is a reading of its configuration — so a caller that uses this on
+/// its own gets the cheap necessary condition and not the proof. `nodal ls` is that
+/// caller: it flags a unit whose remote evidence *cannot* be current, for a per-row cost
+/// of two `stat` calls, and leaves the proof to `nodal reclaim --check`.
+///
+/// An unknown date on either side, and an equal one, witness nothing. A comparison that
+/// cannot be made is not a comparison that passed.
+#[must_use]
+pub fn read_since(home: &Path, heard: Option<SystemTime>) -> bool {
+    match (heard, wrote_origin(home)) {
         (Some(read), Some(written)) => read > written,
         _ => false,
     }
@@ -334,7 +411,7 @@ mod tests {
     fn a_home_with_no_checkout_to_ask_believes_nothing() {
         let directory = tempfile::tempdir().unwrap();
         let read = elsewhere(directory.path(), None);
-        assert!(read.tips.is_empty(), "{read:?}");
+        assert!(read.tips().is_empty(), "{read:?}");
         assert!(read.witnesses.is_empty(), "{read:?}");
     }
 }

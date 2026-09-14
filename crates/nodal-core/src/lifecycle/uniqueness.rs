@@ -59,15 +59,14 @@
 //! The check reads and never writes. What is done about a finding — refuse, or take a
 //! snapshot and go on — belongs to the operation.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
-use crate::git::status::{Entry, State, Summary};
-use crate::git::{Git, Oid};
-use crate::lifecycle::witness::{self, Elsewhere};
+use crate::git::Oid;
+use crate::lifecycle::assess;
+use crate::lifecycle::witness::Elsewhere;
 
 /// How many paths or commits one finding names before it says how many more there are.
 ///
@@ -154,7 +153,12 @@ impl Witness {
     /// Nothing for a project with no remote: there is nowhere to push, and the label
     /// says the whole of it. The other two are the two ways a remote goes unproved, and
     /// a person deciding what to do next needs to know which one they have.
-    fn because(&self) -> String {
+    ///
+    /// Public because the preflight prints the same clause over the same commits
+    /// ([`crate::output::view::check`]). A person who reads one and then the other must
+    /// not be given two accounts of one reading.
+    #[must_use]
+    pub fn because(&self) -> String {
         match self {
             Self::NoRemote | Self::Direct { .. } => String::new(),
             Self::Checked { by } => format!(
@@ -165,8 +169,23 @@ impl Witness {
         }
     }
 
+    /// Whether this reading settled the remote question, rather than leaving it open.
+    ///
+    /// Settled means there is no remote to ask, or the remote is on this disk and was
+    /// read. Anything else is a reading of a copy, and a copy can only say what it last
+    /// saw, so what it does not reach is unproved rather than absent.
+    #[must_use]
+    pub const fn settled(&self) -> bool {
+        matches!(self, Self::NoRemote | Self::Direct { .. })
+    }
+
     /// Which case this is, for a home with these remotes and this reading of them.
-    fn of(remotes: &[String], found: &Elsewhere) -> Self {
+    ///
+    /// Public because the assessment that produces every finding is the caller
+    /// ([`crate::lifecycle::assess`]), and there must not be a second rule for which of
+    /// the four a run has earned.
+    #[must_use]
+    pub fn of(remotes: &[String], found: &Elsewhere) -> Self {
         if remotes.is_empty() {
             return Self::NoRemote;
         }
@@ -262,124 +281,18 @@ impl Uniqueness {
 /// is not there, or is no longer a repository, simply is not asked: the answer is then
 /// the stricter one, which is the safe direction to be wrong in.
 ///
+/// This is a projection of [`crate::lifecycle::assess`], which is the one reading, and
+/// it asks for the part a refusal rests on and nothing else. The read-only preflight
+/// asks the same function for the whole of it and prints what this throws away, so a
+/// `nodal reclaim --check` that says safe and a `nodal reclaim` that refuses cannot both
+/// happen: there is one evaluator under both.
+///
 /// # Errors
 /// [`crate::Error::Git`] when the status or the revision could not be read, and
 /// [`crate::Error::NotARepository`] when `home` is not one.
 pub fn check(home: &Path, elsewhere: Option<&Path>) -> Result<Uniqueness> {
-    let git = Git::open(home)?;
-    let status = git.status()?;
-    let mut findings = Vec::new();
-    findings.extend(uncommitted(&status));
-    findings.extend(untracked(&status));
-    findings.extend(unpushed(&git, home, elsewhere)?);
-    Ok(Uniqueness { home: home.to_path_buf(), findings })
-}
-
-/// The tracked paths that carry work a commit would capture.
-fn uncommitted(status: &Summary) -> Option<Finding> {
-    let paths =
-        paths_where(status, |entry| matches!(entry.state, State::Tracked { .. } | State::Unmerged));
-    finding(paths, |count, sample| Finding::Uncommitted { count, sample })
-}
-
-/// The paths Git does not track and no ignore rule covers.
-fn untracked(status: &Summary) -> Option<Finding> {
-    let paths = paths_where(status, |entry| entry.state == State::Untracked);
-    finding(paths, |count, sample| Finding::Untracked { count, sample })
-}
-
-/// The paths of the entries a rule selects, in the order Git listed them, leaving out
-/// the files Nodal wrote itself.
-fn paths_where(status: &Summary, wanted: impl Fn(&Entry) -> bool) -> Vec<PathBuf> {
-    status
-        .entries
-        .iter()
-        .filter(|entry| wanted(entry) && !is_nodals_own(entry))
-        .map(|entry| entry.path.clone())
-        .collect()
-}
-
-/// Whether an entry is a file Nodal wrote into the home rather than work a person did.
-///
-/// Two halves, and the second is what keeps this from ever hiding somebody's work.
-///
-/// The name has to be one Nodal owns ([`crate::env::files::is_own`]). And the entry has
-/// to be **untracked**, because every file Nodal writes into a home is untracked there:
-/// it is written after the clone and it is hidden from `git status` through the home's
-/// `.git/info/exclude`. A path of that name which Git tracks is the project's own file,
-/// carried by the clone, and a change to it is a change somebody made. That is the
-/// same rule the table states, read from the other side.
-///
-/// That distinction is the whole of the difference between the two settings files. A
-/// project that commits `.claude/settings.json` gets a home whose copy is tracked and
-/// which the adapter never writes to; a project that does not gets one Nodal wrote
-/// ([`crate::adapters::claude_code`]).
-fn is_nodals_own(entry: &Entry) -> bool {
-    entry.state == State::Untracked && crate::env::files::is_own(&entry.path)
-}
-
-/// A finding over a list of paths, or nothing when the list is empty.
-fn finding(paths: Vec<PathBuf>, build: impl Fn(usize, Vec<PathBuf>) -> Finding) -> Option<Finding> {
-    if paths.is_empty() {
-        return None;
-    }
-    let count = paths.len();
-    Some(build(count, paths.into_iter().take(SAMPLE).collect()))
-}
-
-/// The commits of this home that nothing on this machine proves exist anywhere else.
-///
-/// Two `rev-list` runs at worst, and a commit has to survive both to be a finding.
-///
-/// The first walks `HEAD` and takes out everything a tip outside this home reaches:
-/// the checkout's own refs, and the remote-tracking refs a witness vouched for
-/// ([`super::witness`]). Tips and not histories, so one process answers for the whole
-/// history at once. With no witness the list holds no remote-tracking ref at all, which
-/// is the conservative direction and is the whole change: a home with a stale ref and
-/// nothing to check it now refuses instead of calling its only copy of a commit safe.
-///
-/// The second is [`unheld`], and it is asked only of what is left. A commit fetched into
-/// the checkout by identifier is a second copy that no tip names, and a person rescuing
-/// work out of a home makes exactly one of those.
-fn unpushed(git: &Git, home: &Path, checkout: Option<&Path>) -> Result<Option<Finding>> {
-    let remotes = git.remotes()?;
-    let found = witness::elsewhere(home, checkout);
-    let outside = git.commits_outside("HEAD", &found.tips)?;
-    if outside.is_empty() {
-        return Ok(None);
-    }
-    let only_here = unheld(checkout, outside);
-    if only_here.is_empty() {
-        return Ok(None);
-    }
-    let count = only_here.len();
-    Ok(Some(Finding::Unpushed {
-        count,
-        sample: only_here.into_iter().take(SAMPLE).collect(),
-        witness: Witness::of(&remotes, &found),
-        remotes,
-    }))
-}
-
-/// The commits of `outside` that the project's checkout does not have either.
-///
-/// One process for all of them, and it is asked after the tips because it answers a
-/// narrower question that the tips usually settle first. A commit fetched into a
-/// repository by identifier sits in its object store with no ref on it, and a person
-/// rescuing work out of a home does exactly that. It is a second copy, and no list of
-/// tips names it.
-///
-/// A checkout that cannot be read, or that will not answer, holds nothing as far as
-/// this is concerned, which is the strict direction.
-fn unheld(checkout: Option<&Path>, outside: Vec<Oid>) -> Vec<Oid> {
-    let Some(git) = checkout.and_then(|path| Git::open(path).ok()) else {
-        return outside;
-    };
-    let Ok(held) = git.held(&outside) else {
-        return outside;
-    };
-    let held: BTreeSet<Oid> = held.into_iter().collect();
-    outside.into_iter().filter(|oid| !held.contains(oid)).collect()
+    let assessed = assess::assess(&assess::Input::refusal(home, elsewhere))?;
+    Ok(Uniqueness { home: home.to_path_buf(), findings: assessed.findings() })
 }
 
 /// Join what a finding lists, in the one form every message here uses.
@@ -395,47 +308,11 @@ mod tests {
 
     use super::{Finding, SAMPLE, Uniqueness, Witness};
     use crate::git::Oid;
-    use crate::git::status::{Change, Entry, State, Submodule};
 
     fn sample(count: usize) -> Finding {
         Finding::Untracked {
             count,
             sample: (0..count.min(SAMPLE)).map(|n| PathBuf::from(format!("f{n}"))).collect(),
-        }
-    }
-
-    #[test]
-    fn the_files_nodal_writes_into_a_home_are_not_a_persons_work() {
-        for own in
-            [".nodal/id", ".nodal/env", ".nodal/manifest.toml", ".envrc", ".claude/settings.json"]
-        {
-            assert!(super::is_nodals_own(&untracked(own)), "{own}");
-        }
-        assert!(!super::is_nodals_own(&untracked("app/main.txt")));
-        assert!(!super::is_nodals_own(&untracked(".nodal-notes")));
-    }
-
-    /// The one case where the name is Nodal's and the file is not: a project that
-    /// commits its own settings gets a home whose copy Git tracks, and an edit to it is
-    /// work nowhere else has.
-    #[test]
-    fn a_settings_file_the_project_commits_is_the_projects_and_not_nodals() {
-        let tracked = Entry {
-            path: PathBuf::from(".claude/settings.json"),
-            state: State::Tracked { index: Change::Unmodified, worktree: Change::Modified },
-            origin: None,
-            submodule: Submodule::No,
-        };
-        assert!(!super::is_nodals_own(&tracked));
-    }
-
-    /// An entry as `git status` reports an untracked path.
-    fn untracked(path: &str) -> Entry {
-        Entry {
-            path: PathBuf::from(path),
-            state: State::Untracked,
-            origin: None,
-            submodule: Submodule::No,
         }
     }
 
