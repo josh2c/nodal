@@ -138,9 +138,10 @@ pub struct Attribution<'a> {
 
 /// One home, and how much of it to read.
 ///
-/// The two switches are not a preference. Each reading past the refusal costs processes
+/// The three switches are not a preference. Each reading past the refusal costs processes
 /// — a listing of every ignored path, a walk of each one for its size, a scan of the
-/// process table — and a reclaim must not pay for an answer it does not act on.
+/// process table, two more `rev-list` runs — and a reclaim must not pay for an answer it
+/// does not act on.
 #[derive(Debug, Clone, Copy)]
 pub struct Input<'a> {
     /// The home to read.
@@ -150,6 +151,20 @@ pub struct Input<'a> {
     pub checkout: Option<&'a Path>,
     /// Whether to classify the ignored state the home holds.
     pub state: bool,
+    /// Whether to say where else each commit lives, rather than only which commits
+    /// nothing proved live anywhere else.
+    ///
+    /// The whole difference is two `rev-list` runs. A refusal rests on
+    /// [`Copies::OnlyHere`] and [`Copies::NotChecked`], and one reading answers for both
+    /// of those at once; the groups that say a commit is proved on the remote or held a
+    /// second time on this disk cost a reading each and are what a person reads rather
+    /// than what an operation acts on. So `nodal reclaim --check` asks for them and a
+    /// reclaim does not.
+    ///
+    /// It changes what is reported and never what is decided. Every group it adds is one
+    /// [`Copies::survives`] is true of, which neither [`Assessment::findings`] nor
+    /// [`reasons`] reads, so the verdict is the same verdict either way.
+    pub dispositions: bool,
     /// The unit whose runtime to attribute, or nothing to leave it unread.
     pub runtime: Option<Attribution<'a>>,
 }
@@ -162,7 +177,7 @@ impl<'a> Input<'a> {
     /// is the same refusal for a home Nodal made and for a checkout adopted in place.
     #[must_use]
     pub const fn refusal(home: &'a Path, checkout: Option<&'a Path>) -> Self {
-        Self { home, checkout, state: false, runtime: None }
+        Self { home, checkout, state: false, dispositions: false, runtime: None }
     }
 }
 
@@ -632,8 +647,10 @@ impl Assessment {
 
 /// Read `home`, and report everything a reclaim of it would have an opinion about.
 ///
-/// One `git status`, at most three `rev-list` runs, and whatever [`Input`] asked for
-/// beyond them. Nothing is written, nothing is signalled, and no remote is reached.
+/// One `git status`, one `rev-list` for the refusal, and whatever [`Input`] asked for
+/// beyond them — two more `rev-list` runs for the dispositions, a listing and a walk for
+/// the ignored state, a scan for the runtime. Nothing is written, nothing is signalled,
+/// and no remote is reached.
 ///
 /// # Errors
 /// [`crate::Error::Git`] when the status or a revision could not be read, and
@@ -646,7 +663,7 @@ pub fn assess(input: &Input<'_>) -> Result<Assessment> {
     if input.state {
         paths.extend(ignored(input.home, &mut notes));
     }
-    let (commits, remotes) = history(&git, input.home, input.checkout)?;
+    let (commits, remotes) = history(&git, input)?;
     let mut assessment = Assessment {
         home: input.home.to_path_buf(),
         moves: input.runtime.is_some_and(|asked| asked.moves),
@@ -750,7 +767,9 @@ fn measured(held: Held, candidates: Vec<prune::Candidate>) -> Option<PathGroup> 
 
 /// The home's own commits, grouped by where else they live, and the remotes it names.
 ///
-/// Three `rev-list` runs at worst, and each answers for the whole history at once.
+/// Three `rev-list` runs at worst, and each answers for the whole history at once. One
+/// of the three is the refusal and the other two are the dispositions, so a caller that
+/// did not ask for those takes the shorter path through [`refusing`] and pays for one.
 ///
 /// The first fixes the denominator: the commits reachable from `HEAD` that the project's
 /// own checkout does not reach from a branch, a tag or a stash of its own
@@ -767,13 +786,13 @@ fn measured(held: Held, candidates: Vec<prune::Candidate>) -> Option<PathGroup> 
 ///
 /// What survives all three is a commit this machine cannot find a second copy of, and how
 /// it is reported turns on whether the remote question was ever asked ([`unreached`]).
-fn history(
-    git: &Git,
-    home: &Path,
-    checkout: Option<&Path>,
-) -> Result<(Vec<CommitGroup>, Vec<String>)> {
+fn history(git: &Git, input: &Input<'_>) -> Result<(Vec<CommitGroup>, Vec<String>)> {
     let remotes = git.remotes()?;
-    let found = witness::elsewhere(home, checkout);
+    let found = witness::elsewhere(input.home, input.checkout);
+    if !input.dispositions {
+        let refused = refusing(git, input.checkout, &found, &remotes)?;
+        return Ok((refused, remotes));
+    }
     let ours = git.commits_outside("HEAD", &found.own)?;
     if ours.is_empty() {
         return Ok((Vec::new(), remotes));
@@ -783,12 +802,39 @@ fn history(
     let unproved = git.commits_outside("HEAD", &found.tips())?;
     let proved = difference(&ours, &off_remote);
     let second = difference(&off_remote, &unproved);
-    let (fetched, only) = local_copies(checkout, unproved);
+    let (fetched, only) = local_copies(input.checkout, unproved);
     let mut groups = Vec::new();
     groups.extend(commit_group(Copies::RemoteProved { witness: witness.clone() }, proved));
-    groups.extend(second_group(checkout, union(&second, &fetched)));
+    groups.extend(second_group(input.checkout, union(&second, &fetched)));
     groups.extend(commit_group(unreached(&witness), only));
     Ok((groups, remotes))
+}
+
+/// The one group a destructive path acts on: the commits nothing here proved survive.
+///
+/// One `rev-list` and not three. A refusal is raised over [`Copies::OnlyHere`] and
+/// [`Copies::NotChecked`] and over nothing else, and both are drawn from one reading —
+/// the commits of `HEAD` that no tip this machine found reaches. The other two groups say
+/// *where else* a commit lives, which is the question a person asks and not one an
+/// operation acts on: each costs a reading, and [`Input::dispositions`] is the caller
+/// saying whether it wants them.
+///
+/// The split [`local_copies`] makes is still made, because a commit the checkout's object
+/// store holds survives the removal and must not be refused over. What it takes out is
+/// dropped rather than reported, which is the whole of what this path gives up.
+fn refusing(
+    git: &Git,
+    checkout: Option<&Path>,
+    found: &witness::Elsewhere,
+    remotes: &[String],
+) -> Result<Vec<CommitGroup>> {
+    let unproved = git.commits_outside("HEAD", &found.tips())?;
+    if unproved.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (_, only) = local_copies(checkout, unproved);
+    let witness = Witness::of(remotes, found);
+    Ok(commit_group(unreached(&witness), only).into_iter().collect())
 }
 
 /// How the commits nothing proved are reported: as only here, or as not checked.

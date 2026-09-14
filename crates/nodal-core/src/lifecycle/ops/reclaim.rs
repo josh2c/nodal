@@ -277,6 +277,9 @@ fn read(
         home,
         checkout: Some(&project.root),
         state: true,
+        // The preflight is what a person reads, so it pays for the two readings that say
+        // where else each commit lives. The reclaim itself acts on the refusal alone.
+        dispositions: true,
         // A checkout adopted in place is unregistered and left exactly where it is, so
         // nothing is moved out from under anybody standing in it.
         runtime: Some(assess::Attribution { unit: id, groups, moves: environment.managed }),
