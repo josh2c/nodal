@@ -12,10 +12,12 @@
 //! else couples them, so adding a stack means adding a file and a row.
 
 pub mod backend;
+pub mod cargo;
 pub mod env_names;
 pub mod layout;
 pub mod migrations;
 pub mod package_manager;
+pub mod python;
 pub mod scripts;
 pub mod services;
 pub mod source;
@@ -92,6 +94,8 @@ const SOURCES: &[Source] = &[
     ("package manager", package_manager::infer),
     ("toolchain", toolchain::infer),
     ("scripts", scripts::infer),
+    ("cargo", cargo::infer),
+    ("python", python::infer),
     ("layout", layout::infer),
     ("migrations", migrations::infer),
     ("services", services::infer),

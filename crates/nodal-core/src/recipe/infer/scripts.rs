@@ -10,7 +10,10 @@ use crate::recipe::infer::package_manager::run_script;
 use crate::recipe::infer::{Confidence, Project, Proposal};
 
 /// Where one inferred command line is written on the recipe.
-type SetCommand = fn(&mut Recipe, CommandLine);
+///
+/// Shared with the sources for the other ecosystems ([`super::cargo`], [`super::python`]),
+/// so that "which field does this command name fill" is one answer wherever it is asked.
+pub type SetCommand = fn(&mut Recipe, CommandLine);
 
 /// Script names that map straight onto a recipe command, and the field each fills.
 const SCRIPTS: &[(&str, SetCommand)] = &[

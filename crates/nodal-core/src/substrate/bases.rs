@@ -94,12 +94,12 @@ pub fn ensure(
         progress.line(&format!("base {id} is warm for this workspace", id = base.id));
         return Ok(Outcome { base, fingerprint, origin: None });
     }
-    let install = pin::install(&request.recipe, &ThisHost)?;
+    let installs = pin::installs(&request.recipe, &ThisHost)?;
     let key = Key { fingerprint, platform, commit };
     if let Some(outcome) = carried_on(store, &key, progress)? {
         return Ok(outcome);
     }
-    build_one(store, request, &key, &install, progress)
+    build_one(store, request, &key, &installs, progress)
 }
 
 /// Offer the person what a failed attempt at this base left, and use it if they agree.
@@ -238,7 +238,7 @@ fn build_one(
     store: &mut Store,
     request: &Request,
     key: &Key,
-    install: &pin::Install,
+    installs: &[pin::Install],
     progress: &Arc<dyn Reporter>,
 ) -> Result<Outcome> {
     let id = BaseId::from_ulid(ulid::Ulid::new());
@@ -254,8 +254,7 @@ fn build_one(
         origin: origin.clone(),
         objects: request.source.clone(),
         excludes: request.recipe.base.exclude.clone(),
-        install: install.argv.clone(),
-        install_env: install.env.clone(),
+        installs: installs.to_vec(),
         warm: build::warm_argv(&request.recipe, request.warm),
         planned_at: Timestamp::now(),
     };

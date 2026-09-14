@@ -179,7 +179,7 @@ fn lock() -> Lock {
 fn recipe() -> Recipe {
     let mut recipe = Recipe {
         backend: Some(Backend::Native),
-        package_manager: Some(PackageManager::Pnpm),
+        package_manager: vec![PackageManager::Pnpm],
         package_manager_pin: Some(ToolVersion::parse("pnpm@9.12.3").unwrap()),
         monorepo: Some(true),
         task_cache: Some(TaskCache::Turborepo),

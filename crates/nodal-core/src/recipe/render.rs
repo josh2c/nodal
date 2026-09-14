@@ -43,8 +43,12 @@ pub fn render(recipe: &Recipe, gaps: &[Gap]) -> String {
 fn top_level(out: &mut String, recipe: &Recipe) {
     out.push('\n');
     key_enum(out, "backend", &recipe.backend());
-    if let Some(manager) = recipe.package_manager {
-        key_enum(out, "package_manager", &manager);
+    if !recipe.package_manager.is_empty() {
+        key_strings(
+            out,
+            "package_manager",
+            recipe.package_manager.iter().filter_map(token::<crate::model::recipe::PackageManager>),
+        );
     }
     if let Some(pin) = &recipe.package_manager_pin {
         key_string(out, "package_manager_pin", pin.as_str());

@@ -74,7 +74,7 @@ fn the_fixture_infers_the_shape_of_the_repository() {
     let recipe = effective.recipe;
 
     assert_eq!(recipe.backend(), Backend::Native);
-    assert_eq!(recipe.package_manager, Some(PackageManager::Pnpm));
+    assert_eq!(recipe.package_manager, [PackageManager::Pnpm]);
     assert_eq!(
         recipe.package_manager_pin.as_ref().map(ToString::to_string).as_deref(),
         Some("pnpm@9.12.3")
@@ -393,7 +393,11 @@ fn either_spelling_of_the_rust_toolchain_file_is_read_in_either_form() {
         assert_eq!(pins(&root).get("rust").map(String::as_str), Some("1.88.0"), "{file} as a line");
 
         let (_table, root) = project_of(file, "[toolchain]\nchannel = \"1.88.0\"\n");
-        assert_eq!(pins(&root).get("rust").map(String::as_str), Some("1.88.0"), "{file} as a table");
+        assert_eq!(
+            pins(&root).get("rust").map(String::as_str),
+            Some("1.88.0"),
+            "{file} as a table"
+        );
     }
 }
 
@@ -404,4 +408,136 @@ fn a_rust_toolchain_table_without_a_channel_pins_nothing() {
     let (_directory, root) =
         project_of("rust-toolchain.toml", "[toolchain]\ncomponents = [\"clippy\"]\n");
     assert_eq!(pins(&root).get("rust"), None);
+}
+
+/// Infer over the polyglot fixture: a Rust binary, a Node CLI and a Python tool.
+fn polyglot() -> (tempfile::TempDir, Effective) {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = nodal_fixture::polyglot::write(directory.path());
+    let effective = recipe::load(&root).expect("a readable project");
+    (directory, effective)
+}
+
+/// A repository of three ecosystems installs with three managers.
+///
+/// Reading the first lockfile only is what left the Rust and Python halves of such a
+/// project cold: the base installed the Node dependencies and nothing else.
+#[test]
+fn a_polyglot_project_names_every_manager_it_carries() {
+    let (_directory, effective) = polyglot();
+    assert_eq!(
+        effective.recipe.package_manager,
+        [PackageManager::Pnpm, PackageManager::Cargo, PackageManager::Uv]
+    );
+    assert_eq!(effective.recipe.package_manager(), Some(PackageManager::Pnpm));
+}
+
+/// Two lockfiles of one ecosystem are a repository mid-way through changing manager.
+/// Installing with both would write two dependency trees over each other.
+#[test]
+fn only_one_manager_of_an_ecosystem_is_proposed() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = nodal_fixture::polyglot::write(directory.path());
+    std::fs::write(root.join("package-lock.json"), "{}\n").expect("a second node lockfile");
+
+    let effective = recipe::load(&root).expect("a readable project");
+    assert_eq!(
+        effective.recipe.package_manager,
+        [PackageManager::Pnpm, PackageManager::Cargo, PackageManager::Uv],
+        "npm was proposed beside pnpm"
+    );
+}
+
+/// Every half of a polyglot project states its own toolchain, in its own file.
+#[test]
+fn a_polyglot_project_states_a_toolchain_for_every_half() {
+    let (_directory, effective) = polyglot();
+    let pinned: BTreeMap<String, String> =
+        effective.recipe.toolchain.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    for (key, version) in [
+        ("engines.node", "22.11.0"),
+        ("cargo.rust", "1.88"),
+        ("rust", "1.88.0"),
+        ("pyproject.python", ">=3.12"),
+        ("gomod.go", "1.23.4"),
+    ] {
+        assert_eq!(pinned.get(key).map(String::as_str), Some(version), "{key}");
+    }
+}
+
+/// The commands come from whichever half states them, and the Node half owns the names
+/// its own script table declares.
+#[test]
+fn a_polyglot_project_takes_each_command_from_the_half_that_states_it() {
+    let (_directory, effective) = polyglot();
+    let commands = &effective.recipe.commands;
+    let line = |value: &Option<nodal_core::model::recipe::CommandLine>| {
+        value.as_ref().map(ToString::to_string)
+    };
+    assert_eq!(line(&commands.dev).as_deref(), Some("pnpm run dev"), "the Node half declares dev");
+    assert_eq!(line(&commands.lint).as_deref(), Some("pnpm run lint"), "and lint");
+    assert_eq!(
+        line(&commands.build).as_deref(),
+        Some("cargo build"),
+        "no script declares build, so the Rust half fills it"
+    );
+    assert_eq!(line(&commands.test).as_deref(), Some("cargo test"), "and test");
+}
+
+/// Python states nothing by convention, so every Python command needs the project to
+/// have named the tool it runs.
+#[test]
+fn a_python_command_is_proposed_only_where_the_project_names_the_tool() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = directory.path();
+    std::fs::write(root.join("uv.lock"), "version = 1\n").expect("a lockfile");
+    std::fs::write(root.join("pyproject.toml"), "[project]\nname = \"t\"\ndependencies = []\n")
+        .expect("a manifest");
+    let bare = recipe::load(root).expect("a readable project");
+    assert_eq!(bare.recipe.commands.test, None, "pytest is not declared");
+    assert_eq!(bare.recipe.commands.lint, None, "no tool section names a linter");
+
+    std::fs::write(
+        root.join("pyproject.toml"),
+        "[project]\nname = \"t\"\ndependencies = [\"pytest>=8\"]\n\n[tool.mypy]\nstrict = true\n",
+    )
+    .expect("a manifest");
+    let named = recipe::load(root).expect("a readable project");
+    assert_eq!(
+        named.recipe.commands.test.as_ref().map(ToString::to_string).as_deref(),
+        Some("uv run pytest")
+    );
+    assert_eq!(
+        named.recipe.commands.typecheck.as_ref().map(ToString::to_string).as_deref(),
+        Some("uv run mypy")
+    );
+    assert_eq!(named.recipe.commands.lint, None, "mypy is not a linter");
+}
+
+/// `cargo clippy` is a component a toolchain may not have, so it is proposed only where
+/// the tree states that this project lints with it.
+#[test]
+fn a_cargo_lint_command_needs_the_project_to_state_clippy() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = directory.path();
+    std::fs::write(root.join("Cargo.lock"), "version = 3\n").expect("a lockfile");
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"c\"\nversion = \"0.1.0\"\n")
+        .expect("a manifest");
+    assert_eq!(recipe::load(root).expect("a project").recipe.commands.lint, None);
+
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"c\"\nversion = \"0.1.0\"\n\n[lints.clippy]\npedantic = \"deny\"\n",
+    )
+    .expect("a manifest");
+    assert_eq!(
+        recipe::load(root)
+            .expect("a project")
+            .recipe
+            .commands
+            .lint
+            .map(|l| l.to_string())
+            .as_deref(),
+        Some("cargo clippy")
+    );
 }
