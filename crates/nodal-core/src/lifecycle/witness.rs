@@ -109,9 +109,6 @@ const ORIGIN: &str = "origin";
 /// Where a repository keeps its own branches.
 const HEADS: &str = "refs/heads/";
 
-/// Where a repository keeps its reading of somewhere else.
-const REMOTES: &str = "refs/remotes/";
-
 /// What this machine can prove already exists outside one home.
 ///
 /// Three lists, because "somewhere else" is three different answers and a person deciding
@@ -179,9 +176,12 @@ impl Elsewhere {
 /// not there, or is no longer a repository, is simply not asked: the answer is then the
 /// stricter one, which is the safe direction to be wrong in.
 ///
-/// One reading of the checkout's object store covers all three lists. The split that
-/// follows is made from the names, because asking the same store three times would cost
-/// two more processes to learn what the first answer already held.
+/// One reading of the checkout's object store covers all three lists, and one reading of
+/// its refs covers the split between them. The split is made from the names, and the
+/// names arrive with the evidence ([`Evidence::own`]) rather than being read again: the
+/// `for-each-ref` that listed the tips already knew which of them were a reading of
+/// somewhere else, and asking the same repository twice would cost a process to learn
+/// what the first answer held.
 ///
 /// The split is by **ref** and never by commit, and that matters where it looks like it
 /// would not: a checkout whose `main` and whose `origin/main` stand at one commit is the
@@ -200,7 +200,7 @@ pub fn elsewhere(home: &Path, checkout: Option<&Path>) -> Elsewhere {
     let trusted = vouched(home, path, relation, evidence.clone());
     let held = holds(path, &union(&evidence.tips, &trusted.tips));
     let carried: BTreeSet<&Oid> = held.iter().collect();
-    let own: Vec<Oid> = mine(path).into_iter().filter(|oid| carried.contains(oid)).collect();
+    let own: Vec<Oid> = evidence.own.iter().filter(|oid| carried.contains(oid)).cloned().collect();
     let remote: Vec<Oid> =
         trusted.tips.iter().filter(|oid| carried.contains(oid)).cloned().collect();
     let named: BTreeSet<&Oid> = own.iter().chain(&remote).collect();
@@ -221,20 +221,6 @@ fn vouched(home: &Path, checkout: &Path, relation: Relation, evidence: Evidence)
     };
     let subject = Subject { path: home.to_path_buf(), evidence: inspect::evidence(home) };
     believed(&subject, &[&witness])
-}
-
-/// The tips of a repository's own refs: its branches, its tags, its stash.
-///
-/// Everything under `refs/remotes/` is left out. Those are a reading of somewhere else,
-/// and the question this answers is what this repository holds of its own accord.
-fn mine(repo: &Path) -> Vec<Oid> {
-    Git::at(repo)
-        .all_refs()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|reference| !reference.name.starts_with(REMOTES))
-        .map(|reference| reference.oid)
-        .collect()
 }
 
 /// The checkout as a witness for this home's `origin`, in whichever relation it has to it.

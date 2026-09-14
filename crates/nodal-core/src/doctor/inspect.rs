@@ -33,6 +33,14 @@ const TOP: usize = 3;
 /// `backup/main` is not a reading of `origin/main` and may not stand in for one.
 const REMOTES: &str = "refs/remotes/origin/";
 
+/// Where a repository keeps its reading of any remote at all.
+///
+/// The wider prefix [`REMOTES`] sits inside, and the two answer different questions. That
+/// one asks what this clone last saw of `origin`. This one asks which refs are a reading
+/// of somewhere else, whoever the somewhere is, so that what is left over is what the
+/// repository holds of its own accord.
+const TRACKING: &str = "refs/remotes/";
+
 /// The ref under `refs/remotes/<remote>/` that names a default branch rather than one.
 const HEAD: &str = "HEAD";
 
@@ -128,12 +136,27 @@ fn evidence_of(git: &Git, path: &Path, branch: Option<&str>) -> Evidence {
     Evidence {
         head,
         remotes: remote_tips(&tips),
+        own: own_tips(&tips),
         tips: tips.into_iter().map(|reference| reference.oid).collect(),
         heard: super::unique::heard(path),
         complete: super::unique::complete(&refspecs),
         shallow: path.join(".git/shallow").exists(),
         unreadable: None,
     }
+}
+
+/// The tips of the refs this repository holds of its own accord: its branches, its tags,
+/// its stash.
+///
+/// Everything under [`TRACKING`] is left out. Those are a reading of somewhere else, and
+/// what this answers is what the repository has to say for itself.
+///
+/// It is taken here rather than asked for later because here is where the names are. The
+/// same `git for-each-ref` that fills `tips` knows which of them are remote-tracking, and
+/// a caller that wanted the split afterwards had a list of commits with the names already
+/// dropped — so it ran `for-each-ref` a second time to read them back.
+fn own_tips(tips: &[crate::git::refs::Ref]) -> Vec<Oid> {
+    tips.iter().filter(|tip| !tip.name.starts_with(TRACKING)).map(|tip| tip.oid.clone()).collect()
 }
 
 /// The commit HEAD names. A branch's tip is already in hand; a detached HEAD is asked.
