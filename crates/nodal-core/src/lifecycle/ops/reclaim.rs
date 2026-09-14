@@ -118,17 +118,17 @@ use crate::git::{Git, refs};
 use crate::lifecycle::hooks::{
     self, Approvals, Context, Ownership, Phase, Ran, Registered, Runner,
 };
+use crate::lifecycle::assess::{Seen, attributed, scan};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::uniqueness::{self, Finding};
-use crate::lifecycle::{Done, Rebuild, guard, marker, run};
+use crate::lifecycle::{Done, Rebuild, marker, run};
 use crate::model::{
     EnvId, EnvState, Environment, EventKind, Project, Recipe, Timestamp, Trashed, Unit, UnitId,
     UnitStatus, expiry,
 };
 use crate::output::view::{Leftover, Pruned, Reclaimed};
 use crate::runtime::attribute::{Note, Source, Standing};
-use crate::runtime::processes;
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
 use crate::services::docker;
 use crate::services::ports::{self, Released};
@@ -150,9 +150,6 @@ const PRUNE: &str = "home.prune";
 
 /// The message a forced reclaim's snapshot commit carries.
 const SNAPSHOT_MESSAGE: &str = "nodal: work in progress at reclaim";
-
-/// The label a unit's containers carry, which is how they are found again.
-const UNIT_LABEL: &str = "nodal.unit";
 
 /// What a person asked `nodal reclaim` for.
 #[derive(Debug, Clone)]
@@ -507,104 +504,6 @@ impl StopRuntime {
         let groups = self.tethers.iter().map(|pgid| Target::Group(*pgid));
         groups.chain(seen.certain.iter().map(|pid| Target::Process(*pid))).collect()
     }
-}
-
-/// What this machine can see of a unit: its processes, its containers, and whatever it
-/// could not look at.
-#[derive(Debug, Clone, Default)]
-struct Seen {
-    /// The processes that carry the unit's identifier. These are the certain level, and
-    /// they are the only processes a teardown signals.
-    certain: Vec<u32>,
-    /// The processes a scan matched by working directory alone. These are the probable
-    /// level, and they are reported and never signalled.
-    standing: Vec<Standing>,
-    /// The containers the unit labelled as its own.
-    containers: Vec<String>,
-    /// The signals that could not be read.
-    notes: Vec<Note>,
-}
-
-/// Read both signals for one unit. Never fails, for the reason an
-/// [`crate::runtime::attribute::Attributor`] never fails: a machine Nodal cannot look
-/// at is still a machine whose home can be reclaimed, and what it could not look at is
-/// a line of the report.
-///
-/// Read directly rather than through `nodal ps`, and that is deliberate. Attribution
-/// answers about the homes the registry calls live, and a reclaim's whole business is
-/// making one of them not live. A verification built on it would go quiet at exactly
-/// the moment it is supposed to speak: after the registry write, `ps` would attribute
-/// nothing to the unit whether or not anything was still running.
-fn attributed(unit: UnitId, homes: &[PathBuf]) -> Seen {
-    let mut seen = Seen::default();
-    match scan(unit, homes) {
-        Ok((certain, standing)) => {
-            seen.certain = certain;
-            seen.standing = standing;
-        }
-        Err(error) => seen.notes.push(Note::new(Source::Environment, error.to_string())),
-    }
-    match docker::survey(&docker::Cli) {
-        Ok(docker::Survey::Ran(containers)) => seen.containers = labelled(containers, unit),
-        Ok(docker::Survey::Unavailable { why }) => {
-            seen.notes.push(Note::new(Source::Docker, why));
-        }
-        Err(error) => seen.notes.push(Note::new(Source::Docker, error.to_string())),
-    }
-    seen
-}
-
-/// The containers among these that carry this unit's label.
-fn labelled(containers: Vec<docker::Container>, unit: UnitId) -> Vec<String> {
-    let id = unit.to_string();
-    containers
-        .into_iter()
-        .filter(|container| container.label(UNIT_LABEL) == Some(&id))
-        .map(|container| container.name)
-        .collect()
-}
-
-/// Read the process table once and sort what it says about this unit into the two
-/// levels attribution has ([`crate::runtime::attribute::Confidence`]).
-///
-/// The first list is certain: each process carries `NODAL_ID`, which Nodal wrote into
-/// the home's environment and nothing else writes. The second is probable: each process
-/// stands in the home and says nothing about which unit it is working on.
-///
-/// `home` is resolved ([`guard::resolve`]), because the working directory the kernel
-/// reports has every symbolic link on the way to it already taken out. A home reached
-/// through a link — macOS reaches everything under `/var` that way, and so does anyone
-/// whose state directory is a link — would otherwise match no process at all, and a
-/// reclaim would quietly stop nothing and then quietly verify nothing.
-///
-/// The two processes a stop spares ([`stop::spared`]) are left out of the probable list
-/// altogether. A person who typed `nodal reclaim` inside the home is standing in it,
-/// and their own command must not be the reason their reclaim refuses.
-///
-/// # Errors
-/// Whatever the process table reported, which on a host that has none is
-/// [`Error::ProcessScanUnsupported`].
-fn scan(unit: UnitId, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)> {
-    let placed: Vec<PathBuf> = homes.iter().map(|home| guard::resolve(home)).collect();
-    let id = unit.to_string();
-    let spared = stop::spared();
-    let mut certain = Vec::new();
-    let mut standing = Vec::new();
-    for process in processes::Processes::scan(&processes::Live)? {
-        if process.var(crate::env::vars::ID) == Some(id.as_str()) {
-            certain.push(process.pid);
-        } else if in_one_of(&process, &placed) && !spared.contains(&process.pid) {
-            standing.push(Standing::new(process.pid, process.command.clone()));
-        }
-    }
-    Ok((certain, standing))
-}
-
-/// Whether a process stands in one of these directories, which is the whole of the
-/// probable signal.
-fn in_one_of(process: &processes::Running, homes: &[PathBuf]) -> bool {
-    let Some(cwd) = process.cwd.as_deref() else { return false };
-    homes.iter().any(|home| cwd.starts_with(home))
 }
 
 /// Move the home into the project's trash directory, unless something Nodal did not
