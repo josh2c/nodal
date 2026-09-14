@@ -164,8 +164,13 @@ impl Preflight {
         } else {
             lines.push(format!(
                 "standing in the home, never signalled: {}{}",
-                named(&runtime.bystanders.iter().map(Standing::label).collect::<Vec<String>>()),
-                if self.assessment.managed {
+                {
+                    let standing: Vec<String> =
+                        runtime.bystanders.iter().map(Standing::label).collect();
+                    let total = standing.len();
+                    named(&standing, total)
+                },
+                if self.assessment.moves {
                     "; a reclaim would refuse to move the home"
                 } else {
                     "; the home is not moved, so it stops nothing"
@@ -192,9 +197,8 @@ fn commit_line(group: &CommitGroup) -> String {
             .iter()
             .map(|oid| oid.as_str().chars().take(8).collect())
             .collect::<Vec<String>>(),
+        group.count,
     );
-    let more = group.count.saturating_sub(group.sample.len());
-    let tail = if more == 0 { String::new() } else { format!(" and {more} more") };
     let means = if group.copies.survives() {
         "removing this home does not lose it"
     } else {
@@ -203,20 +207,18 @@ fn commit_line(group: &CommitGroup) -> String {
     // The same clause a refusal prints, from the same value, so a person who reads the
     // preflight and then the refusal is given one account of one reading.
     let because = group.copies.witness().map(Witness::because).unwrap_or_default();
-    format!("{} ({}): {sample}{tail} — {means}{because}", group.copies.label(), group.count)
+    format!("{} ({}): {sample} — {means}{because}", group.copies.label(), group.count)
 }
 
 /// One path disposition as a line: how many, which, what it holds, and why.
 fn path_line(group: &PathGroup) -> String {
     let names: Vec<String> = group.sample.iter().map(|path| path.display().to_string()).collect();
-    let more = group.count.saturating_sub(group.sample.len());
-    let tail = if more == 0 { String::new() } else { format!(" and {more} more") };
     let weight = group.bytes.as_ref().map_or_else(String::new, weight_of);
     format!(
-        "{} ({}): {}{tail}{weight} — {}",
+        "{} ({}): {}{weight} — {}",
         group.held.label(),
         group.count,
-        named(&names),
+        named(&names, group.count),
         group.held.why()
     )
 }
@@ -260,15 +262,22 @@ fn unread(runtime: &Runtime, signal: Source) -> bool {
     runtime.notes.iter().any(|note| note.signal == signal)
 }
 
-/// The first [`NAMED`] of these, and how many more there are.
-fn named(items: &[String]) -> String {
+/// The first [`NAMED`] of these, and how many of `total` were not named.
+///
+/// `total` is the group's exact count and `items` is the sample the reading kept, which
+/// is already shorter. Both truncations have to be counted once and in one place: a line
+/// that took its tail from the sample and its tail from the count printed each of them,
+/// and told a person there were "4 more and 3 more".
+fn named(items: &[String], total: usize) -> String {
     if items.is_empty() {
         return String::from(NONE);
     }
-    if items.len() <= NAMED {
-        return items.join(", ");
+    let shown = items.len().min(NAMED);
+    let more = total.saturating_sub(shown);
+    if more == 0 {
+        return items[..shown].join(", ");
     }
-    format!("{}, and {} more", items[..NAMED].join(", "), items.len() - NAMED)
+    format!("{}, and {more} more", items[..shown].join(", "))
 }
 
 /// A count with the word that goes with it, so a report never says `1 processes`.
@@ -305,7 +314,7 @@ mod tests {
     fn clear() -> Assessment {
         Assessment {
             home: PathBuf::from("/state/project/e/E1"),
-            managed: true,
+            moves: true,
             ..Assessment::default()
         }
     }
@@ -425,6 +434,24 @@ mod tests {
         assert!(lines.contains("tmux (pid 4711)"), "{lines}");
         assert!(lines.contains("never signalled"), "{lines}");
         assert!(lines.contains("would refuse to move the home"), "{lines}");
+    }
+
+    /// A group says how many it did not name, once. Two truncations meet on this line —
+    /// the sample the reading kept, and the names the line has room for — and a person
+    /// told there are "4 more and 3 more" cannot tell how many there are.
+    #[test]
+    fn a_group_says_how_many_it_did_not_name_exactly_once() {
+        let mut assessment = clear();
+        assessment.paths.push(PathGroup {
+            held: Held::Uncommitted,
+            count: 13,
+            sample: (0..10).map(|n| PathBuf::from(format!("f{n}.rs"))).collect(),
+            bytes: None,
+        });
+        let line = preflight(assessment).doc().lines().join("\n");
+        assert!(line.contains("uncommitted changes (13)"), "{line}");
+        assert_eq!(line.matches("more").count(), 1, "{line}");
+        assert!(line.contains("and 7 more"), "the count is not against the total: {line}");
     }
 
     /// The human form and `--json` are two renderings of one value: the verdict a person

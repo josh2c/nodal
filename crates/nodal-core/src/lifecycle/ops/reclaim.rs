@@ -115,7 +115,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::survey::Bases;
 use crate::git::{Git, refs};
-use crate::lifecycle::assess::{self, Assessment, Seen, attributed, scan};
+use crate::lifecycle::assess::{self, Assessment, Runtime, attributed, scan};
 use crate::lifecycle::hooks::{
     self, Approvals, Context, Ownership, Phase, Ran, Registered, Runner,
 };
@@ -266,7 +266,6 @@ fn read(
     let Some(home) = placed.path() else {
         return Ok(Assessment {
             home: environment.home.clone(),
-            managed: environment.managed,
             notes: vec![format!(
                 "{} is not there, so there is nothing in it to lose",
                 environment.home.display()
@@ -277,9 +276,10 @@ fn read(
     assess::assess(&assess::Input {
         home,
         checkout: Some(&project.root),
-        managed: environment.managed,
         state: true,
-        runtime: Some(assess::Attribution { unit: id, groups }),
+        // A checkout adopted in place is unregistered and left exactly where it is, so
+        // nothing is moved out from under anybody standing in it.
+        runtime: Some(assess::Attribution { unit: id, groups, moves: environment.managed }),
     })
 }
 
@@ -569,13 +569,13 @@ impl StopRuntime {
     /// scan named is usually gone before its turn comes, and the stop reports what it
     /// actually did rather than counting the same server twice.
     ///
-    /// Nothing at the probable level is here. [`Seen::standing`] holds the processes a
+    /// Nothing at the probable level is here. [`Runtime::bystanders`] holds the processes a
     /// scan matched by working directory alone, and this step never signals one: the
     /// same match is made by a tmux pane, an editor server over SSH and a teammate's
     /// shell, and none of the three is the unit's to stop.
-    fn targets(&self, seen: &Seen) -> Vec<Target> {
+    fn targets(&self, seen: &Runtime) -> Vec<Target> {
         let groups = self.tethers.iter().map(|pgid| Target::Group(*pgid));
-        groups.chain(seen.certain.iter().map(|pid| Target::Process(*pid))).collect()
+        groups.chain(seen.processes.iter().map(|pid| Target::Process(*pid))).collect()
     }
 }
 
@@ -997,10 +997,10 @@ fn running(params: &Params, leftovers: &mut Vec<Leftover>) -> Vec<Note> {
     }
     let seen = attributed(params.unit.id, &watched(params));
     let spared = stop::spared();
-    for pid in seen.certain.iter().filter(|pid| !spared.contains(pid)) {
+    for pid in seen.processes.iter().filter(|pid| !spared.contains(pid)) {
         leftovers.push(Leftover::new("process", pid.to_string()));
     }
-    for process in &seen.standing {
+    for process in &seen.bystanders {
         leftovers.push(Leftover::new("standing", process.describe()));
     }
     for name in seen.containers {

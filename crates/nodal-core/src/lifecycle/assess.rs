@@ -92,7 +92,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Result;
 use crate::git::status::{Entry, State, Summary};
-use crate::git::{Git, Oid};
+use crate::git::{Git, Oid, union};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
 use crate::lifecycle::{guard, witness};
 use crate::model::{Needs, UnitId};
@@ -126,6 +126,14 @@ pub struct Attribution<'a> {
     /// The process groups the registry recorded for it: a tether, or a group a recipe
     /// hook left behind.
     pub groups: &'a [u32],
+    /// Whether a reclaim would move this home, which is the whole of what decides
+    /// whether a bystander blocks.
+    ///
+    /// It lives here rather than on [`Input`] because it is only ever consulted about a
+    /// reading of the runtime. A caller that does not ask for the runtime is not asking
+    /// a question this could answer, and a field it had to fill in anyway would be a
+    /// value nothing reads — which is how a hardcoded one gets in.
+    pub moves: bool,
 }
 
 /// One home, and how much of it to read.
@@ -140,10 +148,6 @@ pub struct Input<'a> {
     /// The project's own checkout, when this machine still has one. A checkout that is
     /// not there is simply not asked, and the answer is then the stricter one.
     pub checkout: Option<&'a Path>,
-    /// Whether the home is one Nodal made, and would therefore be moved to the trash.
-    /// A checkout adopted in place is not moved, which is what decides whether a
-    /// bystander blocks.
-    pub managed: bool,
     /// Whether to classify the ignored state the home holds.
     pub state: bool,
     /// The unit whose runtime to attribute, or nothing to leave it unread.
@@ -152,9 +156,13 @@ pub struct Input<'a> {
 
 impl<'a> Input<'a> {
     /// What a destructive operation asks: the refusal, and nothing it does not act on.
+    ///
+    /// No runtime, so no move question, so nothing here to get wrong about a home that
+    /// would not move. The refusal a reclaim raises is about the work in a home, and it
+    /// is the same refusal for a home Nodal made and for a checkout adopted in place.
     #[must_use]
     pub const fn refusal(home: &'a Path, checkout: Option<&'a Path>) -> Self {
-        Self { home, checkout, managed: true, state: false, runtime: None }
+        Self { home, checkout, state: false, runtime: None }
     }
 }
 
@@ -408,40 +416,33 @@ impl Serialize for PathGroup {
 // Runtime.
 // ---------------------------------------------------------------------------
 
-/// What is running against one home, split the way a reclaim splits it.
+/// What is running against one unit, split the way a reclaim splits it.
+///
+/// One struct for one reading. The teardown, the verification and the preflight all ask
+/// the same two signals about the same unit and want the same four answers out of them,
+/// so there is one value rather than one per reader.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Runtime {
     /// The process groups the registry recorded for the unit. A reclaim signals these
     /// first, as groups, so one signal reaches a server and everything it started.
     ///
+    /// Empty from [`attributed`], which reads the machine: a recorded group is a row of
+    /// the registry and not a reading, and the caller that has the rows fills it in.
+    ///
     /// Whether a group still holds a process is not asked. The portable way to ask is
     /// to signal it, and a preflight that signalled would be doing the thing it is
     /// there to describe.
     pub groups: Vec<u32>,
-    /// The processes carrying the unit's own identifier. A reclaim signals these.
+    /// The processes carrying the unit's own identifier. Attribution's certain level,
+    /// and the only processes a teardown signals.
     pub processes: Vec<u32>,
     /// The containers carrying the unit's label. A reclaim removes these.
     pub containers: Vec<String>,
-    /// The processes matched by working directory alone. A reclaim never signals one,
-    /// and refuses to move the home out from under it.
+    /// The processes matched by working directory alone. Attribution's probable level: a
+    /// reclaim never signals one, and refuses to move the home out from under it.
     pub bystanders: Vec<Standing>,
     /// The signals that could not be read, and why. A note is the difference between
     /// "nothing is running" and "I could not look".
-    pub notes: Vec<Note>,
-}
-
-/// What this machine can see of one unit, at attribution's two levels.
-#[derive(Debug, Clone, Default)]
-pub struct Seen {
-    /// The processes that carry the unit's identifier. The certain level, and the only
-    /// processes a teardown signals.
-    pub certain: Vec<u32>,
-    /// The processes a scan matched by working directory alone. The probable level,
-    /// which is reported and never signalled.
-    pub standing: Vec<Standing>,
-    /// The containers the unit labelled as its own.
-    pub containers: Vec<String>,
-    /// The signals that could not be read.
     pub notes: Vec<Note>,
 }
 
@@ -456,12 +457,12 @@ pub struct Seen {
 /// moment it is supposed to speak: after the registry write, `ps` would attribute nothing
 /// to the unit whether or not anything was still running.
 #[must_use]
-pub fn attributed(unit: UnitId, homes: &[PathBuf]) -> Seen {
-    let mut seen = Seen::default();
+pub fn attributed(unit: UnitId, homes: &[PathBuf]) -> Runtime {
+    let mut seen = Runtime::default();
     match scan(unit, homes) {
-        Ok((certain, standing)) => {
-            seen.certain = certain;
-            seen.standing = standing;
+        Ok((processes, bystanders)) => {
+            seen.processes = processes;
+            seen.bystanders = bystanders;
         }
         Err(error) => seen.notes.push(Note::new(Source::Environment, error.to_string())),
     }
@@ -536,8 +537,10 @@ fn in_one_of(process: &processes::Running, homes: &[PathBuf]) -> bool {
 pub struct Assessment {
     /// The home that was read.
     pub home: PathBuf,
-    /// Whether it is a home Nodal made, and would therefore move.
-    pub managed: bool,
+    /// Whether a reclaim would move this home, as the caller that asked for the runtime
+    /// said. `false` where the runtime was not read at all, because the question only
+    /// arises about something standing in a home that is about to move.
+    pub moves: bool,
     /// The remotes the home names. Empty means there is nowhere it could have pushed
     /// to, which is worth printing rather than reading as "it did not push".
     pub remotes: Vec<String>,
@@ -646,7 +649,7 @@ pub fn assess(input: &Input<'_>) -> Result<Assessment> {
     let (commits, remotes) = history(&git, input.home, input.checkout)?;
     let mut assessment = Assessment {
         home: input.home.to_path_buf(),
-        managed: input.managed,
+        moves: input.runtime.is_some_and(|asked| asked.moves),
         remotes,
         commits,
         paths,
@@ -776,24 +779,16 @@ fn history(
         return Ok((Vec::new(), remotes));
     }
     let witness = Witness::of(&remotes, &found);
-    let off_remote = git.commits_outside("HEAD", &joined(&found.own, &found.remote))?;
+    let off_remote = git.commits_outside("HEAD", &union(&found.own, &found.remote))?;
     let unproved = git.commits_outside("HEAD", &found.tips())?;
     let proved = difference(&ours, &off_remote);
     let second = difference(&off_remote, &unproved);
     let (fetched, only) = local_copies(checkout, unproved);
     let mut groups = Vec::new();
     groups.extend(commit_group(Copies::RemoteProved { witness: witness.clone() }, proved));
-    groups.extend(second_group(checkout, joined(&second, &fetched)));
+    groups.extend(second_group(checkout, union(&second, &fetched)));
     groups.extend(commit_group(unreached(&witness), only));
     Ok((groups, remotes))
-}
-
-/// Two sets of tips as one, for the exclusion a `rev-list` is given.
-fn joined(left: &[Oid], right: &[Oid]) -> Vec<Oid> {
-    let mut all: Vec<Oid> = left.iter().chain(right).cloned().collect();
-    all.sort_unstable();
-    all.dedup();
-    all
 }
 
 /// How the commits nothing proved are reported: as only here, or as not checked.
@@ -851,16 +846,11 @@ fn second_group(checkout: Option<&Path>, commits: Vec<Oid>) -> Option<CommitGrou
 // The runtime.
 // ---------------------------------------------------------------------------
 
-/// What is running against this home, at attribution's two levels.
+/// What is running against this home, at attribution's two levels, with the groups the
+/// registry recorded added to it.
 fn running(asked: Attribution<'_>, home: &Path) -> Runtime {
     let seen = attributed(asked.unit, std::slice::from_ref(&home.to_path_buf()));
-    Runtime {
-        groups: asked.groups.to_vec(),
-        processes: seen.certain,
-        containers: seen.containers,
-        bystanders: seen.standing,
-        notes: seen.notes,
-    }
+    Runtime { groups: asked.groups.to_vec(), ..seen }
 }
 
 // ---------------------------------------------------------------------------
@@ -899,7 +889,7 @@ pub fn reasons(assessment: &Assessment) -> Vec<Reason> {
 /// is moved out from under anybody and a process standing in it stops nothing. Reporting
 /// it as blocking would refuse a reclaim the operation itself would not refuse.
 fn blocked(assessment: &Assessment) -> Option<Reason> {
-    let runtime = assessment.runtime.as_ref().filter(|_| assessment.managed)?;
+    let runtime = assessment.runtime.as_ref().filter(|_| assessment.moves)?;
     let named: Vec<String> = runtime.bystanders.iter().take(SAMPLE).map(Standing::label).collect();
     (!named.is_empty()).then(|| Reason::new(Needs::BlockingRuntime, named.join(", ")))
 }
@@ -959,7 +949,7 @@ mod tests {
     fn assessed(commits: Vec<CommitGroup>, paths: Vec<PathGroup>) -> Assessment {
         let mut assessment = Assessment {
             home: PathBuf::from("/h"),
-            managed: true,
+            moves: true,
             commits,
             paths,
             ..Assessment::default()
@@ -1079,14 +1069,14 @@ mod tests {
             )],
             ..super::Runtime::default()
         };
-        let mut managed = assessed(Vec::new(), Vec::new());
-        managed.runtime = Some(runtime.clone());
-        managed.reasons = reasons(&managed);
-        assert_eq!(managed.top(), Needs::BlockingRuntime);
-        assert!(!managed.safe_to_reclaim());
+        let mut moving = assessed(Vec::new(), Vec::new());
+        moving.runtime = Some(runtime.clone());
+        moving.reasons = reasons(&moving);
+        assert_eq!(moving.top(), Needs::BlockingRuntime);
+        assert!(!moving.safe_to_reclaim());
 
-        let mut in_place = managed.clone();
-        in_place.managed = false;
+        let mut in_place = moving.clone();
+        in_place.moves = false;
         in_place.reasons = reasons(&in_place);
         assert!(in_place.safe_to_reclaim(), "{:?}", in_place.reasons);
     }

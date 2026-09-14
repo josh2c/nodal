@@ -10,6 +10,21 @@ use crate::error::{Error, Result};
 /// Accepted hexadecimal lengths: SHA-1 and SHA-256 object ids.
 const LENGTHS: [usize; 2] = [40, 64];
 
+/// Two sets of object ids as one sorted set with no repeats.
+///
+/// The exclusion a `rev-list` is given is a set of tips, and every caller that builds one
+/// out of two readings wants the same three lines. It lives beside [`Oid`] because that
+/// is what it is about, and because the two callers that want it —
+/// [`crate::lifecycle::witness`] and [`crate::lifecycle::assess`] — should not each keep
+/// a copy of it.
+#[must_use]
+pub fn union(left: &[Oid], right: &[Oid]) -> Vec<Oid> {
+    let mut all: Vec<Oid> = left.iter().chain(right).cloned().collect();
+    all.sort_unstable();
+    all.dedup();
+    all
+}
+
 /// A full Git object id, lower-case hexadecimal.
 ///
 /// The `serde` form is the text itself, and reading one back parses it, so an id that

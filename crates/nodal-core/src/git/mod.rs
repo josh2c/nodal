@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 
 pub use self::history::{Commit, FileChange};
 pub use self::integration::{Divergence, Integration, Standing};
-pub use self::oid::Oid;
+pub use self::oid::{Oid, union};
 use crate::error::{Error, Result};
 
 /// A branch and the commit it points at.

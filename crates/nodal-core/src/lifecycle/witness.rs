@@ -98,7 +98,7 @@ use std::time::SystemTime;
 
 use crate::doctor::unique::{Evidence, RemoteTip, Subject, Trusted, believed};
 use crate::doctor::{inspect, origin};
-use crate::git::{Git, Oid};
+use crate::git::{Git, Oid, union};
 
 /// The remote a home's uniqueness question is about.
 ///
@@ -162,14 +162,14 @@ impl Elsewhere {
     /// Every commit another object store on this machine holds, however it names it.
     #[must_use]
     pub fn local(&self) -> Vec<Oid> {
-        joined(&self.own, &self.copies)
+        union(&self.own, &self.copies)
     }
 
     /// Every tip, for the caller that only asks whether a commit is somewhere else at
     /// all and does not care which evidence says so.
     #[must_use]
     pub fn tips(&self) -> Vec<Oid> {
-        joined(&self.local(), &self.remote)
+        union(&self.local(), &self.remote)
     }
 }
 
@@ -198,7 +198,7 @@ pub fn elsewhere(home: &Path, checkout: Option<&Path>) -> Elsewhere {
     }
     let relation = relation(home, path);
     let trusted = vouched(home, path, relation, evidence.clone());
-    let held = holds(path, &joined(&evidence.tips, &trusted.tips));
+    let held = holds(path, &union(&evidence.tips, &trusted.tips));
     let carried: BTreeSet<&Oid> = held.iter().collect();
     let own: Vec<Oid> = mine(path).into_iter().filter(|oid| carried.contains(oid)).collect();
     let remote: Vec<Oid> =
@@ -235,14 +235,6 @@ fn mine(repo: &Path) -> Vec<Oid> {
         .filter(|reference| !reference.name.starts_with(REMOTES))
         .map(|reference| reference.oid)
         .collect()
-}
-
-/// Two sets of tips as one sorted set with no repeats.
-fn joined(left: &[Oid], right: &[Oid]) -> Vec<Oid> {
-    let mut all: Vec<Oid> = left.iter().chain(right).cloned().collect();
-    all.sort_unstable();
-    all.dedup();
-    all
 }
 
 /// The checkout as a witness for this home's `origin`, in whichever relation it has to it.
