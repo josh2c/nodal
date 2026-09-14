@@ -19,7 +19,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use nodal_core::lifecycle::journal::{self, State, StepRecord, StepState};
@@ -33,6 +33,7 @@ use nodal_core::model::{
 };
 use nodal_core::store::{Store, projects, units};
 use nodal_core::{Error, Result, lifecycle};
+use nodal_safety::process::Owned;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -428,8 +429,10 @@ fn child_runs_the_operation_and_parks_between_two_steps() {
 fn a_killed_operation_is_reported_and_rolled_back_by_the_next_invocation() {
     let (_dir, workspace) = workspace();
     let mut child = spawn_child(&workspace);
-    wait_for_park(&workspace, &mut child);
-    kill(&mut child);
+    wait_for_park(&workspace, &child);
+    // `SIGKILL` to the whole group, so that nothing of the child's runs afterwards.
+    // Anything the next invocation knows, the child had already written down.
+    child.reclaim();
 
     assert_the_killed_run_left_its_work(&workspace);
 
@@ -484,38 +487,36 @@ fn assert_the_journal_closed_the_run(workspace: &Workspace) {
     assert!(done[0].ended_at.is_some());
 }
 
-/// Re-execute this test binary, running only the child test.
-fn spawn_child(workspace: &Workspace) -> Child {
+/// Re-execute this test binary, running only the child test, and own what it starts.
+///
+/// A parked child is a family and not a process: whatever the step it parked in had
+/// started is below it, and a handle on the child reaches none of that. So the child goes
+/// in a process group of its own and is owned as that group, which is reclaimed when this
+/// test ends whichever way it ends.
+fn spawn_child(workspace: &Workspace) -> Owned {
     let binary = std::env::current_exe().expect("a test binary has a path");
-    Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .args([CHILD_TEST, "--exact", "--ignored", "--nocapture", "--test-threads=1"])
-        .env(ROOT_VAR, &workspace.root)
-        .spawn()
-        .expect("the test binary can be run again")
+        .env(ROOT_VAR, &workspace.root);
+    Owned::spawn(&mut command)
 }
 
 /// Wait until the child says it has reached the park.
-fn wait_for_park(workspace: &Workspace, child: &mut Child) {
+///
+/// Nothing here signals anything on the way out. A panic unwinds through the owner, and
+/// the owner takes the group.
+fn wait_for_park(workspace: &Workspace, child: &Owned) {
     let marker = park_marker(&workspace.home());
     let deadline = Instant::now() + PARK_TIMEOUT;
     while Instant::now() < deadline {
         if marker.exists() {
             return;
         }
-        if let Some(status) = child.try_wait().expect("the child can be polled") {
-            panic!("the child exited before it parked: {status}");
-        }
+        assert!(!child.exited(), "the child exited before it parked");
         std::thread::sleep(POLL);
     }
-    let _ = child.kill();
     panic!("the child did not reach the park within {PARK_TIMEOUT:?}");
-}
-
-/// `SIGKILL`, so that nothing of the child's runs afterwards. Anything the next
-/// invocation knows, the child had already written down.
-fn kill(child: &mut Child) {
-    child.kill().expect("the child can be killed");
-    child.wait().expect("the child can be reaped");
 }
 
 // ---------------------------------------------------------------------------

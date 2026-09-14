@@ -25,11 +25,12 @@
 mod state;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use nodal_core::lifecycle::journal;
 use nodal_safety::git::{commit, git_text as git};
+use nodal_safety::process::Owned;
 use nodal_safety::text::{answer, stderr, stdout};
 use nodal_safety::{InState as _, Workspace};
 
@@ -400,15 +401,15 @@ fn a_merge_killed_between_two_steps_is_rolled_back_by_the_next_invocation() {
     std::fs::write(home.join("app").join("new.txt"), "made here\n").unwrap();
     park(&workspace);
 
-    let mut child = workspace
-        .command(&["merge", "worker-import", "--yes"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let parked = wait_for_the_park(&workspace, &mut child);
-    child.kill().unwrap();
-    child.wait().unwrap();
+    let mut command = workspace.command(&["merge", "worker-import", "--yes"]);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let mut child = Owned::spawn(&mut command);
+    let parked = wait_for_the_park(&workspace, &child);
+    // The leader alone, because the `git` it started is holding the branch and what the
+    // next assertion is about is that the branch did not move. The owner has the rest of
+    // the group — the parked hook, and the `sleep` that hook is waiting on — and takes it
+    // when this test ends, whichever way it ends.
+    child.kill_the_leader_alone();
     release(&workspace, parked);
 
     assert_eq!(workspace.main_log().len(), 1, "the kill landed before main moved");
@@ -435,7 +436,10 @@ fn park(workspace: &Workspace) {
 }
 
 /// Wait until the merge is held inside the step that moves the branch.
-fn wait_for_the_park(workspace: &Workspace, child: &mut Child) -> u32 {
+///
+/// Nothing here signals anything on the way out: a panic unwinds through the owner, and
+/// the owner takes the group.
+fn wait_for_the_park(workspace: &Workspace, child: &Owned) -> u32 {
     let marker = workspace.source.join("parked");
     let deadline = Instant::now() + REACH_TIMEOUT;
     while Instant::now() < deadline {
@@ -445,12 +449,9 @@ fn wait_for_the_park(workspace: &Workspace, child: &mut Child) -> u32 {
             assert!(journalled(workspace, "merge"), "the merge is journalled before it is killed");
             return pid;
         }
-        if let Some(status) = child.try_wait().unwrap() {
-            panic!("the merge finished before it could be killed: {status}");
-        }
+        assert!(!child.exited(), "the merge finished before it could be killed");
         std::thread::sleep(POLL);
     }
-    let _ = child.kill();
     panic!("the merge did not reach the park within {REACH_TIMEOUT:?}");
 }
 

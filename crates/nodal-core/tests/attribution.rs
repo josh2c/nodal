@@ -103,6 +103,20 @@ fn about(answer: &Ps, pid: u32) -> Option<&Attributed> {
     answer.rows.iter().find(|row| row.pid == Some(pid) && row.kind == Kind::Process)
 }
 
+/// Read this machine again until it has a row about `pid`, and answer with that reading.
+///
+/// A process exists before it has replaced itself with the program it was started for. A
+/// scan taken in that instant reads the environment the test binary had rather than the one
+/// the test gave the process, so there is no row — rarely, and never twice the same way.
+/// The reading is a question about the machine, so it is asked again until the machine
+/// answers or the deadline passes. What is asserted about the row is asserted once.
+fn observed(store: &Store, pid: u32) -> Ps {
+    process::until("a row for the process the test started", || {
+        let answer = observe(store);
+        about(&answer, pid).is_some().then_some(answer)
+    })
+}
+
 #[test]
 fn a_process_started_inside_the_homes_environment_is_certain() {
     if !platform::reads_process_table("certain by environment") {
@@ -115,8 +129,8 @@ fn a_process_started_inside_the_homes_environment_is_certain() {
     let child = process::carrying(UNIT, &home);
     let pid = child.pid();
 
-    let answer = observe(&store);
-    let row = about(&answer, pid).unwrap_or_else(|| panic!("no row for {pid}: {:?}", answer.rows));
+    let answer = observed(&store, pid);
+    let row = about(&answer, pid).unwrap();
     assert_eq!(row.slug.as_str(), "worker-import");
     assert_eq!(row.confidence, Confidence::Certain);
     assert_eq!(row.signal, Source::Environment);
@@ -136,8 +150,8 @@ fn a_process_started_in_a_plain_terminal_in_the_home_is_probable_by_its_director
     let child = process::standing_in(&home);
     let pid = child.pid();
 
-    let answer = observe(&store);
-    let row = about(&answer, pid).unwrap_or_else(|| panic!("no row for {pid}: {:?}", answer.rows));
+    let answer = observed(&store, pid);
+    let row = about(&answer, pid).unwrap();
     assert_eq!(row.slug.as_str(), "worker-import");
     assert_eq!(row.confidence, Confidence::Probable);
     assert_eq!(row.signal, Source::Cwd);

@@ -28,13 +28,14 @@
 mod state;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use nodal_core::lifecycle::journal;
 use nodal_core::model::{EnvState, UnitStatus};
 use nodal_core::store::{environments, projects, trash, units};
 use nodal_safety::git::git_text as git;
+use nodal_safety::process::{self, Owned, alive, wait_for};
 use nodal_safety::project::Layout;
 use nodal_safety::project::resolved;
 use nodal_safety::text::{answer, stderr, stdout};
@@ -43,10 +44,7 @@ use nodal_safety::{InState as _, Workspace};
 /// How long a test waits for a killed run to reach the step it is being killed in.
 const REACH_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long it waits for a stopped process to actually go.
-const STOP_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// How often either wait looks.
+/// How often it looks.
 const POLL: Duration = Duration::from_millis(5);
 
 /// This suite's project, which ignores its own build output as well.
@@ -381,7 +379,7 @@ fn a_process_planted_in_a_unit_is_stopped_where_nodal_can_see_it() {
     let created = json(&workspace.nodal(&["new", "--name", "worker-import", "--json"]));
     let (id, home) = workspace.one_unit_and_home();
     let port = created["unit"]["environment"]["ports"]["app"].as_u64().expect("a port was granted");
-    let planted = plant(&home, &id, "sleep 300");
+    let mut planted = plant(&home, &id, "sleep 300");
 
     let report = json(&workspace.nodal(&["reclaim", "worker-import", "--json"]));
     assert_process_signal(&report);
@@ -400,12 +398,12 @@ fn a_process_planted_in_a_unit_is_stopped_where_nodal_can_see_it() {
     if can_see_processes() {
         assert_eq!(report["stopped"]["asked"].as_array().unwrap().len(), 1, "{report}");
         assert!(report["leftovers"].as_array().unwrap().is_empty(), "{report}");
-        wait_until_gone(planted);
+        wait_for("the planted process to be stopped", || !alive(planted.pid()));
     } else {
         assert!(report["stopped"]["asked"].as_array().unwrap().is_empty(), "{report}");
-        assert!(is_running(planted), "a host that cannot see a process cannot stop one");
+        assert!(alive(planted.pid()), "a host that cannot see a process cannot stop one");
         assert!(report["leftovers"].as_array().unwrap().is_empty(), "an unread signal is a note");
-        end(planted);
+        planted.reclaim();
     }
     assert_eq!(workspace.trashed().len(), 1, "the home went either way");
 }
@@ -418,46 +416,18 @@ fn a_process_planted_in_a_unit_is_stopped_where_nodal_can_see_it() {
 /// for something that is not running — which would report a stop that worked as a
 /// process left behind. Starting it from a shell that then exits hands it to the system,
 /// which reaps it properly.
-fn plant(home: &Path, unit: &str, command: &str) -> u32 {
+fn plant(home: &Path, unit: &str, command: &str) -> Owned {
     let line = format!("{command} >/dev/null 2>&1 & printf %s \"$!\"");
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(line)
-        .current_dir(home)
-        .env("NODAL_ID", unit)
-        .output()
-        .unwrap();
+    let mut planting = Command::new("sh");
+    planting.arg("-c").arg(line).current_dir(home).env("NODAL_ID", unit);
+    let output = process::mark(&mut planting).output().unwrap();
     let pid: u32 = String::from_utf8(output.stdout).unwrap().trim().parse().unwrap();
-    assert!(is_running(pid), "the plant is running");
-    pid
-}
-
-/// Whether a process is still there. `kill -0` rather than `/proc`, because this file
-/// runs on a host that has no `/proc` and still has to answer the question.
-fn is_running(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stderr(Stdio::null())
-        .status()
-        .unwrap()
-        .success()
-}
-
-/// Stop a plant the test itself has to clean up, on a host that could not stop it.
-fn end(pid: u32) {
-    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
-}
-
-/// Wait for a stopped process to leave the table, and insist that it does.
-fn wait_until_gone(pid: u32) {
-    let deadline = Instant::now() + STOP_TIMEOUT;
-    while Instant::now() < deadline {
-        if !is_running(pid) {
-            return;
-        }
-        std::thread::sleep(POLL);
-    }
-    panic!("process {pid} was still running {STOP_TIMEOUT:?} after the reclaim");
+    assert!(alive(pid), "the plant is running");
+    // Adopted, not owned as a group: the shell that started it has already exited, and
+    // this process is nobody's child. What the test asserts is still that `nodal reclaim`
+    // stopped it. The adoption is what reclaims it when an assertion before that one
+    // fails, and it signals nothing it cannot prove is still the process it adopted.
+    Owned::adopt(pid)
 }
 
 // ---------------------------------------------------------------------------
@@ -610,27 +580,23 @@ fn a_reclaim_killed_between_two_steps_is_rolled_back_by_the_next_invocation() {
     let workspace = workspace();
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (id, home) = workspace.one_unit_and_home();
-    let planted = plant(&home, &id, "trap '' TERM; sleep 300");
+    let mut planted = plant(&home, &id, "trap '' TERM; sleep 300");
 
     if !can_see_processes() {
         let report = json(&workspace.nodal(&["reclaim", "worker-import", "--json"]));
         assert_process_signal(&report);
         assert!(report["stopped"]["asked"].as_array().unwrap().is_empty(), "{report}");
-        assert!(is_running(planted), "nothing this host cannot see was signalled");
+        assert!(alive(planted.pid()), "nothing this host cannot see was signalled");
         assert!(!home.exists(), "and the home was still reclaimed");
-        end(planted);
+        planted.reclaim();
         return;
     }
 
-    let mut child = workspace
-        .command(&["reclaim", "worker-import"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    wait_for_the_reclaim_to_start(&workspace, &mut child);
-    child.kill().unwrap();
-    child.wait().unwrap();
+    let mut command = workspace.command(&["reclaim", "worker-import"]);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let mut child = Owned::spawn(&mut command);
+    wait_for_the_reclaim_to_start(&workspace, &child);
+    child.reclaim();
 
     assert!(home.is_dir(), "the kill landed before the home was moved");
     assert!(workspace.trashed().is_empty());
@@ -643,11 +609,11 @@ fn a_reclaim_killed_between_two_steps_is_rolled_back_by_the_next_invocation() {
     assert!(next.status.success(), "and the second reclaim finishes: {told}");
     assert!(!home.exists());
     assert_eq!(workspace.trashed().len(), 1);
-    wait_until_gone(planted);
+    wait_for("the planted process to be stopped", || !alive(planted.pid()));
 }
 
 /// Wait until the reclaim has journalled itself and is inside its first step.
-fn wait_for_the_reclaim_to_start(workspace: &Workspace, child: &mut Child) {
+fn wait_for_the_reclaim_to_start(workspace: &Workspace, child: &Owned) {
     let deadline = Instant::now() + REACH_TIMEOUT;
     while Instant::now() < deadline {
         let store = workspace.store();
@@ -656,12 +622,9 @@ fn wait_for_the_reclaim_to_start(workspace: &Workspace, child: &mut Child) {
             return;
         }
         drop(store);
-        if let Some(status) = child.try_wait().unwrap() {
-            panic!("the reclaim finished before it could be killed: {status}");
-        }
+        assert!(!child.exited(), "the reclaim finished before it could be killed");
         std::thread::sleep(POLL);
     }
-    let _ = child.kill();
     panic!("no reclaim was journalled within {REACH_TIMEOUT:?}");
 }
 

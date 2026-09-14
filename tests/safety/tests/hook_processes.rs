@@ -36,6 +36,7 @@ use std::path::Path;
 
 use nodal_core::model::{EnvId, Session};
 use nodal_core::store::{environments, projects, sessions, units};
+use nodal_safety::process::Owned;
 use nodal_safety::process::{alive, in_a_group_of_its_own, wait_for};
 use nodal_safety::{InState as _, Machine, answer, git, stderr};
 
@@ -90,6 +91,17 @@ fn phase(name: &str, line: &str) -> String {
     format!("{name} = '{line}'")
 }
 
+/// Adopt the process the hook backgrounded, so that an assertion failing before the one
+/// about Nodal stopping it cannot leave it running.
+///
+/// It runs under `env -i`, so it carries nothing a scan could name it by — which is the
+/// point of the fixture and the reason the number the hook wrote down is the only handle
+/// there is. The adoption reads the process when it takes it and reads it again before it
+/// signals anything, so a number that has been given to somebody else is left alone.
+fn backstop(record: &Path) -> Owned {
+    Owned::adopt(recorded(record))
+}
+
 /// The process the hook backgrounded, read from the file it wrote.
 fn recorded(record: &Path) -> u32 {
     let text = std::fs::read_to_string(record)
@@ -139,6 +151,7 @@ fn a_process_a_hook_hid_from_every_other_signal_is_stopped_by_the_reclaim() {
     let home = machine.unit(UNIT);
     let hidden = recorded(&record);
     assert!(alive(hidden), "the hook backgrounded nothing, so there is nothing to assert about");
+    let _held = Owned::adopt(hidden);
 
     let reclaimed = machine.nodal(&["reclaim", UNIT]);
 
@@ -159,6 +172,7 @@ fn a_surviving_hook_group_is_recorded_against_the_unit_and_names_its_phase() {
     let machine = machine_declaring(&phase("post_new", &backgrounds(&record)));
 
     drop(machine.unit(UNIT));
+    let _held = backstop(&record);
 
     let open = open_groups(&machine);
     assert_eq!(open.len(), 1, "the unit holds one recorded group: {open:?}");
@@ -281,6 +295,7 @@ fn a_group_left_by_post_reclaim_is_reported_and_then_stopped_by_the_sweep() {
     assert!(told.contains("session"), "the report does not say what is left: {told}");
     let hidden = recorded(&record);
     assert!(alive(hidden), "there is nothing left for the sweep to do");
+    let _held = Owned::adopt(hidden);
 
     drop(machine.nodal(&["gc"]));
 
@@ -306,6 +321,7 @@ fn a_recorded_group_that_has_ended_closes_its_row_and_signals_nothing() {
     let machine = machine_declaring(&phase("post_new", &backgrounds(&record)));
     let bystander = in_a_group_of_its_own();
     drop(machine.unit(UNIT));
+    let _held = backstop(&record);
     assert_eq!(open_groups(&machine).len(), 1, "the hook's group was not recorded");
 
     // The group ends on its own, as a development server does when its work is done.
@@ -341,6 +357,7 @@ fn a_group_no_row_holds_is_never_signalled() {
     let bystander = in_a_group_of_its_own();
 
     drop(machine.unit(UNIT));
+    let _held = backstop(&record);
     drop(machine.nodal(&["reclaim", UNIT]));
     drop(machine.nodal(&["gc"]));
 

@@ -32,18 +32,26 @@
 mod state;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Output, Stdio};
 
 use nodal_core::model::{EnvId, EnvState, Session, Timestamp};
 use nodal_core::store::{environments, projects, sessions, units};
+use nodal_safety::process::{Owned, alive, wait_for};
 use nodal_safety::{InState as _, Workspace};
 
-/// How long a test waits for something it has started to reach the state it needs.
-const TIMEOUT: Duration = Duration::from_secs(30);
-
-/// How often a wait looks.
-const POLL: Duration = Duration::from_millis(10);
+/// Adopt each process the product started that this test is about, so that a failed
+/// assertion cannot leave a `sleep 600` behind for ten minutes standing in a temporary tree
+/// the test is about to remove. The test still asserts that the product stopped it; this is
+/// what reclaims it when the assertion before that one fails.
+///
+/// Each number is a process. Where a caller passes the number of a tethered group, that is
+/// the group's leader — `nodal run --tether` makes the group by putting the command in one
+/// of its own, so the group is named by its leader's identifier — and the leader is what is
+/// adopted. The rest of that group is the product's to stop, which is the property under
+/// test.
+fn backstop(leaders: &[u32]) -> Vec<Owned> {
+    leaders.iter().copied().map(Owned::adopt).collect()
+}
 
 // ---------------------------------------------------------------------------
 // The workspace.
@@ -115,29 +123,6 @@ impl Tethering for Workspace {
 // Processes, as a person would look at them.
 // ---------------------------------------------------------------------------
 
-/// Whether a process is still there. `kill -0` rather than `/proc`, because this file
-/// runs on a host that has no `/proc` and still has to answer the question.
-fn is_running(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stderr(Stdio::null())
-        .status()
-        .unwrap()
-        .success()
-}
-
-/// Wait for something to become true, and insist that it does.
-fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + TIMEOUT;
-    while Instant::now() < deadline {
-        if ready() {
-            return;
-        }
-        std::thread::sleep(POLL);
-    }
-    panic!("{what} did not happen within {TIMEOUT:?}");
-}
-
 /// Standard output as text, with the command insisted upon.
 fn assert_ok(output: &Output) -> String {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
@@ -203,8 +188,9 @@ fn a_tethered_group_is_dead_whole_after_the_unit_is_reclaimed() {
     assert!(ran.success(), "the tethered command ran");
 
     let planted = pids(&children);
+    let _held = backstop(&planted);
     assert_eq!(planted.len(), 2, "the script started a child and a grandchild");
-    assert!(planted.iter().all(|pid| is_running(*pid)), "both outlived the nodal run");
+    assert!(planted.iter().all(|pid| alive(*pid)), "both outlived the nodal run");
 
     let open = workspace.tethers(environment);
     assert_eq!(open.len(), 1, "the unit holds one tether");
@@ -214,7 +200,7 @@ fn a_tethered_group_is_dead_whole_after_the_unit_is_reclaimed() {
     assert_eq!(targets(&report, "asked", "group"), vec![u64::from(group)], "{report}");
     assert!(report["leftovers"].as_array().unwrap().is_empty(), "{report}");
     for pid in planted {
-        wait_for("the whole group to go", || !is_running(pid));
+        wait_for("the whole group to go", || !alive(pid));
     }
     assert!(workspace.tethers(environment).is_empty(), "the row was given up with the unit");
 }
@@ -247,17 +233,16 @@ fn a_tether_that_stops_on_the_interrupt_is_never_sent_the_next_signal() {
     )
     .unwrap();
 
-    let mut run = workspace
-        .quiet(&["run", "--tether", "sh", script.to_str().unwrap()], &home)
-        .spawn()
-        .unwrap();
+    let mut command = workspace.quiet(&["run", "--tether", "sh", script.to_str().unwrap()], &home);
+    let run = Owned::spawn(&mut command);
     wait_for("the tethered command to start", || ready.exists());
     wait_for("the tether to be recorded", || !workspace.tethers(environment).is_empty());
+    let _held = backstop(&[workspace.tethers(environment)[0].pgid.expect("a group")]);
 
     let report = json(&workspace.nodal(&["reclaim", "polite-server", "--json"]));
     assert_eq!(targets(&report, "asked", "group").len(), 1, "{report}");
     assert!(targets(&report, "killed", "group").is_empty(), "it was never killed: {report}");
-    run.wait().unwrap();
+    wait_for("the nodal run to finish", || run.exited());
 
     let seen = std::fs::read_to_string(&signals).unwrap();
     assert_eq!(seen, "INT", "the tether saw the interrupt and nothing after it");
@@ -275,27 +260,22 @@ fn a_tether_that_stops_on_the_interrupt_is_never_sent_the_next_signal() {
 fn a_tether_outlives_the_nodal_run_that_started_it_and_is_still_stopped() {
     let workspace = workspace();
     let (home, environment) = workspace.unit_home("orphan-server");
-    let mut run = workspace.quiet(&["run", "--tether", "sleep", "600"], &home).spawn().unwrap();
+    let mut command = workspace.quiet(&["run", "--tether", "sleep", "600"], &home);
+    let mut run = Owned::spawn(&mut command);
     wait_for("the tether to be recorded", || !workspace.tethers(environment).is_empty());
     let group = workspace.tethers(environment)[0].pgid.expect("the row records a group");
+    let _held = backstop(&[group]);
 
-    kill_hard(&mut run);
-    assert!(is_running(group), "the tethered command outlived its parent");
+    // The parent and everything in its group. The tether is in a group of its own, which
+    // is the whole point of the flag, so this reaches the `nodal run` and nothing it
+    // started under the tether.
+    run.reclaim();
+    assert!(alive(group), "the tethered command outlived its parent");
 
     let report = json(&workspace.nodal(&["reclaim", "orphan-server", "--json"]));
     assert_eq!(targets(&report, "asked", "group"), vec![u64::from(group)], "{report}");
     assert!(report["leftovers"].as_array().unwrap().is_empty(), "{report}");
-    wait_for("the orphaned tether to go", || !is_running(group));
-}
-
-/// Kill a `nodal run` outright and wait for it to leave the table.
-fn kill_hard(run: &mut Child) {
-    let pid = run.id();
-    assert!(
-        Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success(),
-        "the parent was killed"
-    );
-    run.wait().unwrap();
+    wait_for("the orphaned tether to go", || !alive(group));
 }
 
 // ---------------------------------------------------------------------------
@@ -322,31 +302,33 @@ fn an_untethered_process_in_the_home_is_stopped_by_attribution_and_not_by_the_te
     let ran = workspace.quiet(&["run", "sh", script.to_str().unwrap()], &home).status().unwrap();
     assert!(ran.success(), "the untethered command ran");
     let untethered = pids(&plain);
+    let _left_to_attribution = backstop(&untethered);
     assert_eq!(untethered.len(), 1);
-    assert!(is_running(untethered[0]));
+    assert!(alive(untethered[0]));
 
-    let mut run = workspace.quiet(&["run", "--tether", "sleep", "600"], &home).spawn().unwrap();
+    let mut command = workspace.quiet(&["run", "--tether", "sleep", "600"], &home);
+    let run = Owned::spawn(&mut command);
     wait_for("the tether to be recorded", || !workspace.tethers(environment).is_empty());
     let open = workspace.tethers(environment);
     assert_eq!(open.len(), 1, "only the tethered run wrote a row");
     let group = open[0].pgid.expect("the row records a group");
+    let _held = backstop(&[group]);
     assert_ne!(group, untethered[0], "the untethered process is in nobody's tether");
 
     let report = json(&workspace.nodal(&["reclaim", "mixed", "--json"]));
-    run.wait().unwrap();
+    wait_for("the nodal run to finish", || run.exited());
     assert_eq!(targets(&report, "asked", "group"), vec![u64::from(group)], "{report}");
     if cfg!(target_os = "linux") {
         assert!(
             targets(&report, "asked", "process").contains(&u64::from(untethered[0])),
             "attribution stopped it as one process: {report}"
         );
-        wait_for("the untethered process to go", || !is_running(untethered[0]));
-    } else {
-        // No process table to attribute with. The tether is still stopped by identifier,
-        // and the process the host could not see is the host's to answer for.
-        let _ = Command::new("kill").args(["-9", &untethered[0].to_string()]).status();
+        wait_for("the untethered process to go", || !alive(untethered[0]));
     }
-    wait_for("the tether to go", || !is_running(group));
+    // A host with no process table attributed nothing, so the untethered process is still
+    // running. It is not signalled here: the backstop above holds it and ends it when this
+    // test does, by a number it can still prove is the one it took.
+    wait_for("the tether to go", || !alive(group));
 }
 
 /// A tether that outlived the reclaim of its unit is stopped by the next `nodal gc`.
@@ -363,10 +345,12 @@ fn an_untethered_process_in_the_home_is_stopped_by_attribution_and_not_by_the_te
 fn a_tether_left_behind_by_a_reclaimed_unit_is_stopped_by_the_next_sweep() {
     let workspace = workspace();
     let (home, environment) = workspace.unit_home("stale");
-    let mut run = workspace.quiet(&["run", "--tether", "sleep", "600"], &home).spawn().unwrap();
+    let mut command = workspace.quiet(&["run", "--tether", "sleep", "600"], &home);
+    let mut run = Owned::spawn(&mut command);
     wait_for("the tether to be recorded", || !workspace.tethers(environment).is_empty());
     let group = workspace.tethers(environment)[0].pgid.expect("the row records a group");
-    kill_hard(&mut run);
+    let _held = backstop(&[group]);
+    run.reclaim();
 
     // What a reclaim that never reached its stop leaves: the home gone as far as the
     // registry is concerned, and the tether's row still open.
@@ -374,11 +358,11 @@ fn a_tether_left_behind_by_a_reclaimed_unit_is_stopped_by_the_next_sweep() {
     environments::update_state(store.conn(), environment, EnvState::Absent, Timestamp::now())
         .unwrap();
     drop(store);
-    assert!(is_running(group), "the tether is still there for the sweep to find");
+    assert!(alive(group), "the tether is still there for the sweep to find");
 
     let swept = json(&workspace.nodal(&["gc", "--json"]));
     assert_eq!(targets(&swept, "asked", "group"), vec![u64::from(group)], "{swept}");
-    wait_for("the stale tether to go", || !is_running(group));
+    wait_for("the stale tether to go", || !alive(group));
     assert!(workspace.tethers(environment).is_empty(), "the sweep gave the row up as well");
 }
 
