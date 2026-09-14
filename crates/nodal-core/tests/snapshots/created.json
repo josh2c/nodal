@@ -38,7 +38,12 @@
       "home": "/home/j/.nodal/project/e/01J9X2K4",
       "state": "stopped",
       "managed": true,
-      "disk_bytes": 287000000,
+      "disk": {
+        "state": "measured",
+        "apparent": 287000000,
+        "complete": true,
+        "exclusive_unknown": "a home shares blocks with the base it was copied from, and no portable call says how many of these bytes are its own"
+      },
       "ports": {
         "app": 41230
       },

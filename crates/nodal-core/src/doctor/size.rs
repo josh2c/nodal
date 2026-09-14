@@ -13,6 +13,36 @@
 use std::path::Path;
 use std::time::SystemTime;
 
+use serde::{Deserialize, Serialize};
+
+/// What removing a directory gives back, and why that is not the figure printed.
+const SHARED: &str = "a home shares blocks with the base it was copied from, and no \
+     portable call says how many of these bytes are its own";
+
+/// What a walk found, and what is not known about it.
+///
+/// One type for every byte figure Nodal reports, so that a list, a detail and a reclaim
+/// preflight cannot say a home's size in three ways. Two things travel with the number
+/// because without them it is read as something it is not: whether the walk was complete,
+/// and that apparent bytes are not what a removal gives back to the disk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bytes {
+    /// Apparent bytes: the sum of the file sizes, as the source counts them.
+    pub apparent: u64,
+    /// Whether every entry was counted. `false` makes [`Bytes::apparent`] a floor.
+    pub complete: bool,
+    /// Why this is not what removing the paths would give back to the disk.
+    pub exclusive_unknown: String,
+}
+
+impl Bytes {
+    /// What a walk of these paths measured.
+    #[must_use]
+    pub fn of(apparent: u64, complete: bool) -> Self {
+        Self { apparent, complete, exclusive_unknown: String::from(SHARED) }
+    }
+}
+
 /// What a walk of one directory found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Measure {
@@ -31,6 +61,14 @@ pub struct Measure {
 impl Default for MeasureBuilder {
     fn default() -> Self {
         Self { measure: Measure { complete: true, ..Measure::default() } }
+    }
+}
+
+impl Measure {
+    /// The same reading, as the figure a report prints.
+    #[must_use]
+    pub fn reading(&self) -> Bytes {
+        Bytes::of(self.bytes, self.complete)
     }
 }
 

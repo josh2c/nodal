@@ -39,7 +39,12 @@
         "home": "/home/j/.nodal/project/e/01J9X2K4",
         "state": "stopped",
         "managed": true,
-        "disk_bytes": 287000000,
+        "disk": {
+          "state": "measured",
+          "apparent": 287000000,
+          "complete": true,
+          "exclusive_unknown": "a home shares blocks with the base it was copied from, and no portable call says how many of these bytes are its own"
+        },
         "ports": {
           "app": 41230
         },
@@ -91,7 +96,10 @@
         "home": "/home/j/.nodal/project/e/01J9X3M8",
         "state": "running",
         "managed": true,
-        "disk_bytes": 301000000,
+        "disk": {
+          "state": "unmeasured",
+          "why": "not_asked"
+        },
         "ports": {
           "app": 41231,
           "postgrest": 54401
@@ -109,6 +117,7 @@
         "actor": "josh",
         "host": "workshop",
         "pid": 4120,
+        "state": "live",
         "taken_at": "2026-09-06T09:40:00Z",
         "refreshed_at": "2026-09-06T14:21:40Z",
         "expires_at": "2026-09-06T22:21:40Z"

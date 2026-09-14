@@ -49,6 +49,7 @@ impl Show {
         let held = ls::Held::of(
             &lock::live(store.conn(), &project.root, now)?,
             lock::idle_hours(&project.root),
+            &processes::Live,
         );
         let mut listed = ls::rows(&surveyed, &processes::Live, &project, &held, now);
         states::settle(store.conn(), &mut listed.units, now);

@@ -203,7 +203,7 @@ impl Ls {
         now: Timestamp,
     ) -> nodal_core::Result<ls::Held> {
         let held = lock::live(store.conn(), &project.root, now)?;
-        Ok(ls::Held::of(&held, lock::idle_hours(&project.root)))
+        Ok(ls::Held::of(&held, lock::idle_hours(&project.root), &processes::Live))
     }
 
     /// The verdict on a checkout the registry holds nothing about.

@@ -32,8 +32,11 @@ use nodal_core::model::{
 use nodal_core::output::view::verdict::{Behind, RowKind, Verdict, WorktreeRow};
 use nodal_core::output::view::{
     Arrival, BaseList, BaseRow, Created, Done, EnvLine, EventLog, Exclusion, Explained, Freshness,
-    Holder, InitReport, Invalidation, Origin, PortLine, Ps, Remote, Running, SharedResource,
+    Holder, HolderState, InitReport, Invalidation, Origin, PortLine, Ps, Remote, Running,
+    SharedResource,
     StandInLine, Status, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
+};
+use nodal_core::output::view::{Disk, Unknowable, Unmeasured,
 };
 use nodal_core::output::{Format, Render, render, watch};
 use nodal_core::recipe::gap::{Gap, GapKey};
@@ -77,10 +80,16 @@ fn holder(name: &str) -> Holder {
         actor: ActorName::parse(name).expect("an actor name"),
         host: HostName::parse("workshop").expect("a host name"),
         pid: Some(4_120),
+        state: HolderState::Live,
         taken_at: at("2026-09-06T09:40:00Z"),
         refreshed_at: at("2026-09-06T14:21:40Z"),
         expires_at: at("2026-09-06T22:21:40Z"),
     }
+}
+
+/// What a walk of a home found, as a report carries it.
+fn bytes(apparent: u64, complete: bool) -> nodal_core::doctor::size::Bytes {
+    nodal_core::doctor::size::Bytes::of(apparent, complete)
 }
 
 /// The revision every row in these snapshots is measured against.
@@ -133,7 +142,7 @@ fn units() -> Vec<UnitRow> {
                 state: EnvState::Stopped,
                 managed: true,
                 made_by: Some(Version::parse("0.1.0").expect("a sample version")),
-                disk_bytes: Some(287_000_000),
+                disk: Disk::measured(bytes(287_000_000, true)),
                 ports: ports(&[("app", 41_230)]),
                 running: Vec::new(),
             }),
@@ -174,7 +183,7 @@ fn units() -> Vec<UnitRow> {
                 state: EnvState::Running,
                 managed: true,
                 made_by: Some(Version::parse("0.1.0").expect("a sample version")),
-                disk_bytes: Some(301_000_000),
+                disk: Disk::Unmeasured { why: Unmeasured::NotAsked },
                 ports: ports(&[("app", 41_231), ("postgrest", 54_401)]),
                 running: vec![Running { command: String::from("next dev"), port: Some(41_231) }],
             }),

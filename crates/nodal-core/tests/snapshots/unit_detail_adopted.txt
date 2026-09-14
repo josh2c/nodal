@@ -11,6 +11,6 @@
   env        running · unmanaged: never reclaimed
   ports      app 41231 · postgrest 54401
   running    next dev :41231
-  disk       301 MB
+  disk       not measured: a list does not walk a home; nodal show measures it
   made by    nodal 0.1.0
   last       now

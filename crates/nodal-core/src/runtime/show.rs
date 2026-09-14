@@ -8,12 +8,21 @@
 //! registry with what Git says about the home and with who is attached to it, and a
 //! second way of computing the same row is a second row that can disagree with the
 //! first. So the list is what this is given, already read and already settled, and all
-//! it adds is the log.
+//! it adds is the log and one measurement.
+//!
+//! **The measurement is the one thing a detail pays for and a list does not.** What a
+//! home occupies is a walk of it, and the list is the command with a startup budget. A
+//! detail is about one unit and a person asking about one unit is asking what it costs,
+//! so the walk happens here ([`crate::doctor::size`]) and the figure is the same
+//! [`Bytes`](crate::doctor::size::Bytes) a reclaim preflight reports. A row a list
+//! printed says it was not measured and why; it never prints an empty column that reads
+//! as nothing.
 
 use rusqlite::Connection;
 
-use crate::model::Unit;
-use crate::output::view::{UnitDetail, UnitList};
+use crate::doctor::size;
+use crate::model::{EnvState, Unit};
+use crate::output::view::{Disk, UnitDetail, UnitList};
 use crate::store::events;
 use crate::{Error, Result};
 
@@ -27,12 +36,26 @@ const HISTORY: u32 = 20;
 /// log could not be read.
 pub fn detail(conn: &Connection, listed: UnitList, unit: &Unit) -> Result<UnitDetail> {
     let now = listed.now;
-    let row = listed
+    let mut row = listed
         .units
         .into_iter()
         .find(|row| row.slug == unit.slug)
         .ok_or_else(|| Error::UnitNotFound { slug: unit.slug.to_string() })?;
+    measure(&mut row);
     let mut history = events::list_recent(conn, unit.id, HISTORY)?;
     history.reverse();
     Ok(UnitDetail { now, unit: row, history })
+}
+
+/// Walk the unit's home and record what it holds.
+///
+/// A home that is not on the disk is not walked: a reclaimed materialisation has no
+/// directory to ask, and the row already says so. Nothing is opened and nothing is
+/// written ([`size`]).
+fn measure(row: &mut crate::output::view::UnitRow) {
+    let Some(environment) = row.environment.as_mut() else { return };
+    if environment.state == EnvState::Absent {
+        return;
+    }
+    environment.disk = Disk::measured(size::measure(&environment.home).reading());
 }

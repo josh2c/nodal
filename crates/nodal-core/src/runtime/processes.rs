@@ -101,6 +101,26 @@ pub trait Processes {
     /// with no readable process table, and [`Error::Io`](crate::Error::Io) when the
     /// table itself cannot be listed.
     fn scan(&self) -> Result<Vec<Running>>;
+
+    /// Whether the process with this identifier is in the table now.
+    ///
+    /// This is asked of a number somebody wrote down — a lock row's `pid` — rather than
+    /// of a process a scan found, and the two readings are not the same question. A scan
+    /// keeps what it can read, and it can read neither the variables nor the working
+    /// directory of another account's process, so a scan that does not name a process
+    /// does not prove the process is gone. [`Live`] therefore overrides this with the
+    /// one reading that does cross accounts, and nothing here ever signals anything.
+    ///
+    /// The answer supplied here is the right one for a table a test states: that table
+    /// is the whole of the machine the test is describing.
+    ///
+    /// # Errors
+    /// Whatever [`Processes::scan`] reports, which on a host with no readable process
+    /// table is [`Error::ProcessScanUnsupported`](crate::Error::ProcessScanUnsupported):
+    /// "I cannot see" is a different answer from "it is gone".
+    fn holds(&self, pid: u32) -> Result<bool> {
+        Ok(self.scan()?.iter().any(|running| running.pid == pid))
+    }
 }
 
 /// The processes of this machine.
@@ -111,6 +131,10 @@ impl Processes for Live {
     fn scan(&self) -> Result<Vec<Running>> {
         scan_this_host()
     }
+
+    fn holds(&self, pid: u32) -> Result<bool> {
+        holds_on_this_host(pid)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -120,6 +144,24 @@ fn scan_this_host() -> Result<Vec<Running>> {
 
 #[cfg(not(target_os = "linux"))]
 fn scan_this_host() -> Result<Vec<Running>> {
+    Err(crate::Error::ProcessScanUnsupported { host: std::env::consts::OS })
+}
+
+/// Whether this host's process table holds a process with this identifier.
+///
+/// On Linux the kernel publishes a directory per process, and the directory is there
+/// whichever account owns the process. So this answers for a process a scan cannot read,
+/// which is the case that matters: a lock row written by another engineer on a shared
+/// host. Nothing is opened, nothing is signalled, and a number that has come round again
+/// reads as present, which keeps a hold rather than dropping one.
+#[cfg(target_os = "linux")]
+fn holds_on_this_host(pid: u32) -> Result<bool> {
+    Ok(linux::holds(pid))
+}
+
+/// Without a readable process table, liveness is not a question this host can answer.
+#[cfg(not(target_os = "linux"))]
+fn holds_on_this_host(_pid: u32) -> Result<bool> {
     Err(crate::Error::ProcessScanUnsupported { host: std::env::consts::OS })
 }
 
@@ -185,6 +227,14 @@ mod linux {
         let command =
             std::fs::read(directory.join(CMDLINE)).ok().and_then(|line| command_of(&line));
         Some(Running { pid, vars, cwd, command })
+    }
+
+    /// Whether the process table holds this identifier.
+    ///
+    /// The directory is there for every process of every account, so this is the one
+    /// reading of liveness that does not depend on what this account may read.
+    pub(super) fn holds(pid: u32) -> bool {
+        Path::new(PROC).join(pid.to_string()).is_dir()
     }
 
     /// Whether a variable is one a scan keeps.

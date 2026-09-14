@@ -91,6 +91,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
+pub use crate::doctor::size::Bytes;
 use crate::git::status::{Entry, State, Summary};
 use crate::git::{Git, Oid, union};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
@@ -104,10 +105,6 @@ use crate::workspace::prune;
 
 /// The label a unit's containers carry, which is how they are found again.
 pub const UNIT_LABEL: &str = "nodal.unit";
-
-/// What removing a directory gives back, and why that is not the figure printed.
-const SHARED: &str = "a home shares blocks with the base it was copied from, and no \
-     portable call says how many of these bytes are its own";
 
 // ---------------------------------------------------------------------------
 // What one assessment is asked to read.
@@ -367,24 +364,6 @@ impl Held {
     #[must_use]
     pub const fn refuses(self) -> bool {
         matches!(self, Self::Uncommitted | Self::Untracked)
-    }
-}
-
-/// What a group of paths holds, and what is not known about it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Bytes {
-    /// Apparent bytes: the sum of the file sizes, as the source counts them.
-    pub apparent: u64,
-    /// Whether every entry was counted. `false` makes [`Bytes::apparent`] a floor.
-    pub complete: bool,
-    /// Why this is not what removing the paths would give back to the disk.
-    pub exclusive_unknown: String,
-}
-
-impl Bytes {
-    /// What a walk of these paths measured.
-    fn of(apparent: u64, complete: bool) -> Self {
-        Self { apparent, complete, exclusive_unknown: String::from(SHARED) }
     }
 }
 

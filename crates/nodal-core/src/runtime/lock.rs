@@ -29,12 +29,22 @@
 //! **The pid is a record, not a signal.** The process that took the hold is written down
 //! so a person can look it up. Nothing here signals it and no hold is released because
 //! the process is gone: a lock names an actor, and an actor outlives any one shell.
+//!
+//! **A record is read before it is printed.** The row outlives the process, so a report
+//! that printed the row alone said `claude-code holds 8 h` about a session that was
+//! killed hours earlier, and a fresh session had nothing to tell it otherwise.
+//! [`liveness`] asks this host's process table whether the recorded process is still
+//! there, and the answer is a word in the report and nothing else: what the lock refuses
+//! is unchanged, because a process identifier is reused and a hold that let go on a
+//! reading of one would be a hold that let go of the wrong home.
 
 use std::path::Path;
 
 use rusqlite::Connection;
 
 use crate::model::{Actor, EventKind, HostName, Lock, Project, Recipe, Timestamp, Unit, UnitId};
+use crate::output::view::{HolderState, Unknowable};
+use crate::runtime::processes::Processes;
 use crate::store::{events, locks};
 use crate::{Error, Result};
 
@@ -227,6 +237,26 @@ pub fn live(conn: &Connection, root: &Path, now: Timestamp) -> Result<Vec<Lock>>
         .into_iter()
         .filter(|held| held.holds_anyone(now, idle_hours))
         .collect())
+}
+
+/// What became of the process that took a hold, read and never signalled.
+///
+/// Three things make the answer unknown rather than gone, and each of them is a reading
+/// that could not be taken: a hold from another machine, whose process identifiers mean
+/// nothing here; a row that records no process; and a host that publishes no process
+/// table this account can read. A report says which, because "I cannot see" and "nobody
+/// is there" are different answers and only one of them is news.
+#[must_use]
+pub fn liveness(lock: &Lock, here: &HostName, processes: &dyn Processes) -> HolderState {
+    if &lock.host != here {
+        return HolderState::Unknown { why: Unknowable::AnotherHost };
+    }
+    let Some(pid) = lock.pid else { return HolderState::Unknown { why: Unknowable::NoPid } };
+    match processes.holds(pid) {
+        Ok(true) => HolderState::Live,
+        Ok(false) => HolderState::Gone,
+        Err(_) => HolderState::Unknown { why: Unknowable::NoProcessTable },
+    }
 }
 
 /// The idle window a project's recipe asks for, or the default when it does not say.

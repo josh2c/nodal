@@ -74,7 +74,7 @@ use crate::context::survey::{self, Snapshot, Work};
 use crate::doctor::unique;
 use crate::git::Integration;
 use crate::lifecycle::{assess, guard, witness};
-use crate::model::{ActorName, Lock, Needs, Project, Timestamp, UnitId};
+use crate::model::{ActorName, HostName, Lock, Needs, Project, Timestamp, UnitId};
 use crate::output::notice::{self, Notice};
 use crate::output::view::{EnvLine, Holder, ToolSessions, UnitList, UnitRow, WorkTree};
 use crate::runtime::processes::{Processes, Running};
@@ -98,7 +98,7 @@ pub fn list(
     let surveyed = survey::project(conn, project)?;
     let held = crate::runtime::lock::live(conn, &project.root, now)?;
     let idle_hours = crate::runtime::lock::idle_hours(&project.root);
-    Ok(rows(&surveyed, processes, project, &Held::of(&held, idle_hours), now))
+    Ok(rows(&surveyed, processes, project, &Held::of(&held, idle_hours, processes), now))
 }
 
 /// The writers of a project's units, by unit, with the project's idle window applied.
@@ -106,17 +106,25 @@ pub fn list(
 /// The rows are read once for the whole list rather than once per unit, for the reason
 /// the survey gives about Git: a list of eight units must not become eight statements to
 /// answer one column.
+///
+/// The process table is asked whether each recorded holder is still running
+/// ([`crate::runtime::lock::liveness`]), so that a row never says "holds" about a session
+/// that ended. That is a reading of `/proc` and never a signal.
 #[derive(Debug, Default)]
 pub struct Held(BTreeMap<UnitId, Holder>);
 
 impl Held {
     /// The holders of these locks, as a report shows them.
     #[must_use]
-    pub fn of(locks: &[Lock], idle_hours: u32) -> Self {
+    pub fn of(locks: &[Lock], idle_hours: u32, processes: &dyn Processes) -> Self {
+        let here = HostName::current();
         Self(
             locks
                 .iter()
-                .filter_map(|lock| Some((lock.unit_id, Holder::from_lock(lock, idle_hours)?)))
+                .filter_map(|lock| {
+                    let state = crate::runtime::lock::liveness(lock, &here, processes);
+                    Some((lock.unit_id, Holder::from_lock(lock, idle_hours, state)?))
+                })
                 .collect(),
         )
     }
