@@ -34,7 +34,7 @@ use std::path::Path;
 
 use crate::Result;
 use crate::model::manifest::{Manifest, Missing, Origin, Want};
-use crate::model::{EnvName, Environment, Project, Recipe, Timestamp, Unit};
+use crate::model::{EnvName, Environment, Project, Recipe, Timestamp, Unit, Version};
 use crate::workspace::home;
 
 pub use crate::env::secrets::{MachineSecrets, SecretSource, UnitGenerated};
@@ -130,6 +130,7 @@ impl Activation {
             host: environment.host.clone(),
             home: environment.home.clone(),
             written_at: Timestamp::now(),
+            binary_version: Version::of_this_binary(),
             env: self.origins(),
             missing: self.missing.clone(),
         }

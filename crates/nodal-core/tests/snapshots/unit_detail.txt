@@ -12,6 +12,7 @@
   ports      app 41230
   running    —
   disk       287 MB
+  made by    nodal 0.1.0
   last       12 min ago
 
   WHEN        KIND     ACTOR        HOW   WHAT

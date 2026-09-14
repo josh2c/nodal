@@ -26,6 +26,7 @@
 //! So the directory takes the base's own name from the clone onwards, and a mark
 //! beside it says it is not a base yet until the last step takes the mark off.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -36,10 +37,13 @@ use crate::git::{self, Git, scrub};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::step::{Output, Outputs, nothing};
 use crate::lifecycle::{Plan, Rebuild, Recovery, Step};
-use crate::model::recipe::{PackageManager, Recipe};
-use crate::substrate::pin::Install;
+use crate::model::Digest;
+use crate::model::base::Provenance;
+use crate::model::recipe::{PackageManager, Recipe, ToolName, ToolVersion};
+use crate::model::version::Version;
 use crate::model::{Base, BaseId, CommitId, Platform, ProjectId, Timestamp, WorkspaceFp};
 use crate::store::bases;
+use crate::substrate::pin::Install;
 use crate::substrate::progress::Reporter;
 use crate::workspace::remove::tree as remove_tree;
 use crate::workspace::sharing::Sharing;
@@ -262,6 +266,12 @@ pub struct Params {
     /// The project's build command, as an argument list. Empty unless a warm build was
     /// asked for and the command can run without a shell.
     pub warm: Vec<String>,
+    /// The version of the Nodal that planned the build.
+    pub nodal_version: Version,
+    /// What every tool the recipe names answered when it was asked, at the plan.
+    pub tools: BTreeMap<ToolName, ToolVersion>,
+    /// The effective recipe the build was planned from, by content.
+    pub recipe_digest: Digest,
     /// The instant the build was planned, which is what the row is stamped with.
     pub planned_at: Timestamp,
 }
@@ -278,6 +288,13 @@ impl Params {
             path: self.destination.clone(),
             built_at: self.planned_at,
             last_used: self.planned_at,
+            provenance: Some(Provenance {
+                nodal_version: self.nodal_version.clone(),
+                install: self.installs.iter().map(|install| install.argv.clone()).collect(),
+                warm: self.warm.clone(),
+                tools: self.tools.clone(),
+                recipe: self.recipe_digest.clone(),
+            }),
         }
     }
 }

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Result;
 use crate::env::files;
+use crate::model::readiness::{Readiness, State};
 use crate::model::{EnvName, Environment, Manifest, Missing, Origin, Timestamp, Unit};
 use crate::output::Render;
 use crate::output::human::{Block, Doc, Field, NONE};
@@ -58,6 +59,24 @@ pub struct Created {
     /// ([`crate::env::stand_in`]).
     #[serde(default)]
     pub stand_ins: Vec<EnvName>,
+    /// Whether the home holds what its tools were to put in it, part by part.
+    ///
+    /// Information and never a refusal. A unit whose dependencies are not installed is
+    /// still a unit, and a person who is told so at the moment it is made runs one
+    /// install rather than losing an hour to a build that fails for a reason nothing
+    /// named. Measured on the home after the clone, because the home is what the person
+    /// is about to work in.
+    #[serde(default = "unmeasured")]
+    pub readiness: Readiness,
+}
+
+/// What a report carries when nothing measured the home: neither part answered.
+///
+/// A report read back out of an older release's JSON has no readiness in it, and
+/// "nobody looked" is the true answer for one, not "ready".
+fn unmeasured() -> Readiness {
+    let why = || String::from("this report was written before a home was asked");
+    Readiness { dependencies: State::Unknown { why: why() }, build: State::Unknown { why: why() } }
 }
 
 impl Created {
@@ -97,7 +116,18 @@ impl Created {
             missing: manifest.missing.clone(),
             kept: Vec::new(),
             stand_ins: stand_ins_of(manifest),
+            readiness: unmeasured(),
         }
+    }
+
+    /// The same report, with the home asked what its tools left in it.
+    ///
+    /// A builder rather than an argument for the reason [`Self::keeping`] is: the
+    /// recipe is known where the caller stands and the report is made before it.
+    #[must_use]
+    pub fn ready(mut self, readiness: Readiness) -> Self {
+        self.readiness = readiness;
+        self
     }
 
     /// The same report, with the default exclusion rows the copy kept named on it.
@@ -133,6 +163,9 @@ impl Render for Created {
         }
         if !self.kept.is_empty() {
             fields.push(Field::new("kept", kept_cell(&self.kept)));
+        }
+        for (part, why) in self.readiness.cold() {
+            fields.push(Field::new("not ready", format!("{part}: {why}")));
         }
         let mut doc = Doc::from_iter([Block::fields(fields)]);
         // An adoption ends with a sentence, not with a column. The field above is read

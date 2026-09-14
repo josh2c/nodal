@@ -21,12 +21,14 @@ pub mod manifest;
 pub mod needs;
 pub mod port;
 pub mod project;
+pub mod readiness;
 pub mod recipe;
 pub mod schema;
 pub mod session;
 pub mod timestamp;
 pub mod trash;
 pub mod unit;
+pub mod version;
 
 pub use crate::model::actor::{Actor, ActorKind, ActorName};
 pub use crate::model::base::{Base, CommitId};
@@ -45,6 +47,7 @@ pub use crate::model::manifest::{Manifest, Missing, Origin, Want};
 pub use crate::model::needs::Needs;
 pub use crate::model::port::{PortAllocation, PortBlock};
 pub use crate::model::project::{Project, ProjectName, RemoteUrl};
+pub use crate::model::readiness::{Part, Readiness, State as ReadinessState};
 pub use crate::model::recipe::{
     Backend, BaseSpec, CommandLine, Commands, DEFAULT_TRASH_RETENTION_DAYS, Db, DbKind, Env,
     EnvName, Hooks, LockPolicy, MigrationTool, PackageManager, Recipe, Reclaim, ServiceName,
@@ -55,3 +58,4 @@ pub use crate::model::session::Session;
 pub use crate::model::timestamp::Timestamp;
 pub use crate::model::trash::{Trashed, expiry};
 pub use crate::model::unit::{BranchName, Objective, Slug, Unit, UnitStatus};
+pub use crate::model::version::Version;

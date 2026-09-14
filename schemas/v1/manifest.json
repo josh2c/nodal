@@ -84,6 +84,12 @@
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
+    "Version": {
+      "description": "A program's version: dot-separated numbers, and what a pre-release adds after them.\n\nOrdered by the numbers, most significant first, with a missing number read as zero\nso that `1.2` and `1.2.0` are the same version. A pre-release is older than the\nrelease it leads to, which is the one rule that is not arithmetic.",
+      "maxLength": 64,
+      "pattern": "^[0-9]{1,9}(\\.[0-9]{1,9}){0,3}([-+][0-9A-Za-z.-]+)?$",
+      "type": "string"
+    },
     "Want": {
       "description": "Why a declared name has no value.",
       "oneOf": [
@@ -109,6 +115,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "`.nodal/manifest.toml`: what this home is, and which names it was activated with.",
   "properties": {
+    "binary_version": {
+      "$ref": "#/$defs/Version",
+      "default": "0",
+      "description": "The version of the Nodal that made this home.\n\nA home outlives the release that made it, and a home made by a release that\nwrote a different manifest, a different `.nodal/env` or a different exclusion\ntable is the first thing to know about when it behaves unlike a fresh one.\nDefaulted for a file written before a home recorded it, which reads as the\nversion before there were any."
+    },
     "env": {
       "additionalProperties": false,
       "description": "Every name `.nodal/env` assigns, and who supplied it. Names only.",

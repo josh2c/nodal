@@ -263,6 +263,9 @@ impl World {
             path: self.base.clone(),
             built_at: at(),
             last_used: at(),
+            // A base row a test writes by hand records no provenance, which is exactly
+            // what a base built before a base recorded one looks like.
+            provenance: None,
         }
     }
 

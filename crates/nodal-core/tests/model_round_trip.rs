@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use nodal_core::model::base::Provenance;
 use nodal_core::model::recipe::{
     Backend, CommandLine, DbKind, EnvName, MigrationTool, PackageManager, ServiceName, TaskCache,
     ToolName, ToolVersion,
@@ -19,7 +20,7 @@ use nodal_core::model::{
     EnvId, EnvState, Environment, Epistemic, Event, EventId, EventKind, HostName, Lease, Lock,
     Objective, Platform, PortName, Ports, Project, ProjectId, ProjectName, RawRef, Recipe, RefName,
     ResourceKey, SchemaFp, Session, SessionId, Slug, TemplateId, Timestamp, Unit, UnitId,
-    UnitStatus, WorkspaceFp,
+    UnitStatus, Version, WorkspaceFp,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -72,6 +73,16 @@ fn base() -> Base {
         path: PathBuf::from("/home/dev/.nodal/example/bases/aa01"),
         built_at: at("2026-09-06T09:05:00Z"),
         last_used: at("2026-09-06T10:00:00Z"),
+        provenance: Some(Provenance {
+            nodal_version: Version::parse("0.1.0").expect("a sample version"),
+            install: vec![vec![String::from("pnpm"), String::from("install")]],
+            warm: Vec::new(),
+            tools: BTreeMap::from([(
+                ToolName::parse("pnpm").expect("a tool name"),
+                ToolVersion::parse("9.12.3").expect("a tool version"),
+            )]),
+            recipe: digest("bb02"),
+        }),
     }
 }
 

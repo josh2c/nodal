@@ -10,11 +10,13 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use nodal_core::error::Error;
+use nodal_core::model::base::Provenance;
+use nodal_core::model::recipe::{ToolName, ToolVersion};
 use nodal_core::model::{
     Actor, ActorKind, ActorName, Base, BranchName, CommitId, DbName, DbTemplate, Digest, EnvState,
     Environment, Epistemic, Event, EventId, EventKind, HostName, Lease, Lock, Objective, Platform,
     PortAllocation, PortBlock, PortName, Ports, Project, ProjectName, RawRef, RefName, ResourceKey,
-    SchemaFp, Session, Slug, Timestamp, Unit, UnitId, UnitStatus, WorkspaceFp,
+    SchemaFp, Session, Slug, Timestamp, Unit, UnitId, UnitStatus, Version, WorkspaceFp,
 };
 use nodal_core::store::{
     SCHEMA_VERSION, Store, bases, environments, events, leases, locks, port_allocations,
@@ -96,6 +98,16 @@ fn base() -> Base {
         path: PathBuf::from("/home/dev/.nodal/acme/base/aabbcc"),
         built_at: at("2026-09-06T10:02:00Z"),
         last_used: at("2026-09-06T10:02:00Z"),
+        provenance: Some(Provenance {
+            nodal_version: Version::parse("0.1.0").unwrap(),
+            install: vec![vec![String::from("pnpm"), String::from("install")]],
+            warm: vec![String::from("pnpm"), String::from("run"), String::from("build")],
+            tools: BTreeMap::from([(
+                ToolName::parse("pnpm").unwrap(),
+                ToolVersion::parse("9.12.3").unwrap(),
+            )]),
+            recipe: Digest::parse("ddeeff").unwrap(),
+        }),
     }
 }
 

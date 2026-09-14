@@ -30,9 +30,69 @@
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
+    "Provenance": {
+      "description": "What built a base, and with what.\n\nA base is minutes of work that a later release may no longer produce the same way,\nand until this record existed a base could not say which release made it, which\ncommands it ran or which tools answered them. A person looking at a base that\nbehaves unlike a fresh one had nothing to compare.\n\nIt is not part of the key. A base is keyed by its workspace fingerprint and its\nplatform, and none of this changes that: a base built by an older Nodal is still\nwarm, and this is what makes that visible rather than making it cold.",
+      "properties": {
+        "install": {
+          "description": "Every install it ran, in order, each as the argument list it was given.",
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "nodal_version": {
+          "$ref": "#/$defs/Version",
+          "description": "The Nodal that built it."
+        },
+        "recipe": {
+          "$ref": "#/$defs/Digest",
+          "description": "The effective recipe the build read, by content."
+        },
+        "tools": {
+          "additionalProperties": false,
+          "description": "What each tool answered when it was asked its version, by the name the recipe\nrecords that tool under.",
+          "patternProperties": {
+            "^[\\x21-\\x7E]+$": {
+              "$ref": "#/$defs/ToolVersion"
+            }
+          },
+          "type": "object"
+        },
+        "warm": {
+          "description": "The build it ran afterwards, empty when it was not asked for one.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "nodal_version",
+        "install",
+        "warm",
+        "tools",
+        "recipe"
+      ],
+      "type": "object"
+    },
     "Timestamp": {
       "description": "A UTC instant, serialised as an RFC 3339 string.",
       "format": "date-time",
+      "type": "string"
+    },
+    "ToolVersion": {
+      "description": "The version a toolchain pins a tool to, as written in the pin file.",
+      "maxLength": 255,
+      "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
+      "type": "string"
+    },
+    "Version": {
+      "description": "A program's version: dot-separated numbers, and what a pre-release adds after them.\n\nOrdered by the numbers, most significant first, with a missing number read as zero\nso that `1.2` and `1.2.0` are the same version. A pre-release is older than the\nrelease it leads to, which is the one rule that is not arithmetic.",
+      "maxLength": 64,
+      "pattern": "^[0-9]{1,9}(\\.[0-9]{1,9}){0,3}([-+][0-9A-Za-z.-]+)?$",
       "type": "string"
     },
     "WorkspaceFp": {
@@ -71,6 +131,17 @@
     "project_id": {
       "$ref": "#/$defs/ProjectId",
       "description": "The project this base belongs to."
+    },
+    "provenance": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Provenance"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "What built it. `None` for a base built before a base recorded this, which is\nthe one thing a stale base cannot be asked about."
     },
     "ws_fingerprint": {
       "$ref": "#/$defs/WorkspaceFp",

@@ -10,10 +10,37 @@
         "commit": "9f1d2c3b4a5968778695a4b3c2d1e0f102030405",
         "path": "/home/j/.nodal/project/base/7f3e",
         "built_at": "2026-09-05T09:00:00Z",
-        "last_used": "2026-09-06T13:22:00Z"
+        "last_used": "2026-09-06T13:22:00Z",
+        "provenance": {
+          "nodal_version": "0.1.0",
+          "install": [
+            [
+              "pnpm",
+              "install"
+            ]
+          ],
+          "warm": [
+            "pnpm",
+            "run",
+            "build"
+          ],
+          "tools": {
+            "pnpm": "9.12.3"
+          },
+          "recipe": "c1d2e3f405"
+        }
       },
       "pins": 1,
-      "disk_bytes": 1160000000
+      "disk_bytes": 1160000000,
+      "readiness": {
+        "dependencies": {
+          "state": "ready"
+        },
+        "build": {
+          "state": "unknown",
+          "why": "a `pnpm` build names no output directory this can check"
+        }
+      }
     }
   ]
 }

@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 
 use nodal_core::lifecycle::ops::new::ensure_project;
 use nodal_core::lifecycle::{Action, Rebuild};
+use nodal_core::model::recipe::Recipe;
 use nodal_core::model::{
     EnvState, Environment, HostName, Ports, Project, Slug, Timestamp, Unit, UnitStatus,
 };
@@ -252,7 +253,7 @@ fn two_bases_coexist_keyed_by_different_fingerprints() {
     assert_ne!(first.fingerprint, second.fingerprint, "the two are keyed differently");
     assert_ne!(first.base.id, second.base.id);
     assert_both_are_on_disk_and_neither_is_the_checkout(&[&first, &second]);
-    assert_eq!(substrate::list(&store, project.id).unwrap().len(), 2);
+    assert_eq!(substrate::list(&store, project.id, &Recipe::default()).unwrap().len(), 2);
 
     // And asking again for a key that is warm finds it rather than building it.
     let (again, _) = build(&world, &mut store, &project);
@@ -321,7 +322,7 @@ fn gc_refuses_a_pinned_base_and_sweeps_the_idle_ones() {
     assert_eq!(removed.iter().map(|base| base.id).collect::<Vec<_>>(), vec![idle.base.id]);
     assert!(!idle.base.path.exists(), "the idle base is gone from disk");
     assert!(pinned.base.path.is_dir(), "the pinned base is untouched");
-    assert_eq!(substrate::list(&store, project.id).unwrap().len(), 1);
+    assert_eq!(substrate::list(&store, project.id, &Recipe::default()).unwrap().len(), 1);
 }
 
 /// Record a unit whose environment was cloned from a base, which is what a pin is.
@@ -424,7 +425,10 @@ fn a_build_killed_between_steps_is_finished_by_the_next_invocation() {
 
     let mut store = world.store();
     let project = world.project(&mut store);
-    assert!(substrate::list(&store, project.id).unwrap().is_empty(), "no row was committed");
+    assert!(
+        substrate::list(&store, project.id, &Recipe::default()).unwrap().is_empty(),
+        "no row was committed"
+    );
 
     let resolutions = lifecycle::resolve(&mut store, &[&BaseBuild]).unwrap();
 
@@ -437,7 +441,7 @@ fn a_build_killed_between_steps_is_finished_by_the_next_invocation() {
          promotion that follows it puts the base at its name"
     );
 
-    let bases = substrate::list(&store, project.id).unwrap();
+    let bases = substrate::list(&store, project.id, &Recipe::default()).unwrap();
     assert_eq!(bases.len(), 1, "the resumed build committed its row");
     assert!(bases[0].base.path.join(".warm-log").exists(), "and finished the work");
 

@@ -21,6 +21,7 @@ use crate::model::project::ProjectName;
 use crate::model::recipe::EnvName;
 use crate::model::timestamp::Timestamp;
 use crate::model::unit::Slug;
+use crate::model::version::Version;
 
 /// Who supplied an environment variable's value.
 ///
@@ -89,6 +90,15 @@ pub struct Manifest {
     pub home: PathBuf,
     /// When the file was written.
     pub written_at: Timestamp,
+    /// The version of the Nodal that made this home.
+    ///
+    /// A home outlives the release that made it, and a home made by a release that
+    /// wrote a different manifest, a different `.nodal/env` or a different exclusion
+    /// table is the first thing to know about when it behaves unlike a fresh one.
+    /// Defaulted for a file written before a home recorded it, which reads as the
+    /// version before there were any.
+    #[serde(default = "Version::before_this_was_recorded")]
+    pub binary_version: Version,
     /// Every name `.nodal/env` assigns, and who supplied it. Names only.
     pub env: BTreeMap<EnvName, Origin>,
     /// Every declared name nothing answered.

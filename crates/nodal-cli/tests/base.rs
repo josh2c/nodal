@@ -108,3 +108,43 @@ fn base_gc_removes_the_bases_that_are_not_kept() {
     let listed = nodal(root, &["ls"]);
     assert!(stdout(&listed).contains("no base built yet"), "{}", stdout(&listed));
 }
+
+/// A base records what built it, so a base that behaves unlike a fresh one can be
+/// compared with one.
+#[test]
+fn a_base_records_the_nodal_and_the_commands_that_built_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    world(root);
+    assert!(nodal(root, &["build"]).status.success());
+
+    let listed = nodal(root, &["ls", "--json"]);
+    let json: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let built = &json["bases"][0]["base"]["provenance"];
+    assert_eq!(built["nodal_version"], env!("CARGO_PKG_VERSION"), "{json}");
+    assert!(built["install"].is_array(), "the installs are a list of argument lists: {json}");
+    assert!(built["recipe"].as_str().is_some_and(|d| d.len() >= 40), "a recipe digest: {json}");
+}
+
+/// Warmth is read from the files, and a project whose managers leave nothing in the
+/// tree is reported as unanswerable rather than as ready.
+#[test]
+fn a_base_says_which_part_of_it_a_file_can_prove() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    world(root);
+    assert!(nodal(root, &["build"]).status.success());
+
+    let listed = nodal(root, &["ls", "--json"]);
+    let json: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let readiness = &json["bases"][0]["readiness"];
+    assert_eq!(readiness["dependencies"]["state"], "unknown", "{json}");
+    assert_eq!(readiness["build"]["state"], "unknown", "{json}");
+    assert!(
+        readiness["build"]["why"].as_str().unwrap().contains("no build command"),
+        "the reason is carried, not only the verdict: {json}"
+    );
+
+    let human = nodal(root, &["ls"]);
+    assert!(stdout(&human).contains("unknown"), "{}", stdout(&human));
+}

@@ -3,6 +3,7 @@
 use rusqlite::{Connection, Row, params};
 
 use crate::Result;
+use crate::model::base::Provenance;
 use crate::model::{Base, BaseId, CommitId, Platform, ProjectId, Timestamp, WorkspaceFp};
 use crate::store::row;
 
@@ -10,8 +11,12 @@ use crate::store::row;
 const TABLE: &str = "base";
 
 /// Every column [`decode`] reads.
-const COLUMNS: &str =
-    "id, project_id, ws_fingerprint, platform, commit_id, path, built_at, last_used";
+const COLUMNS: &str = "id, project_id, ws_fingerprint, platform, commit_id, path, built_at, \
+                       last_used, nodal_version, install_argv, warm_argv, tool_versions, \
+                       recipe_digest";
+
+/// What a provenance column is called when the store refuses to encode one.
+const PROVENANCE: &str = "base provenance";
 
 /// Record a built base. One base exists per fingerprint and platform.
 ///
@@ -19,10 +24,12 @@ const COLUMNS: &str =
 /// [`crate::Error::StoreConflict`] when a base for that key is already recorded,
 /// [`crate::Error::Store`] on any other failure.
 pub fn insert(conn: &Connection, base: &Base) -> Result<()> {
+    let built = base.provenance.as_ref();
     row::write(
         conn,
         "INSERT INTO base (id, project_id, ws_fingerprint, platform, commit_id, path, built_at, \
-         last_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         last_used, nodal_version, install_argv, warm_argv, tool_versions, recipe_digest) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             base.id.to_string(),
             base.project_id.to_string(),
@@ -32,6 +39,11 @@ pub fn insert(conn: &Connection, base: &Base) -> Result<()> {
             row::path_of(&base.path)?,
             base.built_at.unix_seconds(),
             base.last_used.unix_seconds(),
+            built.map(|p| p.nodal_version.to_string()),
+            built.map(|p| row::json_of(&p.install, PROVENANCE)).transpose()?,
+            built.map(|p| row::json_of(&p.warm, PROVENANCE)).transpose()?,
+            built.map(|p| row::json_of(&p.tools, PROVENANCE)).transpose()?,
+            built.map(|p| p.recipe.as_str().to_owned()),
         ],
     )?;
     Ok(())
@@ -110,5 +122,24 @@ fn decode(row: &Row<'_>) -> Result<Base> {
         path: row::path(row, TABLE, "path")?,
         built_at: row::stamp(row, TABLE, "built_at")?,
         last_used: row::stamp(row, TABLE, "last_used")?,
+        provenance: provenance(row)?,
     })
+}
+
+/// What built this base, or `None` for a row written before a base recorded it.
+///
+/// The version column is what says whether there is a record at all: the four beside it
+/// are written in the same statement, so a row with a version has them and a row
+/// without one has none of them.
+fn provenance(row: &Row<'_>) -> Result<Option<Provenance>> {
+    let Some(nodal_version) = row::scalar_opt(row, TABLE, "nodal_version")? else {
+        return Ok(None);
+    };
+    Ok(Some(Provenance {
+        nodal_version,
+        install: row::json_opt(row, TABLE, "install_argv")?.unwrap_or_default(),
+        warm: row::json_opt(row, TABLE, "warm_argv")?.unwrap_or_default(),
+        tools: row::json_opt(row, TABLE, "tool_versions")?.unwrap_or_default(),
+        recipe: row::scalar(row, TABLE, "recipe_digest")?,
+    }))
 }
