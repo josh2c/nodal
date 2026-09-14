@@ -504,36 +504,68 @@ fn labelled(containers: Vec<docker::Container>, unit: UnitId) -> Vec<String> {
 /// Read the process table once and sort what it says about this unit into the two levels
 /// attribution has ([`crate::runtime::attribute::Confidence`]).
 ///
-/// The first list is certain: each process carries `NODAL_ID`, which Nodal wrote into the
-/// home's environment and nothing else writes. The second is probable: each process
-/// stands in the home and says nothing about which unit it is working on.
+/// The first list is certain: each process carries this unit's `NODAL_ID`, which Nodal
+/// wrote into the home's environment and nothing else writes. The second is probable:
+/// each process stands in the home and says nothing about working on *this* unit.
 ///
-/// `home` is resolved ([`guard::resolve`]), because the working directory the kernel
-/// reports has every symbolic link on the way to it already taken out. A home reached
-/// through a link — macOS reaches everything under `/var` that way, and so does anyone
-/// whose state directory is a link — would otherwise match no process at all.
-///
-/// The two processes a stop spares ([`stop::spared`]) are left out of the probable list
-/// altogether. A person who typed the command inside the home is standing in it, and
-/// their own command must not be the reason their reclaim refuses.
+/// Both halves are one predicate each, [`owned_by`] and [`bystander`], so that `nodal ls`
+/// reaches the same rule rather than writing a second one.
 ///
 /// # Errors
 /// Whatever the process table reported, which on a host that has none is
 /// [`Error::ProcessScanUnsupported`].
 pub fn scan(unit: UnitId, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)> {
     let placed: Vec<PathBuf> = homes.iter().map(|home| guard::resolve(home)).collect();
-    let id = unit.to_string();
     let spared = stop::spared();
     let mut certain = Vec::new();
     let mut standing = Vec::new();
     for process in processes::Processes::scan(&processes::Live)? {
-        if process.var(crate::env::vars::ID) == Some(id.as_str()) {
+        if owned_by(&process, unit) {
             certain.push(process.pid);
-        } else if in_one_of(&process, &placed) && !spared.contains(&process.pid) {
+        } else if bystander(&process, unit, &placed, &spared) {
             standing.push(Standing::new(process.pid, process.command.clone()));
         }
     }
     Ok((certain, standing))
+}
+
+/// Whether this process is something standing in one of `unit`'s homes that a reclaim of
+/// `unit` would never signal — attribution's probable level, and the thing a reclaim
+/// refuses to move the home out from under.
+///
+/// One predicate, public, because one word has to mean one thing. `nodal ls` marks a row
+/// `blocking_runtime` with it and `nodal reclaim --check` refuses with it, and the two
+/// used to disagree over the case that makes the distinction worth drawing: a process of
+/// **another** unit standing in this one's home. It carries a `NODAL_ID`, so a rule that
+/// asked only whether one was there read it as something Nodal started and said nothing;
+/// it does not carry *this* unit's, so a reclaim here will not signal it and will move
+/// the home out from under it. That is a bystander by every part of the definition, and
+/// both readings now say so.
+///
+/// `placed` must already be resolved ([`guard::resolve`]), because the working directory
+/// the kernel reports has every symbolic link on the way to it taken out. A home reached
+/// through a link — macOS reaches everything under `/var` that way, and so does anyone
+/// whose state directory is a link — would otherwise match no process at all.
+///
+/// The two processes a stop spares ([`stop::spared`]) are never bystanders. A person who
+/// typed the command inside the home is standing in it, and their own command must not be
+/// the reason their unit reads as blocked.
+#[must_use]
+pub fn bystander(
+    process: &processes::Running,
+    unit: UnitId,
+    placed: &[PathBuf],
+    spared: &[u32],
+) -> bool {
+    !owned_by(process, unit) && !spared.contains(&process.pid) && in_one_of(process, placed)
+}
+
+/// Whether a process is this unit's own, which is attribution's certain level.
+///
+/// It carries `NODAL_ID`, Nodal wrote that into the home's environment, and nothing else
+/// writes it. The identifier has to be this unit's: another unit's is another unit's.
+fn owned_by(process: &processes::Running, unit: UnitId) -> bool {
+    process.var(crate::env::vars::ID).is_some_and(|carried| carried == unit.to_string())
 }
 
 /// Whether a process stands in one of these directories, which is the whole of the

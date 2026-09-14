@@ -50,6 +50,7 @@
 //! | heavy ignored state is reconstructable | `heavy_ignored_state_is_reconstructable_and_priced_as_apparent` |
 //! | owned runtime is named and does not block | `owned_runtime_is_named_and_is_not_a_reason_to_refuse` |
 //! | a bystander blocks, and so it does for the reclaim | `a_bystander_blocks_the_move_and_the_reclaim_refuses_the_same_way` |
+//! | another unit's process blocks in the list too | `another_units_process_in_this_home_blocks_the_list_and_the_check_alike` |
 //! | it changes nothing | `the_check_changes_nothing_and_runs_no_hook` |
 //! | one value, two renderings | `the_human_form_and_the_json_are_one_value` |
 //! | it is not a way to force anything | `check_refuses_force_and_yes` |
@@ -66,6 +67,10 @@ use serde_json::Value;
 
 /// The unit every property here asks about. One of the fixture's own handles.
 const SLUG: &str = "worker-import";
+
+/// A second unit of the same project, for the one property that needs another unit's
+/// identifier to exist.
+const NEIGHBOUR: &str = "report-export";
 
 /// A path no ignore rule of the fixture covers, so a commit of it is work.
 const ONLY: &str = "only-here.txt";
@@ -484,6 +489,63 @@ fn a_bystander_blocks_the_move_and_the_reclaim_refuses_the_same_way() {
     assert!(told.contains(&bystander.pid().to_string()), "the refusal does not name it: {told}");
     assert!(home.is_dir(), "the refusal moved the home");
     assert!(machine.trashed().is_empty(), "the refusal trashed the home");
+}
+
+/// A process of **another** unit standing in this unit's home blocks it in both
+/// readings, and that is one predicate rather than two that agree by luck.
+///
+/// The process carries a `NODAL_ID`, so it is something Nodal started; the identifier is
+/// not this unit's, so a reclaim here will never signal it and will move the home out
+/// from under it. `nodal reclaim --check` refused over it and `nodal ls` said nothing,
+/// which is the list and the preflight printing two different answers about one process
+/// — against the rule the list's own module states, that one word means one thing in
+/// both places.
+///
+/// Both sides are read from real commands against a real process, because the property is
+/// about two readings of one machine and a table a test wrote is only one of them.
+#[test]
+fn another_units_process_in_this_home_blocks_the_list_and_the_check_alike() {
+    if !nodal_safety::platform::reads_process_table("one bystander rule for two readings") {
+        return;
+    }
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    let other = machine.unit(NEIGHBOUR);
+    let their_id = std::fs::read_to_string(other.join(".nodal/id")).unwrap();
+    let intruder = nodal_safety::process::of_another_unit(their_id.trim(), &other, &home);
+
+    let answer = check(&machine, SLUG);
+    let standing = answer["runtime"]["bystanders"].as_array().unwrap();
+    assert!(
+        standing.iter().any(|row| row["pid"] == intruder.pid()),
+        "the check did not name another unit's process as a bystander: {answer:#}"
+    );
+    assert_eq!(answer["safe_to_reclaim"], Value::Bool(false), "it did not block: {answer:#}");
+
+    assert_eq!(needs(&machine, SLUG), "blocking_runtime", "the list did not agree with the check");
+    assert_ne!(
+        needs(&machine, NEIGHBOUR),
+        "blocking_runtime",
+        "the process blocked the unit it belongs to, which it is standing nowhere near"
+    );
+    assert!(nodal_safety::process::alive(intruder.pid()), "a reading signalled the process");
+}
+
+/// What one row of `nodal ls` says it needs, and `absent` where it says nothing.
+fn needs(machine: &Machine, slug: &str) -> String {
+    let listed = machine.nodal(&["ls", "--json"]);
+    let printed = answer(&listed);
+    let read: Value = serde_json::from_str(&printed)
+        .unwrap_or_else(|_| panic!("ls --json is one document: {printed}"));
+    read["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["slug"] == slug)
+        .unwrap_or_else(|| panic!("no row for {slug}: {printed}"))["needs"]
+        .as_str()
+        .unwrap_or("absent")
+        .to_owned()
 }
 
 /// A unit with one process carrying its identifier, or nothing on a host with no process

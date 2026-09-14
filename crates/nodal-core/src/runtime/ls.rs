@@ -73,7 +73,7 @@ use crate::Result;
 use crate::context::survey::{self, Snapshot, Work};
 use crate::doctor::unique;
 use crate::git::Integration;
-use crate::lifecycle::{guard, witness};
+use crate::lifecycle::{assess, guard, witness};
 use crate::model::{ActorName, Lock, Needs, Project, Timestamp, UnitId};
 use crate::output::notice::{self, Notice};
 use crate::output::view::{EnvLine, Holder, ToolSessions, UnitList, UnitRow, WorkTree};
@@ -138,10 +138,12 @@ pub fn rows(
     now: Timestamp,
 ) -> UnitList {
     let mut notices = Vec::new();
-    let homes: Vec<PathBuf> = surveyed
+    // Each home with the unit it belongs to, because a process carrying another unit's
+    // identifier is a bystander here and the predicate has to be asked with this one's
+    // ([`assess::bystander`]).
+    let homes: Vec<(UnitId, PathBuf)> = surveyed
         .iter()
-        .filter_map(|subject| subject.home.as_ref())
-        .map(|env| env.home.clone())
+        .filter_map(|subject| Some((subject.unit.id, subject.home.as_ref()?.home.clone())))
         .collect();
     let seen = scan(processes, &homes, &mut notices);
     // One reading of the checkout for the whole list, and two `stat` calls per home
@@ -321,12 +323,13 @@ impl Attached {
 struct Seen {
     /// Who is attached to each home, counted by tool. This is WHO.
     attached: Attached,
-    /// The homes something Nodal did not start is standing in.
+    /// The homes something this unit may not signal is standing in.
     ///
-    /// A process matched by working directory alone: a tmux pane, an editor server over
-    /// SSH, a teammate's shell. Nothing signals one, and it is what a reclaim would
-    /// refuse to move the home out from under
-    /// ([`crate::lifecycle::assess`]).
+    /// A tmux pane, an editor server over SSH, a teammate's shell — and a process of
+    /// another unit, which Nodal did start and which this unit still may not touch. What
+    /// they have in common is the whole of the definition: a reclaim here would signal
+    /// none of them and would move the home out from under all of them
+    /// ([`assess::bystander`], which decides it).
     bystanders: BTreeSet<PathBuf>,
 }
 
@@ -345,10 +348,12 @@ impl Seen {
 /// attached" and "I could not see". A row's NEEDS is then decided without the runtime
 /// half, which understates and never overstates.
 ///
-/// The two processes a stop spares ([`stop::spared`]) are left out. A person who typed
-/// `nodal ls` inside a home is standing in it, and their own command must not be the
-/// reason their unit reads as blocked.
-fn scan(processes: &dyn Processes, homes: &[PathBuf], notices: &mut Vec<Notice>) -> Seen {
+/// What counts as standing in a home is [`assess::bystander`] and not a rule of this
+/// module's own. The list and the preflight print the same word over the same process,
+/// so they have to be reading the same predicate — including over a process that carries
+/// **another** unit's identifier, which is Nodal's own and is still nothing this unit may
+/// signal or move a home out from under.
+fn scan(processes: &dyn Processes, homes: &[(UnitId, PathBuf)], notices: &mut Vec<Notice>) -> Seen {
     let running = match processes.scan() {
         Ok(running) => running,
         Err(error) => {
@@ -360,16 +365,14 @@ fn scan(processes: &dyn Processes, homes: &[PathBuf], notices: &mut Vec<Notice>)
         }
     };
     let mut seen = Seen { attached: attached(&running, notices), ..Seen::default() };
-    let placed: Vec<(PathBuf, PathBuf)> =
-        homes.iter().map(|home| (guard::resolve(home), home.clone())).collect();
+    // Resolved once for the whole list, because that is the form the predicate asks for
+    // and the kernel's own reading of a working directory has the links taken out.
+    let placed: Vec<(UnitId, PathBuf, PathBuf)> =
+        homes.iter().map(|(unit, home)| (*unit, guard::resolve(home), home.clone())).collect();
     let spared = stop::spared();
     for process in &running {
-        if process.var(crate::env::vars::ID).is_some() || spared.contains(&process.pid) {
-            continue;
-        }
-        let Some(cwd) = process.cwd.as_deref() else { continue };
-        for (resolved, home) in &placed {
-            if cwd.starts_with(resolved) {
+        for (unit, resolved, home) in &placed {
+            if assess::bystander(process, *unit, std::slice::from_ref(resolved), &spared) {
                 seen.bystanders.insert(home.clone());
             }
         }

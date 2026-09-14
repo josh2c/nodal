@@ -635,6 +635,24 @@ pub fn carrying(unit: &str, home: &Path) -> Owned {
     Owned::spawn(&mut command)
 }
 
+/// A sleeping process carrying one unit's environment and standing in another's home.
+///
+/// The case two readings of the process table can disagree over. It carries `NODAL_ID`,
+/// so it is something Nodal started and not a stranger; the identifier is not the
+/// identifier of the unit whose home it stands in, so a reclaim of *that* unit will never
+/// signal it and would move the home out from under it. That is a bystander to the home
+/// it stands in and owned runtime to the unit it names, both at once.
+///
+/// # Panics
+///
+/// As [`Owned::spawn`].
+#[must_use]
+pub fn of_another_unit(unit: &str, its_home: &Path, standing_in: &Path) -> Owned {
+    let mut command = Command::new("sleep");
+    command.arg("30").current_dir(standing_in).env("NODAL_ID", unit).env("NODAL_ROOT", its_home);
+    Owned::spawn(&mut command)
+}
+
 /// A sleeping process that merely stands in a home and carries no Nodal variable.
 ///
 /// This is the signal attribution calls probable: a terminal with no integration and no
