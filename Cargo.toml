@@ -84,3 +84,14 @@ allow_attributes_without_reason = "deny"
 strip = "symbols"
 lto = true
 codegen-units = 1
+
+# The bundled SQLite is about a quarter of the release artifact, and it is the one
+# dependency whose speed nothing waits for: the registry holds one row for each unit, and
+# every statement it runs is a point lookup or a short scan over tens of rows. Compiled
+# for size it costs 887,968 fewer bytes on the CI runner and measures the same.
+#
+# The stanza is here and not in `.cargo/config.toml`, because `cargo install --git` reads
+# this manifest and does not read that file. The artifact a person installs must be the
+# artifact CI measures.
+[profile.release.package.libsqlite3-sys]
+opt-level = "s"
