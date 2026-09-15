@@ -49,14 +49,14 @@ mod tests {
     fn the_package_manager_key_is_read_as_one_manager_or_as_several() {
         let one = parse("package_manager = \"pnpm\"\n", "x").unwrap();
         assert_eq!(one.package_manager, [PackageManager::Pnpm]);
-        assert_eq!(one.package_manager(), Some(PackageManager::Pnpm));
+        assert_eq!(one.package_manager.first().copied(), Some(PackageManager::Pnpm));
 
         let many = parse("package_manager = [\"cargo\", \"pnpm\", \"uv\"]\n", "x").unwrap();
         assert_eq!(
             many.package_manager,
             [PackageManager::Cargo, PackageManager::Pnpm, PackageManager::Uv]
         );
-        assert_eq!(many.package_manager(), Some(PackageManager::Cargo));
+        assert_eq!(many.package_manager.first().copied(), Some(PackageManager::Cargo));
         assert_eq!(many.script_manager(), Some(PackageManager::Pnpm));
     }
 

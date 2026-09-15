@@ -132,7 +132,7 @@ fn carried_on(
             ));
             return Ok(None);
         }
-        Some(Attempt::Resumable(stopped)) => stopped,
+        Some(Attempt::Resumable(stopped)) => *stopped,
     };
     progress.line(&format!(
         "an earlier build of this base stopped at the {step} step: {why}",
@@ -159,8 +159,9 @@ fn carried_on(
 
 /// What a failed build of this base amounts to for the invocation that found it.
 enum Attempt {
-    /// Its parameters read back, so it can be carried on.
-    Resumable(Stopped),
+    /// Its parameters read back, so it can be carried on. Boxed, because a whole set
+    /// of build parameters beside a path and a sentence is a lopsided value to move.
+    Resumable(Box<Stopped>),
     /// Its parameters were written in a shape this release does not read. Nothing can
     /// be rebuilt from them, and the directory the attempt left is named so that it is
     /// not silently orphaned.
@@ -227,7 +228,8 @@ fn stopped_at(store: &Store, key: &Key) -> Result<Option<Attempt>> {
             }
         };
         let Some((step, why)) = failing_step(store, record.id)? else { continue };
-        return Ok(Some(Attempt::Resumable(Stopped { operation: record.id, params, step, why })));
+        let stopped = Stopped { operation: record.id, params, step, why };
+        return Ok(Some(Attempt::Resumable(Box::new(stopped))));
     }
     Ok(None)
 }

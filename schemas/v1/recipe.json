@@ -523,22 +523,6 @@
       "maxLength": 255,
       "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
       "type": "string"
-    },
-    "Written": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/PackageManager",
-          "description": "`package_manager = \"pnpm\"`, which is what a project of one ecosystem writes."
-        },
-        {
-          "description": "`package_manager = [\"cargo\", \"pnpm\"]`, the primary first.",
-          "items": {
-            "$ref": "#/$defs/PackageManager"
-          },
-          "type": "array"
-        }
-      ],
-      "description": "How a recipe writes its package managers: one, or several in the order they install\nin. This is the boundary shape only. The model holds the list, so no code below the\nparse sees two spellings of one key."
     }
   },
   "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/recipe.json",
@@ -645,9 +629,19 @@
       ]
     },
     "package_manager": {
-      "$ref": "#/$defs/Written",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PackageManager"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/PackageManager"
+          },
+          "type": "array"
+        }
+      ],
       "default": [],
-      "description": "Every package manager the project installs with, the primary first.\n\nA repository of more than one ecosystem has more than one, and a base installs\neach of them in this order. The primary is the one whose commands a bare script\nname resolves against ([`Recipe::package_manager`])."
+      "description": "Every package manager the project installs with, the primary first.\n\nWritten as one name or as a list of them. A repository of more than one\necosystem has more than one, and a base installs each of them in this order.\nThe first is the primary: the one a bare script name resolves against."
     },
     "package_manager_pin": {
       "anyOf": [

@@ -9,7 +9,7 @@
 //! Each command runs through the manager the lockfile named, because that is what puts
 //! the environment the tool is installed in on the path.
 
-use crate::model::recipe::{CommandLine, PackageManager, Recipe};
+use crate::model::recipe::{CommandLine, Ecosystem, PackageManager, Recipe};
 use crate::recipe::infer::scripts::SetCommand;
 use crate::recipe::infer::{Confidence, Project, Proposal};
 
@@ -59,11 +59,7 @@ pub fn infer(project: &Project, so_far: &Recipe) -> Proposal {
 
 /// The Python manager the recipe named, when it named one.
 fn python_manager(recipe: &Recipe) -> Option<PackageManager> {
-    recipe
-        .package_manager
-        .iter()
-        .copied()
-        .find(|manager| matches!(manager, PackageManager::Uv | PackageManager::Poetry))
+    recipe.package_manager.iter().copied().find(|m| m.ecosystem() == Ecosystem::Python)
 }
 
 /// Whether the manifest declares `name` as a dependency, in any of the places the

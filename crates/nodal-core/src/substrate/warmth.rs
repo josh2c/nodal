@@ -14,7 +14,7 @@
 use std::path::Path;
 
 use crate::model::readiness::{Readiness, State};
-use crate::model::recipe::{PackageManager, Recipe};
+use crate::model::recipe::{Ecosystem, PackageManager, Recipe};
 
 /// Where a Node install puts what it installed.
 const NODE_MODULES: &str = "node_modules";
@@ -48,22 +48,26 @@ fn dependencies(recipe: &Recipe, tree: &Path) -> State {
 }
 
 /// Whether one manager has left its dependencies in the tree.
+///
+/// The ecosystem answers for the directory, and the manager answers where two managers
+/// of one ecosystem differ: Poetry puts its environment outside the tree unless the
+/// project asked otherwise, and Cargo always does.
 fn installed(manager: PackageManager, tree: &Path) -> State {
     let program = manager.program();
-    match manager {
-        PackageManager::Pnpm | PackageManager::Yarn | PackageManager::Npm | PackageManager::Bun => {
-            present(tree, NODE_MODULES, program)
-        }
-        PackageManager::Uv => present(tree, VENV, program),
-        PackageManager::Poetry if in_project(tree) => present(tree, VENV, program),
-        PackageManager::Poetry => State::Unknown {
-            why: String::from(
-                "poetry keeps its environment outside the tree unless virtualenvs.in-project is set",
-            ),
-        },
-        PackageManager::Cargo => {
+    match manager.ecosystem() {
+        Ecosystem::Node => present(tree, NODE_MODULES, program),
+        Ecosystem::Rust => {
             State::Unknown { why: String::from("cargo keeps its download cache outside the tree") }
         }
+        Ecosystem::Python if manager == PackageManager::Poetry && !in_project(tree) => {
+            State::Unknown {
+                why: String::from(
+                    "poetry keeps its environment outside the tree unless \
+                     virtualenvs.in-project is set",
+                ),
+            }
+        }
+        Ecosystem::Python => present(tree, VENV, program),
     }
 }
 

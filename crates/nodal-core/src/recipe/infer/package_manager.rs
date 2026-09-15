@@ -10,7 +10,7 @@
 //! specificity inside an ecosystem, so a repository that carries both a `pnpm-lock.yaml`
 //! and a `package-lock.json` still installs with the one its own tooling would use.
 
-use crate::model::recipe::{PackageManager, Recipe, ToolVersion};
+use crate::model::recipe::{Ecosystem, PackageManager, Recipe, ToolVersion};
 use crate::recipe::infer::{Confidence, Project, Proposal};
 
 /// The lockfile each package manager writes, most specific first.
@@ -34,10 +34,10 @@ pub fn infer(project: &Project, _so_far: &Recipe) -> Proposal {
     let mut proposal = Proposal::default();
     let mut ecosystems: Vec<Ecosystem> = Vec::new();
     for (lockfile, manager) in LOCKFILES {
-        if !project.exists(lockfile) || ecosystems.contains(&ecosystem(*manager)) {
+        if !project.exists(lockfile) || ecosystems.contains(&manager.ecosystem()) {
             continue;
         }
-        ecosystems.push(ecosystem(*manager));
+        ecosystems.push(manager.ecosystem());
         proposal.recipe.package_manager.push(*manager);
     }
     if !proposal.recipe.package_manager.is_empty() {
@@ -49,29 +49,6 @@ pub fn infer(project: &Project, _so_far: &Recipe) -> Proposal {
         .and_then(serde_json::Value::as_str)
         .and_then(|pin| ToolVersion::parse(pin).ok());
     proposal
-}
-
-/// The dependency tree a manager writes. Two managers of one ecosystem write the same
-/// one, so a project installs with at most one of them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ecosystem {
-    /// `node_modules`.
-    Node,
-    /// The Cargo registry cache.
-    Rust,
-    /// A virtual environment.
-    Python,
-}
-
-/// Which dependency tree a manager writes.
-const fn ecosystem(manager: PackageManager) -> Ecosystem {
-    match manager {
-        PackageManager::Pnpm | PackageManager::Yarn | PackageManager::Npm | PackageManager::Bun => {
-            Ecosystem::Node
-        }
-        PackageManager::Cargo => Ecosystem::Rust,
-        PackageManager::Uv | PackageManager::Poetry => Ecosystem::Python,
-    }
 }
 
 /// The command that runs a script a `package.json` declares.

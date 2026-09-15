@@ -429,7 +429,7 @@ fn a_polyglot_project_names_every_manager_it_carries() {
         effective.recipe.package_manager,
         [PackageManager::Pnpm, PackageManager::Cargo, PackageManager::Uv]
     );
-    assert_eq!(effective.recipe.package_manager(), Some(PackageManager::Pnpm));
+    assert_eq!(effective.recipe.package_manager.first().copied(), Some(PackageManager::Pnpm));
 }
 
 /// Two lockfiles of one ecosystem are a repository mid-way through changing manager.

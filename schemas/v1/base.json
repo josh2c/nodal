@@ -90,7 +90,7 @@
       "type": "string"
     },
     "Version": {
-      "description": "A program's version: dot-separated numbers, and what a pre-release adds after them.\n\nOrdered by the numbers, most significant first, with a missing number read as zero\nso that `1.2` and `1.2.0` are the same version. A pre-release is older than the\nrelease it leads to, which is the one rule that is not arithmetic.",
+      "description": "A program's version: dot-separated numbers, with a pre-release or a build after\nthem, as the program writes it.",
       "maxLength": 64,
       "pattern": "^[0-9]{1,9}(\\.[0-9]{1,9}){0,3}([-+][0-9A-Za-z.-]+)?$",
       "type": "string"
