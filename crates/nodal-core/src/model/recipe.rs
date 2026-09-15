@@ -129,35 +129,89 @@ impl PackageManager {
             Self::Poetry => "poetry",
         }
     }
+
+    /// Every manager a recipe may name, in the order a message lists them.
+    ///
+    /// The list is written once here and read by the reader and by the message it
+    /// fails with, so a manager added to the enum cannot be accepted by one and
+    /// omitted by the other.
+    pub const ALL: [Self; 7] =
+        [Self::Npm, Self::Pnpm, Self::Yarn, Self::Bun, Self::Cargo, Self::Uv, Self::Poetry];
+
+    /// The manager this word names, `None` when no manager is called that.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|manager| manager.program() == word)
+    }
+
+    /// The accepted words, for a message that has to list them.
+    #[must_use]
+    pub fn accepted() -> String {
+        Self::ALL.iter().map(|manager| manager.program()).collect::<Vec<&str>>().join(", ")
+    }
 }
 
 /// Read the `package_manager` key in either spelling a recipe may write it in.
 ///
 /// Reading only. A list writes itself, so the key always comes out as a list and the
 /// two spellings exist on the way in and nowhere else.
+///
+/// **Why a visitor and not an untagged enum.** An untagged enum answers a value it
+/// cannot read with the name of its own type: `pip` in the list made `data did not
+/// match any variant of untagged enum OneOrMany`, which names neither the key, nor the
+/// word that was wrong, nor the words that are right. A person reading that has to read
+/// this program's source to fix their own file. The visitor below reads the two shapes
+/// itself and fails with the three facts a correction needs ([`named`]).
 mod written {
-    use serde::{Deserialize, Deserializer};
+    use std::fmt;
+
+    use serde::de::{Deserializer, Error, SeqAccess, Visitor};
 
     use super::PackageManager;
 
-    /// One manager, or several. The shape a recipe file may hold, and no part of the
-    /// model: [`deserialize`] turns it into the list before anything else sees it.
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OneOrMany {
-        /// `package_manager = "pnpm"`.
-        One(PackageManager),
-        /// `package_manager = ["cargo", "pnpm"]`.
-        Many(Vec<PackageManager>),
+    /// The key this reader is for, which every message it writes names.
+    const KEY: &str = "package_manager";
+
+    /// The two shapes a recipe file may hold: one word, or a list of them.
+    struct OneOrMany;
+
+    impl<'de> Visitor<'de> for OneOrMany {
+        type Value = Vec<PackageManager>;
+
+        fn expecting(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(out, "{KEY}: one package manager, or a list of them")
+        }
+
+        fn visit_str<E: Error>(self, word: &str) -> Result<Self::Value, E> {
+            Ok(vec![named(word)?])
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut managers = Vec::with_capacity(seq.size_hint().unwrap_or_default());
+            while let Some(word) = seq.next_element::<String>()? {
+                managers.push(named(&word)?);
+            }
+            Ok(managers)
+        }
+    }
+
+    /// The manager this word names, or the failure that says what to write instead.
+    ///
+    /// Three facts, because a correction needs all three: which key was read, which
+    /// word it could not read, and every word it can.
+    fn named<E: Error>(word: &str) -> Result<PackageManager, E> {
+        PackageManager::named(word).ok_or_else(|| {
+            E::custom(format!(
+                "{KEY}: \"{word}\" is not a package manager Nodal knows. Write one of: {}",
+                PackageManager::accepted()
+            ))
+        })
     }
 
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         input: D,
     ) -> Result<Vec<PackageManager>, D::Error> {
-        Ok(match OneOrMany::deserialize(input)? {
-            OneOrMany::One(manager) => vec![manager],
-            OneOrMany::Many(managers) => managers,
-        })
+        input.deserialize_any(OneOrMany)
     }
 
     /// What the published schema says the key accepts.
