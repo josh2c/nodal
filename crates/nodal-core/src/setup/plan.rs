@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 
 use crate::adapters::{claude_code, mcp, settings};
 use crate::lifecycle::uniqueness::{self, Uniqueness};
+use crate::lifecycle::witness::Checkout;
 use crate::model::Timestamp;
 use crate::output::view::setup::{Installed, Item, Kind, Uninstall};
 use crate::runtime::shells::Shell;
@@ -415,7 +416,8 @@ fn homes(state: &Path) -> Result<Vec<(PathBuf, Option<PathBuf>)>> {
 /// findings because there is nothing to report about it; the state item still names how
 /// many homes there are, and `--state` still asks before it removes any of them.
 fn unique_work(home: &Path, project: Option<&Path>) -> Option<Uniqueness> {
-    uniqueness::check(home, project).ok().filter(|answer| !answer.is_clear())
+    let checkout = project.map(Checkout::read);
+    uniqueness::check(home, checkout.as_ref()).ok().filter(|answer| !answer.is_clear())
 }
 
 /// The message a refused uninstall carries.

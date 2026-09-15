@@ -90,6 +90,17 @@
 //! of anything. What it implies is a refusal, and a refusal is what a home with no
 //! witness gets anyway.
 //!
+//! # The checkout is read once, and every home is read against that reading
+//!
+//! Which of the five cases above a home is in depends on the home. What the checkout
+//! *is* — its git directory, its refs, its `origin`, and which of its tips its object
+//! store really holds — does not. A survey that asked those of each home in turn paid
+//! six `git` invocations per home to learn one answer over and over.
+//!
+//! So [`Checkout::read`] takes that reading once and [`elsewhere`] is given it
+//! ([`Checkout`]). A survey reads one; a command about one home reads one and uses it
+//! once. The evidence is the same evidence either way, so no verdict moves.
+//!
 //! Nothing here writes, and nothing here reaches a network.
 
 use std::collections::BTreeSet;
@@ -170,11 +181,57 @@ impl Elsewhere {
     }
 }
 
+/// The project's own checkout, read once.
+///
+/// Everything in it is a fact about the checkout rather than about any home read against
+/// it, so a survey of many homes takes one of these and hands it to [`elsewhere`] for
+/// each of them.
+///
+/// A checkout that Git will not read, and a shallow one, witness nothing: [`elsewhere`]
+/// stops at the evidence and asks them nothing further. So nothing further is read of
+/// them here either, and the fields below are empty rather than unknown.
+#[derive(Debug, Clone)]
+pub struct Checkout {
+    /// Where it is.
+    path: PathBuf,
+    /// What it can say about where its commits also live.
+    evidence: Evidence,
+    /// The grouping name of its `origin`, `None` when it has none to read.
+    origin: Option<String>,
+    /// The commits of its own tips that its object store really holds ([`holds`]).
+    held: Vec<Oid>,
+}
+
+impl Checkout {
+    /// Read the checkout at `path`.
+    ///
+    /// Four `git` invocations for the evidence, one for the name of `origin`, and one
+    /// that looks for every tip it names in its own object store. A caller that reads
+    /// one home pays what it always paid; a caller that reads many pays it once.
+    #[must_use]
+    pub fn read(path: &Path) -> Self {
+        let evidence = inspect::evidence(path);
+        let path = path.to_path_buf();
+        if evidence.unreadable.is_some() || evidence.shallow {
+            return Self { path, evidence, origin: None, held: Vec::new() };
+        }
+        let origin = named(&path);
+        let held = holds(&path, &evidence.tips);
+        Self { path, evidence, origin, held }
+    }
+
+    /// Where it is.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 /// Everything this machine can say about where `home`'s commits also live.
 ///
-/// `checkout` is the project's own, when this machine still has one. A checkout that is
-/// not there, or is no longer a repository, is simply not asked: the answer is then the
-/// stricter one, which is the safe direction to be wrong in.
+/// `checkout` is the project's own, read once, when this machine still has one. A
+/// checkout that is not there, or is no longer a repository, is simply not asked: the
+/// answer is then the stricter one, which is the safe direction to be wrong in.
 ///
 /// One reading of the checkout's object store covers all three lists, and one reading of
 /// its refs covers the split between them. The split is made from the names, and the
@@ -188,17 +245,17 @@ impl Elsewhere {
 /// ordinary case, and reading that commit as the remote's would take the whole of the
 /// project's history out of the denominator and report it back as this unit's work.
 #[must_use]
-pub fn elsewhere(home: &Path, checkout: Option<&Path>) -> Elsewhere {
-    let Some(path) = checkout else {
+pub fn elsewhere(home: &Path, checkout: Option<&Checkout>) -> Elsewhere {
+    let Some(checkout) = checkout else {
         return Elsewhere::default();
     };
-    let evidence = inspect::evidence(path);
+    let evidence = &checkout.evidence;
     if evidence.unreadable.is_some() || evidence.shallow {
         return Elsewhere::default();
     }
-    let relation = relation(home, path);
-    let trusted = vouched(home, path, relation, evidence.clone());
-    let held = holds(path, &union(&evidence.tips, &trusted.tips));
+    let relation = relation(home, checkout);
+    let trusted = vouched(home, &checkout.path, relation, evidence.clone());
+    let held = holdings(checkout, &trusted.tips);
     let carried: BTreeSet<&Oid> = held.iter().collect();
     let own: Vec<Oid> = evidence.own.iter().filter(|oid| carried.contains(oid)).cloned().collect();
     let remote: Vec<Oid> =
@@ -212,6 +269,22 @@ pub fn elsewhere(home: &Path, checkout: Option<&Path>) -> Elsewhere {
         witnesses: trusted.witnesses,
         direct: relation == Relation::IsTheRemote,
     }
+}
+
+/// The tips the checkout really holds, out of its own and whatever a witness added.
+///
+/// [`Checkout::read`] already looked for every tip the checkout names, which is the
+/// whole of the set wherever nobody witnesses. A witness adds the commits it vouches
+/// for, and the ones of those the checkout does not already name are looked for here —
+/// so the ordinary home costs no invocation at all, and a witnessed one costs the same
+/// single invocation it always did.
+fn holdings(checkout: &Checkout, trusted: &[Oid]) -> Vec<Oid> {
+    let named: BTreeSet<&Oid> = checkout.evidence.tips.iter().collect();
+    let extra: Vec<Oid> = trusted.iter().filter(|oid| !named.contains(oid)).cloned().collect();
+    if extra.is_empty() {
+        return checkout.held.clone();
+    }
+    union(&checkout.held, &holds(&checkout.path, &extra))
 }
 
 /// What a witness will vouch for, and nothing at all when there is no witness.
@@ -352,14 +425,14 @@ enum Relation {
 }
 
 /// Which of the three this pair is.
-fn relation(home: &Path, checkout: &Path) -> Relation {
+fn relation(home: &Path, checkout: &Checkout) -> Relation {
     let Some(origin) = named(home) else {
         return Relation::Unrelated;
     };
-    if named(checkout).is_some_and(|theirs| theirs == origin) {
+    if checkout.origin.as_ref().is_some_and(|theirs| *theirs == origin) {
         return Relation::SameRemote;
     }
-    if resolved(checkout).is_some_and(|path| origin::normalize(&path) == origin) {
+    if resolved(&checkout.path).is_some_and(|path| origin::normalize(&path) == origin) {
         return Relation::IsTheRemote;
     }
     Relation::Unrelated
@@ -393,7 +466,7 @@ fn heads(repo: &Path) -> Vec<RemoteTip> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 mod tests {
-    use super::{Relation, elsewhere, named, relation};
+    use super::{Checkout, Relation, elsewhere, named, relation};
 
     /// A path that is not a repository names no remote, stands in no relation to one,
     /// and witnesses nothing. This is the safe direction: nothing is believed.
@@ -402,8 +475,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let absent = directory.path().join("gone");
         assert_eq!(named(&absent), None);
-        assert_eq!(relation(&absent, directory.path()), Relation::Unrelated);
-        assert!(elsewhere(&absent, Some(&absent)).witnesses.is_empty());
+        assert_eq!(relation(&absent, &Checkout::read(directory.path())), Relation::Unrelated);
+        assert!(elsewhere(&absent, Some(&Checkout::read(&absent))).witnesses.is_empty());
     }
 
     /// With no checkout to ask, nothing is believed and nobody vouched.

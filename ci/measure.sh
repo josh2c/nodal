@@ -9,8 +9,10 @@
 #
 # Every ceiling below states the value measured when the ceiling was written. The
 # baselines were measured on this workspace at commit 2cbbad5 on 2026-09-08, except the
-# two git-process ceilings, which were measured again at 29d4838 on the same day after
-# the layout of an ordinary checkout stopped costing two invocations per home. Where an
+# git-process ceilings. The list and create ceilings were measured again at 29d4838 on
+# the same day after the layout of an ordinary checkout stopped costing two invocations
+# per home, and the doctor ceiling was measured when this script gained that row, after
+# doctor's only-here section stopped reading the checkout once for every home. Where an
 # earlier measurement of the same quantity used a different definition and read a
 # different number, both are stated and the ceiling follows this script, because this
 # script is what CI runs and its definitions are the ones stated here.
@@ -100,6 +102,10 @@ SHIM
     : > "$NODAL_GIT_LOG"
     "$binary" ls > /dev/null 2>&1
     list_total=$(wc -l < "$NODAL_GIT_LOG" | tr -d ' ')
+
+    : > "$NODAL_GIT_LOG"
+    "$binary" doctor > /dev/null 2>&1
+    doctor_total=$(wc -l < "$NODAL_GIT_LOG" | tr -d ' ')
     cd "$root"
 
     per_row=$(awk -v total="$list_total" -v units="$units" 'BEGIN { printf "%.1f", total / units }')
@@ -130,6 +136,20 @@ SHIM
         "baseline 90 at the tenth create; ratchet to 74 with the list row"
 
     report "git processes, list total" "$list_total" "processes" "over $units units"
+
+    per_home=$(awk -v total="$doctor_total" -v units="$units" 'BEGIN { printf "%.1f", total / units }')
+
+    # Baseline 6.5 per home at 10 units on the shapes fixture, where every home sits at
+    # the base tip: five readings of the home, the survey's share of one reading of the
+    # checkout, and the share of the three invocations the rest of doctor makes. It was
+    # 11.9 until the only-here section stopped reading the checkout once for every home.
+    # Six of the thirteen invocations a home cost were facts about the checkout — its git
+    # directory, its refs, its `origin`, and which of its tips it really holds — and a
+    # survey asks the same question of the checkout whichever home it is reading. The
+    # same fixture with four homes read 13.2 per home before and 8.8 after. What is left
+    # per home is the home's own status and history; batching those is the next ratchet.
+    gate "git processes per doctor home" "$per_home" 7 "per home" \
+        "baseline 6.5 at 10 units, from 11.9; ratchet to 5 when the home readings are batched"
 fi
 echo
 

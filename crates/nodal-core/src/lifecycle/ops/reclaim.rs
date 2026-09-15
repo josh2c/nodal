@@ -122,6 +122,7 @@ use crate::lifecycle::hooks::{
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::uniqueness::{self, Finding};
+use crate::lifecycle::witness::Checkout;
 use crate::lifecycle::{Done, Rebuild, marker, run};
 use crate::model::{
     EnvId, EnvState, Environment, EventKind, Project, Recipe, Timestamp, Trashed, Unit, UnitId,
@@ -275,7 +276,7 @@ fn read(
     };
     assess::assess(&assess::Input {
         home,
-        checkout: Some(&project.root),
+        checkout: Some(&Checkout::read(&project.root)),
         state: true,
         // The preflight is what a person reads, so it pays for the two readings that say
         // where else each commit lives. The reclaim itself acts on the refusal alone.
@@ -881,7 +882,7 @@ fn placement(environment: &Environment) -> Result<Placement> {
 /// carried into the report, and the caller takes a snapshot before it goes on.
 fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Result<Vec<Finding>> {
     let Some(home) = placed.path() else { return Ok(Vec::new()) };
-    let found = uniqueness::check(home, Some(source))?;
+    let found = uniqueness::check(home, Some(&Checkout::read(source)))?;
     if found.is_clear() || force {
         return Ok(found.findings);
     }

@@ -95,7 +95,7 @@ use crate::doctor::size::Bytes;
 use crate::git::status::{Entry, State, Summary};
 use crate::git::{Git, Oid, union};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
-use crate::lifecycle::witness;
+use crate::lifecycle::witness::{self, Checkout};
 use crate::model::{Needs, UnitId};
 use crate::paths;
 use crate::runtime::attribute::{Note, Source, Standing};
@@ -144,9 +144,15 @@ pub struct Attribution<'a> {
 pub struct Input<'a> {
     /// The home to read.
     pub home: &'a Path,
-    /// The project's own checkout, when this machine still has one. A checkout that is
-    /// not there is simply not asked, and the answer is then the stricter one.
-    pub checkout: Option<&'a Path>,
+    /// The project's own checkout, read once, when this machine still has one. A
+    /// checkout that is not there is simply not asked, and the answer is then the
+    /// stricter one.
+    ///
+    /// It arrives read rather than as a path because what an assessment asks of it is
+    /// the same of every home: its git directory, its refs, its `origin`, and which of
+    /// its tips it really holds. A caller that assesses many homes reads it once
+    /// ([`Checkout::read`]) and pays for it once.
+    pub checkout: Option<&'a Checkout>,
     /// Whether to classify the ignored state the home holds.
     pub state: bool,
     /// Whether to say where else each commit lives, rather than only which commits
@@ -174,7 +180,7 @@ impl<'a> Input<'a> {
     /// would not move. The refusal a reclaim raises is about the work in a home, and it
     /// is the same refusal for a home Nodal made and for a checkout adopted in place.
     #[must_use]
-    pub const fn refusal(home: &'a Path, checkout: Option<&'a Path>) -> Self {
+    pub const fn refusal(home: &'a Path, checkout: Option<&'a Checkout>) -> Self {
         Self { home, checkout, state: false, dispositions: false, runtime: None }
     }
 }
@@ -801,8 +807,9 @@ fn measured(held: Held, candidates: Vec<prune::Candidate>) -> Option<PathGroup> 
 fn history(git: &Git, input: &Input<'_>) -> Result<(Vec<CommitGroup>, Vec<String>)> {
     let remotes = git.remotes()?;
     let found = witness::elsewhere(input.home, input.checkout);
+    let checkout = input.checkout.map(Checkout::path);
     if !input.dispositions {
-        let refused = refusing(git, input.checkout, &found, &remotes)?;
+        let refused = refusing(git, checkout, &found, &remotes)?;
         return Ok((refused, remotes));
     }
     let ours = git.commits_outside("HEAD", &found.own)?;
@@ -814,10 +821,10 @@ fn history(git: &Git, input: &Input<'_>) -> Result<(Vec<CommitGroup>, Vec<String
     let unproved = git.commits_outside("HEAD", &found.tips())?;
     let proved = difference(&ours, &off_remote);
     let second = difference(&off_remote, &unproved);
-    let (fetched, only) = local_copies(input.checkout, unproved);
+    let (fetched, only) = local_copies(checkout, unproved);
     let mut groups = Vec::new();
     groups.extend(commit_group(Copies::RemoteProved { witness: witness.clone() }, proved));
-    groups.extend(second_group(input.checkout, union(&second, &fetched)));
+    groups.extend(second_group(checkout, union(&second, &fetched)));
     groups.extend(commit_group(unreached(&witness), only));
     Ok((groups, remotes))
 }
