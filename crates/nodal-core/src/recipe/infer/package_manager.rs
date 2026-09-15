@@ -9,15 +9,16 @@
 //! specificity inside an ecosystem, so a repository that carries both a `pnpm-lock.yaml`
 //! and a `package-lock.json` still installs with the one its own tooling would use.
 //!
-//! **Which of them is the primary is a second question.** The primary is the manager a
-//! bare script name resolves against, so it is the manager that leads the repository,
-//! and the file that says which one that is, is the root manifest that declares the
-//! build the recipe takes: a Rust-led repository with a `package.json` beside its
-//! `Cargo.toml` builds with `cargo build`, and its primary is Cargo however many Node
-//! files it carries. Where two root manifests declare a build, and where none does, the
-//! tie falls to the manager the root manifest names — a `packageManager` field names its
-//! program whether or not it also pins a version. A repository that states neither keeps
-//! the table's own order.
+//! **Which of them is the primary is a second question, and the recipe answers it.** The
+//! primary is the manager a bare script name resolves against, so it is the manager that
+//! leads the repository, and what says which one that is, is the build command the recipe
+//! ends up with: a repository built by `cargo build` is led by Cargo however many Node
+//! files it carries. A repository with no build command is led by the manager its
+//! `packageManager` field names, which names its program whether or not it also pins a
+//! version. A repository that states neither keeps the table's own order.
+//!
+//! [`lead`] is what applies that, and it runs after every source rather than inside this
+//! one, because the build command is what the sources together decide.
 
 use crate::model::recipe::{Ecosystem, PackageManager, Recipe, ToolVersion};
 use crate::recipe::infer::{Confidence, Project, Proposal};
@@ -52,7 +53,6 @@ pub fn infer(project: &Project, _so_far: &Recipe) -> Proposal {
         ecosystems.push(manager.ecosystem());
         proposal.recipe.package_manager.push(*manager);
     }
-    lead(project, &mut proposal.recipe.package_manager);
     if !proposal.recipe.package_manager.is_empty() {
         proposal = proposal.sure("package_manager", Confidence::High);
     }
@@ -64,48 +64,34 @@ pub fn infer(project: &Project, _so_far: &Recipe) -> Proposal {
     proposal
 }
 
-/// Move the primary to the front of `proposed`, and leave the rest in their order.
-fn lead(project: &Project, proposed: &mut [PackageManager]) {
-    let Some(at) = primary(project, proposed) else { return };
-    proposed[..=at].rotate_right(1);
-}
-
-/// Where the manager that leads this repository is, `None` where the project states no
-/// more than the lockfiles it carries.
-fn primary(project: &Project, proposed: &[PackageManager]) -> Option<usize> {
-    let mut builders =
-        proposed.iter().enumerate().filter(|(_, manager)| builds(project, **manager));
-    match (builders.next(), builders.next()) {
-        (Some((only, _)), None) => Some(only),
-        _ => named(project, proposed),
-    }
-}
-
-/// Whether this manager's root manifest declares the build the recipe takes.
+/// Put the manager that leads the repository at the front of its list.
 ///
-/// The same reading as the source that proposes the build command, so "which manager
-/// builds this repository" and "which command builds it" cannot disagree. Every Cargo
-/// tree builds with `cargo build` ([`super::cargo`]); a Node tree builds where its
-/// script table declares a build ([`super::scripts`]); a Python project declares no
-/// build at all ([`super::python`]).
-fn builds(project: &Project, manager: PackageManager) -> bool {
-    match manager.ecosystem() {
-        Ecosystem::Rust => project.exists(super::cargo::MANIFEST),
-        Ecosystem::Node => project.scripts().contains_key(super::scripts::BUILD),
-        Ecosystem::Python => false,
-    }
-}
-
-/// The proposed manager the root manifest names.
+/// Run once, after every source, because what decides the primary is the build command
+/// the sources together arrived at. A repository built by `cargo build` is led by Cargo
+/// and one built by `pnpm run build` is led by pnpm, whatever else either of them
+/// carries: the manager that runs the build is the manager a bare script name belongs
+/// to, and reading the recipe's own command is one reading rather than a second one kept
+/// in step with the first.
 ///
-/// The program out of the `packageManager` field, which names it whether or not it
-/// carries a version: `"packageManager": "pnpm"` names pnpm exactly as `"pnpm@9.12.3"`
-/// does. A field that names a manager the project carries no lockfile for names nothing
-/// here, because a manager that is not proposed cannot lead the list.
-fn named(project: &Project, proposed: &[PackageManager]) -> Option<usize> {
-    let pin = project.package_json().get(PIN)?.as_str()?;
-    let program = pin.split('@').next()?;
-    proposed.iter().position(|manager| manager.program() == program)
+/// With no build command the `packageManager` field names the primary. That field names
+/// its program whether or not it also pins a version, so `pnpm` names pnpm exactly as
+/// `pnpm@9.12.3` does.
+///
+/// Nothing moves where the program named is not one of the managers the project carries
+/// a lockfile for, and nothing moves where the recipe states neither. The managers
+/// behind the primary keep the order the table gave them.
+pub fn lead(recipe: &mut Recipe) {
+    let program = match (&recipe.commands.build, &recipe.package_manager_pin) {
+        (Some(build), _) => build.as_str().split_whitespace().next(),
+        (None, Some(pin)) => pin.as_str().split('@').next(),
+        (None, None) => None,
+    };
+    let Some(at) = program
+        .and_then(|program| recipe.package_manager.iter().position(|m| m.program() == program))
+    else {
+        return;
+    };
+    recipe.package_manager[..=at].rotate_right(1);
 }
 
 /// The command that runs a script a `package.json` declares.

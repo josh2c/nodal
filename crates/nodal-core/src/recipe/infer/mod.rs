@@ -112,6 +112,9 @@ pub fn infer(project: &Project) -> Proposal {
         tracing::debug!(source = name, gaps = found.gaps.len(), "recipe inference: source ran");
         proposal.absorb(found);
     }
+    // After every source, not inside one: which manager leads the repository follows
+    // from the build command the sources together arrived at.
+    package_manager::lead(&mut proposal.recipe);
     proposal.gaps.sort_by_key(|gap| gap.key);
     proposal.gaps.dedup_by_key(|gap| gap.key);
     proposal

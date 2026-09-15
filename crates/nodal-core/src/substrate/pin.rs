@@ -24,6 +24,25 @@
 //! Refusing before the clone is the point of the third case. A refusal that arrives
 //! after a base has been cloned and half-installed has cost the person minutes and left
 //! them a directory to think about.
+//!
+//! # Which manager a pin belongs to
+//!
+//! A `packageManager` field that names its program belongs to the manager it names, and
+//! [`pinned`] reads it that way. A field that names a version and no program belongs to
+//! the primary manager, because the primary is the manager the repository is driven by.
+//!
+//! That second rule is now stated against a primary the build command decides
+//! ([`crate::recipe::infer::package_manager::lead`]). So in a Rust-led repository — one
+//! built by `cargo build`, with a `package.json` beside its `Cargo.toml` — a bare
+//! `"packageManager": "9.12.3"` binds to Cargo, and a base build refuses the host's
+//! `cargo` over a version the Node half asked for. The field is a `package.json` field,
+//! so the manager whose manifest carries it is the one that meant it.
+//!
+//! It is stated rather than fixed here. The fix is to give the pin to the manager whose
+//! manifest carries it, which is a change to what the recipe records rather than to how
+//! this module reads it, and it is a follow-up of its own. A field that names its
+//! program, which is what a manifest written by any of these tools carries, is
+//! unaffected.
 
 use std::path::Path;
 

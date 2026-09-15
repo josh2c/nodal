@@ -15,15 +15,10 @@ use crate::recipe::infer::{Confidence, Project, Proposal};
 /// so that "which field does this command name fill" is one answer wherever it is asked.
 pub type SetCommand = fn(&mut Recipe, CommandLine);
 
-/// The script name a Node repository declares its build under. Named here because the
-/// package-manager source reads the same name to decide which manager leads the
-/// repository ([`super::package_manager`]).
-pub(super) const BUILD: &str = "build";
-
 /// Script names that map straight onto a recipe command, and the field each fills.
 const SCRIPTS: &[(&str, SetCommand)] = &[
     ("dev", |recipe, line| recipe.commands.dev = Some(line)),
-    (BUILD, |recipe, line| recipe.commands.build = Some(line)),
+    ("build", |recipe, line| recipe.commands.build = Some(line)),
     ("test", |recipe, line| recipe.commands.test = Some(line)),
     ("lint", |recipe, line| recipe.commands.lint = Some(line)),
     ("typecheck", |recipe, line| recipe.commands.typecheck = Some(line)),
