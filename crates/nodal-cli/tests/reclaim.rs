@@ -248,6 +248,108 @@ fn a_commit_no_other_tree_has_refuses_a_reclaim_and_a_shared_one_does_not() {
     assert!(accepted.status.success(), "{}", stderr(&accepted));
 }
 
+/// F-2 of the third reclaim proof, in the layout that found it.
+///
+/// `siblings/mirror` held alpha3's first commit and `--check` called that commit "only
+/// here", because the reading asked the project's checkout and nothing else while the
+/// help promised the machine. The mislabel was conservative and could not cause a
+/// false-safe, and it was still a wrong answer to the question a person asks before they
+/// clear a machine.
+///
+/// The commit is proved in the sibling's own object store. A repository that only names
+/// it counts for nothing, which is the second half of this test.
+#[test]
+fn a_commit_a_sibling_clone_on_this_machine_holds_is_not_only_here() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "alpha3"])));
+    let (_, home) = workspace.one_unit_and_home();
+    std::fs::write(home.join("app").join("main.txt"), "the duplicated commit\n").unwrap();
+    drop(git(&home, &["config", "user.email", "unit@example.invalid"]));
+    drop(git(&home, &["config", "user.name", "Test"]));
+    drop(git(&home, &["add", "-A"]));
+    drop(git(&home, &["commit", "-qm", "work this home and one sibling have"]));
+    let commit = git(&home, &["rev-parse", "HEAD"]).trim().to_owned();
+
+    // Nothing beside the checkout holds it yet, so it is the only copy and the refusal
+    // says so. This is the reading Nodal made on Day 1.
+    let refused = workspace.nodal(&["reclaim", "alpha3", "--check"]);
+    assert!(!refused.status.success(), "{}", answer(&refused));
+    let before = answer(&refused);
+    assert!(before.contains("only"), "the commit is the only copy: {before}");
+
+    // A second clone beside the checkout, one directory down, which is where the proof
+    // put its mirror. It fetches the commit, so its own object store holds it.
+    let siblings = workspace.root().join("siblings");
+    std::fs::create_dir_all(&siblings).unwrap();
+    let mirror = siblings.join("mirror");
+    drop(git(workspace.root(), &["clone", "-q", workspace.source.to_str().unwrap(), mirror.to_str().unwrap()]));
+    drop(git(&mirror, &["fetch", "-q", home.to_str().unwrap(), &format!("{commit}:refs/heads/alpha3-partial")]));
+
+    let answered = workspace.nodal(&["reclaim", "alpha3", "--check"]);
+    let after = answer(&answered);
+    assert!(answered.status.success(), "the verdict is the exit code: {after}");
+    assert!(after.contains("second local copy"), "the commit has a second copy: {after}");
+
+    // The report names the repository that holds it, so a person can go and look, and no
+    // group calls the commit the only copy any more.
+    let report = json(&workspace.nodal(&["reclaim", "alpha3", "--check", "--json"]));
+    let groups = report["commits"].as_array().expect("the report carries commit groups");
+    assert!(
+        !groups.iter().any(|group| group["copies"]["kind"] == "only_here"),
+        "no group calls it the only copy: {report}"
+    );
+    let held_by: Vec<&str> = report["commits"]
+        .as_array()
+        .expect("the report carries commit groups")
+        .iter()
+        .filter_map(|group| group["copies"]["held_by"].as_str())
+        .collect();
+    assert!(
+        held_by.iter().any(|path| resolved(Path::new(path)) == resolved(&mirror)),
+        "the sibling that holds it is named: {held_by:?}"
+    );
+}
+
+/// A sibling that names a commit without holding it proves nothing.
+///
+/// This is the invariant the reading rests on: a refusal is weakened by an object in a
+/// second store, proved by `git rev-list` in that store, and never by a name. The proof's
+/// own mirror was `reflog expire`d and garbage collected, so it kept names over an empty
+/// store, and that is the case that must not weaken anything.
+#[test]
+fn a_sibling_that_names_a_commit_without_holding_it_does_not_weaken_the_refusal() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "alpha3"])));
+    let (_, home) = workspace.one_unit_and_home();
+    std::fs::write(home.join("app").join("main.txt"), "the unique commit\n").unwrap();
+    drop(git(&home, &["config", "user.email", "unit@example.invalid"]));
+    drop(git(&home, &["config", "user.name", "Test"]));
+    drop(git(&home, &["add", "-A"]));
+    drop(git(&home, &["commit", "-qm", "work only this home has"]));
+    let commit = git(&home, &["rev-parse", "HEAD"]).trim().to_owned();
+
+    // A clone beside the checkout that carries the name and not the object.
+    let siblings = workspace.root().join("siblings");
+    std::fs::create_dir_all(&siblings).unwrap();
+    let mirror = siblings.join("mirror");
+    drop(git(workspace.root(), &["clone", "-q", workspace.source.to_str().unwrap(), mirror.to_str().unwrap()]));
+    // The ref is written as a file rather than through `update-ref`, because Git refuses
+    // to name an object it does not have. This is the state the proof's own mirror was
+    // left in: `reflog expire` and `gc --prune=now` took the objects and left the names.
+    let named = mirror.join(".git").join("refs").join("heads").join("alpha3-partial");
+    std::fs::create_dir_all(named.parent().unwrap()).unwrap();
+    std::fs::write(&named, format!("{commit}\n")).unwrap();
+
+
+    let refused = workspace.nodal(&["reclaim", "alpha3", "--check"]);
+    assert!(!refused.status.success(), "a name is not a second copy: {}", answer(&refused));
+    let told = answer(&refused);
+    assert!(
+        !told.contains(mirror.to_str().unwrap()),
+        "and the repository that only names it is not offered as a copy: {told}"
+    );
+}
+
 #[test]
 fn a_forced_reclaim_commits_the_work_before_it_moves_the_home() {
     let workspace = workspace();

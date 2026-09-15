@@ -417,7 +417,7 @@ fn homes(state: &Path) -> Result<Vec<(PathBuf, Option<PathBuf>)>> {
 /// many homes there are, and `--state` still asks before it removes any of them.
 fn unique_work(home: &Path, project: Option<&Path>) -> Option<Uniqueness> {
     let checkout = project.map(Checkout::read);
-    uniqueness::check(home, checkout.as_ref()).ok().filter(|answer| !answer.is_clear())
+    uniqueness::check(home, checkout.as_ref(), &[]).ok().filter(|answer| !answer.is_clear())
 }
 
 /// The message a refused uninstall carries.

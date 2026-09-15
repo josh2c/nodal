@@ -287,6 +287,11 @@ fn read(
     assess::assess(&assess::Input {
         home,
         checkout: Some(&Checkout::read(&project.root)),
+        // The rest of what "another copy on this machine" promises: the other
+        // repositories beside the project's checkout, proved by their own object stores
+        // and never by a name (F-4 of the third proof's ledger is the runtime half of
+        // this reading; this is the history half, F-2).
+        siblings: &crate::doctor::scan::siblings(&project.root),
         state: true,
         // The preflight is what a person reads, so it pays for the two readings that say
         // where else each commit lives. The reclaim itself acts on the refusal alone.
@@ -925,7 +930,8 @@ fn placement(environment: &Environment) -> Result<Placement> {
 /// carried into the report, and the caller takes a snapshot before it goes on.
 fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Result<Vec<Finding>> {
     let Some(home) = placed.path() else { return Ok(Vec::new()) };
-    let found = uniqueness::check(home, Some(&Checkout::read(source)))?;
+    let found =
+        uniqueness::check(home, Some(&Checkout::read(source)), &crate::doctor::scan::siblings(source))?;
     if found.is_clear() || force {
         return Ok(found.findings);
     }

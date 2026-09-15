@@ -39,6 +39,10 @@ pub struct Reclaim {
     /// another copy on this machine, what a reading of the remote proves, what a tool
     /// writes again, what would be stopped, and whether it would go ahead. It changes
     /// nothing. The exit code is the verdict.
+    ///
+    /// "Another copy on this machine" is the project's checkout and the other
+    /// repositories beside it, two directory levels under its parent. A copy counts only
+    /// where that repository's own object store holds the commit.
     #[arg(long, conflicts_with_all = ["force", "yes"])]
     pub check: bool,
 
