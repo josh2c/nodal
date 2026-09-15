@@ -105,6 +105,88 @@ pub fn list_by_status(
     row::many(conn, &sql, key, decode)
 }
 
+/// Give up a unit's handle, so the name is free for the next unit of the project.
+///
+/// A handle is unique among a project's units, and the schema holds that with a unique
+/// index over every row rather than over the open ones. So a unit that was reclaimed
+/// went on owning its name, and a person who made the unit again got `<name>-2` — a
+/// second unit on the first one's branch, which is the shape the third reclaim proof
+/// found (F-7).
+///
+/// The row is not deleted and nothing of it is lost. It keeps its own identifier, its
+/// branch, its objective and its place in the log, and the trash entry written beside it
+/// keeps the name a person typed. What it gives up is the handle, which is the one part
+/// of a unit that is a claim on something another unit may want.
+///
+/// The released handle is the old one with the unit's own identifier after it. That is
+/// unique among the project's units by construction, so the write cannot fail on the
+/// index, and it reads as what it is. The handle is truncated first, where it has to be,
+/// so the result is inside the length a handle may have.
+///
+/// Doing this twice is doing it once: a handle that already ends in the unit's own
+/// identifier has already been released, and is returned as it is.
+///
+/// # Errors
+/// [`crate::Error::InvalidValue`] when the released handle is not a handle, and
+/// [`crate::Error::Store`] when the row could not be written.
+pub fn release_slug(conn: &Connection, unit: &Unit, at: Timestamp) -> Result<Slug> {
+    let released = released(&unit.slug, unit.id)?;
+    if released == unit.slug {
+        return Ok(released);
+    }
+    row::write(
+        conn,
+        "UPDATE unit SET slug = ?, updated_at = ? WHERE id = ?",
+        params![released.as_str(), at.unix_seconds(), unit.id.to_string()],
+    )?;
+    Ok(released)
+}
+
+/// The unit that held this handle until a reclaim released it.
+///
+/// Asked only after no unit holds the handle. The released form is the handle with the
+/// unit's own identifier after it ([`released`]), so the question is put the way it was
+/// answered: for each of the project's archived units, what would this handle have
+/// become in its hands, and is that the handle it has. One row can match, because the
+/// identifier in the form is that unit's own.
+///
+/// Nothing else records the released name. A reclaim of a checkout adopted in place
+/// writes no trash entry, so a record kept there would answer for some reclaims and not
+/// for others; the handle the unit carries is the record every reclaim leaves.
+///
+/// # Errors
+/// As [`get`].
+pub fn find_released_by_slug(
+    conn: &Connection,
+    project_id: ProjectId,
+    slug: &Slug,
+) -> Result<Option<Unit>> {
+    for unit in list_by_status(conn, project_id, UnitStatus::Archived)? {
+        if released(slug, unit.id)? == unit.slug {
+            return Ok(Some(unit));
+        }
+    }
+    Ok(None)
+}
+
+/// The handle a released unit takes: its own, with its identifier after it.
+///
+/// The identifier is lower case because a handle is, and it is 26 characters, so the
+/// handle in front of it is cut to what is left of the 64 a handle may hold. A cut that
+/// ends on the separator takes the separator too, because a handle holds no empty group.
+fn released(slug: &Slug, id: UnitId) -> Result<Slug> {
+    let id = id.to_string().to_lowercase();
+    if slug.as_str().ends_with(&id) {
+        return Ok(slug.clone());
+    }
+    let room = SLUG_MAX_LEN - id.len() - 1;
+    let kept = slug.as_str().get(..room).unwrap_or(slug.as_str()).trim_end_matches('-');
+    Slug::parse(format!("{kept}-{id}"))
+}
+
+/// How long a handle may be, which the released form has to stay inside.
+const SLUG_MAX_LEN: usize = 64;
+
 /// Move a unit to another state; `false` when there is no such row.
 ///
 /// # Errors
