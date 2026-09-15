@@ -163,10 +163,10 @@ fn done_pushes_the_branch_and_leaves_the_snapshot_here() {
     assert!(kept.contains("notes.txt"), "and the snapshot in the home does: {kept}");
 }
 
-/// F-6 of the third reclaim proof: `done` pushed and set no upstream, so the REMOTE
-/// column read `—` and `work.remote` was null immediately after the branch reached the
-/// remote. The push records where it sent the branch, and every later reading of the
-/// remote answers from that record.
+/// `done` used to push and set no upstream, so the REMOTE column read `—` and
+/// `work.remote` was null immediately after the branch reached the remote. The push
+/// records where it sent the branch, and every later reading of the remote answers from
+/// that record.
 #[test]
 fn done_sets_the_upstream_it_pushed_to_and_ls_shows_it() {
     let workspace = workspace();
@@ -175,7 +175,8 @@ fn done_sets_the_upstream_it_pushed_to_and_ls_shows_it() {
 
     drop(stdout(&workspace.nodal(&["done", "worker-import"])));
 
-    let upstream = git(&home, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
+    let upstream =
+        git(&home, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
     assert_eq!(
         upstream.trim(),
         "origin/nodal/worker-import",
@@ -185,10 +186,8 @@ fn done_sets_the_upstream_it_pushed_to_and_ls_shows_it() {
     let listed: serde_json::Value =
         serde_json::from_str(&stdout(&workspace.nodal(&["ls", "--json"]))).unwrap();
     let units = listed["units"].as_array().expect("the list has units");
-    let row = units
-        .iter()
-        .find(|row| row["slug"] == "worker-import")
-        .expect("the unit is in the list");
+    let row =
+        units.iter().find(|row| row["slug"] == "worker-import").expect("the unit is in the list");
     assert!(
         !row["work"]["remote"].is_null(),
         "ls reads the upstream done set: {}",

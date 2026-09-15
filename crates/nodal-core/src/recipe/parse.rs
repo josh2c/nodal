@@ -60,7 +60,7 @@ mod tests {
         assert_eq!(many.script_manager(), Some(PackageManager::Pnpm));
     }
 
-    /// The Day 1 value of the third reclaim proof, which is the finding this asserts.
+    /// A recipe naming a manager that is not one of the seven.
     ///
     /// `pip` is not one of the seven managers, and the message a person got named the
     /// reader's own type instead of their line. The three facts a correction needs are

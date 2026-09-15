@@ -427,13 +427,13 @@ fn a_hold_whose_process_is_running_is_reported_as_held() {
     drop(fixture.directory);
 }
 
-/// F-3 of the third reclaim proof, and the rule this reverses.
+/// The rule this reverses.
 ///
 /// A hold whose recorded process was gone used to be read as live while a process of the
 /// same actor stood in the home, because a hold belongs to an actor and an actor outlives
-/// any one process of theirs. The proof killed an agent and left its child standing in
-/// the home: the list reported the killed holder live with seven hours to run, which is
-/// the opposite of what had happened, for exactly the case the advisor's question names.
+/// any one process of theirs. Kill an agent and leave its child standing in the home, and
+/// the list reported the killed holder live with hours left to run, which is the opposite
+/// of what had happened.
 ///
 /// The orphan carries the unit's own `NODAL_ID`, because Nodal wrote it into the home its
 /// parent was killed in. So it is not better evidence than the actor name was; it is

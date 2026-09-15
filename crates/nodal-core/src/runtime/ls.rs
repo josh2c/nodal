@@ -194,7 +194,11 @@ pub fn rows(
         .iter()
         .filter_map(|subject| {
             let environment = subject.home.as_ref()?;
-            Some(Placed::new(subject.unit.id, &environment.home, held.of_environment(environment.id)))
+            Some(Placed::new(
+                subject.unit.id,
+                &environment.home,
+                held.of_environment(environment.id),
+            ))
         })
         .collect();
     let seen = scan(processes, &homes, &mut notices);
@@ -269,10 +273,10 @@ fn row(subject: &Snapshot, seen: &Seen, held: &Held, remote: Reading) -> UnitRow
 /// live whenever a process of the same actor stood in the home. An actor outlives any
 /// one process of theirs and `nodal new` writes its own identifier and exits, so the
 /// rule was written to stop every unit reading as held by somebody who had gone. But an
-/// actor name is not a process: the third reclaim proof killed an agent and left its
-/// orphan standing in the home, and the list reported the killed holder `live` with
-/// seven hours to run (F-3). That is the case the advisor's question is about, and the
-/// reading said the opposite of what had happened.
+/// actor name is not a process. Kill an agent and leave a child of it standing in the
+/// home, and the list reported the killed holder `live` with hours left to run: the
+/// reading said the opposite of what had happened, for the one case a person most needs
+/// it to be right about.
 ///
 /// So nothing upgrades a hold any more. One reading decides whether a holder is there —
 /// whether the process that took the hold is on this host
@@ -281,11 +285,10 @@ fn row(subject: &Snapshot, seen: &Seen, held: &Held, remote: Reading) -> UnitRow
 ///
 /// **Why not "a process of the unit's own" either.** A process carrying the unit's
 /// `NODAL_ID` looks like better evidence than an actor name, and it is not evidence
-/// about this hold at all: gamma3's orphan carried the identifier, because Nodal wrote
-/// it into the home its parent was killed in. An upgrade on that reading would report
-/// the killed holder live for exactly the case the proof was built to find. A process
-/// of the unit's own says the unit is being worked in; it never says who holds the
-/// write.
+/// about this hold at all: an orphan carries the identifier because Nodal wrote it into
+/// the home its parent was killed in. An upgrade on that reading would report the killed
+/// holder live for exactly the case this rule is about. A process of the unit's own says
+/// the unit is being worked in; it never says who holds the write.
 ///
 /// An orphan of the same actor is therefore the second fact, reported beside the first:
 /// the holder is gone, **and** something of that actor is still standing in the home. A
@@ -428,7 +431,6 @@ impl Seen {
     fn blocked(&self, home: &Path) -> bool {
         self.bystanders.contains(home)
     }
-
 }
 
 /// One home the scan asks about, with the unit it belongs to and what the registry says
@@ -672,9 +674,9 @@ mod tests {
         vec![ToolSessions { tool: crate::model::ActorName::parse(tool).unwrap(), count: 1 }]
     }
 
-    /// F-3 of the third reclaim proof. The agent holding gamma3 was killed on Day 1 and
-    /// left an orphan of its own in the home. Both `ls` and `show --json` reported the
-    /// hold `live` with seven hours to run, and no field said the process was gone.
+    /// An agent that is killed and leaves a child of its own in the home. Both `ls` and
+    /// `show --json` used to report the hold `live` with hours left to run, and no field
+    /// said the process was gone.
     #[test]
     fn a_killed_holder_that_left_an_orphan_is_gone_and_the_orphan_is_the_second_fact() {
         let mut holder = held("claude-code", HolderState::Gone);
@@ -703,9 +705,9 @@ mod tests {
         assert!(!holder.orphan);
     }
 
-    /// The orphan gamma3 left carried the unit's own `NODAL_ID`, because Nodal wrote it
-    /// into the home its parent was killed in. That is not evidence about the hold, and
-    /// reading it as evidence is what reported a killed agent as a live holder.
+    /// An orphan carries the unit's own `NODAL_ID`, because Nodal wrote it into the home
+    /// its parent was killed in. That is not evidence about the hold, and reading it as
+    /// evidence is what reported a killed agent as a live holder.
     #[test]
     fn a_process_carrying_the_units_identifier_does_not_raise_a_gone_holder() {
         let mut holder = held("claude-code", HolderState::Gone);

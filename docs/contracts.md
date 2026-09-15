@@ -808,10 +808,17 @@ the process is gone: a lock names an actor, and an actor outlives any one shell.
 A report says whether that actor is still there. The holder carries a `state`: `live`, `gone`, or
 `unknown` with the reason it could not be read — the hold is on another machine, the row records no
 process, or this host has no process table. The reading is the process table and never a signal. It is
-two questions in this order: whether a process of that actor stands in the home, and whether the
-recorded process is still there. The first is the one that matters, because the identifier a row
-carries is the command that entered the home and that command ends; a hold both readings answer no for
-is a session that is gone.
+one question: whether the process the row records is still on this host.
+
+Nothing else raises a hold to `live`. An actor name is not a process, and neither is the unit's own
+identifier: an agent that is killed leaves a child standing in the home, and that child carries both.
+Reading either as evidence about the hold reported a killed holder as `live` with hours left to run,
+which is the case a person most needs the reading to be right about. A process of the unit's own says
+the unit is being worked in; it never says who holds the write.
+
+What is still in the home is reported beside the state rather than folded into it. A holder that is
+gone whose actor still has a process in the home carries `orphan`, and the report says the two as two
+facts: the hold is nobody's to refresh, and something of that actor is still writing in the home.
 
 `gone` is printed where a reading contradicts the row, and nowhere else. A hold this host could not
 read a process for is printed the way the row states it, because a reading nobody could take is not
@@ -1139,6 +1146,23 @@ history is on the remote, and reporting all of it would bury the few that are no
 | `second_local_copy` | another object store on this disk holds it | no, and no server is involved |
 | `not_checked` | nothing here read the remote, and nothing here holds it | unknown, so it is kept |
 | `only_here` | the reading was taken and it is still nowhere else | yes |
+
+**Which object stores "another object store on this disk" means.** Two: the project's checkout, and the
+other repositories beside it. The second set is found by walking the checkout's parent directory, two
+levels down, which reaches a clone put next to the checkout (`<parent>/mirror`) and one put a directory
+below (`<parent>/siblings/mirror`). The walk does not enter the checkout itself or Nodal's state
+directory, and it is the same bound for every project: this reading is taken before every destructive
+step, so what it costs is paid on the safe path. It is not the walk `nodal doctor --machine` makes.
+
+A project whose checkout sits directly in a home directory is the widest case this reaches, because the
+parent is then the home directory itself. Two levels is what keeps that bounded. There is no way to turn
+the walk off.
+
+A store counts only where its own object store holds the commit, proved by `git rev-list` run in that
+repository. A name never counts: a clone that was `reflog expire`d and garbage collected keeps refs over
+objects it no longer has, and a reading that believed the name would call a home safe over the only copy
+of its work. A store that cannot be opened or read proves nothing, which leaves the stricter answer
+standing.
 
 `not_checked` is not zero and it is not safe. A home's own `refs/remotes/origin/*` is the record of a
 push it made, so the remote is proved only where a witness confirms it, and a ref name with no object

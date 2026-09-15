@@ -110,8 +110,7 @@ pub fn list_by_status(
 /// A handle is unique among a project's units, and the schema holds that with a unique
 /// index over every row rather than over the open ones. So a unit that was reclaimed
 /// went on owning its name, and a person who made the unit again got `<name>-2` — a
-/// second unit on the first one's branch, which is the shape the third reclaim proof
-/// found (F-7).
+/// second unit on the first one's branch.
 ///
 /// The row is not deleted and nothing of it is lost. It keeps its own identifier, its
 /// branch, its objective and its place in the log, and the trash entry written beside it

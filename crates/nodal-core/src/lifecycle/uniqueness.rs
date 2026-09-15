@@ -290,7 +290,11 @@ impl Uniqueness {
 /// # Errors
 /// [`crate::Error::Git`] when the status or the revision could not be read, and
 /// [`crate::Error::NotARepository`] when `home` is not one.
-pub fn check(home: &Path, elsewhere: Option<&Checkout>, siblings: &[PathBuf]) -> Result<Uniqueness> {
+pub fn check(
+    home: &Path,
+    elsewhere: Option<&Checkout>,
+    siblings: &[PathBuf],
+) -> Result<Uniqueness> {
     let assessed = assess::assess(&assess::Input::refusal(home, elsewhere, siblings))?;
     Ok(Uniqueness { home: home.to_path_buf(), findings: assessed.findings() })
 }

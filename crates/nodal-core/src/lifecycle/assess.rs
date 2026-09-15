@@ -160,10 +160,10 @@ pub struct Input<'a> {
     /// The other repositories on this machine that may hold a copy of a commit, beside
     /// the project's own checkout.
     ///
-    /// The third reclaim proof found `--check` calling a commit "only here" while a
-    /// clone two directories away held it, because the reading asked the project's
-    /// checkout and nothing else while the help promised the machine (F-2). These are
-    /// the stores that answer the rest of that promise.
+    /// The reading used to ask the project's checkout and nothing else, so a commit a
+    /// clone two directories away held was reported as the only copy, while the help of
+    /// `nodal reclaim --check` promised the machine. These are the stores that answer
+    /// the rest of that promise.
     ///
     /// Read by the caller and handed in, so that a caller assessing many homes discovers
     /// them once, and so that a caller which cannot afford the reading passes none and
@@ -574,11 +574,11 @@ pub fn bystander(
 ///
 /// Two facts, because one of them was not enough. The identifier is what a process
 /// carries. The recorded processes are the ones Nodal wrote down when it started them,
-/// and they are here because of what the third reclaim proof found (F-4): `nodal run
-/// --tether` writes `NODAL_ID` into the environment of the command it starts and does
-/// not carry it in its own, so Nodal's own wrapper was read by its working directory
-/// alone — as a stranger standing in the home — and refused the reclaim of the very unit
-/// it was tethering. The registry knew all along which unit that process served.
+/// and the second is here because the first was not enough: `nodal run --tether` writes
+/// `NODAL_ID` into the environment of the command it starts and does not carry it in its
+/// own, so Nodal's own wrapper was read by its working directory alone — as a stranger
+/// standing in the home — and refused the reclaim of the very unit it was tethering. The
+/// registry knew all along which unit that process served.
 ///
 /// A recorded identifier is a record and not a reading, and a process identifier is
 /// reused. The record is the open session rows of the unit's own materialisation, so an
@@ -1017,9 +1017,7 @@ fn second_groups(
         }
     }
     held.into_iter()
-        .filter_map(|(held_by, commits)| {
-            commit_group(Copies::SecondLocalCopy { held_by }, commits)
-        })
+        .filter_map(|(held_by, commits)| commit_group(Copies::SecondLocalCopy { held_by }, commits))
         .collect()
 }
 
@@ -1088,12 +1086,12 @@ mod tests {
         Assessment, CommitGroup, Copies, Held, Needs, Own, PathGroup, Reason, bystander, owns,
         reasons,
     };
-    use crate::model::UnitId;
     use crate::git::Oid;
     use crate::git::status::{Change, Entry, State, Submodule};
     use crate::lifecycle::uniqueness::{Finding, Witness};
+    use crate::model::UnitId;
 
-    /// F-4 of the third reclaim proof, at the predicate that decided it.
+    /// The wrapper case, at the predicate that decides it.
     ///
     /// `nodal run --tether` writes `NODAL_ID` into the environment of the command it
     /// starts and carries none in its own, so Nodal's own wrapper was read by its
@@ -1103,7 +1101,7 @@ mod tests {
     #[test]
     fn a_process_the_registry_recorded_is_the_units_own_and_never_a_stranger_in_its_home() {
         let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
-        let home = std::path::PathBuf::from("/homes/alpha3");
+        let home = std::path::PathBuf::from("/homes/worker-import");
         let placed = [home.clone()];
 
         // The wrapper: no identifier of its own, standing in the home.
@@ -1111,7 +1109,7 @@ mod tests {
             .in_directory(&home)
             .running("nodal run");
 
-        // Read without the record, which is what Nodal did on Day 1.
+        // Read without the record, which is what Nodal did before.
         let blind = Own::unrecorded(unit);
         assert!(!owns(&wrapper, blind), "nothing it carries says which unit it serves");
         assert!(
@@ -1130,7 +1128,7 @@ mod tests {
     #[test]
     fn a_recorded_process_of_another_unit_is_not_this_ones_own() {
         let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
-        let home = std::path::PathBuf::from("/homes/alpha3");
+        let home = std::path::PathBuf::from("/homes/worker-import");
         let stranger = crate::runtime::processes::Running::new(5_000, BTreeMap::new())
             .in_directory(&home)
             .running("somebody else's editor");

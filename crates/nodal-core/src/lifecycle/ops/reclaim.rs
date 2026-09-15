@@ -189,7 +189,7 @@ pub struct Params {
     /// The processes the unit's open recorded sessions name — the `nodal run` a tether
     /// is driven by among them. Read with the groups, and for the same reason: Nodal's
     /// own wrapper carries no identifier in its own environment, so the record is the
-    /// only thing that says the process standing in the home is Nodal's own (F-4).
+    /// only thing that says the process standing in the home is Nodal's own.
     ///
     /// Defaulted on the way in, for the reason the groups are.
     #[serde(default)]
@@ -289,8 +289,7 @@ fn read(
         checkout: Some(&Checkout::read(&project.root)),
         // The rest of what "another copy on this machine" promises: the other
         // repositories beside the project's checkout, proved by their own object stores
-        // and never by a name (F-4 of the third proof's ledger is the runtime half of
-        // this reading; this is the history half, F-2).
+        // and never by a name.
         siblings: &crate::doctor::scan::siblings(&project.root),
         state: true,
         // The preflight is what a person reads, so it pays for the two readings that say
@@ -634,7 +633,7 @@ struct TrashHome {
     /// Whether the move goes ahead over a process standing in the home.
     force: bool,
     /// The processes the registry recorded for the unit, so that Nodal's own wrapper is
-    /// not the stranger the move refuses to act over (F-4).
+    /// not the stranger the move refuses to act over.
     recorded: Vec<u32>,
 }
 
@@ -849,16 +848,15 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
         approvals: Approvals::open(hooks::path_in(&state_dir))?,
         enabled: request.hooks,
     };
-    let params =
-        Params {
-            project,
-            unit,
-            environment,
-            entry,
-            tethers: Vec::new(),
-            recorded: Vec::new(),
-            force: request.force,
-        };
+    let params = Params {
+        project,
+        unit,
+        environment,
+        entry,
+        tethers: Vec::new(),
+        recorded: Vec::new(),
+        force: request.force,
+    };
     Ok(Prepared { params, findings, runner })
 }
 
@@ -874,7 +872,10 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
 /// two orderings are both required and they are not in tension: the reading is still
 /// the last thing before the plan.
 fn recorded(conn: &Connection, environment: EnvId) -> Result<Vec<u32>> {
-    Ok(sessions::list_open(conn, environment)?.into_iter().filter_map(|session| session.pid).collect())
+    Ok(sessions::list_open(conn, environment)?
+        .into_iter()
+        .filter_map(|session| session.pid)
+        .collect())
 }
 
 /// The process groups of a materialisation's open recorded sessions.
@@ -930,8 +931,11 @@ fn placement(environment: &Environment) -> Result<Placement> {
 /// carried into the report, and the caller takes a snapshot before it goes on.
 fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Result<Vec<Finding>> {
     let Some(home) = placed.path() else { return Ok(Vec::new()) };
-    let found =
-        uniqueness::check(home, Some(&Checkout::read(source)), &crate::doctor::scan::siblings(source))?;
+    let found = uniqueness::check(
+        home,
+        Some(&Checkout::read(source)),
+        &crate::doctor::scan::siblings(source),
+    )?;
     if found.is_clear() || force {
         return Ok(found.findings);
     }

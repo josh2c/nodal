@@ -248,9 +248,9 @@ fn a_commit_no_other_tree_has_refuses_a_reclaim_and_a_shared_one_does_not() {
     assert!(accepted.status.success(), "{}", stderr(&accepted));
 }
 
-/// F-2 of the third reclaim proof, in the layout that found it.
+/// A second clone beside the checkout, which is the layout this reading was missing.
 ///
-/// `siblings/mirror` held alpha3's first commit and `--check` called that commit "only
+/// A clone under `siblings/` held a unit's commit and `--check` called that commit "only
 /// here", because the reading asked the project's checkout and nothing else while the
 /// help promised the machine. The mislabel was conservative and could not cause a
 /// false-safe, and it was still a wrong answer to the question a person asks before they
@@ -261,7 +261,7 @@ fn a_commit_no_other_tree_has_refuses_a_reclaim_and_a_shared_one_does_not() {
 #[test]
 fn a_commit_a_sibling_clone_on_this_machine_holds_is_not_only_here() {
     let workspace = workspace();
-    drop(stdout(&workspace.nodal(&["new", "--name", "alpha3"])));
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (_, home) = workspace.one_unit_and_home();
     std::fs::write(home.join("app").join("main.txt"), "the duplicated commit\n").unwrap();
     drop(git(&home, &["config", "user.email", "unit@example.invalid"]));
@@ -271,28 +271,34 @@ fn a_commit_a_sibling_clone_on_this_machine_holds_is_not_only_here() {
     let commit = git(&home, &["rev-parse", "HEAD"]).trim().to_owned();
 
     // Nothing beside the checkout holds it yet, so it is the only copy and the refusal
-    // says so. This is the reading Nodal made on Day 1.
-    let refused = workspace.nodal(&["reclaim", "alpha3", "--check"]);
+    // says so. This is the reading Nodal made before it asked the siblings.
+    let refused = workspace.nodal(&["reclaim", "worker-import", "--check"]);
     assert!(!refused.status.success(), "{}", answer(&refused));
     let before = answer(&refused);
     assert!(before.contains("only"), "the commit is the only copy: {before}");
 
-    // A second clone beside the checkout, one directory down, which is where the proof
-    // put its mirror. It fetches the commit, so its own object store holds it.
+    // A second clone beside the checkout, one directory down. It fetches the commit, so
+    // its own object store holds it.
     let siblings = workspace.root().join("siblings");
     std::fs::create_dir_all(&siblings).unwrap();
     let mirror = siblings.join("mirror");
-    drop(git(workspace.root(), &["clone", "-q", workspace.source.to_str().unwrap(), mirror.to_str().unwrap()]));
-    drop(git(&mirror, &["fetch", "-q", home.to_str().unwrap(), &format!("{commit}:refs/heads/alpha3-partial")]));
+    drop(git(
+        workspace.root(),
+        &["clone", "-q", workspace.source.to_str().unwrap(), mirror.to_str().unwrap()],
+    ));
+    drop(git(
+        &mirror,
+        &["fetch", "-q", home.to_str().unwrap(), &format!("{commit}:refs/heads/partial-copy")],
+    ));
 
-    let answered = workspace.nodal(&["reclaim", "alpha3", "--check"]);
+    let answered = workspace.nodal(&["reclaim", "worker-import", "--check"]);
     let after = answer(&answered);
     assert!(answered.status.success(), "the verdict is the exit code: {after}");
     assert!(after.contains("second local copy"), "the commit has a second copy: {after}");
 
     // The report names the repository that holds it, so a person can go and look, and no
     // group calls the commit the only copy any more.
-    let report = json(&workspace.nodal(&["reclaim", "alpha3", "--check", "--json"]));
+    let report = json(&workspace.nodal(&["reclaim", "worker-import", "--check", "--json"]));
     let groups = report["commits"].as_array().expect("the report carries commit groups");
     assert!(
         !groups.iter().any(|group| group["copies"]["kind"] == "only_here"),
@@ -313,13 +319,13 @@ fn a_commit_a_sibling_clone_on_this_machine_holds_is_not_only_here() {
 /// A sibling that names a commit without holding it proves nothing.
 ///
 /// This is the invariant the reading rests on: a refusal is weakened by an object in a
-/// second store, proved by `git rev-list` in that store, and never by a name. The proof's
-/// own mirror was `reflog expire`d and garbage collected, so it kept names over an empty
-/// store, and that is the case that must not weaken anything.
+/// second store, proved by `git rev-list` in that store, and never by a name. A clone
+/// that has been `reflog expire`d and garbage collected keeps names over an empty store,
+/// and that is the case that must not weaken anything.
 #[test]
 fn a_sibling_that_names_a_commit_without_holding_it_does_not_weaken_the_refusal() {
     let workspace = workspace();
-    drop(stdout(&workspace.nodal(&["new", "--name", "alpha3"])));
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (_, home) = workspace.one_unit_and_home();
     std::fs::write(home.join("app").join("main.txt"), "the unique commit\n").unwrap();
     drop(git(&home, &["config", "user.email", "unit@example.invalid"]));
@@ -332,16 +338,18 @@ fn a_sibling_that_names_a_commit_without_holding_it_does_not_weaken_the_refusal(
     let siblings = workspace.root().join("siblings");
     std::fs::create_dir_all(&siblings).unwrap();
     let mirror = siblings.join("mirror");
-    drop(git(workspace.root(), &["clone", "-q", workspace.source.to_str().unwrap(), mirror.to_str().unwrap()]));
+    drop(git(
+        workspace.root(),
+        &["clone", "-q", workspace.source.to_str().unwrap(), mirror.to_str().unwrap()],
+    ));
     // The ref is written as a file rather than through `update-ref`, because Git refuses
-    // to name an object it does not have. This is the state the proof's own mirror was
-    // left in: `reflog expire` and `gc --prune=now` took the objects and left the names.
-    let named = mirror.join(".git").join("refs").join("heads").join("alpha3-partial");
+    // to name an object it does not have. This is the state `reflog expire` and
+    // `gc --prune=now` leave: the objects are taken and the names stay.
+    let named = mirror.join(".git").join("refs").join("heads").join("partial-copy");
     std::fs::create_dir_all(named.parent().unwrap()).unwrap();
     std::fs::write(&named, format!("{commit}\n")).unwrap();
 
-
-    let refused = workspace.nodal(&["reclaim", "alpha3", "--check"]);
+    let refused = workspace.nodal(&["reclaim", "worker-import", "--check"]);
     assert!(!refused.status.success(), "a name is not a second copy: {}", answer(&refused));
     let told = answer(&refused);
     assert!(
@@ -451,34 +459,34 @@ fn a_reclaimed_unit_is_listed_as_archived_with_no_home_and_no_complaint() {
     assert!(!listed.contains("git status"), "the list has nothing to complain about: {listed}");
 }
 
-/// F-7 of the third reclaim proof: a reclaimed unit went on holding its name, so
-/// making the unit again gave `<name>-2` on the branch the archived unit already had.
-/// Two units then shared `nodal/<name>`.
+/// A reclaimed unit used to go on holding its name, so making the unit again gave
+/// `<name>-2` on the branch the archived unit already had. Two units then shared
+/// `nodal/<name>`.
 #[test]
 fn a_reclaimed_units_name_is_free_again_and_the_archived_row_keeps_its_own_identity() {
     let workspace = workspace();
-    drop(stdout(&workspace.nodal(&["new", "--name", "alpha3"])));
-    let archived = slug_id(&workspace, "alpha3");
-    drop(stdout(&workspace.nodal(&["reclaim", "alpha3"])));
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let archived = slug_id(&workspace, "worker-import");
+    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
 
     // Until somebody takes the name, it still reaches the unit that had it, so a person
     // who reclaims twice is told what happened rather than that there is no such unit.
-    let again = workspace.nodal(&["reclaim", "alpha3"]);
+    let again = workspace.nodal(&["reclaim", "worker-import"]);
     assert!(!again.status.success());
     assert!(stderr(&again).contains("was reclaimed already"), "{}", stderr(&again));
 
-    drop(stdout(&workspace.nodal(&["new", "--name", "alpha3"])));
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
 
     let listed = json(&workspace.nodal(&["ls", "--json"]));
     let units = listed["units"].as_array().expect("the list has units");
     let made = units
         .iter()
-        .find(|row| row["slug"] == "alpha3")
+        .find(|row| row["slug"] == "worker-import")
         .expect("the name was free, so the new unit has it");
-    assert_eq!(made["branch"], "nodal/alpha3", "and the branch is the one the name makes");
+    assert_eq!(made["branch"], "nodal/worker-import", "and the branch is the one the name makes");
     assert_ne!(made["id"], serde_json::json!(archived), "it is a new unit, not the archived one");
     assert!(
-        !units.iter().any(|row| row["slug"] == "alpha3-2"),
+        !units.iter().any(|row| row["slug"] == "worker-import-2"),
         "no unit was pushed onto a suffix: {listed}"
     );
 
@@ -489,12 +497,12 @@ fn a_reclaimed_units_name_is_free_again_and_the_archived_row_keeps_its_own_ident
         .find(|row| row["id"] == serde_json::json!(archived))
         .expect("the archived unit is still on the list");
     assert_eq!(kept["status"], "archived", "{kept}");
-    assert_ne!(kept["slug"], "alpha3", "it gave the name back: {kept}");
+    assert_ne!(kept["slug"], "worker-import", "it gave the name back: {kept}");
     assert!(
-        kept["slug"].as_str().expect("a handle").starts_with("alpha3-"),
+        kept["slug"].as_str().expect("a handle").starts_with("worker-import-"),
         "and the name it had is still readable in the one it took: {kept}"
     );
-    assert_eq!(kept["branch"], "nodal/alpha3", "the archived unit keeps its own branch");
+    assert_eq!(kept["branch"], "nodal/worker-import", "the archived unit keeps its own branch");
 }
 
 /// The identifier of the unit that holds this handle now.

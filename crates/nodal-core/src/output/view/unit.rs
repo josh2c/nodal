@@ -188,9 +188,9 @@ pub struct Holder {
     ///
     /// The second fact of two, and never a correction of the first. A killed agent that
     /// left a child behind is a holder that is gone and an orphan that is there, and the
-    /// third reclaim proof found the two merged into the word `live` (F-3). They are
-    /// reported apart because a person acts on them apart: the hold is nobody's to
-    /// refresh, and something is still writing in the home.
+    /// two used to be merged into the one word `live`. They are reported apart because a
+    /// person acts on them apart: the hold is nobody's to refresh, and something is
+    /// still writing in the home.
     ///
     /// False wherever the holder is not gone, because the question is only asked of a
     /// hold whose own process has ended ([`crate::runtime::ls`]).
