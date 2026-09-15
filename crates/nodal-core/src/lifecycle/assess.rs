@@ -157,6 +157,21 @@ pub struct Input<'a> {
     /// its tips it really holds. A caller that assesses many homes reads it once
     /// ([`Checkout::read`]) and pays for it once.
     pub checkout: Option<&'a Checkout>,
+    /// The other repositories on this machine that may hold a copy of a commit, beside
+    /// the project's own checkout.
+    ///
+    /// The third reclaim proof found `--check` calling a commit "only here" while a
+    /// clone two directories away held it, because the reading asked the project's
+    /// checkout and nothing else while the help promised the machine (F-2). These are
+    /// the stores that answer the rest of that promise.
+    ///
+    /// Read by the caller and handed in, so that a caller assessing many homes discovers
+    /// them once, and so that a caller which cannot afford the reading passes none and
+    /// gets the stricter answer. An empty slice is exactly the reading Nodal made before.
+    ///
+    /// A store is only ever believed when it holds the object, proved by `git rev-list`
+    /// in that repository ([`local_copies`]). A name never counts.
+    pub siblings: &'a [PathBuf],
     /// Whether to classify the ignored state the home holds.
     pub state: bool,
     /// Whether to say where else each commit lives, rather than only which commits
@@ -184,8 +199,12 @@ impl<'a> Input<'a> {
     /// would not move. The refusal a reclaim raises is about the work in a home, and it
     /// is the same refusal for a home Nodal made and for a checkout adopted in place.
     #[must_use]
-    pub const fn refusal(home: &'a Path, checkout: Option<&'a Checkout>) -> Self {
-        Self { home, checkout, state: false, dispositions: false, runtime: None }
+    pub const fn refusal(
+        home: &'a Path,
+        checkout: Option<&'a Checkout>,
+        siblings: &'a [PathBuf],
+    ) -> Self {
+        Self { home, checkout, siblings, state: false, dispositions: false, runtime: None }
     }
 }
 
@@ -864,7 +883,7 @@ fn history(git: &Git, input: &Input<'_>) -> Result<(Vec<CommitGroup>, Vec<String
     let found = witness::elsewhere(input.home, input.checkout);
     let checkout = input.checkout.map(Checkout::path);
     if !input.dispositions {
-        let refused = refusing(git, checkout, &found, &remotes)?;
+        let refused = refusing(git, checkout, input.siblings, &found, &remotes)?;
         return Ok((refused, remotes));
     }
     let ours = git.commits_outside("HEAD", &found.own)?;
@@ -876,10 +895,10 @@ fn history(git: &Git, input: &Input<'_>) -> Result<(Vec<CommitGroup>, Vec<String
     let unproved = git.commits_outside("HEAD", &found.tips())?;
     let proved = difference(&ours, &off_remote);
     let second = difference(&off_remote, &unproved);
-    let (fetched, only) = local_copies(checkout, unproved);
+    let (held, only) = local_copies(checkout, input.siblings, unproved);
     let mut groups = Vec::new();
     groups.extend(commit_group(Copies::RemoteProved { witness: witness.clone() }, proved));
-    groups.extend(second_group(checkout, union(&second, &fetched)));
+    groups.extend(second_groups(checkout, second, held));
     groups.extend(commit_group(unreached(&witness), only));
     Ok((groups, remotes))
 }
@@ -899,6 +918,7 @@ fn history(git: &Git, input: &Input<'_>) -> Result<(Vec<CommitGroup>, Vec<String
 fn refusing(
     git: &Git,
     checkout: Option<&Path>,
+    siblings: &[PathBuf],
     found: &witness::Elsewhere,
     remotes: &[String],
 ) -> Result<Vec<CommitGroup>> {
@@ -906,7 +926,7 @@ fn refusing(
     if unproved.is_empty() {
         return Ok(Vec::new());
     }
-    let (_, only) = local_copies(checkout, unproved);
+    let (_, only) = local_copies(checkout, siblings, unproved);
     let witness = Witness::of(remotes, found);
     Ok(commit_group(unreached(&witness), only).into_iter().collect())
 }
@@ -930,15 +950,37 @@ fn unreached(witness: &Witness) -> Copies {
 ///
 /// A checkout that cannot be read, or that will not answer, holds nothing as far as this
 /// is concerned, which is the strict direction.
-fn local_copies(checkout: Option<&Path>, unproved: Vec<Oid>) -> (Vec<Oid>, Vec<Oid>) {
-    let Some(git) = checkout.and_then(|path| Git::open(path).ok()) else {
-        return (Vec::new(), unproved);
-    };
-    let Ok(held) = git.held(&unproved) else {
-        return (Vec::new(), unproved);
-    };
-    let held: BTreeSet<Oid> = held.into_iter().collect();
-    unproved.into_iter().partition(|oid| held.contains(oid))
+fn local_copies(
+    checkout: Option<&Path>,
+    siblings: &[PathBuf],
+    unproved: Vec<Oid>,
+) -> (Vec<(PathBuf, Vec<Oid>)>, Vec<Oid>) {
+    let mut left = unproved;
+    let mut found = Vec::new();
+    for store in checkout.into_iter().chain(siblings.iter().map(PathBuf::as_path)) {
+        if left.is_empty() {
+            break;
+        }
+        let holds = holds_of(store, &left);
+        if holds.is_empty() {
+            continue;
+        }
+        let (held, rest) = left.into_iter().partition(|oid| holds.contains(oid));
+        found.push((store.to_path_buf(), held));
+        left = rest;
+    }
+    (found, left)
+}
+
+/// Which of these commits one repository's object store really holds.
+///
+/// A repository that will not open, and a `rev-list` that would not run, both answer
+/// with nothing. That is the stricter reading and it is the safe direction: a store
+/// nobody could read has proved no second copy of anything, and the commit stays in the
+/// group a refusal is raised over.
+fn holds_of(store: &Path, commits: &[Oid]) -> BTreeSet<Oid> {
+    let Some(git) = Git::open(store).ok() else { return BTreeSet::new() };
+    git.held(commits).map(|held| held.into_iter().collect()).unwrap_or_default()
 }
 
 /// The members of `all` that `fewer` does not have, in the order `all` has them.
@@ -956,10 +998,29 @@ fn commit_group(copies: Copies, commits: Vec<Oid>) -> Option<CommitGroup> {
     Some(CommitGroup { copies, count, sample: commits.into_iter().take(SAMPLE).collect() })
 }
 
-/// The group of commits a second object store on this machine holds.
-fn second_group(checkout: Option<&Path>, commits: Vec<Oid>) -> Option<CommitGroup> {
-    let held_by = checkout?.to_path_buf();
-    commit_group(Copies::SecondLocalCopy { held_by }, commits)
+/// One group per object store on this machine that holds a second copy.
+///
+/// The checkout's own group carries the commits it names under a ref nothing vouched for
+/// as well as the ones its store was found to hold, because both are the same claim
+/// about the same repository and two rows would read as two findings.
+fn second_groups(
+    checkout: Option<&Path>,
+    named_by_checkout: Vec<Oid>,
+    mut held: Vec<(PathBuf, Vec<Oid>)>,
+) -> Vec<CommitGroup> {
+    if let Some(checkout) = checkout
+        && !named_by_checkout.is_empty()
+    {
+        match held.iter_mut().find(|(store, _)| store == checkout) {
+            Some((_, commits)) => *commits = union(commits, &named_by_checkout),
+            None => held.insert(0, (checkout.to_path_buf(), named_by_checkout)),
+        }
+    }
+    held.into_iter()
+        .filter_map(|(held_by, commits)| {
+            commit_group(Copies::SecondLocalCopy { held_by }, commits)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

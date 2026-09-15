@@ -37,11 +37,11 @@
 //! Only this project's section carries these rows. Another project's unique work is that
 //! project's to look at, and a person cleaning up one project must not be led into it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
-use crate::doctor::{Known, Scope, Section, size};
+use crate::doctor::{Known, Scope, Section, scan, size};
 use crate::lifecycle::assess::{self, Copies};
 use crate::lifecycle::witness::Checkout;
 use crate::model::{Unit, UnitStatus};
@@ -59,13 +59,18 @@ pub fn find(conn: &Connection, scope: &Scope) -> crate::Result<Vec<(Section, Fin
             continue;
         }
         let mut checkout = None;
+        // Discovered once for the project, like the checkout beside it and for the same
+        // reason: which other repositories stand beside this checkout is a fact about
+        // the project, not about any home read against them.
+        let mut siblings = None;
         for unit in open_units(conn, known)? {
             for environment in environments::list_for_unit(conn, unit.id)? {
                 if !environment.home.is_dir() {
                     continue;
                 }
                 let read_once = checkout.get_or_insert_with(|| Checkout::read(&known.root));
-                if let Some(finding) = read(&environment.home, read_once, &unit) {
+                let beside = siblings.get_or_insert_with(|| scan::siblings(&known.root));
+                if let Some(finding) = read(&environment.home, read_once, beside, &unit) {
                     rows.push((Section::Here, finding));
                 }
             }
@@ -85,8 +90,8 @@ fn open_units(conn: &Connection, known: &Known) -> crate::Result<Vec<Unit>> {
 ///
 /// `None` for a home whose every commit lives somewhere else, which is the home the
 /// closing line is about.
-fn read(home: &Path, checkout: &Checkout, unit: &Unit) -> Option<Finding> {
-    let assessed = match assess::assess(&assess::Input::refusal(home, Some(checkout))) {
+fn read(home: &Path, checkout: &Checkout, siblings: &[PathBuf], unit: &Unit) -> Option<Finding> {
+    let assessed = match assess::assess(&assess::Input::refusal(home, Some(checkout), siblings)) {
         Ok(assessed) => assessed,
         Err(why) => return Some(unreadable(unit, home, &why.to_string())),
     };
