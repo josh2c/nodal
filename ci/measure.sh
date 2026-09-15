@@ -141,12 +141,21 @@ if [ "${NODAL_MEASURE_SKIP_GIT:-0}" = "1" ]; then
     cargo build --release --locked -q -p nodal-cli
 fi
 size=$(wc -c < "$root/target/release/nodal" | tr -d ' ')
-# Baseline 7,890,600 bytes on x86_64-unknown-linux-gnu, stripped, with the release
-# profile linked as one unit. The same build measured 8,920,552 bytes before that, so the
-# link step removes about 1,030,000 bytes. The ceiling is 8,200,000, which keeps about
-# 310,000 bytes of margin for a different toolchain or a different runner, and keeps most
-# of the removed bytes from coming back without a person seeing it.
-gate "release binary size" "$size" 8200000 "bytes" "baseline 7,890,600; 8,920,552 unlinked"
+# Baseline 7,273,656 bytes on the CI runner, x86_64-unknown-linux-gnu, stripped, with the
+# release profile linked as one unit. It read 8,161,624 until the bundled SQLite was
+# compiled for size instead of for speed, and 8,920,552 before the link step.
+#
+# Say which toolchain a number came from. The runner and a workstation do not differ by a
+# constant. The same two builds read 8,330,952 and 7,264,872 on the workstation this was
+# developed on, so that workstation was 169,328 bytes over the runner before the change
+# and 8,784 bytes under it after. The C compiler that builds the SQLite amalgamation is
+# not the same one on the two machines. Only a runner number is comparable with the
+# ceiling.
+#
+# The ceiling stays at 8,200,000. It is a promise about install size, not a record of the
+# artifact, and the bytes below it are the room the next surface spends. Lower it only
+# when the promise changes.
+gate "release binary size" "$size" 8200000 "bytes" "baseline 7,273,656 on the runner; 8,161,624 before the SQLite profile"
 
 packages=$(grep -c '^\[\[package\]\]' "$root/Cargo.lock")
 # Baseline 127 packages in the lockfile; 83 crates in the nodal-cli normal tree.
