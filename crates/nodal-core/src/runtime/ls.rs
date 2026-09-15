@@ -248,7 +248,7 @@ fn row(subject: &Snapshot, seen: &Seen, held: &Held, remote: Reading) -> UnitRow
     let Some(environment) = subject.home.as_ref() else { return row };
     row.sessions = seen.attached.of(&environment.home);
     if let Some(holder) = row.holder.as_mut() {
-        still_there(holder, &row.sessions);
+        read_again(holder, &row.sessions);
     }
     row.last_active = Some(environment.last_active);
     row.environment = Some(EnvLine::from_environment(environment));
@@ -263,21 +263,39 @@ fn row(subject: &Snapshot, seen: &Seen, held: &Held, remote: Reading) -> UnitRow
     row
 }
 
-/// A hold belongs to an actor, and an actor outlives any one process of theirs.
+/// Read a hold whose recorded process is gone once more, and report the two facts apart.
 ///
-/// The identifier a lock row carries is the command that entered the home, and that
-/// command has usually ended long before anybody reads the list: `nodal new` writes its
-/// own identifier and exits. Reading that alone would report every unit as held by
-/// somebody who is gone, which is a different untruth from the one this replaced.
+/// **What this replaced, and why.** A hold whose process was gone used to be upgraded to
+/// live whenever a process of the same actor stood in the home. An actor outlives any
+/// one process of theirs and `nodal new` writes its own identifier and exits, so the
+/// rule was written to stop every unit reading as held by somebody who had gone. But an
+/// actor name is not a process: the third reclaim proof killed an agent and left its
+/// orphan standing in the home, and the list reported the killed holder `live` with
+/// seven hours to run (F-3). That is the case the advisor's question is about, and the
+/// reading said the opposite of what had happened.
 ///
-/// So a hold whose recorded process is gone is read once more, against the same scan the
-/// WHO column is built from: where a process of that actor stands in the home, the actor
-/// is there and the hold is live. A hold with neither is an agent that was killed with
-/// nothing of it left in the home, and it is the only one reported as gone.
-fn still_there(holder: &mut Holder, sessions: &[ToolSessions]) {
-    if holder.state == HolderState::Gone && sessions.iter().any(|seen| seen.tool == holder.actor) {
-        holder.state = HolderState::Live;
+/// So nothing upgrades a hold any more. One reading decides whether a holder is there —
+/// whether the process that took the hold is on this host
+/// ([`crate::runtime::lock::liveness`]) — and every other process in the home is a
+/// different fact about a different thing.
+///
+/// **Why not "a process of the unit's own" either.** A process carrying the unit's
+/// `NODAL_ID` looks like better evidence than an actor name, and it is not evidence
+/// about this hold at all: gamma3's orphan carried the identifier, because Nodal wrote
+/// it into the home its parent was killed in. An upgrade on that reading would report
+/// the killed holder live for exactly the case the proof was built to find. A process
+/// of the unit's own says the unit is being worked in; it never says who holds the
+/// write.
+///
+/// An orphan of the same actor is therefore the second fact, reported beside the first:
+/// the holder is gone, **and** something of that actor is still standing in the home. A
+/// person reading two facts can act on both; a person reading one word that merged them
+/// could act on neither.
+fn read_again(holder: &mut Holder, sessions: &[ToolSessions]) {
+    if holder.state != HolderState::Gone {
+        return;
     }
+    holder.orphan = sessions.iter().any(|seen| seen.tool == holder.actor);
 }
 
 /// What this machine knows about the project's remote, for one row.
@@ -504,7 +522,7 @@ fn attached(running: &[Running], notices: &mut Vec<Notice>) -> Attached {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
-    use super::{Needs, Remote, needs};
+    use super::{Holder, HolderState, Needs, Remote, ToolSessions, needs, read_again};
     use crate::context::survey::Work;
     use crate::git::{Divergence, Integration};
     use crate::output::view::Remote as Upstream;
@@ -632,5 +650,78 @@ mod tests {
     fn a_home_that_could_not_be_read_has_no_ranking_and_is_not_nothing() {
         assert_eq!(needs(None, true, STALE), None);
         assert_ne!(Needs::Nothing.label(), crate::output::human::NONE);
+    }
+
+    /// A hold, as the registry states it, before anything is read against the machine.
+    fn held(actor: &str, state: HolderState) -> Holder {
+        let at = crate::model::Timestamp::from_unix_seconds(1_789_000_000).unwrap();
+        Holder {
+            actor: crate::model::ActorName::parse(actor).unwrap(),
+            host: crate::model::HostName::parse("workshop").unwrap(),
+            pid: Some(4_025_274),
+            state,
+            taken_at: at,
+            refreshed_at: at,
+            expires_at: at,
+            orphan: false,
+        }
+    }
+
+    /// Who is standing in the home, counted by tool.
+    fn attached(tool: &str) -> Vec<ToolSessions> {
+        vec![ToolSessions { tool: crate::model::ActorName::parse(tool).unwrap(), count: 1 }]
+    }
+
+    /// F-3 of the third reclaim proof. The agent holding gamma3 was killed on Day 1 and
+    /// left an orphan of its own in the home. Both `ls` and `show --json` reported the
+    /// hold `live` with seven hours to run, and no field said the process was gone.
+    #[test]
+    fn a_killed_holder_that_left_an_orphan_is_gone_and_the_orphan_is_the_second_fact() {
+        let mut holder = held("claude-code", HolderState::Gone);
+        read_again(&mut holder, &attached("claude-code"));
+        assert_eq!(holder.state, HolderState::Gone, "the process that took the hold is gone");
+        assert!(holder.orphan, "and something of that actor is still standing in the home");
+    }
+
+    /// The two facts are two. A hold whose process is gone with nothing of the actor in
+    /// the home is gone, and there is no orphan to report.
+    #[test]
+    fn a_killed_holder_that_left_nothing_is_gone_with_no_second_fact() {
+        let mut holder = held("claude-code", HolderState::Gone);
+        read_again(&mut holder, &[]);
+        assert_eq!(holder.state, HolderState::Gone);
+        assert!(!holder.orphan);
+    }
+
+    /// An actor name is not a process. A different actor standing in the home says
+    /// nothing about this hold either way.
+    #[test]
+    fn another_actor_in_the_home_is_not_this_holders_orphan() {
+        let mut holder = held("claude-code", HolderState::Gone);
+        read_again(&mut holder, &attached("ada"));
+        assert_eq!(holder.state, HolderState::Gone);
+        assert!(!holder.orphan);
+    }
+
+    /// The orphan gamma3 left carried the unit's own `NODAL_ID`, because Nodal wrote it
+    /// into the home its parent was killed in. That is not evidence about the hold, and
+    /// reading it as evidence is what reported a killed agent as a live holder.
+    #[test]
+    fn a_process_carrying_the_units_identifier_does_not_raise_a_gone_holder() {
+        let mut holder = held("claude-code", HolderState::Gone);
+        read_again(&mut holder, &attached("claude-code"));
+        assert_eq!(holder.state, HolderState::Gone, "the orphan is not the holder");
+        assert!(holder.orphan);
+    }
+
+    /// A hold this host could not read is not touched. A reading nobody could take is
+    /// not evidence against the row, and that is unchanged.
+    #[test]
+    fn a_hold_that_could_not_be_read_is_left_exactly_as_it_was() {
+        let why = crate::output::view::Unknowable::NoProcessTable;
+        let mut holder = held("claude-code", HolderState::Unknown { why });
+        read_again(&mut holder, &attached("claude-code"));
+        assert_eq!(holder.state, HolderState::Unknown { why });
+        assert!(!holder.orphan);
     }
 }
