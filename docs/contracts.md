@@ -1257,7 +1257,13 @@ nothing, not that nothing is left, and the note says which signal went unread.
 
 `nodal gc` removes a trashed home when `reclaim.trash_retention` days have passed. Nodal stamps
 that window on the row when it moves the home. A recipe edited later cannot shorten a retention
-that somebody relies on. `gc` also removes the pre-operation records of runs that are over, and gives
+that somebody relies on.
+
+A snapshot record is kept differently, and the difference is worth stating. Nothing stamps a window
+on a record: the sweep reads the recipe as it stands and measures that window from the record's own
+commit. So a shortened `reclaim.trash_retention` shortens the window of every record already taken,
+and a lengthened one lengthens it. Shorten the key only when you accept losing the records of runs
+that are already older than the new window. `gc` also removes the pre-operation records of runs that are over, and gives
 back lapsed leases. It stops runtime that belongs to a unit whose materialisations have all been
 reclaimed, and the tethers of every materialisation that has been reclaimed. It never stops the
 runtime of a live unit.

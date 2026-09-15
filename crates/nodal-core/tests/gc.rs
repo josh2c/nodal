@@ -23,13 +23,17 @@ use nodal_core::runtime::{ls, show};
 use nodal_safety::git::{git, git_ok};
 use support::World;
 
-/// The retention this project asks for: a record may go as soon as its run is over.
-const RECIPE: &str = "[reclaim]\ntrash_retention = 0\n";
-
-/// A world with the unit's rows, its home on the disk, and a recipe that keeps nothing.
+/// A world whose records may go as soon as their runs are over.
 fn world() -> World {
+    keeping_for(0)
+}
+
+/// A world with the unit's rows, its home on the disk, and a recipe that keeps a home
+/// and a record for `days`.
+fn keeping_for(days: u32) -> World {
     let world = World::plain();
-    std::fs::write(world.source.join("nodal.toml"), RECIPE).unwrap();
+    let recipe = format!("[reclaim]\ntrash_retention = {days}\n");
+    std::fs::write(world.source.join("nodal.toml"), recipe).unwrap();
     world.insert_unit();
     let home = world.home();
     std::fs::create_dir_all(home.parent().unwrap()).unwrap();
@@ -103,6 +107,40 @@ fn a_record_of_a_finished_run_is_collected_and_stops_being_listed() {
     assert!(!lists(&detail, &rolled_back), "the report still lists a record that has gone");
 }
 
+/// A record inside the window the project asked for stays, and is still offered.
+///
+/// The run is over and the record could go on that count alone. What keeps it is the
+/// clock: the commit was made now and the project keeps a record for a fortnight.
+#[test]
+fn a_record_inside_the_window_the_project_asked_for_stays() {
+    let world = keeping_for(14);
+    let committed = record(&world, Some(State::Committed));
+
+    let swept = sweep(&world);
+
+    assert!(swept.records.is_empty(), "a record inside its window went: {swept:?}");
+    assert!(refs_of(&world).contains(&committed), "the record went");
+    assert!(lists(&shown(&world), &committed), "the report stopped offering a record that is here");
+}
+
+/// A second sweep of a swept home removes nothing and reports nothing.
+///
+/// Every record the first sweep could take is gone, and a ref that is not there is not
+/// a failure to remove. This is the property that makes `nodal gc` a thing to run on a
+/// timer.
+#[test]
+fn a_second_sweep_removes_nothing() {
+    let world = world();
+    let committed = record(&world, Some(State::Committed));
+    let first = sweep(&world);
+    assert_eq!(first.records, [committed], "the first sweep takes the record: {first:?}");
+
+    let second = sweep(&world);
+
+    assert!(second.records.is_empty(), "the second sweep removed something: {second:?}");
+    assert!(second.leftovers.is_empty(), "the second sweep reported something: {second:?}");
+}
+
 /// A run that is still open keeps its record, however old the record is. That record is
 /// what the run's own rollback reads, and the sweep never takes it.
 #[test]
@@ -115,6 +153,27 @@ fn a_record_of_an_open_run_is_never_collected() {
     assert!(swept.records.is_empty(), "the sweep removed an open run's record: {swept:?}");
     assert!(refs_of(&world).contains(&open), "the record of an open run went");
     assert!(lists(&shown(&world), &open), "the report stopped listing a record that is here");
+}
+
+/// A project whose recipe will not load is reported, and nothing of it is swept.
+///
+/// The window it asked for is the one thing the sweep needs from that file. A window
+/// nobody can read is not a window to guess at: the default is shorter than many a
+/// project asks for, and acting on it would take a record away early.
+#[test]
+fn a_project_whose_recipe_will_not_load_is_reported_and_swept_for_nothing() {
+    let world = world();
+    let committed = record(&world, Some(State::Committed));
+    std::fs::write(world.source.join("nodal.toml"), "reclaim = [\n").unwrap();
+
+    let swept = sweep(&world);
+
+    assert!(swept.records.is_empty(), "the sweep acted on an unreadable window: {swept:?}");
+    assert!(refs_of(&world).contains(&committed), "the record went");
+    let reported: Vec<&str> =
+        swept.leftovers.iter().filter(|left| left.kind == "project").map(|l| &*l.detail).collect();
+    assert_eq!(reported.len(), 1, "the project is one line of the report: {swept:?}");
+    assert!(reported[0].contains("project"), "the line names the project: {reported:?}");
 }
 
 /// Every other ref of the namespace is left where it is. The work-in-progress ref, the

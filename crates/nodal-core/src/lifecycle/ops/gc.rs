@@ -33,6 +33,13 @@
 //! over SSH and a teammate's shell all match it, and the sweep cannot tell one of those
 //! from a build somebody forgot. So it names them and leaves them running.
 //!
+//! **The retention is read once.** Two of the steps below measure a window the project
+//! asked for, and the recipe is the only thing that states it. It is read once for the
+//! whole sweep, before anything acts, because running the whole of recipe inference for
+//! one number is the reading, not the number. A project whose recipe will not load is a
+//! line of the report and is swept for nothing: a window nobody can read is not a window
+//! to guess at, and guessing it would take a home away early.
+//!
 //! **A merged unit's home is given back before any of that.** A unit the list found
 //! merged keeps its home, because the day after a merge is exactly when somebody wants
 //! to look at what they did. It keeps it for the retention the project asked for
@@ -135,12 +142,13 @@ pub fn collect(store: &mut Store, now: Timestamp, options: &Options) -> Result<S
     let host = crate::model::HostName::current();
     let gone = crate::runtime::sessions::close_dead_groups(store.conn(), &host, now)?;
     tracing::debug!(gone, "recorded groups that had already ended");
-    let retired = retire(store, now, options.hooks, &mut leftovers)?;
+    let retentions = retentions(store.conn(), &mut leftovers)?;
+    let retired = retire(store, now, options.hooks, &retentions, &mut leftovers)?;
     let expired = trash::list_expired(store.conn(), now)?;
     let stopped = stop_absent(store.conn())?;
     let (removed, freed, mut swept_leftovers) = sweep(store, &expired)?;
     leftovers.append(&mut swept_leftovers);
-    let records = forget(store.conn(), now, &mut leftovers)?;
+    let records = forget(store.conn(), now, &retentions, &mut leftovers)?;
     let released = release_lapsed(store.conn(), now, &mut leftovers)?;
     for process in &stopped.standing {
         leftovers.push(Leftover::new("standing", process.describe()));
@@ -166,6 +174,43 @@ pub fn collect(store: &mut Store, now: Timestamp, options: &Options) -> Result<S
 }
 
 // ---------------------------------------------------------------------------
+// What each project asked for, read once.
+// ---------------------------------------------------------------------------
+
+/// One project and the window it keeps a home and a record for.
+#[derive(Debug, Clone)]
+struct Retention {
+    /// The project itself, which the reclaim of one of its units is given.
+    project: Project,
+    /// Days, from `reclaim.trash_retention`.
+    days: u32,
+}
+
+/// What every project asked for, read once for the whole sweep.
+///
+/// Reading it is running the whole of recipe inference, so the two steps that measure
+/// the window share one reading rather than taking one each.
+///
+/// A recipe that will not load is a line of the report, and its project is left out, so
+/// the sweep removes nothing of it and touches nothing of it. The alternative is the
+/// default window, which for a project that asked for a longer one takes a home away
+/// early; a number nobody could read is not a number to act on.
+fn retentions(conn: &Connection, leftovers: &mut Vec<Leftover>) -> Result<Vec<Retention>> {
+    let mut read = Vec::new();
+    for project in projects::list(conn)? {
+        match crate::recipe::load(&project.root) {
+            Ok(effective) => {
+                read.push(Retention { days: effective.recipe.trash_retention_days(), project });
+            }
+            Err(why) => {
+                leftovers.push(Leftover::new("project", format!("{}: {why}", project.name)));
+            }
+        }
+    }
+    Ok(read)
+}
+
+// ---------------------------------------------------------------------------
 // The merged units whose retention has run out.
 // ---------------------------------------------------------------------------
 
@@ -184,10 +229,11 @@ fn retire(
     store: &mut Store,
     now: Timestamp,
     hooks: bool,
+    retentions: &[Retention],
     leftovers: &mut Vec<Leftover>,
 ) -> Result<Vec<Retired>> {
     let mut retired = Vec::new();
-    for (project, unit) in due(store.conn(), now)? {
+    for (project, unit) in due(store.conn(), now, retentions)? {
         let request = reclaim::Request {
             target: Some(unit.slug.to_string()),
             force: false,
@@ -211,12 +257,15 @@ fn retire(
 /// The clock runs from the unit's own `updated_at`, which for a merged unit is the
 /// instant the merge was recorded ([`crate::lifecycle::states`]). A unit whose home has
 /// already gone is not one of these: there is nothing left to give back.
-fn due(conn: &Connection, now: Timestamp) -> Result<Vec<(Project, Unit)>> {
+fn due(
+    conn: &Connection,
+    now: Timestamp,
+    retentions: &[Retention],
+) -> Result<Vec<(Project, Unit)>> {
     let mut found = Vec::new();
-    for project in projects::list(conn)? {
-        let days = super::reclaim::recipe_of(&project.root).trash_retention_days();
+    for Retention { project, days } in retentions {
         for unit in units::list_by_status(conn, project.id, UnitStatus::Merged)? {
-            let expires = retention::expiry(unit.updated_at, days);
+            let expires = retention::expiry(unit.updated_at, *days);
             if expires.unix_seconds() <= now.unix_seconds() && live_home(conn, &unit)?.is_some() {
                 found.push((project.clone(), unit));
             }
@@ -252,16 +301,20 @@ fn refusal(unit: &Unit, why: &Error) -> Leftover {
 /// Remove the pre-operation record of every run that is over and has been kept long
 /// enough, and answer with the refs that went.
 ///
-/// One retention, read where the trash reads it, so a project states the window once.
-/// A ref that will not go is a line of the report: one record nobody can remove must
-/// not stop the rest of the sweep.
-fn forget(conn: &Connection, now: Timestamp, leftovers: &mut Vec<Leftover>) -> Result<Vec<String>> {
+/// The window is the one the trash keeps a home for, read once with the rest
+/// ([`retentions`]), so a project states it in one place. A ref that will not go is a
+/// line of the report: one record nobody can remove must not stop the rest of the sweep.
+fn forget(
+    conn: &Connection,
+    now: Timestamp,
+    retentions: &[Retention],
+    leftovers: &mut Vec<Leftover>,
+) -> Result<Vec<String>> {
     let mut removed = Vec::new();
-    for project in projects::list(conn)? {
-        let days = reclaim::recipe_of(&project.root).trash_retention_days();
+    for Retention { project, days } in retentions {
         for unit in units::list(conn, project.id)? {
             let Some(home) = live_home(conn, &unit)? else { continue };
-            for record in collectable(conn, &home, &unit, days, now) {
+            for record in collectable(conn, &home, &unit, *days, now) {
                 match Git::at(&home).delete_ref(&record) {
                     Ok(()) => removed.push(record),
                     Err(why) => {
@@ -299,13 +352,15 @@ fn collectable(
 
 /// Whether this ref is a pre-operation record whose run has finished either way.
 ///
-/// The name says which run wrote it ([`refs::pre`]) and the journal row says how that
-/// run ended. Every other ref of the namespace answers `false`: the work-in-progress
-/// ref, the branch before a squash, the copies a home took of the checkout, and a
-/// record whose run is still open, failed, or whose row is no longer there.
+/// The name says which run wrote it ([`refs::operation_in`], which is also what the
+/// report reads it by) and the journal row says how that run ended. Every other ref of
+/// the namespace answers `false`: the work-in-progress ref, the branch before a squash,
+/// the copies a home took of the checkout, and a record whose run is still open, failed,
+/// or whose row is no longer there.
 fn records_a_run_that_is_over(conn: &Connection, reference: &str, unit: &Unit) -> bool {
-    let namespace = format!("{}{}/{}", refs::NAMESPACE, unit.id, refs::PRE);
-    let Some(operation) = reference.strip_prefix(&namespace) else { return false };
+    let Some(operation) = refs::operation_in(reference, &unit.id.to_string()) else {
+        return false;
+    };
     let Ok(id) = OperationId::parse(operation) else { return false };
     let Ok(Some(run)) = journal::get(conn, id) else { return false };
     matches!(run.state, OperationState::Committed | OperationState::RolledBack)
