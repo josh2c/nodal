@@ -74,7 +74,7 @@ use crate::context::survey::{self, Snapshot, Work};
 use crate::doctor::unique;
 use crate::git::Integration;
 use crate::lifecycle::{assess, witness};
-use crate::model::{ActorName, HostName, Lock, Needs, Project, Timestamp, UnitId};
+use crate::model::{ActorName, EnvId, HostName, Lock, Needs, Project, Session, Timestamp, UnitId};
 use crate::output::notice::{self, Notice};
 use crate::output::view::{
     EnvLine, Holder, HolderState, ToolSessions, UnitList, UnitRow, WorkTree,
@@ -82,6 +82,7 @@ use crate::output::view::{
 use crate::paths;
 use crate::runtime::processes::{Processes, Running};
 use crate::runtime::{sessions, stop};
+use crate::store::sessions as session_rows;
 
 /// Every unit of a project, with what Git and the process table say about each.
 ///
@@ -101,7 +102,9 @@ pub fn list(
     let surveyed = survey::project(conn, project)?;
     let held = crate::runtime::lock::live(conn, &project.root, now)?;
     let idle_hours = crate::runtime::lock::idle_hours(&project.root);
-    Ok(rows(&surveyed, processes, project, &Held::of(&held, idle_hours, processes), now))
+    let open = session_rows::list_open_all(conn)?;
+    let held = Held::of(&held, idle_hours, processes).recording(&open);
+    Ok(rows(&surveyed, processes, project, &held, now))
 }
 
 /// The writers of a project's units, by unit, with the project's idle window applied.
@@ -114,7 +117,19 @@ pub fn list(
 /// ([`crate::runtime::lock::liveness`]), so that a row never says "holds" about a session
 /// that ended. That is a reading of `/proc` and never a signal.
 #[derive(Debug, Default)]
-pub struct Held(BTreeMap<UnitId, Holder>);
+pub struct Held {
+    /// Who holds each unit.
+    holders: BTreeMap<UnitId, Holder>,
+    /// The processes the registry recorded for each materialisation, from its open
+    /// session rows.
+    ///
+    /// The list reads these for the same reason `nodal reclaim --check` does: Nodal's
+    /// own tether wrapper carries no identifier in its own environment, so the record is
+    /// the only thing that says the process standing in a home is Nodal's own
+    /// ([`assess::Own`]). The list and the preflight print the same word over the same
+    /// process, so they read the same inputs.
+    recorded: BTreeMap<EnvId, Vec<u32>>,
+}
 
 impl Held {
     /// The holders of these locks, as a report shows them.
@@ -124,21 +139,41 @@ impl Held {
         // One reading of the process table for every lock, rather than one for each.
         let pids: Vec<u32> = locks.iter().filter_map(|lock| lock.pid).collect();
         let seen = crate::runtime::lock::Seen::read(processes, &pids);
-        Self(
-            locks
+        Self {
+            holders: locks
                 .iter()
                 .filter_map(|lock| {
                     let state = crate::runtime::lock::liveness(lock, &here, &seen);
                     Some((lock.unit_id, Holder::from_lock(lock, idle_hours, state)?))
                 })
                 .collect(),
-        )
+            recorded: BTreeMap::new(),
+        }
+    }
+
+    /// The same, with the processes the registry recorded for each materialisation.
+    ///
+    /// One query for the whole list, because a list of eight units must not put eight
+    /// statements to the registry to answer one column.
+    #[must_use]
+    pub fn recording(mut self, sessions: &[Session]) -> Self {
+        for session in sessions {
+            if let Some(pid) = session.pid {
+                self.recorded.entry(session.environment_id).or_default().push(pid);
+            }
+        }
+        self
     }
 
     /// Who holds one unit, `None` when nobody does.
     #[must_use]
     pub fn of_unit(&self, unit: UnitId) -> Option<Holder> {
-        self.0.get(&unit).cloned()
+        self.holders.get(&unit).cloned()
+    }
+
+    /// The processes the registry recorded for one materialisation.
+    fn of_environment(&self, environment: EnvId) -> &[u32] {
+        self.recorded.get(&environment).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -155,9 +190,12 @@ pub fn rows(
     // Each home with the unit it belongs to, because a process carrying another unit's
     // identifier is a bystander here and the predicate has to be asked with this one's
     // ([`assess::bystander`]).
-    let homes: Vec<(UnitId, PathBuf)> = surveyed
+    let homes: Vec<Placed> = surveyed
         .iter()
-        .filter_map(|subject| Some((subject.unit.id, subject.home.as_ref()?.home.clone())))
+        .filter_map(|subject| {
+            let environment = subject.home.as_ref()?;
+            Some(Placed::new(subject.unit.id, &environment.home, held.of_environment(environment.id)))
+        })
         .collect();
     let seen = scan(processes, &homes, &mut notices);
     // One reading of the checkout for the whole list, and two `stat` calls per home
@@ -372,6 +410,41 @@ impl Seen {
     fn blocked(&self, home: &Path) -> bool {
         self.bystanders.contains(home)
     }
+
+}
+
+/// One home the scan asks about, with the unit it belongs to and what the registry says
+/// is that unit's own.
+///
+/// The home is carried twice on purpose: resolved, which is the form the predicate asks
+/// for because the kernel's reading of a working directory has every link taken out, and
+/// as the registry names it, which is the key every other reading of the list uses.
+struct Placed {
+    /// The unit whose home this is, and the processes recorded for it.
+    unit: UnitId,
+    /// Those processes.
+    recorded: Vec<u32>,
+    /// The home, with every link on the way to it followed.
+    resolved: PathBuf,
+    /// The home, as the registry names it.
+    home: PathBuf,
+}
+
+impl Placed {
+    /// One home, resolved once for the whole list.
+    fn new(unit: UnitId, home: &Path, recorded: &[u32]) -> Self {
+        Self {
+            unit,
+            recorded: recorded.to_vec(),
+            resolved: paths::resolve(home),
+            home: home.to_path_buf(),
+        }
+    }
+
+    /// What the registry says is this unit's own.
+    fn own(&self) -> assess::Own<'_> {
+        assess::Own::of(self.unit, &self.recorded)
+    }
 }
 
 /// Read the process table once, for who is attached to each home and for what is
@@ -387,7 +460,7 @@ impl Seen {
 /// so they have to be reading the same predicate — including over a process that carries
 /// **another** unit's identifier, which is Nodal's own and is still nothing this unit may
 /// signal or move a home out from under.
-fn scan(processes: &dyn Processes, homes: &[(UnitId, PathBuf)], notices: &mut Vec<Notice>) -> Seen {
+fn scan(processes: &dyn Processes, homes: &[Placed], notices: &mut Vec<Notice>) -> Seen {
     let running = match processes.scan() {
         Ok(running) => running,
         Err(error) => {
@@ -399,15 +472,12 @@ fn scan(processes: &dyn Processes, homes: &[(UnitId, PathBuf)], notices: &mut Ve
         }
     };
     let mut seen = Seen { attached: attached(&running, notices), ..Seen::default() };
-    // Resolved once for the whole list, because that is the form the predicate asks for
-    // and the kernel's own reading of a working directory has the links taken out.
-    let placed: Vec<(UnitId, PathBuf, PathBuf)> =
-        homes.iter().map(|(unit, home)| (*unit, paths::resolve(home), home.clone())).collect();
     let spared = stop::spared();
     for process in &running {
-        for (unit, resolved, home) in &placed {
-            if assess::bystander(process, *unit, std::slice::from_ref(resolved), &spared) {
-                seen.bystanders.insert(home.clone());
+        for placed in homes {
+            let placement = std::slice::from_ref(&placed.resolved);
+            if assess::bystander(process, placed.own(), placement, &spared) {
+                seen.bystanders.insert(placed.home.clone());
             }
         }
     }

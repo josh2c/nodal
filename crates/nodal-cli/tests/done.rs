@@ -173,7 +173,7 @@ fn done_sets_the_upstream_it_pushed_to_and_ls_shows_it() {
     let home = workspace.unit_home("worker-import");
     commit(&home, "fixed\n");
 
-    stdout(&workspace.nodal(&["done", "worker-import"]));
+    drop(stdout(&workspace.nodal(&["done", "worker-import"])));
 
     let upstream = git(&home, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
     assert_eq!(

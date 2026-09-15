@@ -115,7 +115,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::survey::Bases;
 use crate::git::{Git, refs};
-use crate::lifecycle::assess::{self, Assessment, Runtime, attributed, scan};
+use crate::lifecycle::assess::{self, Assessment, Own, Runtime, attributed, scan};
 use crate::lifecycle::hooks::{
     self, Approvals, Context, Ownership, Phase, Ran, Registered, Runner,
 };
@@ -186,6 +186,14 @@ pub struct Params {
     /// such field and still has to be rebuilt and finished rather than refused.
     #[serde(default)]
     pub tethers: Vec<u32>,
+    /// The processes the unit's open recorded sessions name — the `nodal run` a tether
+    /// is driven by among them. Read with the groups, and for the same reason: Nodal's
+    /// own wrapper carries no identifier in its own environment, so the record is the
+    /// only thing that says the process standing in the home is Nodal's own (F-4).
+    ///
+    /// Defaulted on the way in, for the reason the groups are.
+    #[serde(default)]
+    pub recorded: Vec<u32>,
     /// Whether the home is moved although something Nodal did not start is standing in
     /// it. Journalled, because the step that refuses the move is the one a rebuilt plan
     /// runs again, and it has to refuse the same way.
@@ -215,6 +223,7 @@ pub fn reclaim(store: &mut Store, request: &Request) -> Result<Reclaimed> {
     // registry write would close the row and the group would be exactly the invisible
     // process the recording exists to prevent.
     prepared.params.tethers = tethers(store.conn(), prepared.params.environment.id)?;
+    prepared.params.recorded = recorded(store.conn(), prepared.params.environment.id)?;
     let params = &prepared.params;
     // Before the home moves, because the remote is reached through the repository in
     // it, and after the hook, because a hook that refuses stops the reclaim and nothing
@@ -251,7 +260,8 @@ pub fn check(store: &Store, request: &Request) -> Result<Preflight> {
     let project = project_of(store.conn(), &unit)?;
     let placed = placement(&environment)?;
     let groups = tethers(store.conn(), environment.id)?;
-    let assessment = read(&placed, &project, &environment, (unit.id, &groups))?;
+    let named = recorded(store.conn(), environment.id)?;
+    let assessment = read(&placed, &project, &environment, Own::of(unit.id, &named), &groups)?;
     let trash = would_trash(&placed, &project, &environment)?;
     Ok(Preflight::new(Timestamp::now(), unit.slug.to_string(), trash, assessment))
 }
@@ -261,9 +271,9 @@ fn read(
     placed: &Placement,
     project: &Project,
     environment: &Environment,
-    unit: (UnitId, &[u32]),
+    own: Own<'_>,
+    groups: &[u32],
 ) -> Result<Assessment> {
-    let (id, groups) = unit;
     let Some(home) = placed.path() else {
         return Ok(Assessment {
             home: environment.home.clone(),
@@ -283,7 +293,12 @@ fn read(
         dispositions: true,
         // A checkout adopted in place is unregistered and left exactly where it is, so
         // nothing is moved out from under anybody standing in it.
-        runtime: Some(assess::Attribution { unit: id, groups, moves: environment.managed }),
+        runtime: Some(assess::Attribution {
+            unit: own.unit,
+            groups,
+            recorded: own.recorded,
+            moves: environment.managed,
+        }),
     })
 }
 
@@ -387,6 +402,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
             unit: params.unit.id,
             environment: params.environment.clone(),
             tethers: params.tethers.clone(),
+            recorded: params.recorded.clone(),
         });
     let Some(entry) = &params.entry else {
         if params.environment.managed {
@@ -401,6 +417,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
             home: entry.home.clone(),
             path: entry.path.clone(),
             force: params.force,
+            recorded: params.recorded.clone(),
         })
         .then(TrashPrune { path: entry.path.clone() }))
 }
@@ -542,6 +559,8 @@ struct StopRuntime {
     environment: Environment,
     /// The process groups its tethers hold, from the journal rather than the machine.
     tethers: Vec<u32>,
+    /// The processes the registry recorded for it, from the journal for the same reason.
+    recorded: Vec<u32>,
 }
 
 impl Step for StopRuntime {
@@ -551,7 +570,10 @@ impl Step for StopRuntime {
 
     /// Repeatable: a second run finds nothing attributed and stops nothing.
     fn apply(&self) -> Result<Output> {
-        let mut seen = attributed(self.unit, std::slice::from_ref(&self.environment.home));
+        let mut seen = attributed(
+            Own::of(self.unit, &self.recorded),
+            std::slice::from_ref(&self.environment.home),
+        );
         let stopped = stop::processes(&stop::Live, &self.targets(&seen), stop::GRACE);
         let containers = match docker::remove(&docker::Cli, &seen.containers) {
             Ok(removed) => {
@@ -606,6 +628,9 @@ struct TrashHome {
     path: PathBuf,
     /// Whether the move goes ahead over a process standing in the home.
     force: bool,
+    /// The processes the registry recorded for the unit, so that Nodal's own wrapper is
+    /// not the stranger the move refuses to act over (F-4).
+    recorded: Vec<u32>,
 }
 
 impl Step for TrashHome {
@@ -646,7 +671,7 @@ impl TrashHome {
     /// What is standing in the home at the probable level, and nothing when the process
     /// table could not be read.
     fn bystanders(&self) -> Vec<Standing> {
-        scan(self.unit, std::slice::from_ref(&self.home))
+        scan(Own::of(self.unit, &self.recorded), std::slice::from_ref(&self.home))
             .map(|(_, standing)| standing)
             .unwrap_or_default()
     }
@@ -820,7 +845,15 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
         enabled: request.hooks,
     };
     let params =
-        Params { project, unit, environment, entry, tethers: Vec::new(), force: request.force };
+        Params {
+            project,
+            unit,
+            environment,
+            entry,
+            tethers: Vec::new(),
+            recorded: Vec::new(),
+            force: request.force,
+        };
     Ok(Prepared { params, findings, runner })
 }
 
@@ -835,6 +868,11 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
 /// Read after `pre_reclaim`, so that a group that hook left behind is one of them. The
 /// two orderings are both required and they are not in tension: the reading is still
 /// the last thing before the plan.
+fn recorded(conn: &Connection, environment: EnvId) -> Result<Vec<u32>> {
+    Ok(sessions::list_open(conn, environment)?.into_iter().filter_map(|session| session.pid).collect())
+}
+
+/// The process groups of a materialisation's open recorded sessions.
 fn tethers(conn: &Connection, environment: EnvId) -> Result<Vec<u32>> {
     Ok(sessions::list_open_tethers(conn, environment)?
         .into_iter()
@@ -1011,7 +1049,7 @@ fn running(params: &Params, leftovers: &mut Vec<Leftover>) -> Vec<Note> {
             leftovers.push(Leftover::new("tether", pgid.to_string()));
         }
     }
-    let seen = attributed(params.unit.id, &watched(params));
+    let seen = attributed(Own::of(params.unit.id, &params.recorded), &watched(params));
     let spared = stop::spared();
     for pid in seen.processes.iter().filter(|pid| !spared.contains(pid)) {
         leftovers.push(Leftover::new("process", pid.to_string()));

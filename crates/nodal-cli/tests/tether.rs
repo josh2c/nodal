@@ -278,6 +278,57 @@ fn a_tether_outlives_the_nodal_run_that_started_it_and_is_still_stopped() {
     wait_for("the orphaned tether to go", || !alive(group));
 }
 
+/// F-4 of the third reclaim proof. The `nodal run --tether` wrapper writes `NODAL_ID`
+/// into the environment of the command it starts and carries none in its own, so
+/// `reclaim --check` read Nodal's own wrapper by its working directory alone — as a
+/// stranger standing in the home — and said a reclaim would refuse to move the home, in
+/// the same report that said it would stop the group that wrapper leads.
+///
+/// The registry recorded the wrapper when it started it. The report counts it once, as
+/// the unit's own.
+#[test]
+fn the_tether_wrapper_is_the_units_own_and_does_not_block_the_unit_it_tethers() {
+    let workspace = workspace();
+    let (home, environment) = workspace.unit_home("tethered");
+    let mut command = workspace.quiet(&["run", "--tether", "sleep", "600"], &home);
+    let mut run = Owned::spawn(&mut command);
+    wait_for("the tether to be recorded", || !workspace.tethers(environment).is_empty());
+    let session = workspace.tethers(environment)[0].clone();
+    let wrapper = session.pid.expect("the row records the process that took the tether");
+    let group = session.pgid.expect("the row records a group");
+    let _held = backstop(&[group]);
+
+    // The exit code of `--check` carries the verdict, so the answer is read whatever it
+    // is: this test is about what the runtime section says, not about the verdict.
+    let answered = workspace.nodal(&["reclaim", "tethered", "--check", "--json"]);
+    let text = String::from_utf8(answered.stdout.clone()).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|_| panic!("{text}{}", String::from_utf8_lossy(&answered.stderr)));
+    let runtime = &report["runtime"];
+    let owned: Vec<u64> =
+        runtime["processes"].as_array().unwrap().iter().filter_map(serde_json::Value::as_u64).collect();
+    assert!(owned.contains(&u64::from(wrapper)), "the wrapper is the unit's own: {report}");
+
+    let standing: Vec<u64> = runtime["bystanders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["pid"].as_u64())
+        .collect();
+    assert!(
+        !standing.contains(&u64::from(wrapper)),
+        "and it is not also a stranger standing in the home: {report}"
+    );
+    assert!(
+        !report.to_string().contains("not signalled"),
+        "so nothing in the report says a reclaim would refuse to move the home: {report}"
+    );
+
+    // The tether is in a group of its own and outlives its wrapper on purpose, so the
+    // backstop is what ends it.
+    run.reclaim();
+}
+
 // ---------------------------------------------------------------------------
 // What the tether does not touch.
 // ---------------------------------------------------------------------------

@@ -124,6 +124,10 @@ pub struct Attribution<'a> {
     /// The process groups the registry recorded for it: a tether, or a group a recipe
     /// hook left behind.
     pub groups: &'a [u32],
+    /// The processes the registry recorded for it, from its open session rows. Nodal's
+    /// own tether wrapper is one of these and carries no identifier of its own
+    /// ([`Own`]).
+    pub recorded: &'a [u32],
     /// Whether a reclaim would move this home, which is the whole of what decides
     /// whether a bystander blocks.
     ///
@@ -434,8 +438,9 @@ pub struct Runtime {
     /// to signal it, and a preflight that signalled would be doing the thing it is
     /// there to describe.
     pub groups: Vec<u32>,
-    /// The processes carrying the unit's own identifier. Attribution's certain level,
-    /// and the only processes a teardown signals.
+    /// The processes this unit owns: the ones carrying its identifier, and the ones the
+    /// registry recorded for it ([`Own`]). Attribution's certain level, and the only
+    /// processes a teardown signals.
     pub processes: Vec<u32>,
     /// The containers carrying the unit's label. A reclaim removes these.
     pub containers: Vec<String>,
@@ -458,9 +463,9 @@ pub struct Runtime {
 /// moment it is supposed to speak: after the registry write, `ps` would attribute nothing
 /// to the unit whether or not anything was still running.
 #[must_use]
-pub fn attributed(unit: UnitId, homes: &[PathBuf]) -> Runtime {
+pub fn attributed(own: Own<'_>, homes: &[PathBuf]) -> Runtime {
     let mut seen = Runtime::default();
-    match scan(unit, homes) {
+    match scan(own, homes) {
         Ok((processes, bystanders)) => {
             seen.processes = processes;
             seen.bystanders = bystanders;
@@ -468,7 +473,7 @@ pub fn attributed(unit: UnitId, homes: &[PathBuf]) -> Runtime {
         Err(error) => seen.notes.push(Note::new(Source::Environment, error.to_string())),
     }
     match docker::survey(&docker::Cli) {
-        Ok(docker::Survey::Ran(containers)) => seen.containers = labelled(containers, unit),
+        Ok(docker::Survey::Ran(containers)) => seen.containers = labelled(containers, own.unit),
         Ok(docker::Survey::Unavailable { why }) => {
             seen.notes.push(Note::new(Source::Docker, why));
         }
@@ -494,21 +499,21 @@ fn labelled(containers: Vec<docker::Container>, unit: UnitId) -> Vec<String> {
 /// wrote into the home's environment and nothing else writes. The second is probable:
 /// each process stands in the home and says nothing about working on *this* unit.
 ///
-/// Both halves are one predicate each, [`owned_by`] and [`bystander`], so that `nodal ls`
+/// Both halves are one predicate each, [`owns`] and [`bystander`], so that `nodal ls`
 /// reaches the same rule rather than writing a second one.
 ///
 /// # Errors
 /// Whatever the process table reported, which on a host that has none is
 /// [`Error::ProcessScanUnsupported`].
-pub fn scan(unit: UnitId, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)> {
+pub fn scan(own: Own<'_>, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)> {
     let placed: Vec<PathBuf> = homes.iter().map(|home| paths::resolve(home)).collect();
     let spared = stop::spared();
     let mut certain = Vec::new();
     let mut standing = Vec::new();
     for process in processes::Processes::scan(&processes::Live)? {
-        if owned_by(&process, unit) {
+        if owns(&process, own) {
             certain.push(process.pid);
-        } else if bystander(&process, unit, &placed, &spared) {
+        } else if bystander(&process, own, &placed, &spared) {
             standing.push(Standing::new(process.pid, process.command.clone()));
         }
     }
@@ -539,19 +544,69 @@ pub fn scan(unit: UnitId, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)
 #[must_use]
 pub fn bystander(
     process: &processes::Running,
-    unit: UnitId,
+    own: Own<'_>,
     placed: &[PathBuf],
     spared: &[u32],
 ) -> bool {
-    !owned_by(process, unit) && !spared.contains(&process.pid) && in_one_of(process, placed)
+    !owns(process, own) && !spared.contains(&process.pid) && in_one_of(process, placed)
+}
+
+/// What the registry says is a unit's own, which is the whole of the certain level.
+///
+/// Two facts, because one of them was not enough. The identifier is what a process
+/// carries. The recorded processes are the ones Nodal wrote down when it started them,
+/// and they are here because of what the third reclaim proof found (F-4): `nodal run
+/// --tether` writes `NODAL_ID` into the environment of the command it starts and does
+/// not carry it in its own, so Nodal's own wrapper was read by its working directory
+/// alone — as a stranger standing in the home — and refused the reclaim of the very unit
+/// it was tethering. The registry knew all along which unit that process served.
+///
+/// A recorded identifier is a record and not a reading, and a process identifier is
+/// reused. The record is the open session rows of the unit's own materialisation, so an
+/// identifier that came round again is claimed only while a session Nodal opened for it
+/// is still open. The consequence of being wrong here is a reclaim signalling a process
+/// of somebody else's, which is why the record is read narrowly and never widened to a
+/// session that has ended.
+#[derive(Debug, Clone, Copy)]
+pub struct Own<'a> {
+    /// The unit.
+    pub unit: UnitId,
+    /// The processes the registry recorded for this unit's materialisation, from its
+    /// open session rows.
+    pub recorded: &'a [u32],
+}
+
+impl<'a> Own<'a> {
+    /// The unit and the processes the registry recorded for it.
+    #[must_use]
+    pub const fn of(unit: UnitId, recorded: &'a [u32]) -> Self {
+        Self { unit, recorded }
+    }
+
+    /// The unit alone, for a caller that has taken no reading of the registry.
+    ///
+    /// The answer is then the one Nodal gave before the record was read: a process is
+    /// this unit's own only where it carries the identifier. That understates what
+    /// belongs to the unit and never overstates it, which is the safe direction.
+    #[must_use]
+    pub const fn unrecorded(unit: UnitId) -> Self {
+        Self { unit, recorded: &[] }
+    }
 }
 
 /// Whether a process is this unit's own, which is attribution's certain level.
 ///
-/// It carries `NODAL_ID`, Nodal wrote that into the home's environment, and nothing else
-/// writes it. The identifier has to be this unit's: another unit's is another unit's.
-fn owned_by(process: &processes::Running, unit: UnitId) -> bool {
-    process.var(crate::env::vars::ID).is_some_and(|carried| carried == unit.to_string())
+/// Either it carries `NODAL_ID` — Nodal wrote that into the home's environment and
+/// nothing else writes it — or the registry recorded it as a process of this unit. The
+/// identifier has to be this unit's: another unit's is another unit's.
+///
+/// Public for the same reason [`bystander`] is: `nodal ls` and `nodal reclaim --check`
+/// say the same word over the same process, so they ask one predicate rather than
+/// writing two.
+#[must_use]
+pub fn owns(process: &processes::Running, own: Own<'_>) -> bool {
+    process.var(crate::env::vars::ID).is_some_and(|carried| carried == own.unit.to_string())
+        || own.recorded.contains(&process.pid)
 }
 
 /// Whether a process stands in one of these directories, which is the whole of the
@@ -914,7 +969,8 @@ fn second_group(checkout: Option<&Path>, commits: Vec<Oid>) -> Option<CommitGrou
 /// What is running against this home, at attribution's two levels, with the groups the
 /// registry recorded added to it.
 fn running(asked: Attribution<'_>, home: &Path) -> Runtime {
-    let seen = attributed(asked.unit, std::slice::from_ref(&home.to_path_buf()));
+    let seen =
+        attributed(Own::of(asked.unit, asked.recorded), std::slice::from_ref(&home.to_path_buf()));
     Runtime { groups: asked.groups.to_vec(), ..seen }
 }
 
@@ -965,10 +1021,63 @@ mod tests {
 
     use std::path::PathBuf;
 
-    use super::{Assessment, CommitGroup, Copies, Held, Needs, PathGroup, Reason, reasons};
+    use std::collections::BTreeMap;
+
+    use super::{
+        Assessment, CommitGroup, Copies, Held, Needs, Own, PathGroup, Reason, bystander, owns,
+        reasons,
+    };
+    use crate::model::UnitId;
     use crate::git::Oid;
     use crate::git::status::{Change, Entry, State, Submodule};
     use crate::lifecycle::uniqueness::{Finding, Witness};
+
+    /// F-4 of the third reclaim proof, at the predicate that decided it.
+    ///
+    /// `nodal run --tether` writes `NODAL_ID` into the environment of the command it
+    /// starts and carries none in its own, so Nodal's own wrapper was read by its
+    /// working directory alone: a stranger standing in the home, which refused the
+    /// reclaim of the unit it was tethering. The registry recorded that process when it
+    /// started it.
+    #[test]
+    fn a_process_the_registry_recorded_is_the_units_own_and_never_a_stranger_in_its_home() {
+        let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+        let home = std::path::PathBuf::from("/homes/alpha3");
+        let placed = [home.clone()];
+
+        // The wrapper: no identifier of its own, standing in the home.
+        let wrapper = crate::runtime::processes::Running::new(4_023_598, BTreeMap::new())
+            .in_directory(&home)
+            .running("nodal run");
+
+        // Read without the record, which is what Nodal did on Day 1.
+        let blind = Own::unrecorded(unit);
+        assert!(!owns(&wrapper, blind), "nothing it carries says which unit it serves");
+        assert!(
+            bystander(&wrapper, blind, &placed, &[]),
+            "so it was a stranger, and it blocked the reclaim of the unit it tethers"
+        );
+
+        // Read with it, which is what the registry knew all along.
+        let recorded = [4_023_598];
+        let known = Own::of(unit, &recorded);
+        assert!(owns(&wrapper, known), "the record says it is this unit's own");
+        assert!(!bystander(&wrapper, known, &placed, &[]), "so it is counted once, as owned");
+    }
+
+    /// The record is narrow on purpose: it claims a process of this unit and no other.
+    #[test]
+    fn a_recorded_process_of_another_unit_is_not_this_ones_own() {
+        let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+        let home = std::path::PathBuf::from("/homes/alpha3");
+        let stranger = crate::runtime::processes::Running::new(5_000, BTreeMap::new())
+            .in_directory(&home)
+            .running("somebody else's editor");
+        let recorded = [4_023_598];
+        let own = Own::of(unit, &recorded);
+        assert!(!owns(&stranger, own), "it is not a process the registry recorded here");
+        assert!(bystander(&stranger, own, &[home], &[]), "so it still blocks a move");
+    }
 
     #[test]
     fn the_files_nodal_writes_into_a_home_are_not_a_persons_work() {
