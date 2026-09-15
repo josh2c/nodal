@@ -104,6 +104,7 @@
 //! Nothing here writes, and nothing here reaches a network.
 
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -193,6 +194,16 @@ impl Elsewhere {
 /// stops at the evidence and asks them nothing further. So nothing further is read of
 /// them here either, and the fields below are empty rather than unknown.
 ///
+/// # One call stack, so a cell needs no lock
+///
+/// [`Checkout::heads`] is read at most once and kept, which needs interior mutability.
+/// It is [`OnceCell`], a cell and not a lock: a `Checkout` is made inside one command,
+/// is handed out by reference for the length of that call, and is dropped before the
+/// command returns. Nothing shares one between threads, and `ci/measure.sh` holds this
+/// workspace to zero asynchronous execution, so there is no executor to move one
+/// across. Locking here would buy nothing and would make the type `Sync` by accident,
+/// which reads as a promise this module does not make.
+///
 /// # A reading that failed is not a reading that found nothing
 ///
 /// One reading is taken here and many homes are judged against it, so a failure that
@@ -216,6 +227,12 @@ pub struct Checkout {
     /// Empty is a fact about the store and never a reading that failed: a failure is in
     /// `evidence.unreadable` instead.
     held: Vec<Oid>,
+    /// Its own branches, read the first time a home needs them ([`Checkout::heads`]).
+    ///
+    /// Lazy and not read with the rest, because only one of the three relations asks for
+    /// them ([`Relation::IsTheRemote`]). A command about one home in either of the other
+    /// two must pay exactly what it paid before this value existed.
+    heads: OnceCell<Vec<RemoteTip>>,
 }
 
 impl Checkout {
@@ -239,13 +256,22 @@ impl Checkout {
                 Err(why) => evidence.unreadable = Some(why.to_string()),
             }
         }
-        Self { path, evidence, origin, held }
+        Self { path, evidence, origin, held, heads: OnceCell::new() }
     }
 
     /// Where it is.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Its own branches, as the tips a clone of it would fetch.
+    ///
+    /// A fact about the checkout, like everything else here, and read once however many
+    /// homes ask. Only the relation in which the checkout *is* the remote asks at all,
+    /// so the reading is taken on the first home that needs it and not before.
+    fn heads(&self) -> &[RemoteTip] {
+        self.heads.get_or_init(|| heads(&self.path))
     }
 }
 
@@ -276,7 +302,7 @@ pub fn elsewhere(home: &Path, checkout: Option<&Checkout>) -> Elsewhere {
         return Elsewhere::default();
     }
     let relation = relation(home, checkout);
-    let trusted = vouched(home, &checkout.path, relation, evidence.clone());
+    let trusted = vouched(home, checkout, relation, evidence.clone());
     let Ok(held) = holdings(checkout, &trusted.tips) else {
         return Elsewhere::default();
     };
@@ -315,7 +341,7 @@ fn holdings<'a>(checkout: &'a Checkout, trusted: &[Oid]) -> Result<Cow<'a, [Oid]
 }
 
 /// What a witness will vouch for, and nothing at all when there is no witness.
-fn vouched(home: &Path, checkout: &Path, relation: Relation, evidence: Evidence) -> Trusted {
+fn vouched(home: &Path, checkout: &Checkout, relation: Relation, evidence: Evidence) -> Trusted {
     let Some(witness) = witness(home, checkout, relation, evidence) else {
         return Trusted::default();
     };
@@ -326,7 +352,7 @@ fn vouched(home: &Path, checkout: &Path, relation: Relation, evidence: Evidence)
 /// The checkout as a witness for this home's `origin`, in whichever relation it has to it.
 fn witness(
     home: &Path,
-    checkout: &Path,
+    checkout: &Checkout,
     relation: Relation,
     mut evidence: Evidence,
 ) -> Option<Subject> {
@@ -338,10 +364,10 @@ fn witness(
         // The checkout is what the base was cloned from, so its branches are not a
         // reading of the remote. They are the remote, and reading the authority needs
         // no comparison with anybody's copy of it.
-        Relation::IsTheRemote => evidence.remotes = heads(checkout),
+        Relation::IsTheRemote => evidence.remotes = checkout.heads().to_vec(),
         _ => return None,
     }
-    Some(Subject { path: checkout.to_path_buf(), evidence })
+    Some(Subject { path: checkout.path.clone(), evidence })
 }
 
 /// The commits of `tips` that the repository they were read out of actually holds.
@@ -486,6 +512,8 @@ fn resolved(path: &Path) -> Option<String> {
 }
 
 /// A repository's own branches, read as the tips a clone of it would fetch.
+///
+/// One `git for-each-ref`. [`Checkout::heads`] is what calls it, and keeps the answer.
 fn heads(repo: &Path) -> Vec<RemoteTip> {
     Git::at(repo)
         .list_refs(HEADS)

@@ -134,16 +134,6 @@ fn counting_git(directory: &Path, log: &Path) {
     std::fs::set_permissions(&shim, mode).unwrap();
 }
 
-/// The reading [`Checkout::read`] takes of a repository's refs: every ref, no prefix.
-///
-/// A line the shim writes is the arguments of one `git`, so a reading is told from
-/// another by them. The trailing `%(refname)` is what tells this one from the reading a
-/// witness takes of `refs/heads/` alone: that one ends in the prefix, it is a question
-/// about one home, and it is asked once per home by design.
-///
-/// [`Checkout::read`]: nodal_core::lifecycle::witness::Checkout::read
-const EVERY_REF: &str = "for-each-ref --sort=refname --format=%(objectname) %(refname)";
-
 /// The lines of the shim's log, or none when nothing ran.
 fn logged(log: &Path) -> Vec<String> {
     std::fs::read_to_string(log).unwrap_or_default().lines().map(ToOwned::to_owned).collect()
@@ -167,59 +157,83 @@ fn against(log: &Path, repo: &Path) -> usize {
     logged(log).iter().filter(|line| ran_in(line, &wanted)).count()
 }
 
-/// How many times the log says a survey read every ref of `repo`.
-fn readings_of(log: &Path, repo: &Path) -> usize {
-    let wanted = std::fs::canonicalize(repo).unwrap();
-    logged(log).iter().filter(|line| line.ends_with(EVERY_REF) && ran_in(line, &wanted)).count()
-}
-
-/// Run one survey and answer with how many times it read the checkout's refs.
+/// Run one survey and answer with every `git` process it started in the checkout.
+///
+/// Every one of them, and no rule about which. A count that named the reading it was
+/// about would only see the readings whoever wrote it thought of, which is how a second
+/// per-home reading of the checkout sat under this test unnoticed.
 fn survey(machine: &Machine, log: &Path) -> usize {
     drop(std::fs::remove_file(log));
     let read = machine.nodal(&["doctor"]);
     assert!(read.status.success(), "doctor failed: {}", nodal_safety::stderr(&read));
-    readings_of(log, &machine.source)
+    against(log, &machine.source)
 }
+
+/// What a home costs the checkout, in each of the two relations a project can be in.
+///
+/// A project cloned from a remote costs nothing per home: everything the survey asks of
+/// the checkout is a fact about the checkout, and the survey asks it once.
+///
+/// A project with no remote of its own is dearer, and not because of the survey. Its
+/// homes' `origin` is the checkout, so the checkout is read as the remote itself, and
+/// the proof then asks it two questions about each home — which of that home's remote
+/// tips it holds, and which of them its branches no longer reach
+/// (`nodal_core::doctor::unique`). Those are questions about the home. Nothing can
+/// answer them once for a survey, and this test holds them at two so that a fact about
+/// the checkout can never hide among them again.
+const PER_HOME: [(&str, usize); 2] = [("a clone of a remote", 0), ("no remote of its own", 2)];
 
 /// The survey reads the checkout once, whatever the project's homes cost.
 ///
-/// Three surveys of one machine. The homes are taken away between them by removing the
-/// directories, which is the state a person leaves by deleting a home by hand and which
-/// the survey already skips.
+/// Three surveys of one machine, in each relation. The homes are taken away between
+/// them by removing the directories, which is the state a person leaves by deleting a
+/// home by hand and which the survey already skips.
 ///
-/// Two numbers carry the claim. Three homes must cost one reading of the checkout, not
-/// three, because what the reading asks is the project's question and not the home's.
-/// And a project with no home left to read must cost none at all, because a reading
-/// nothing needs is a reading nothing takes.
+/// Two numbers carry the claim, and both are over every `git` process the command
+/// started in the checkout rather than over a reading named in advance. Two more homes
+/// must cost what [`PER_HOME`] says and not a process more, because what the survey
+/// asks of the checkout it asks once. And a project with no home left to read must cost
+/// less than one with a home, because a reading nothing needs is a reading nothing
+/// takes.
 #[test]
 fn the_survey_reads_the_checkout_once_however_many_homes_it_has() {
-    let machine = Machine::new();
-    let homes = [machine.unit(PROVED), machine.unit(ONLY), machine.unit(THIRD)];
+    for (relation, per_home) in PER_HOME {
+        let machine = if per_home == 0 { Machine::with_remote() } else { Machine::new() };
+        let machine = machine.with_env(ONLY_LOCAL);
+        let homes = [machine.unit(PROVED), machine.unit(ONLY), machine.unit(THIRD)];
 
-    let counted = tempfile::tempdir().unwrap();
-    let log = counted.path().join("git.log");
-    counting_git(counted.path(), &log);
-    let search = std::env::join_paths(
-        std::iter::once(counted.path().to_path_buf())
-            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        let counted = tempfile::tempdir().unwrap();
+        let log = counted.path().join("git.log");
+        counting_git(counted.path(), &log);
+        let search = search_through(counted.path());
+        let machine = machine
+            .with_env(("PATH", &search))
+            // The measurement script honours this. A test is not the script, and this
+            // property runs whatever it says.
+            .with_env(("NODAL_MEASURE_SKIP_GIT", "1"));
+
+        let three = survey(&machine, &log);
+        for home in &homes {
+            assert!(against(&log, home) > 0, "{relation}: the survey did not read a home");
+        }
+
+        std::fs::remove_dir_all(&homes[1]).unwrap();
+        std::fs::remove_dir_all(&homes[2]).unwrap();
+        let one = survey(&machine, &log);
+        assert_eq!(three - one, per_home * 2, "{relation}: two more homes cost the checkout");
+
+        std::fs::remove_dir_all(&homes[0]).unwrap();
+        let none = survey(&machine, &log);
+        assert!(none < one, "{relation}: a project with no home to read still read its checkout");
+    }
+}
+
+/// This machine's own search path, with `directory` in front of it.
+fn search_through(directory: &Path) -> String {
+    let inherited = std::env::var_os("PATH").unwrap();
+    let joined = std::env::join_paths(
+        std::iter::once(directory.to_path_buf()).chain(std::env::split_paths(&inherited)),
     )
     .unwrap();
-    let machine = machine
-        .with_env(("PATH", search.to_str().unwrap()))
-        // The measurement script honours this. A test is not the script, and this
-        // property runs whatever it says.
-        .with_env(("NODAL_MEASURE_SKIP_GIT", "1"));
-
-    let three = survey(&machine, &log);
-    for home in &homes {
-        assert!(against(&log, home) > 0, "the survey did not read {}", home.display());
-    }
-    assert_eq!(three, 1, "the survey read the checkout once for every home, not once");
-
-    std::fs::remove_dir_all(&homes[1]).unwrap();
-    std::fs::remove_dir_all(&homes[2]).unwrap();
-    assert_eq!(survey(&machine, &log), 1, "one home costs what three homes cost");
-
-    std::fs::remove_dir_all(&homes[0]).unwrap();
-    assert_eq!(survey(&machine, &log), 0, "a project with no home to read still read its checkout");
+    joined.into_string().unwrap()
 }

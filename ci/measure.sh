@@ -11,8 +11,10 @@
 # baselines were measured on this workspace at commit 2cbbad5 on 2026-09-08, except the
 # git-process ceilings. The list and create ceilings were measured again at 29d4838 on
 # the same day after the layout of an ordinary checkout stopped costing two invocations
-# per home, and the doctor ceiling was measured when this script gained that row, after
-# doctor's only-here section stopped reading the checkout once for every home. Where an
+# per home, and the two doctor ceilings were measured when this script gained those rows,
+# after doctor's only-here section stopped reading the checkout once for every home and
+# once for every home again for its branches. Both are set at exactly what they read,
+# with no slack, because a process count is exact. Where an
 # earlier measurement of the same quantity used a different definition and read a
 # different number, both are stated and the ceiling follows this script, because this
 # script is what CI runs and its definitions are the ones stated here.
@@ -106,6 +108,27 @@ SHIM
     : > "$NODAL_GIT_LOG"
     "$binary" doctor > /dev/null 2>&1
     doctor_total=$(wc -l < "$NODAL_GIT_LOG" | tr -d ' ')
+
+    # The same reading in the other relation a project can be in. This checkout has no
+    # remote of its own, so a home's `origin` is the checkout itself, and the uniqueness
+    # proof reads the checkout as the remote rather than as another clone of one. That
+    # path asks more of the checkout per home, so it is measured rather than assumed.
+    # Its own state directory, so doctor sees one project and not two.
+    git clone --quiet "$origin" "$work/solo"
+    git -C "$work/solo" remote remove origin
+    cd "$work/solo"
+    NODAL_HOME=$work/solo-state
+    export NODAL_HOME
+    : > "$NODAL_GIT_LOG"
+    "$binary" init > /dev/null 2>&1
+    number=1
+    while [ "$number" -le "$units" ]; do
+        "$binary" new "measure unit $number" --name "u$number" > /dev/null 2>&1
+        number=$((number + 1))
+    done
+    : > "$NODAL_GIT_LOG"
+    "$binary" doctor > /dev/null 2>&1
+    solo_total=$(wc -l < "$NODAL_GIT_LOG" | tr -d ' ')
     cd "$root"
 
     per_row=$(awk -v total="$list_total" -v units="$units" 'BEGIN { printf "%.1f", total / units }')
@@ -138,18 +161,34 @@ SHIM
     report "git processes, list total" "$list_total" "processes" "over $units units"
 
     per_home=$(awk -v total="$doctor_total" -v units="$units" 'BEGIN { printf "%.1f", total / units }')
+    solo_per_home=$(awk -v total="$solo_total" -v units="$units" 'BEGIN { printf "%.1f", total / units }')
 
-    # Baseline 6.5 per home at 10 units on the shapes fixture, where every home sits at
-    # the base tip: five readings of the home, the survey's share of one reading of the
-    # checkout, and the share of the three invocations the rest of doctor makes. It was
-    # 11.9 until the only-here section stopped reading the checkout once for every home.
-    # Six of the thirteen invocations a home cost were facts about the checkout — its git
-    # directory, its refs, its `origin`, and which of its tips it really holds — and a
-    # survey asks the same question of the checkout whichever home it is reading. The
-    # same fixture with four homes read 13.2 per home before and 8.8 after. What is left
-    # per home is the home's own status and history; batching those is the next ratchet.
-    gate "git processes per doctor home" "$per_home" 7 "per home" \
+    # A project is in one of two relations to its homes' `origin`, and they cost
+    # different amounts, so both are measured and each has a ceiling of its own set at
+    # exactly what it reads. One ceiling at the worse of the two would leave the better
+    # one free to grow by the difference without anything saying so.
+    #
+    # This row is a checkout cloned from a remote, which is the ordinary one. Baseline
+    # 6.5 per home at 10 units on the shapes fixture, where every home sits at the base
+    # tip: five readings of the home, the survey's share of one reading of the checkout,
+    # and the share of the three invocations the rest of doctor makes. It was 11.9 until
+    # the only-here section stopped reading the checkout once for every home. Six of the
+    # thirteen invocations a home cost were facts about the checkout — its git directory,
+    # its refs, its `origin`, and which of its tips it really holds — and a survey asks
+    # the same question of the checkout whichever home it is reading. The same fixture
+    # with four homes read 13.2 per home before and 8.8 after. What is left per home is
+    # the home's own status and history; batching those is the next ratchet.
+    gate "git processes per doctor home" "$per_home" 6.5 "per home" \
         "baseline 6.5 at 10 units, from 11.9; ratchet to 5 when the home readings are batched"
+
+    # The other relation: the checkout is what `origin` names, so it is read as the
+    # remote itself. Baseline 12.7 per home at 10 units, from 13.6 before the checkout's
+    # own branches stopped being read once for every home. It is the dearer of the two
+    # because the proof reads the home's own evidence as well and asks the checkout two
+    # questions about that home — which are questions about the home, not facts about
+    # the checkout, so they are not the survey's to hoist. Ratchet with the row above.
+    gate "git processes per doctor home, no remote" "$solo_per_home" 12.7 "per home" \
+        "baseline 12.7 at 10 units, from 13.6; the two readings left are the home's own"
 fi
 echo
 
