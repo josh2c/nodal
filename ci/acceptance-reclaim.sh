@@ -13,6 +13,11 @@
 # runnable; and `nodal gc` removes a trashed home once its retention has run out and
 # leaves the one whose has not.
 #
+# `nodal gc` also collects the records the runner writes before an operation. A record of
+# a run that is over goes once the project's retention has run out, and `nodal show` stops
+# listing it; a record of a run that is still open stays, and so does every ref of the
+# namespace that records no run.
+#
 # `nodal reclaim --check` is the same suite asked what it would do. It answers the same
 # way the operation does — every case the check refuses is a case the reclaim refuses,
 # with the same reading behind both — and it performs no part of a reclaim: no hook, no
@@ -47,6 +52,7 @@ cargo test --locked -p nodal-core --lib output::view::check
 cargo test --locked -p nodal-core --lib lifecycle::hooks
 cargo test --locked -p nodal-core --lib runtime::stop
 cargo test --locked -p nodal-core --lib lifecycle::ops::gc
+cargo test --locked -p nodal-core --test gc
 cargo test --locked -p nodal-core --lib output::view::reclaim
 
 work=$(mktemp -d)
@@ -55,4 +61,4 @@ mkdir -p "$work/real"
 ln -s "$work/real" "$work/by-another-name"
 TMPDIR="$work/by-another-name" cargo test --locked -p nodal-cli --test reclaim
 
-echo "acceptance (reclaim): dirty is refused, a clean unit leaves only a trash entry, a done adopted worktree offers git worktree remove, hooks are approved by text and told one name per directory, and gc removes it"
+echo "acceptance (reclaim): dirty is refused, a clean unit leaves only a trash entry, a done adopted worktree offers git worktree remove, hooks are approved by text and told one name per directory, and gc removes it and the records of the runs that are over"

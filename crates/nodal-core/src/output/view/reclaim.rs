@@ -331,6 +331,9 @@ pub struct Swept {
     pub containers: Vec<String>,
     /// Leases that had lapsed and were given back.
     pub leases: Vec<String>,
+    /// The pre-operation snapshot refs that were removed, because their runs are over
+    /// and their retention has run out.
+    pub records: Vec<String>,
     /// The merged units whose homes were reclaimed because their retention had run out.
     pub retired: Vec<Retired>,
     /// The live units nothing has touched for longer than the threshold that was asked
@@ -355,6 +358,10 @@ impl Render for Swept {
             Field::new("kept", plural(self.kept.len(), "home in trash", "homes in trash")),
             Field::new("merged", self.retired_cell()),
             Field::new("runtime", self.runtime_cell()),
+            Field::new(
+                "records",
+                plural(self.records.len(), "snapshot record removed", "snapshot records removed"),
+            ),
         ];
         if self.idle_asked {
             fields.push(Field::new("idle", self.idle_cell()));

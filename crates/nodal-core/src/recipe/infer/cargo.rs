@@ -15,7 +15,7 @@ use crate::recipe::infer::scripts::SetCommand;
 use crate::recipe::infer::{Confidence, Project, Proposal};
 
 /// The manifest every Cargo tree has.
-const MANIFEST: &str = "Cargo.toml";
+pub(super) const MANIFEST: &str = "Cargo.toml";
 
 /// Where a project states that it lints with Clippy, as a file of its own.
 const CLIPPY_FILES: &[&str] = &["clippy.toml", ".clippy.toml"];
