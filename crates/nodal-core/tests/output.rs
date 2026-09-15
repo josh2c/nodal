@@ -645,6 +645,7 @@ fn snapshots() -> Vec<Snapshot> {
             taken_by: Taker::Operation {
                 operation: String::from("01J9X4A1B2C3D4E5F6G7H8J9K0"),
                 op: Some(String::from("merge")),
+                outcome: Some(String::from("rolled_back")),
             },
         },
         Snapshot {

@@ -12,8 +12,11 @@
 //! so removing it leaves the file byte for byte the file it was, with every other server
 //! somebody declared still in it.
 //!
-//! The command is this binary's own path. A person who has two copies of Nodal gets the
-//! one they ran, rather than whichever one a search path finds first.
+//! The command is the name `nodal` and not the path of the binary that wrote it. This
+//! file is committed in most projects, so an absolute path would put one person's home
+//! directory in the repository and hand every teammate a server that is not there. The
+//! name resolves the way every other tool in that project resolves: on the search path
+//! of whoever starts the agent.
 
 use std::path::{Path, PathBuf};
 
@@ -37,19 +40,15 @@ pub fn path(root: &Path) -> PathBuf {
     root.join(FILE)
 }
 
-/// The declaration: which program to run, and the one argument that makes it a server.
+/// What the declaration runs: the name on the search path, and the one argument that
+/// makes it a server.
 #[must_use]
-pub fn entry(binary: &Path) -> Value {
-    json!({ "command": binary.display().to_string(), "args": ["mcp"] })
+pub fn entry() -> Value {
+    json!({ "command": COMMAND, "args": ["mcp"] })
 }
 
-/// This binary's own path, for a declaration that names it.
-///
-/// # Errors
-/// [`Error::Io`] when the running program cannot say where it is.
-pub fn binary() -> Result<PathBuf> {
-    std::env::current_exe().map_err(Error::io("<the running program>"))
-}
+/// The program a declaration names.
+pub const COMMAND: &str = "nodal";
 
 /// Declare the server in the project at `root`, and answer with the file that changed.
 ///
@@ -59,10 +58,10 @@ pub fn binary() -> Result<PathBuf> {
 /// # Errors
 /// [`Error::InvalidValue`] when the file is not a JSON object, and [`Error::Io`] when it
 /// cannot be read or written.
-pub fn install(root: &Path, binary: &Path) -> Result<Option<PathBuf>> {
+pub fn install(root: &Path) -> Result<Option<PathBuf>> {
     let file = path(root);
     let before = super::claude_code::read(&file)?;
-    let Some(after) = settings::add_member(&before, CONTAINER, NAME, &entry(binary))? else {
+    let Some(after) = settings::add_member(&before, CONTAINER, NAME, &entry())? else {
         return Ok(None);
     };
     std::fs::write(&file, after).map_err(Error::io(&file))?;
@@ -77,9 +76,9 @@ pub fn install(root: &Path, binary: &Path) -> Result<Option<PathBuf>> {
 ///
 /// # Errors
 /// [`Error::Io`] when the file cannot be read, written or removed.
-pub fn uninstall(file: &Path, binary: &Path) -> Result<bool> {
+pub fn uninstall(file: &Path) -> Result<bool> {
     let before = super::claude_code::read(file)?;
-    let Some(after) = settings::remove_member(&before, CONTAINER, NAME, &entry(binary)) else {
+    let Some(after) = settings::remove_member(&before, CONTAINER, NAME, &entry()) else {
         return Ok(false);
     };
     if settings::is_empty(&after) {
@@ -94,16 +93,27 @@ pub fn uninstall(file: &Path, binary: &Path) -> Result<bool> {
 ///
 /// # Errors
 /// [`Error::Io`] when the file is there and cannot be read.
-pub fn declared(file: &Path, binary: &Path) -> Result<bool> {
+pub fn declared(file: &Path) -> Result<bool> {
     let text = super::claude_code::read(file)?;
-    Ok(settings::holds_member(&text, CONTAINER, NAME, &entry(binary)))
+    Ok(settings::holds_member(&text, CONTAINER, NAME, &entry()))
+}
+
+/// Read the file, so a caller can refuse before it writes anything.
+///
+/// `nodal init` writes two files, and a malformed second file must not leave the first
+/// one written: both are read and checked before either is touched.
+///
+/// # Errors
+/// [`Error::InvalidValue`] when the file is not a JSON object, and [`Error::Io`] when it
+/// cannot be read.
+pub fn readable(root: &Path) -> Result<()> {
+    let text = super::claude_code::read(&path(root))?;
+    settings::parsed(&text)
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
-
-    use std::path::Path;
 
     use super::{CONTAINER, NAME, entry};
     use crate::adapters::settings;
@@ -112,15 +122,13 @@ mod tests {
     /// file that held somebody else's server still holds it, to the byte.
     #[test]
     fn what_is_written_comes_out_and_leaves_the_file_as_it_was() {
-        let binary = Path::new("/usr/local/bin/nodal");
         let theirs =
             "{\n  \"mcpServers\": {\n    \"theirs\": {\n      \"command\": \"x\"\n    }\n  }\n}\n";
         for before in ["", "{}\n", theirs] {
-            let after =
-                settings::add_member(before, CONTAINER, NAME, &entry(binary)).unwrap().unwrap();
+            let after = settings::add_member(before, CONTAINER, NAME, &entry()).unwrap().unwrap();
             assert!(after.contains("\"nodal\""), "{after}");
             assert!(after.contains("\"mcp\""), "{after}");
-            let back = settings::remove_member(&after, CONTAINER, NAME, &entry(binary)).unwrap();
+            let back = settings::remove_member(&after, CONTAINER, NAME, &entry()).unwrap();
             assert_eq!(
                 back,
                 if before.is_empty() { String::from("{}\n") } else { before.to_owned() }
@@ -131,8 +139,17 @@ mod tests {
     /// A second install finds the declaration already there and writes nothing.
     #[test]
     fn declaring_twice_is_declaring_once() {
-        let binary = Path::new("/usr/local/bin/nodal");
-        let once = settings::add_member("", CONTAINER, NAME, &entry(binary)).unwrap().unwrap();
-        assert!(settings::add_member(&once, CONTAINER, NAME, &entry(binary)).unwrap().is_none());
+        let once = settings::add_member("", CONTAINER, NAME, &entry()).unwrap().unwrap();
+        assert!(settings::add_member(&once, CONTAINER, NAME, &entry()).unwrap().is_none());
+    }
+
+    /// The declaration names a program on the search path and never a path on the
+    /// machine that wrote it. This file is committed, and one person's home directory in
+    /// it hands every teammate a server that is not there.
+    #[test]
+    fn the_declaration_names_no_path_of_this_machine() {
+        let written = entry().to_string();
+        assert!(written.contains("\"nodal\""), "{written}");
+        assert!(!written.contains('/'), "the declaration carries a path: {written}");
     }
 }

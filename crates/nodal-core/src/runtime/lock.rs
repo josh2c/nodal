@@ -38,13 +38,14 @@
 //! is unchanged, because a process identifier is reused and a hold that let go on a
 //! reading of one would be a hold that let go of the wrong home.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use rusqlite::Connection;
 
 use crate::model::{Actor, EventKind, HostName, Lock, Project, Recipe, Timestamp, Unit, UnitId};
 use crate::output::view::{HolderState, Unknowable};
-use crate::runtime::processes::Processes;
+use crate::runtime::processes::{Presence, Processes};
 use crate::store::{events, locks};
 use crate::{Error, Result};
 
@@ -247,15 +248,43 @@ pub fn live(conn: &Connection, root: &Path, now: Timestamp) -> Result<Vec<Lock>>
 /// table this account can read. A report says which, because "I cannot see" and "nobody
 /// is there" are different answers and only one of them is news.
 #[must_use]
-pub fn liveness(lock: &Lock, here: &HostName, processes: &dyn Processes) -> HolderState {
+pub fn liveness(lock: &Lock, here: &HostName, seen: &Seen) -> HolderState {
     if &lock.host != here {
         return HolderState::Unknown { why: Unknowable::AnotherHost };
     }
     let Some(pid) = lock.pid else { return HolderState::Unknown { why: Unknowable::NoPid } };
-    match processes.holds(pid) {
-        Ok(true) => HolderState::Live,
-        Ok(false) => HolderState::Gone,
-        Err(_) => HolderState::Unknown { why: Unknowable::NoProcessTable },
+    match seen.of(pid) {
+        None => HolderState::Unknown { why: Unknowable::NoProcessTable },
+        Some(Presence::Gone) => HolderState::Gone,
+        // An identifier that came round again. The process wearing it now started after
+        // the hold was taken, so it is not the process that took it, and reporting it as
+        // the holder would put a stranger's shell in the WHO column.
+        Some(Presence::Running { started_at: Some(started) }) if started > lock.taken_at => {
+            HolderState::Gone
+        }
+        Some(Presence::Running { .. }) => HolderState::Live,
+    }
+}
+
+/// What one reading of the process table said about the identifiers a caller asked for.
+///
+/// Taken once for a whole list ([`read`]) and asked of each lock, because the reading is
+/// of one machine and a list of eight units must not read it eight times. A host that
+/// could not be read says so once, for every identifier, rather than answering `gone`.
+#[derive(Debug, Default)]
+pub struct Seen(Option<BTreeMap<u32, Presence>>);
+
+impl Seen {
+    /// Read this host's table for these identifiers.
+    #[must_use]
+    pub fn read(processes: &dyn Processes, pids: &[u32]) -> Self {
+        Self(processes.presences(pids).ok())
+    }
+
+    /// What it said about one identifier, `None` where the table could not be read.
+    #[must_use]
+    fn of(&self, pid: u32) -> Option<Presence> {
+        self.0.as_ref().map(|seen| seen.get(&pid).copied().unwrap_or(Presence::Gone))
     }
 }
 
@@ -312,7 +341,9 @@ fn refusal(unit: &Unit, held: &Lock, now: Timestamp) -> Error {
 /// of the project, which is not what a refusal should pay for. So the refusal names the
 /// reading it made and names the command that makes the other one.
 fn hold_line(held: &Lock) -> String {
-    match liveness(held, &HostName::current(), &crate::runtime::processes::Live) {
+    let seen =
+        Seen::read(&crate::runtime::processes::Live, &held.pid.into_iter().collect::<Vec<_>>());
+    match liveness(held, &HostName::current(), &seen) {
         HolderState::Gone => {
             let named =
                 held.pid.map_or_else(|| String::from("the process"), |pid| format!("pid {pid}"));

@@ -121,11 +121,14 @@ impl Held {
     #[must_use]
     pub fn of(locks: &[Lock], idle_hours: u32, processes: &dyn Processes) -> Self {
         let here = HostName::current();
+        // One reading of the process table for every lock, rather than one for each.
+        let pids: Vec<u32> = locks.iter().filter_map(|lock| lock.pid).collect();
+        let seen = crate::runtime::lock::Seen::read(processes, &pids);
         Self(
             locks
                 .iter()
                 .filter_map(|lock| {
-                    let state = crate::runtime::lock::liveness(lock, &here, processes);
+                    let state = crate::runtime::lock::liveness(lock, &here, &seen);
                     Some((lock.unit_id, Holder::from_lock(lock, idle_hours, state)?))
                 })
                 .collect(),
@@ -231,9 +234,8 @@ fn row(subject: &Snapshot, seen: &Seen, held: &Held, remote: Reading) -> UnitRow
 ///
 /// So a hold whose recorded process is gone is read once more, against the same scan the
 /// WHO column is built from: where a process of that actor stands in the home, the actor
-/// is there and the hold is live. A hold with neither is the case the three-day proof
-/// found — an agent killed, nothing of it left in the home — and it is the only one
-/// reported as gone.
+/// is there and the hold is live. A hold with neither is an agent that was killed with
+/// nothing of it left in the home, and it is the only one reported as gone.
 fn still_there(holder: &mut Holder, sessions: &[ToolSessions]) {
     if holder.state == HolderState::Gone && sessions.iter().any(|seen| seen.tool == holder.actor) {
         holder.state = HolderState::Live;

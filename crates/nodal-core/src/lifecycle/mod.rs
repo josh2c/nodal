@@ -196,7 +196,15 @@ pub fn run(store: &mut Store, plan: &Plan) -> Result<Done> {
     let id = OperationId::from_ulid(ulid::Ulid::new());
     let owner = Owner::current();
     journal::start(store.conn(), id, plan, &owner, Timestamp::now())?;
-    record(plan, id)?;
+    if let Err(why) = record(plan, id) {
+        // The record is taken after the run is opened, because the run is what names the
+        // ref. A run that stops here has applied no step, so there is nothing to undo and
+        // nothing for the next command to resolve — but the row is open, and an open row
+        // with no steps is a run the next `nodal` would announce as rolled back. It is
+        // closed here, as every other way out of this function closes it.
+        close(store.conn(), id, plan.kind, State::Failed)?;
+        return Err(why);
+    }
     let mut outputs = Outputs::new();
     for (position, step) in plan.steps.iter().enumerate() {
         let position = position_of(position)?;
@@ -232,6 +240,12 @@ pub fn run(store: &mut Store, plan: &Plan) -> Result<Done> {
 }
 
 /// Commit the home a mutating plan is about, before the plan touches it.
+///
+/// A record of a run that then rolled back stays where it is. It is one commit of a home
+/// as it was a moment before, on a ref named by a run the journal still holds, and
+/// removing it would be this module deleting the one copy of something at exactly the
+/// moment an operation has gone wrong. `nodal show` lists it with the operation it was
+/// taken for, and `nodal gc` is where a later task collects the ones nothing needs.
 ///
 /// The record is one commit on a ref of this run's own,
 /// `refs/nodal/<unit>/pre/<operation>`, built in an index of its own so that the

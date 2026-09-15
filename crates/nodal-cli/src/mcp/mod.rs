@@ -24,9 +24,8 @@ use std::io::{BufRead, Write};
 use serde_json::{Value, json};
 
 use crate::cli::Cli;
-use crate::mcp::protocol::{
-    Answer, Failure, INVALID_PARAMS, METHOD_NOT_FOUND, Message, PARSE_ERROR,
-};
+use crate::mcp::protocol::{Answer, Failure, INVALID_PARAMS, METHOD_NOT_FOUND, Message};
+use crate::mcp::tools::Fault;
 
 /// The version of the model context protocol this server answers with.
 const PROTOCOL: &str = "2025-06-18";
@@ -60,14 +59,9 @@ pub fn serve(cli: &Cli, input: &mut dyn BufRead, output: &mut dyn Write) -> noda
 
 /// The answer to one line, or nothing for a notification.
 fn answer(cli: &Cli, line: &str) -> Option<Answer> {
-    let message: Message = match serde_json::from_str(line) {
+    let message = match Message::read(line) {
         Ok(message) => message,
-        Err(why) => {
-            return Some(Answer::failed(
-                Value::Null,
-                Failure::new(PARSE_ERROR, format!("the line is not a request: {why}")),
-            ));
-        }
+        Err((id, failure)) => return Some(Answer::failed(id, failure)),
     };
     // A message with no identifier is a notification: it is never answered, and the one
     // that matters here (`notifications/initialized`) asks for nothing.
@@ -140,12 +134,23 @@ fn call(cli: &Cli, params: &Value) -> Result<Value, Failure> {
         ));
     }
     let tools = tools::all();
+    // A tool that is not there is a parameter that is wrong, not a method that is
+    // missing: the method — `tools/call` — is one this server answers.
     let Some(tool) = tools.iter().find(|tool| tool.name == name) else {
-        return Err(Failure::new(
-            METHOD_NOT_FOUND,
-            format!("nodal mcp has no tool called {name:?}"),
-        ));
+        return Err(Failure::new(INVALID_PARAMS, format!("nodal mcp has no tool called {name:?}")));
     };
-    let answer = (tool.call)(cli, &arguments)?;
-    Ok(json!({ "content": [{ "type": "text", "text": answer }], "isError": false }))
+    tools::check(&(tool.schema)(), &arguments)?;
+    match (tool.call)(cli, &arguments) {
+        Ok(answer) => {
+            Ok(json!({ "content": [{ "type": "text", "text": answer }], "isError": false }))
+        }
+        // A refusal is the tool's answer and not the protocol's. A model has to read it
+        // to act on it, and several clients never show a protocol error to the model, so
+        // the sentence the command line prints comes back as the content of a result
+        // that says it failed.
+        Err(Fault::Refused(why)) => {
+            Ok(json!({ "content": [{ "type": "text", "text": why }], "isError": true }))
+        }
+        Err(Fault::Protocol(failure)) => Err(failure),
+    }
 }

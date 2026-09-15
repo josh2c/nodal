@@ -220,21 +220,38 @@ error.
 Methods: `initialize`, `tools/list`, `tools/call`, `ping`. A message with no `id` is a notification and is
 never answered.
 
-Tools: `ls`, `show`, `check`, `new`, `handoff`, `done`. **A tool result is the bytes the matching
+Tools: `ls`, `show`, `check`, `new`, `handoff`, `done`. **A tool result is what the matching
 `nodal <verb> --json` writes.** The content is one text block holding that document. There is no second
-representation, and `ci/acceptance-mcp.sh` compares the two texts.
+representation, and `ci/acceptance-mcp.sh` compares the two documents.
+
+The `done` tool sends the unit's branch and nothing else. It takes no `wip`: that flag sends the
+work-in-progress snapshot, which carries every uncommitted and untracked file of the home, and it stays
+on the command line where the person who types it is the person whose work it is.
 
 `reclaim`, `merge`, `gc`, `uninstall` and `base` are not tools. They are absent from `tools/list`, and
-`tools/call` on one of them is refused by name with the reason and the command a person runs instead. A
-refusal of any kind is a JSON-RPC error carrying the sentence the command line prints for it.
+`tools/call` on one of them is refused by name with the reason and the command a person runs instead.
+
+**A refusal and a bad message are different answers.** The work saying no — no such unit, a held unit, a
+handoff with nothing in it — comes back as the tool's own result with `isError: true`, carrying the
+sentence the command line prints, because a model has to read it to act on it and several clients never
+show a protocol error to a model. A message that is wrong — an argument the tool does not take, one of
+the wrong type, a required one missing, an unknown tool — is `-32602`. A line that is not a request, a
+batch, a missing `jsonrpc` or `method`, or an id that is not a string, a number or null, is `-32600`,
+answered under the id the line carried. Arguments are checked against the tool's own published schema,
+so what `tools/list` states and what the server enforces are one thing.
 
 Each call opens the registry the way the matching command does, resolves what an interrupted operation left,
 and closes it again. A tool runs in the directory the server was started in; no tool takes a path to work in.
 
-`nodal init --claude-hooks` declares the server in the project's own `.mcp.json`, under `mcpServers.nodal`,
-naming the path of the binary that wrote it. It is one marked region, written the way the hooks are, so
-`nodal uninstall` takes it out and leaves the file byte for byte the file it was, with every other server
-somebody declared still in it. `nodal mcp --tools` prints the listing; the committed copy is
+`nodal init --claude-hooks` declares the server in the project's own `.mcp.json`, under
+`mcpServers.nodal`, as `"command": "nodal"` with the argument `mcp`. It names the program and never the
+path of the binary that wrote it: the file is committed in most projects, and an absolute path would put
+one person's home directory in the repository and hand every teammate a server that is not there. It is
+one marked region, written the way the hooks are, so `nodal uninstall` takes it out and leaves the file
+byte for byte the file it was, with every other server somebody declared still in it; a file somebody has
+since reformatted is read and written again instead, which changes its formatting and no other member of
+it. `nodal init` reads both files before it writes either, so a malformed `.mcp.json` refuses the command
+rather than leaving the hooks installed and the declaration missing. `nodal mcp --tools` prints the listing; the committed copy is
 `schemas/mcp/tools.json` and `ci/schema-diff.sh` fails on a change that is not committed with it.
 
 Nodal asks whether it shares file blocks under the state root **once**, when the state root is made. The

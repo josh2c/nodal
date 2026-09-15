@@ -99,10 +99,6 @@
           "unit": {
             "description": "The unit's handle. Defaults to the unit of the working directory.",
             "type": "string"
-          },
-          "wip": {
-            "description": "Send the work-in-progress snapshot as well as the branch.",
-            "type": "boolean"
           }
         },
         "type": "object"

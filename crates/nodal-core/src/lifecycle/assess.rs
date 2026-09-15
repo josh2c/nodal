@@ -91,7 +91,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
-pub use crate::doctor::size::Bytes;
+use crate::doctor::size::Bytes;
 use crate::git::status::{Entry, State, Summary};
 use crate::git::{Git, Oid, union};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};

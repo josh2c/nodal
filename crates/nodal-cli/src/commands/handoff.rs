@@ -33,7 +33,7 @@ impl Handoff {
     /// registry reported.
     pub fn run(&self, store: &Store) -> nodal_core::Result<ExitCode> {
         let text = self.rendered(store, Format::from_json_flag(self.json))?;
-        print!("{text}");
+        crate::commands::emit(&text)?;
         Ok(ExitCode::SUCCESS)
     }
 

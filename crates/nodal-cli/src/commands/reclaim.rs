@@ -128,11 +128,11 @@ impl Reclaim {
         Ok((output::render(&report, format)?, safe))
     }
 
-    /// The values a preflight is asked for, as the arguments give them.
+    /// The values a reclaim is asked for, as the arguments give them.
     ///
-    /// # Errors
-    ///
-    /// [`nodal_core::Error::Io`] when the working directory could not be read.
+    /// A working directory that cannot be read answers `.`, because the path is what
+    /// names the unit when the command line does not, and a command run somewhere
+    /// unreadable has no unit to name either way.
     pub fn request(&self, hooks: bool) -> Request {
         Request {
             target: self.unit.clone(),

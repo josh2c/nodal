@@ -28,7 +28,7 @@ use nodal_core::model::{
 };
 use nodal_core::output::Render;
 use nodal_core::output::view::{Disk, HolderState, Unknowable, Unmeasured};
-use nodal_core::runtime::processes::{Processes, Running};
+use nodal_core::runtime::processes::{Presence, Processes, Running};
 use nodal_core::runtime::{entry, ls, show};
 use nodal_core::store::{Store, locks, projects, units};
 use nodal_fixture::shapes::{self, Branch};
@@ -44,6 +44,34 @@ struct Table(Vec<Running>);
 impl Processes for Table {
     fn scan(&self) -> nodal_core::Result<Vec<Running>> {
         Ok(self.0.clone())
+    }
+}
+
+/// A process table that dates every process it holds, which is what a host with a clock
+/// answers and what a recycled identifier is told apart by.
+struct Started(Vec<Running>, Timestamp);
+
+impl Processes for Started {
+    fn scan(&self) -> nodal_core::Result<Vec<Running>> {
+        Ok(self.0.clone())
+    }
+
+    fn presences(
+        &self,
+        pids: &[u32],
+    ) -> nodal_core::Result<std::collections::BTreeMap<u32, Presence>> {
+        Ok(pids
+            .iter()
+            .map(|pid| {
+                let found = self.0.iter().any(|running| running.pid == *pid);
+                let presence = if found {
+                    Presence::Running { started_at: Some(self.1) }
+                } else {
+                    Presence::Gone
+                };
+                (*pid, presence)
+            })
+            .collect())
     }
 }
 
@@ -358,9 +386,9 @@ fn who(list: &nodal_core::output::view::UnitList, branch: &str) -> String {
     list.doc().lines().into_iter().find(|line| line.contains(branch)).expect("the unit has a row")
 }
 
-/// The finding this pins is F-A of the three-day proof: an agent was killed and the
-/// report still said `claude-code holds 8 h`, with the dead process named beside it.
-/// Nothing in the answer told the next session that nobody was there.
+/// The fault this pins: an agent was killed and the report still said
+/// `claude-code holds 8 h`, with the dead process named beside it. Nothing in the answer
+/// told the next session that nobody was there.
 #[test]
 fn a_hold_whose_process_is_gone_is_never_reported_as_held() {
     let fixture = Fixture::build();
@@ -447,9 +475,9 @@ fn a_reading_that_cannot_be_taken_is_unknown_and_never_gone() {
 
 // ------------------------------------------------------- what a home is said to hold
 
-/// The finding this pins is F-B of the three-day proof: `disk` was an em dash for a home
-/// holding 108 MiB, which reads as "nothing here". A list still does not walk a home —
-/// that is the detail's cost — but it says so, and `nodal show` measures.
+/// The fault this pins: `disk` was an em dash for a home holding 108 MiB, which reads as
+/// "nothing here". A list still does not walk a home — that is the detail's cost — but it
+/// says so, and `nodal show` measures.
 #[test]
 fn a_list_says_why_a_home_was_not_measured_and_a_detail_measures_it() {
     let fixture = Fixture::build();
@@ -470,5 +498,31 @@ fn a_list_says_why_a_home_was_not_measured_and_a_detail_measures_it() {
     assert!(bytes.apparent >= 40_000, "{bytes:?}");
     assert!(bytes.complete);
     assert!(!bytes.exclusive_unknown.is_empty(), "a figure says what it is not");
+    drop(fixture.directory);
+}
+
+/// An identifier that came round again is not the holder wearing it.
+///
+/// A machine that has been up for weeks hands a lock row's number to something else, and
+/// a reading that only asked "is there a process" would report a session that ended as
+/// being back at work. The process that took a hold started before the hold was taken;
+/// anything that started after it is a stranger.
+#[test]
+fn a_recycled_identifier_is_not_the_holder_that_wrote_it() {
+    let fixture = Fixture::build();
+    let (unit, home) = fixture.units["ahead"].clone();
+    let pid = 4_120;
+    hold(&fixture, "ahead", HostName::current(), Some(pid));
+    // The table holds that identifier, and the process wearing it started a day after
+    // the hold was taken.
+    let later = Timestamp::from_unix_seconds(Timestamp::now().unix_seconds() + 86_400).unwrap();
+    // Somebody else's shell wearing the number. Nothing of the actor that holds the unit
+    // is in the home, so the identifier is the whole of the question.
+    let table = Started(vec![running(pid, &unit, &home, &[("USER", "josh")])], later);
+
+    let list = ls::list(fixture.store.conn(), &table, &fixture.project, Timestamp::now()).unwrap();
+    let row = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
+
+    assert_eq!(row.holder.as_ref().unwrap().state, HolderState::Gone);
     drop(fixture.directory);
 }

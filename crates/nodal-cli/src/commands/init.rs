@@ -223,9 +223,14 @@ impl Init {
                 settings::path(root)
             }
         };
+        // Both files are read before either is written. This command writes two, and a
+        // malformed `.mcp.json` found after the hooks were already installed would leave
+        // the project half set up and the person with nothing to undo it by.
+        settings::parsed(&claude_code::read(&file)?)?;
+        mcp::readable(root)?;
         let Some(done) = claude_code::install(&file, scope)? else {
             eprintln!("nodal: {} already declares the hooks", file.display());
-            return Ok(());
+            return Self::declare(root);
         };
         eprintln!(
             "nodal: wrote {} Claude Code hooks into {} ({} scope)",
@@ -249,8 +254,7 @@ impl Init {
     ///
     /// Whatever reading or writing `.mcp.json` reported.
     fn declare(root: &Path) -> nodal_core::Result<()> {
-        let binary = mcp::binary()?;
-        let Some(file) = mcp::install(root, &binary)? else {
+        let Some(file) = mcp::install(root)? else {
             eprintln!(
                 "nodal: {} already declares the nodal tool server",
                 mcp::path(root).display()

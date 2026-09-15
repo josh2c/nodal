@@ -150,8 +150,20 @@ pub fn add(text: &str, hooks: &[Hook]) -> Result<Option<String>> {
         Some(stripped) => stripped,
         None => text.to_owned(),
     };
-    let document = parse(&base)?;
-    let installed = splice(&base, &document, HOOKS, &members(hooks));
+    written(text, &base, HOOKS, &members(hooks))
+}
+
+/// The region spliced into `base`, or `None` when `text` already reads that way.
+///
+/// The one place a region is written, whether it is the hooks or one member of another
+/// object. Both callers strip what they wrote before, so installing twice is installing
+/// once, and both answer `None` rather than an identical file.
+///
+/// # Errors
+/// [`Error::InvalidValue`] when the file is not a JSON object.
+fn written(text: &str, base: &str, container: &str, members: &[String]) -> Result<Option<String>> {
+    let document = parse(base)?;
+    let installed = splice(base, &document, container, members);
     Ok((installed != text).then_some(installed))
 }
 
@@ -330,14 +342,12 @@ pub fn add_member(
     name: &str,
     value: &Value,
 ) -> Result<Option<String>> {
-    let written = vec![named(name, value)];
-    let base = match cut(text, container, &written) {
+    let members = vec![named(name, value)];
+    let base = match remove_member(text, container, name, value) {
         Some(stripped) => stripped,
         None => text.to_owned(),
     };
-    let document = parse(&base)?;
-    let installed = splice(&base, &document, container, &written);
-    Ok((installed != text).then_some(installed))
+    written(text, &base, container, &members)
 }
 
 /// `text` with that member taken out, or `None` when it is not there as Nodal wrote it.
@@ -348,7 +358,22 @@ pub fn add_member(
 /// rewrite of that file is not Nodal's to make.
 #[must_use]
 pub fn remove_member(text: &str, container: &str, name: &str, value: &Value) -> Option<String> {
-    cut(text, container, &[named(name, value)])
+    if let Some(exact) = cut(text, container, &[named(name, value)]) {
+        return Some(exact);
+    }
+    // The fallback, which the hooks have for the same reason: a file somebody
+    // reformatted, or wrote by another route, holds no region this recognises, and an
+    // uninstall that walked away from it would leave a declaration behind naming a
+    // server that is meant to be gone. So the document is read, the member is taken out
+    // by name, and the file is written again. Every other member of it survives; only
+    // its formatting changes, and only for a file Nodal could not otherwise clean up.
+    let mut document = parse(text).ok()?;
+    let held = document.get_mut(container)?.as_object_mut()?;
+    held.remove(name)?;
+    if held.is_empty() {
+        document.remove(container);
+    }
+    Some(render(&document))
 }
 
 /// Whether `text` holds that member exactly as [`add_member`] writes it.
@@ -387,6 +412,17 @@ fn render(document: &Map<String, Value>) -> String {
 }
 
 // Reading the file: what it holds, and where its objects open.
+
+/// Whether this text is a file this module could write into.
+///
+/// For a caller that writes more than one file and must refuse before it writes any of
+/// them.
+///
+/// # Errors
+/// [`Error::InvalidValue`] when the text is not a JSON object.
+pub fn parsed(text: &str) -> Result<()> {
+    parse(text).map(drop)
+}
 
 /// The file as an object. A file that is not there, or is only whitespace, is `{}`.
 fn parse(text: &str) -> Result<Map<String, Value>> {

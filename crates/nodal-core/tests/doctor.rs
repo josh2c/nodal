@@ -957,10 +957,9 @@ impl Project {
     }
 }
 
-/// The finding this pins is F-D of the three-day proof. Doctor printed "nothing of this
-/// project is left behind" while two unit homes held three commits that exist in no
-/// other object store and on no remote. The sentence was true of leftovers and was read
-/// as an answer about unique work.
+/// The fault this pins: doctor printed "nothing of this project is left behind" while two
+/// unit homes held three commits that exist in no other object store and on no remote.
+/// The sentence was true of leftovers and was read as an answer about unique work.
 #[test]
 fn a_unit_home_that_holds_the_only_copy_of_a_commit_is_named() {
     let planted = Project::plant();

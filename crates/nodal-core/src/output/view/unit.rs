@@ -497,6 +497,10 @@ pub enum Taker {
         /// Which operation it was, as the journal recorded it. `None` where the row is
         /// no longer there: the ref outlives the registry row it was named after.
         op: Option<String>,
+        /// How that run ended, in the journal's own word. A record of a run that rolled
+        /// back is still a record of the home, and it says which it is rather than
+        /// leaving a reader to assume the operation happened.
+        outcome: Option<String>,
     },
     /// The work-in-progress ref `nodal done` and a forced reclaim write.
     WorkInProgress,
@@ -561,8 +565,16 @@ fn snapshot_table(snapshots: &[Snapshot], now: Timestamp) -> Table {
 /// What a snapshot records, in the words the operation is called by.
 fn taker_cell(taker: &Taker) -> String {
     match taker {
-        Taker::Operation { op: Some(kind), .. } => format!("the home before {kind}"),
-        Taker::Operation { op: None, .. } => String::from("the home before an operation"),
+        Taker::Operation { op, outcome, .. } => {
+            let named = op.as_ref().map_or_else(
+                || String::from("the home before an operation"),
+                |kind| format!("the home before {kind}"),
+            );
+            match outcome.as_deref() {
+                Some("committed") | None => named,
+                Some(ended) => format!("{named} ({})", ended.replace('_', " ")),
+            }
+        }
         Taker::WorkInProgress => String::from("the home, work in progress"),
         Taker::PreMerge => String::from("the branch before a squash"),
         Taker::Other => String::from("a ref of this unit"),
