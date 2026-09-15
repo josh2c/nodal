@@ -89,11 +89,11 @@ fn taker(conn: &Connection, reference: &str, unit: &Unit) -> Taker {
     let Some(operation) = rest.strip_prefix(refs::PRE) else { return Taker::Other };
     let run =
         OperationId::parse(operation).ok().and_then(|id| journal::get(conn, id).ok().flatten());
-    let outcome = run
-        .as_ref()
-        .and_then(|run| serde_json::to_value(run.state).ok())
-        .and_then(|state| state.as_str().map(ToOwned::to_owned));
-    Taker::Operation { operation: operation.to_owned(), op: run.map(|run| run.kind), outcome }
+    Taker::Operation {
+        operation: operation.to_owned(),
+        outcome: run.as_ref().map(|run| run.state),
+        op: run.map(|run| run.kind),
+    }
 }
 
 /// Walk the unit's home and record what it holds.

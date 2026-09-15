@@ -205,6 +205,9 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 handoff, sync, done, merge, prune, reclaim, reclaim --check, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
 `--json`; `status --watch` emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
+`nodal done --wip` says on standard error what the flag sends — every uncommitted and untracked file of
+the home — before the push, not after it.
+
 `nodal handoff [--unit <unit>] "<text>"` records one stated handoff on a unit and prints it. It takes no
 lock, enters no home and writes no file in one: the unit's memory is compiled from the registry by the
 commands that read a unit. A handoff whose text is empty or blank is refused. The actor is read the way
@@ -229,12 +232,14 @@ work-in-progress snapshot, which carries every uncommitted and untracked file of
 on the command line where the person who types it is the person whose work it is.
 
 `reclaim`, `merge`, `gc`, `uninstall` and `base` are not tools. They are absent from `tools/list`, and
-`tools/call` on one of them is refused by name with the reason and the command a person runs instead.
+`tools/call` on one of them answers with a result marked `isError: true`, naming the verb, the reason it
+is not offered, and the command a person runs instead — the same shape a refusal of the work takes, so
+the agent that asked for it reads the answer.
 
 **A refusal and a bad message are different answers.** The work saying no — no such unit, a held unit, a
-handoff with nothing in it — comes back as the tool's own result with `isError: true`, carrying the
-sentence the command line prints, because a model has to read it to act on it and several clients never
-show a protocol error to a model. A message that is wrong — an argument the tool does not take, one of
+handoff with nothing in it, a verb that is not offered — comes back as the tool's own result with
+`isError: true`, carrying the sentence the command line prints, because a model has to read it to act on
+it and several clients never show a protocol error to a model. A message that is wrong — an argument the tool does not take, one of
 the wrong type, a required one missing, an unknown tool — is `-32602`. A line that is not a request, a
 batch, a missing `jsonrpc` or `method`, or an id that is not a string, a number or null, is `-32600`,
 answered under the id the line carried. Arguments are checked against the tool's own published schema,
@@ -251,7 +256,8 @@ one marked region, written the way the hooks are, so `nodal uninstall` takes it 
 byte for byte the file it was, with every other server somebody declared still in it; a file somebody has
 since reformatted is read and written again instead, which changes its formatting and no other member of
 it. `nodal init` reads both files before it writes either, so a malformed `.mcp.json` refuses the command
-rather than leaving the hooks installed and the declaration missing. `nodal mcp --tools` prints the listing; the committed copy is
+rather than leaving the hooks installed and the declaration missing. It says on standard error that the
+declaration runs `nodal mcp`, so whoever opens the project needs `nodal` on their own PATH. `nodal mcp --tools` prints the listing; the committed copy is
 `schemas/mcp/tools.json` and `ci/schema-diff.sh` fails on a change that is not committed with it.
 
 Nodal asks whether it shares file blocks under the state root **once**, when the state root is made. The

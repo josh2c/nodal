@@ -26,8 +26,8 @@ use nodal_core::model::recipe::{ToolName, ToolVersion};
 use nodal_core::model::{
     Actor, ActorKind, ActorName, Base, BaseId, BranchName, CommitId, Digest, EnvId, EnvName,
     EnvState, Epistemic, Event, EventId, EventKind, FingerprintPart, HostName, Missing, Needs,
-    Objective, Platform, PortName, Ports, ProjectId, ProjectName, Slug, Timestamp, UnitId,
-    UnitStatus, Version, Want, WorkspaceFp,
+    Objective, OperationState, Platform, PortName, Ports, ProjectId, ProjectName, Slug, Timestamp,
+    UnitId, UnitStatus, Version, Want, WorkspaceFp,
 };
 use nodal_core::output::view::verdict::{Behind, RowKind, Verdict, WorktreeRow};
 use nodal_core::output::view::{
@@ -645,7 +645,7 @@ fn snapshots() -> Vec<Snapshot> {
             taken_by: Taker::Operation {
                 operation: String::from("01J9X4A1B2C3D4E5F6G7H8J9K0"),
                 op: Some(String::from("merge")),
-                outcome: Some(String::from("rolled_back")),
+                outcome: Some(OperationState::RolledBack),
             },
         },
         Snapshot {

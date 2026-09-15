@@ -264,14 +264,18 @@ fn the_withheld_verbs_are_not_offered_and_are_refused_by_name() {
             "{verb} is in the listing: {listed:?}"
         );
     }
+    // The refusal is the tool's own answer, marked as failed, so the agent that asked for
+    // the verb reads where it lives. It is not a protocol error, which several clients
+    // never show a model.
     for (answer, verb) in answers[1..].iter().zip(withheld) {
-        let said = answer["error"]["message"].as_str().expect("a refusal with a reason");
+        assert_eq!(answer["result"]["isError"], true, "{answer:?}");
+        assert!(answer["error"].is_null(), "a withheld verb answered with a protocol error");
+        let said = text(answer);
         assert!(said.contains(verb), "the refusal does not name the verb: {said}");
         assert!(
             said.contains(&format!("`nodal {verb}`")),
             "it does not say where to run it: {said}"
         );
-        assert!(answer["result"].is_null(), "a withheld verb answered with a result: {answer}");
     }
 }
 

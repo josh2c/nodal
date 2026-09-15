@@ -29,6 +29,10 @@ pub struct Done {
     pub json: bool,
 }
 
+/// What `--wip` puts on the remote, said before it goes.
+const WIP_SENDS: &str = "--wip sends the work-in-progress snapshot as well as the branch: \
+     every uncommitted and untracked file of the home goes to the remote";
+
 impl Done {
     /// Push the branch, and put the unit up for review.
     ///
@@ -56,6 +60,12 @@ impl Done {
     ///
     /// Whatever the push, the registry or Git reported.
     pub fn rendered(&self, store: &mut Store, format: Format) -> nodal_core::Result<String> {
+        if self.wip {
+            // Before the push, not after it. The snapshot carries every uncommitted and
+            // untracked file of the home, and a person who reads this after the fact
+            // reads it too late.
+            eprintln!("nodal: {WIP_SENDS}");
+        }
         let request = Request {
             target: self.unit.clone(),
             remote: self.remote.clone(),

@@ -252,12 +252,6 @@ pub enum Fault {
     Refused(String),
 }
 
-impl From<Failure> for Fault {
-    fn from(failure: Failure) -> Self {
-        Self::Protocol(failure)
-    }
-}
-
 /// Check one call's arguments against the tool's own published schema.
 ///
 /// The schema is the one `tools/list` states and `schemas/mcp/tools.json` holds, so what
@@ -314,6 +308,11 @@ fn text(arguments: &Value, name: &str) -> Option<String> {
 }
 
 /// One string argument the tool cannot work without.
+///
+/// A second guard behind [`check`], which has already refused a call that left this out.
+/// It is here because a tool that cannot work without a value must not be able to run
+/// without one if a schema and a call ever part company; it is not a place to add a
+/// third check of the same thing.
 fn required(arguments: &Value, name: &str) -> Result<String, Fault> {
     text(arguments, name)
         .ok_or_else(|| Fault::Protocol(Failure::new(INVALID_PARAMS, format!("{name} is required"))))

@@ -262,6 +262,10 @@ impl Init {
             return Ok(());
         };
         eprintln!("nodal: declared the nodal tool server in {}", file.display());
+        eprintln!(
+            "nodal: it runs `{} mcp`, so whoever opens this project needs {0} on their PATH",
+            mcp::COMMAND
+        );
         Ok(())
     }
 }

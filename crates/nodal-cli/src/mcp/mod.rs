@@ -127,11 +127,13 @@ fn call(cli: &Cli, params: &Value) -> Result<Value, Failure> {
         return Err(Failure::new(INVALID_PARAMS, "the call names no tool"));
     };
     let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    // A withheld verb is answered the way a refusal is, and not as a protocol error: the
+    // agent that asked for it is the reader who has to act on the answer, and it has to
+    // reach the model to do that. What it says is where the verb lives and why.
     if let Some((verb, why)) = tools::WITHHELD.iter().find(|(verb, _)| *verb == name) {
-        return Err(Failure::new(
-            INVALID_PARAMS,
-            format!("nodal mcp does not offer {verb}, because {why}; a person runs `nodal {verb}`"),
-        ));
+        return Ok(refusal(&format!(
+            "nodal mcp does not offer {verb}, because {why}; a person runs `nodal {verb}`"
+        )));
     }
     let tools = tools::all();
     // A tool that is not there is a parameter that is wrong, not a method that is
@@ -148,9 +150,13 @@ fn call(cli: &Cli, params: &Value) -> Result<Value, Failure> {
         // to act on it, and several clients never show a protocol error to the model, so
         // the sentence the command line prints comes back as the content of a result
         // that says it failed.
-        Err(Fault::Refused(why)) => {
-            Ok(json!({ "content": [{ "type": "text", "text": why }], "isError": true }))
-        }
+        Err(Fault::Refused(why)) => Ok(refusal(&why)),
         Err(Fault::Protocol(failure)) => Err(failure),
     }
+}
+
+/// A "no" the model reads: the tool's own result, marked as failed, carrying the
+/// sentence a person would have been told.
+fn refusal(why: &str) -> Value {
+    json!({ "content": [{ "type": "text", "text": why }], "isError": true })
 }

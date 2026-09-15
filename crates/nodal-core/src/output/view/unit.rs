@@ -8,8 +8,8 @@ use crate::doctor::size::Bytes;
 use crate::git::integration::{Divergence, Integration};
 use crate::model::{
     ActorName, BranchName, EnvId, EnvState, Environment, Epistemic, Event, FingerprintPart,
-    HostName, Lock, Needs, Objective, Ports, ProjectName, Slug, Timestamp, Unit, UnitId,
-    UnitStatus, Version,
+    HostName, Lock, Needs, Objective, OperationState, Ports, ProjectName, Slug, Timestamp, Unit,
+    UnitId, UnitStatus, Version,
 };
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, NONE, Table};
@@ -497,10 +497,10 @@ pub enum Taker {
         /// Which operation it was, as the journal recorded it. `None` where the row is
         /// no longer there: the ref outlives the registry row it was named after.
         op: Option<String>,
-        /// How that run ended, in the journal's own word. A record of a run that rolled
-        /// back is still a record of the home, and it says which it is rather than
-        /// leaving a reader to assume the operation happened.
-        outcome: Option<String>,
+        /// How that run ended. A record of a run that rolled back is still a record of
+        /// the home, and it says which it is rather than leaving a reader to assume the
+        /// operation happened. `None` where the journal no longer holds the row.
+        outcome: Option<OperationState>,
     },
     /// The work-in-progress ref `nodal done` and a forced reclaim write.
     WorkInProgress,
@@ -562,6 +562,20 @@ fn snapshot_table(snapshots: &[Snapshot], now: Timestamp) -> Table {
     table
 }
 
+/// How a run ended, where that is worth saying.
+///
+/// A run that committed is the ordinary case and the row says nothing about it: the
+/// record is of the home before the operation that then happened. The other three are
+/// the ones a reader must not assume, so each has a word.
+const fn ended(state: OperationState) -> Option<&'static str> {
+    match state {
+        OperationState::Committed => None,
+        OperationState::Running => Some("still running"),
+        OperationState::RolledBack => Some("rolled back"),
+        OperationState::Failed => Some("failed"),
+    }
+}
+
 /// What a snapshot records, in the words the operation is called by.
 fn taker_cell(taker: &Taker) -> String {
     match taker {
@@ -570,9 +584,9 @@ fn taker_cell(taker: &Taker) -> String {
                 || String::from("the home before an operation"),
                 |kind| format!("the home before {kind}"),
             );
-            match outcome.as_deref() {
-                Some("committed") | None => named,
-                Some(ended) => format!("{named} ({})", ended.replace('_', " ")),
+            match outcome.and_then(ended) {
+                Some(said) => format!("{named} ({said})"),
+                None => named,
             }
         }
         Taker::WorkInProgress => String::from("the home, work in progress"),
