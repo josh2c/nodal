@@ -41,6 +41,21 @@ impl Show {
     /// [`nodal_core::Error::UnitNotFound`] when no unit has the handle, and whatever
     /// the registry or Git reported.
     pub fn run(&self, store: &Store) -> nodal_core::Result<ExitCode> {
+        let text = self.rendered(store, Format::from_json_flag(self.json))?;
+        crate::commands::emit(&text)?;
+        Ok(ExitCode::SUCCESS)
+    }
+
+    /// What this command writes, in the format asked for.
+    ///
+    /// One reading and one rendering, asked for by the person's command and by the tool
+    /// surface `nodal mcp` answers on.
+    ///
+    /// # Errors
+    ///
+    /// [`nodal_core::Error::UnitNotFound`] when no unit has the handle, and whatever
+    /// the registry or Git reported.
+    pub fn rendered(&self, store: &Store, format: Format) -> nodal_core::Result<String> {
         let cwd = std::env::current_dir().map_err(nodal_core::Error::io("."))?;
         let unit = entry::unit_named(store.conn(), self.unit.as_deref(), &cwd)?;
         let project = entry::project_of_unit(store.conn(), &unit)?;
@@ -49,12 +64,12 @@ impl Show {
         let held = ls::Held::of(
             &lock::live(store.conn(), &project.root, now)?,
             lock::idle_hours(&project.root),
+            &processes::Live,
         );
         let mut listed = ls::rows(&surveyed, &processes::Live, &project, &held, now);
         states::settle(store.conn(), &mut listed.units, now);
         let answer = show::detail(store.conn(), listed, &unit)?;
         context::compile(&project, &surveyed);
-        output::write(&answer, Format::from_json_flag(self.json), &mut std::io::stdout())?;
-        Ok(ExitCode::SUCCESS)
+        output::render(&answer, format)
     }
 }

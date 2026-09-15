@@ -21,8 +21,10 @@ use crate::commands::done::Done;
 use crate::commands::env::Env;
 use crate::commands::explain::Explain;
 use crate::commands::gc::Gc;
+use crate::commands::handoff::Handoff;
 use crate::commands::init::Init;
 use crate::commands::ls::{Ls, Reading};
+use crate::commands::mcp::Mcp;
 use crate::commands::merge::Merge;
 use crate::commands::new::New;
 use crate::commands::ps::Ps;
@@ -65,6 +67,8 @@ pub enum Command {
     Run(Run),
     /// Report what is running on this machine and which unit each thing belongs to.
     Ps(Ps),
+    /// Leave a note on a unit for whoever continues it.
+    Handoff(Handoff),
     /// Push a unit's work for review and print where the change is opened.
     Done(Done),
     /// Merge a unit: commit, squash, rebase, fast-forward the target, and remove it.
@@ -82,6 +86,9 @@ pub enum Command {
     /// nothing.
     #[command(visible_alias = "update")]
     Upgrade(Upgrade),
+    /// Answer an agent's tool calls on standard input, as a model context protocol
+    /// server. One JSON-RPC message per line.
+    Mcp(Mcp),
     /// List, build and collect the warm bases unit homes are cloned from.
     #[command(subcommand_required = true, arg_required_else_help = true)]
     Base(Base),
@@ -132,6 +139,7 @@ impl Cli {
             Some(Command::Cd(cd)) => cd.run(&self.registry()?),
             Some(Command::Run(run)) => run.run(&self.registry()?),
             Some(Command::Ps(ps)) => ps.run(&self.registry()?),
+            Some(Command::Handoff(handoff)) => handoff.run(&self.registry()?),
             Some(Command::Done(done)) => done.run(&mut self.registry()?),
             Some(Command::Merge(merge)) => merge.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Reclaim(reclaim)) => reclaim.run(&mut self.registry()?, !self.no_hooks),
@@ -145,6 +153,7 @@ impl Cli {
             Some(Command::Shell(shell)) => shell.run(&self.registry()?),
             Some(Command::Uninstall(uninstall)) => uninstall.run(),
             Some(Command::Upgrade(upgrade)) => upgrade.run(),
+            Some(Command::Mcp(mcp)) => mcp.run(self),
             Some(Command::Base(base)) => base.run(&mut self.registry()?),
             None => self.bare(),
         }
@@ -224,7 +233,7 @@ impl Cli {
     ///
     /// [`nodal_core::Error::NoHomeDirectory`] when nothing says where the registry
     /// belongs, and whatever opening or reading an existing one reported.
-    fn registry_if_present(&self) -> nodal_core::Result<Option<Store>> {
+    pub(crate) fn registry_if_present(&self) -> nodal_core::Result<Option<Store>> {
         let path = match &self.store {
             Some(chosen) => chosen.clone(),
             None => home::registry()?,
@@ -239,7 +248,7 @@ impl Cli {
         Ok(Some(store))
     }
 
-    fn registry(&self) -> nodal_core::Result<Store> {
+    pub(crate) fn registry(&self) -> nodal_core::Result<Store> {
         let path = match &self.store {
             Some(chosen) => chosen.clone(),
             None => home::registry()?,

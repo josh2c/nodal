@@ -139,7 +139,7 @@ fn unit_of(conn: &Connection, slug: &Slug, cwd: &Path) -> Result<Unit> {
 /// reaches Nodal's state directory rather than the repository the work came from.
 ///
 /// A project root is recorded with its symbolic links resolved, so the walk is made on
-/// the resolved form of the directory ([`crate::lifecycle::guard::resolve`]). Without
+/// the resolved form of the directory ([`crate::paths::resolve`]). Without
 /// that, a project is invisible from inside itself on any host that hands a process a
 /// different name for the directory it is in, which macOS does for everything under
 /// `/tmp`. The name as it was given is walked afterwards, for a row an earlier build
@@ -151,7 +151,7 @@ pub fn project_at(conn: &Connection, path: &Path) -> Result<Option<Project>> {
     if let Some(project) = project_of_home(conn, path)? {
         return Ok(Some(project));
     }
-    let resolved = crate::lifecycle::guard::resolve(path);
+    let resolved = crate::paths::resolve(path);
     if let Some(project) = project_of_ancestor(conn, &resolved)? {
         return Ok(Some(project));
     }

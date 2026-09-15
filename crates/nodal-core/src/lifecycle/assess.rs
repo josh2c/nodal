@@ -91,11 +91,13 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
+use crate::doctor::size::Bytes;
 use crate::git::status::{Entry, State, Summary};
 use crate::git::{Git, Oid, union};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
-use crate::lifecycle::{guard, witness};
+use crate::lifecycle::witness;
 use crate::model::{Needs, UnitId};
+use crate::paths;
 use crate::runtime::attribute::{Note, Source, Standing};
 use crate::runtime::processes;
 use crate::runtime::stop;
@@ -104,10 +106,6 @@ use crate::workspace::prune;
 
 /// The label a unit's containers carry, which is how they are found again.
 pub const UNIT_LABEL: &str = "nodal.unit";
-
-/// What removing a directory gives back, and why that is not the figure printed.
-const SHARED: &str = "a home shares blocks with the base it was copied from, and no \
-     portable call says how many of these bytes are its own";
 
 // ---------------------------------------------------------------------------
 // What one assessment is asked to read.
@@ -370,24 +368,6 @@ impl Held {
     }
 }
 
-/// What a group of paths holds, and what is not known about it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Bytes {
-    /// Apparent bytes: the sum of the file sizes, as the source counts them.
-    pub apparent: u64,
-    /// Whether every entry was counted. `false` makes [`Bytes::apparent`] a floor.
-    pub complete: bool,
-    /// Why this is not what removing the paths would give back to the disk.
-    pub exclusive_unknown: String,
-}
-
-impl Bytes {
-    /// What a walk of these paths measured.
-    fn of(apparent: u64, complete: bool) -> Self {
-        Self { apparent, complete, exclusive_unknown: String::from(SHARED) }
-    }
-}
-
 /// The paths of one home under one disposition.
 ///
 /// The disposition and the sentence that justifies it are written out by
@@ -515,7 +495,7 @@ fn labelled(containers: Vec<docker::Container>, unit: UnitId) -> Vec<String> {
 /// Whatever the process table reported, which on a host that has none is
 /// [`Error::ProcessScanUnsupported`].
 pub fn scan(unit: UnitId, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)> {
-    let placed: Vec<PathBuf> = homes.iter().map(|home| guard::resolve(home)).collect();
+    let placed: Vec<PathBuf> = homes.iter().map(|home| paths::resolve(home)).collect();
     let spared = stop::spared();
     let mut certain = Vec::new();
     let mut standing = Vec::new();
@@ -542,7 +522,7 @@ pub fn scan(unit: UnitId, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)
 /// the home out from under it. That is a bystander by every part of the definition, and
 /// both readings now say so.
 ///
-/// `placed` must already be resolved ([`guard::resolve`]), because the working directory
+/// `placed` must already be resolved ([`paths::resolve`]), because the working directory
 /// the kernel reports has every symbolic link on the way to it taken out. A home reached
 /// through a link — macOS reaches everything under `/var` that way, and so does anyone
 /// whose state directory is a link — would otherwise match no process at all.

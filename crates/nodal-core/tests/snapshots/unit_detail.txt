@@ -11,9 +11,13 @@
   env        stopped · managed
   ports      app 41230
   running    —
-  disk       287 MB
+  disk       287 MB apparent · a home shares blocks with the base it was copied from, and no portable call says how many of these bytes are its own
   made by    nodal 0.1.0
   last       12 min ago
+
+  TAKEN       WHAT IT RECORDS                      REF
+  3 h ago     the home before merge (rolled back)  refs/nodal/01J9X2K4Q7QW8QG4M2N5B3T6HP/pre/01J9X4A1B2C3D4E5F6G7H8J9K0
+  42 min ago  the home, work in progress           refs/nodal/01J9X2K4Q7QW8QG4M2N5B3T6HP/wip
 
   WHEN        KIND     ACTOR        HOW   WHAT
   20 min ago  test     claude-code  saw   pnpm test: 0 failing

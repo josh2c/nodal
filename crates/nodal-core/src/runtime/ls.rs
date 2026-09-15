@@ -73,10 +73,13 @@ use crate::Result;
 use crate::context::survey::{self, Snapshot, Work};
 use crate::doctor::unique;
 use crate::git::Integration;
-use crate::lifecycle::{assess, guard, witness};
-use crate::model::{ActorName, Lock, Needs, Project, Timestamp, UnitId};
+use crate::lifecycle::{assess, witness};
+use crate::model::{ActorName, HostName, Lock, Needs, Project, Timestamp, UnitId};
 use crate::output::notice::{self, Notice};
-use crate::output::view::{EnvLine, Holder, ToolSessions, UnitList, UnitRow, WorkTree};
+use crate::output::view::{
+    EnvLine, Holder, HolderState, ToolSessions, UnitList, UnitRow, WorkTree,
+};
+use crate::paths;
 use crate::runtime::processes::{Processes, Running};
 use crate::runtime::{sessions, stop};
 
@@ -98,7 +101,7 @@ pub fn list(
     let surveyed = survey::project(conn, project)?;
     let held = crate::runtime::lock::live(conn, &project.root, now)?;
     let idle_hours = crate::runtime::lock::idle_hours(&project.root);
-    Ok(rows(&surveyed, processes, project, &Held::of(&held, idle_hours), now))
+    Ok(rows(&surveyed, processes, project, &Held::of(&held, idle_hours, processes), now))
 }
 
 /// The writers of a project's units, by unit, with the project's idle window applied.
@@ -106,17 +109,28 @@ pub fn list(
 /// The rows are read once for the whole list rather than once per unit, for the reason
 /// the survey gives about Git: a list of eight units must not become eight statements to
 /// answer one column.
+///
+/// The process table is asked whether each recorded holder is still running
+/// ([`crate::runtime::lock::liveness`]), so that a row never says "holds" about a session
+/// that ended. That is a reading of `/proc` and never a signal.
 #[derive(Debug, Default)]
 pub struct Held(BTreeMap<UnitId, Holder>);
 
 impl Held {
     /// The holders of these locks, as a report shows them.
     #[must_use]
-    pub fn of(locks: &[Lock], idle_hours: u32) -> Self {
+    pub fn of(locks: &[Lock], idle_hours: u32, processes: &dyn Processes) -> Self {
+        let here = HostName::current();
+        // One reading of the process table for every lock, rather than one for each.
+        let pids: Vec<u32> = locks.iter().filter_map(|lock| lock.pid).collect();
+        let seen = crate::runtime::lock::Seen::read(processes, &pids);
         Self(
             locks
                 .iter()
-                .filter_map(|lock| Some((lock.unit_id, Holder::from_lock(lock, idle_hours)?)))
+                .filter_map(|lock| {
+                    let state = crate::runtime::lock::liveness(lock, &here, &seen);
+                    Some((lock.unit_id, Holder::from_lock(lock, idle_hours, state)?))
+                })
                 .collect(),
         )
     }
@@ -195,6 +209,9 @@ fn row(subject: &Snapshot, seen: &Seen, held: &Held, remote: Reading) -> UnitRow
     row.holder = held.of_unit(subject.unit.id);
     let Some(environment) = subject.home.as_ref() else { return row };
     row.sessions = seen.attached.of(&environment.home);
+    if let Some(holder) = row.holder.as_mut() {
+        still_there(holder, &row.sessions);
+    }
     row.last_active = Some(environment.last_active);
     row.environment = Some(EnvLine::from_environment(environment));
     row.work = subject.work.as_ref().map(work_tree);
@@ -202,10 +219,27 @@ fn row(subject: &Snapshot, seen: &Seen, held: &Held, remote: Reading) -> UnitRow
     // state directory reached through a symbolic link is the ordinary shape on macOS.
     let reading = Remote {
         exists: remote.exists,
-        current: witness::read_since(&guard::resolve(&environment.home), remote.heard),
+        current: witness::read_since(&paths::resolve(&environment.home), remote.heard),
     };
     row.needs = needs(subject.work.as_ref(), seen.blocked(&environment.home), reading);
     row
+}
+
+/// A hold belongs to an actor, and an actor outlives any one process of theirs.
+///
+/// The identifier a lock row carries is the command that entered the home, and that
+/// command has usually ended long before anybody reads the list: `nodal new` writes its
+/// own identifier and exits. Reading that alone would report every unit as held by
+/// somebody who is gone, which is a different untruth from the one this replaced.
+///
+/// So a hold whose recorded process is gone is read once more, against the same scan the
+/// WHO column is built from: where a process of that actor stands in the home, the actor
+/// is there and the hold is live. A hold with neither is an agent that was killed with
+/// nothing of it left in the home, and it is the only one reported as gone.
+fn still_there(holder: &mut Holder, sessions: &[ToolSessions]) {
+    if holder.state == HolderState::Gone && sessions.iter().any(|seen| seen.tool == holder.actor) {
+        holder.state = HolderState::Live;
+    }
 }
 
 /// What this machine knows about the project's remote, for one row.
@@ -368,7 +402,7 @@ fn scan(processes: &dyn Processes, homes: &[(UnitId, PathBuf)], notices: &mut Ve
     // Resolved once for the whole list, because that is the form the predicate asks for
     // and the kernel's own reading of a working directory has the links taken out.
     let placed: Vec<(UnitId, PathBuf, PathBuf)> =
-        homes.iter().map(|(unit, home)| (*unit, guard::resolve(home), home.clone())).collect();
+        homes.iter().map(|(unit, home)| (*unit, paths::resolve(home), home.clone())).collect();
     let spared = stop::spared();
     for process in &running {
         for (unit, resolved, home) in &placed {

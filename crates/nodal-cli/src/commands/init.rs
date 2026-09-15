@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, ValueEnum};
+use nodal_core::adapters::mcp;
 use nodal_core::adapters::settings::Scope;
 use nodal_core::adapters::{claude_code, settings};
 use nodal_core::lifecycle::hooks;
@@ -222,15 +223,48 @@ impl Init {
                 settings::path(root)
             }
         };
+        // Both files are read before either is written. This command writes two, and a
+        // malformed `.mcp.json` found after the hooks were already installed would leave
+        // the project half set up and the person with nothing to undo it by.
+        settings::parsed(&claude_code::read(&file)?)?;
+        mcp::readable(root)?;
         let Some(done) = claude_code::install(&file, scope)? else {
             eprintln!("nodal: {} already declares the hooks", file.display());
-            return Ok(());
+            return Self::declare(root);
         };
         eprintln!(
             "nodal: wrote {} Claude Code hooks into {} ({} scope)",
             done.events.len(),
             done.path.display(),
             done.scope.name()
+        );
+        Self::declare(root)
+    }
+
+    /// Declare the tool server in the project's own `.mcp.json`.
+    ///
+    /// Always the project's file, whichever file the hooks went in: a server list is
+    /// per project, so a machine with three projects declares three servers and none of
+    /// them reaches another project.
+    ///
+    /// The hooks are one vendor's and this is not. Every agent that speaks the model
+    /// context protocol reads the same six tools from it (`nodal mcp`).
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading or writing `.mcp.json` reported.
+    fn declare(root: &Path) -> nodal_core::Result<()> {
+        let Some(file) = mcp::install(root)? else {
+            eprintln!(
+                "nodal: {} already declares the nodal tool server",
+                mcp::path(root).display()
+            );
+            return Ok(());
+        };
+        eprintln!("nodal: declared the nodal tool server in {}", file.display());
+        eprintln!(
+            "nodal: it runs `{} mcp`, so whoever opens this project needs {0} on their PATH",
+            mcp::COMMAND
         );
         Ok(())
     }

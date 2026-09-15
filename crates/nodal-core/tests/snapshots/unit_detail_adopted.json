@@ -35,7 +35,10 @@
       "home": "/home/j/code/app/.claude/worktrees/payroll",
       "state": "running",
       "managed": false,
-      "disk_bytes": 301000000,
+      "disk": {
+        "state": "unmeasured",
+        "why": "not_asked"
+      },
       "ports": {
         "app": 41231,
         "postgrest": 54401
@@ -53,6 +56,7 @@
       "actor": "josh",
       "host": "workshop",
       "pid": 4120,
+      "state": "live",
       "taken_at": "2026-09-06T09:40:00Z",
       "refreshed_at": "2026-09-06T14:21:40Z",
       "expires_at": "2026-09-06T22:21:40Z"
@@ -69,5 +73,6 @@
     ],
     "last_active": "2026-09-06T14:21:40Z"
   },
+  "snapshots": [],
   "history": []
 }

@@ -534,6 +534,24 @@ transfer, and it was right about the machine and the stack it measured. Both hav
    promises `status`, `handoff` and `sync` and ships none of them is a contract a reader
    stops trusting.
 
+## What `nodal doctor` costs after it reads unit homes
+
+Measured 2026-09-15 on the machine this project is developed on. Doctor reads each unit home of the
+project the way a reclaim reads it, so a home holding work nothing else has is a row rather than
+silence (`docs/contracts.md`, doctor).
+
+| reading | before | after |
+|---|---|---|
+| `nodal doctor`, warm, 12 open units | 0.63 s | 0.68 s |
+| `nodal doctor`, cold cache | — | 4.0 s |
+| git processes, 4 unit homes, shapes fixture | 9 | 55 |
+
+Thirteen git processes per home, of which six are facts about the **checkout** — its git directory, its
+refs, its remote and its tips — that the evaluator reads again for every home. Reading the checkout once
+for a whole survey is the saving that is left, and it is a change to the evaluator that `nodal reclaim`
+shares. The tree walk is not in that number and is not paid for by every home: a home is walked only
+where it has earned a row.
+
 ## Method
 
 Everything ran on this machine: Linux 7.1.9, 28 cores, btrfs on `/home` with

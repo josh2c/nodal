@@ -22,10 +22,15 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use nodal_core::git::Git;
-use nodal_core::model::{Digest, HostName, Project, ProjectId, ProjectName, Timestamp, UnitId};
-use nodal_core::runtime::processes::{Processes, Running};
-use nodal_core::runtime::{entry, ls};
-use nodal_core::store::{Store, projects};
+use nodal_core::model::{
+    Actor, ActorKind, ActorName, Digest, HostName, Lock, Project, ProjectId, ProjectName,
+    Timestamp, UnitId,
+};
+use nodal_core::output::Render;
+use nodal_core::output::view::{Disk, HolderState, Unknowable, Unmeasured};
+use nodal_core::runtime::processes::{Presence, Processes, Running};
+use nodal_core::runtime::{entry, ls, show};
+use nodal_core::store::{Store, locks, projects, units};
 use nodal_fixture::shapes::{self, Branch};
 use nodal_safety::rows;
 use tempfile::TempDir;
@@ -39,6 +44,34 @@ struct Table(Vec<Running>);
 impl Processes for Table {
     fn scan(&self) -> nodal_core::Result<Vec<Running>> {
         Ok(self.0.clone())
+    }
+}
+
+/// A process table that dates every process it holds, which is what a host with a clock
+/// answers and what a recycled identifier is told apart by.
+struct Started(Vec<Running>, Timestamp);
+
+impl Processes for Started {
+    fn scan(&self) -> nodal_core::Result<Vec<Running>> {
+        Ok(self.0.clone())
+    }
+
+    fn presences(
+        &self,
+        pids: &[u32],
+    ) -> nodal_core::Result<std::collections::BTreeMap<u32, Presence>> {
+        Ok(pids
+            .iter()
+            .map(|pid| {
+                let found = self.0.iter().any(|running| running.pid == *pid);
+                let presence = if found {
+                    Presence::Running { started_at: Some(self.1) }
+                } else {
+                    Presence::Gone
+                };
+                (*pid, presence)
+            })
+            .collect())
     }
 }
 
@@ -319,5 +352,177 @@ fn a_signal_that_cannot_run_is_a_note_and_the_rows_still_print() {
     assert!(list.notes.iter().any(|note| note.starts_with("ahead: ")), "{:?}", list.notes);
     let gone = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
     assert!(gone.work.is_none(), "a home that is not there has no Git answer");
+    drop(fixture.directory);
+}
+
+// ------------------------------------------------- the holder, read and not assumed
+
+/// Take a hold on a unit, by an actor on a host, by a process.
+///
+/// Written straight to the table rather than through `runtime::lock`, because these
+/// tests are about what a report says of a row that is already there: a row the process
+/// that wrote it did not outlive.
+fn hold(fixture: &Fixture, branch: &str, host: HostName, pid: Option<u32>) -> UnitId {
+    let unit = fixture.units[branch].0;
+    let now = Timestamp::now();
+    let lock = Lock {
+        unit_id: unit,
+        host,
+        actor: Some(Actor {
+            kind: ActorKind::Agent,
+            name: ActorName::parse("claude-code").unwrap(),
+        }),
+        pid,
+        taken_at: now,
+        refreshed_at: now,
+        expires_at: Timestamp::from_unix_seconds(now.unix_seconds() + 28_800).unwrap(),
+    };
+    locks::take(fixture.store.conn(), &lock, now, lock.idle_deadline(8)).unwrap();
+    unit
+}
+
+/// The WHO cell of one unit, as a person reads it.
+fn who(list: &nodal_core::output::view::UnitList, branch: &str) -> String {
+    list.doc().lines().into_iter().find(|line| line.contains(branch)).expect("the unit has a row")
+}
+
+/// The fault this pins: an agent was killed and the report still said
+/// `claude-code holds 8 h`, with the dead process named beside it. Nothing in the answer
+/// told the next session that nobody was there.
+#[test]
+fn a_hold_whose_process_is_gone_is_never_reported_as_held() {
+    let fixture = Fixture::build();
+    let (unit, home) = fixture.units["ahead"].clone();
+    hold(&fixture, "ahead", HostName::current(), Some(4_294_967_000));
+    // Somebody else's shell stands in the home. Nothing of the actor that holds it does.
+    let table = Table(vec![running(11, &unit, &home, &[("USER", "josh")])]);
+
+    let list = fixture.list(&table);
+    let row = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
+    let holder = row.holder.as_ref().expect("the row carries the holder");
+
+    assert_eq!(holder.state, HolderState::Gone);
+    assert_eq!(holder.pid, Some(4_294_967_000), "the row still says which process it was");
+    let cell = who(&list, "ahead");
+    assert!(cell.contains("claude-code gone"), "{cell}");
+    assert!(!cell.contains("holds"), "a dead holder is reported as holding: {cell}");
+    drop(fixture.directory);
+}
+
+/// The other side of the same reading: a process that is there is reported as there,
+/// in the word the column always used.
+#[test]
+fn a_hold_whose_process_is_running_is_reported_as_held() {
+    let fixture = Fixture::build();
+    let (unit, home) = fixture.units["ahead"].clone();
+    let pid = 4_120;
+    hold(&fixture, "ahead", HostName::current(), Some(pid));
+    let table = Table(vec![running(pid, &unit, &home, &[("CLAUDECODE", "1")])]);
+
+    let list = fixture.list(&table);
+    let row = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
+
+    assert_eq!(row.holder.as_ref().unwrap().state, HolderState::Live);
+    assert!(who(&list, "ahead").contains("claude-code holds"), "{}", who(&list, "ahead"));
+    drop(fixture.directory);
+}
+
+/// A hold belongs to an actor, not to one process of theirs. The identifier a lock row
+/// carries is the command that entered the home, and that command ends; the session it
+/// belonged to does not. So a hold whose recorded process is gone is live while a process
+/// of the same actor is still in the home.
+#[test]
+fn a_hold_is_live_while_the_actor_is_in_the_home_whatever_became_of_the_process() {
+    let fixture = Fixture::build();
+    let (unit, home) = fixture.units["ahead"].clone();
+    hold(&fixture, "ahead", HostName::current(), Some(4_294_967_000));
+    let table = Table(vec![running(11, &unit, &home, &[("CLAUDECODE", "1")])]);
+
+    let list = fixture.list(&table);
+    let row = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
+
+    assert_eq!(row.holder.as_ref().unwrap().state, HolderState::Live);
+    assert!(who(&list, "ahead").contains("claude-code holds"), "{}", who(&list, "ahead"));
+    drop(fixture.directory);
+}
+
+/// A hold from another machine, and a host with no readable process table, are both
+/// unknown and neither is gone. A reading that could not be taken proves nothing.
+#[test]
+fn a_reading_that_cannot_be_taken_is_unknown_and_never_gone() {
+    let fixture = Fixture::build();
+    hold(&fixture, "ahead", host(), Some(4_120));
+    hold(&fixture, "behind", HostName::current(), Some(4_121));
+
+    let list = fixture.list(&Unreadable);
+    let state = |slug: &str| {
+        list.units.iter().find(|row| row.slug.as_str() == slug).unwrap().holder.clone().unwrap()
+    };
+
+    assert_eq!(state("ahead").state, HolderState::Unknown { why: Unknowable::AnotherHost });
+    assert_eq!(state("behind").state, HolderState::Unknown { why: Unknowable::NoProcessTable });
+    // And it reads the way the lock row states it. This is the rendering a host with no
+    // readable process table gets for every hold it has — macOS today — and it is
+    // asserted here rather than only there, because a suite that runs on one host must
+    // still hold the other host's words.
+    for slug in ["ahead", "behind"] {
+        let cell = who(&list, slug);
+        assert!(cell.contains("claude-code holds"), "{cell}");
+        assert!(!cell.contains("gone"), "a reading nobody took was printed as gone: {cell}");
+    }
+    drop(fixture.directory);
+}
+
+// ------------------------------------------------------- what a home is said to hold
+
+/// The fault this pins: `disk` was an em dash for a home holding 108 MiB, which reads as
+/// "nothing here". A list still does not walk a home — that is the detail's cost — but it
+/// says so, and `nodal show` measures.
+#[test]
+fn a_list_says_why_a_home_was_not_measured_and_a_detail_measures_it() {
+    let fixture = Fixture::build();
+    let (_, home) = fixture.units["ahead"].clone();
+    std::fs::write(home.join("weight.bin"), vec![7_u8; 40_000]).unwrap();
+
+    let list = fixture.list(&Table(Vec::new()));
+    let row = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
+    let listed = row.environment.as_ref().unwrap().disk.clone();
+
+    assert_eq!(listed, Disk::Unmeasured { why: Unmeasured::NotAsked });
+
+    let unit = units::get(fixture.store.conn(), fixture.units["ahead"].0).unwrap().unwrap();
+    let detail = show::detail(fixture.store.conn(), list, &unit).unwrap();
+    let measured = detail.unit.environment.as_ref().unwrap().disk.clone();
+
+    let Disk::Measured { bytes } = measured else { panic!("a detail did not measure the home") };
+    assert!(bytes.apparent >= 40_000, "{bytes:?}");
+    assert!(bytes.complete);
+    assert!(!bytes.exclusive_unknown.is_empty(), "a figure says what it is not");
+    drop(fixture.directory);
+}
+
+/// An identifier that came round again is not the holder wearing it.
+///
+/// A machine that has been up for weeks hands a lock row's number to something else, and
+/// a reading that only asked "is there a process" would report a session that ended as
+/// being back at work. The process that took a hold started before the hold was taken;
+/// anything that started after it is a stranger.
+#[test]
+fn a_recycled_identifier_is_not_the_holder_that_wrote_it() {
+    let fixture = Fixture::build();
+    let (unit, home) = fixture.units["ahead"].clone();
+    let pid = 4_120;
+    hold(&fixture, "ahead", HostName::current(), Some(pid));
+    // The table holds that identifier, and the process wearing it started a day after
+    // the hold was taken.
+    let later = Timestamp::from_unix_seconds(Timestamp::now().unix_seconds() + 86_400).unwrap();
+    // Somebody else's shell wearing the number. Nothing of the actor that holds the unit
+    // is in the home, so the identifier is the whole of the question.
+    let table = Started(vec![running(pid, &unit, &home, &[("USER", "josh")])], later);
+
+    let list = ls::list(fixture.store.conn(), &table, &fixture.project, Timestamp::now()).unwrap();
+    let row = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
+
+    assert_eq!(row.holder.as_ref().unwrap().state, HolderState::Gone);
     drop(fixture.directory);
 }

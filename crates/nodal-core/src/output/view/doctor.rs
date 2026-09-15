@@ -67,6 +67,8 @@ pub enum Kind {
     OrphanDatabase,
     /// A project holding more open units than the threshold.
     UnitCount,
+    /// A unit home that holds work no other copy on this machine or on a remote has.
+    UniqueWork,
 }
 
 impl Kind {
@@ -80,6 +82,7 @@ impl Kind {
             Self::DanglingVolume => "dangling volume",
             Self::OrphanDatabase => "orphan database",
             Self::UnitCount => "unit count",
+            Self::UniqueWork => "unique work",
         }
     }
 }

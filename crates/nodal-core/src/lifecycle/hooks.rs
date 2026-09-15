@@ -74,7 +74,7 @@
 //! `NODAL_ROOT` in its environment, `{repo_root}` and `{unit_path}` in its text, the
 //! directory it is started in, and the directory the report says it ran in. All six come
 //! from the same two values, so all six are resolved once, here, on the way in
-//! ([`guard::resolve`]).
+//! ([`paths::resolve`]).
 //!
 //! Resolving is not a nicety. A hook that compares a variable with its own `$PWD` is
 //! comparing two answers from two sources: Nodal's, which is a registry row holding the
@@ -92,12 +92,12 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::fingerprint;
-use crate::lifecycle::guard;
 use crate::lifecycle::template::Variables;
 use crate::model::{
     Actor, ActorName, BranchName, CommandLine, Digest, EnvId, Hooks, Session, SessionId, Slug,
     Timestamp, UnitId,
 };
+use crate::paths;
 use crate::runtime::stop::{self, Signals as _, Target};
 use crate::store::sessions;
 use crate::{Error, Result};
@@ -210,12 +210,12 @@ impl Context {
     /// all read from these.
     ///
     /// A home that is not there yet — `pre_new` runs before one is made — resolves as
-    /// far as it exists, which is what [`guard::resolve`] answers.
+    /// far as it exists, which is what [`paths::resolve`] answers.
     #[must_use]
     pub fn resolved(&self) -> Self {
         Self {
-            source: guard::resolve(&self.source),
-            root: guard::resolve(&self.root),
+            source: paths::resolve(&self.source),
+            root: paths::resolve(&self.root),
             ..self.clone()
         }
     }
@@ -443,7 +443,7 @@ impl Runner {
             });
         }
         let context = context.resolved();
-        let directory = guard::resolve(directory);
+        let directory = paths::resolve(directory);
         let filled = Variables::of(&context)?.expand(phase, command)?;
         execute(phase, &filled, &directory, &context, owner)?;
         Ok(Some(Ran { phase, command: command.to_owned(), ran: filled, directory }))
@@ -679,11 +679,11 @@ fn digest(command: &str) -> Result<String> {
 /// directory, and an approval keyed by the text as typed would be an approval the other
 /// side never finds.
 ///
-/// Through [`guard::resolve`], which is the one place a path is normalised, rather than
+/// Through [`paths::resolve`], which is the one place a path is normalised, rather than
 /// a rule of this file's own. A project since deleted resolves as far as it exists,
 /// which is still a key that matches itself.
 fn key_of(project: &Path) -> String {
-    guard::resolve(project).to_string_lossy().into_owned()
+    paths::resolve(project).to_string_lossy().into_owned()
 }
 
 #[cfg(test)]

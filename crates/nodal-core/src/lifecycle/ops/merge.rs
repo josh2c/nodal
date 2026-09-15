@@ -278,7 +278,11 @@ pub fn abort(store: &mut Store, request: &Request) -> Result<Merged> {
 pub fn plan(params: &Params) -> Result<Plan> {
     let value = serde_json::to_value(params)
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
-    let mut plan = Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params));
+    // The home as it was, before a squash, a rebase or a fast-forward moves anything
+    // (`crate::lifecycle::run`). A merge rewrites a branch, and the commits it folds are
+    // the ones a person goes back for.
+    let mut plan = Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params))
+        .recording(params.unit.id, params.home().to_path_buf());
     plan = plan.then(FetchTarget {
         home: params.home().to_path_buf(),
         source: params.project.root.clone(),

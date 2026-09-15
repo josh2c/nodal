@@ -76,6 +76,7 @@ use crate::model::{
     Project, Recipe, Slug, Timestamp, Unit, UnitId, UnitStatus,
 };
 use crate::output::view::{AdoptedAll, AdoptedRow, Arrival, Created};
+use crate::paths;
 use crate::services::ports;
 use crate::store::{Store, environments, events, units};
 use crate::substrate::{self, Reporter};
@@ -256,7 +257,7 @@ fn adopt_one(
 
 /// Whether two checkouts are the same directory on this machine.
 fn same_tree(left: &Path, right: &Path) -> bool {
-    guard::resolve(left) == guard::resolve(right)
+    paths::resolve(left) == paths::resolve(right)
 }
 
 /// Run `post_new` in the home, for the form of adoption that made one.
@@ -382,7 +383,11 @@ pub fn plan(params: &Params) -> Result<Plan> {
         .map_err(|source| Error::Render { kind: "operation parameters", source })?;
     let plan = Plan::new(KIND, params.unit.slug.to_string(), value, commit_of(params));
     let plan = match &params.source {
-        Source::InPlace => plan,
+        // A checkout that is already here is work somebody has. It is taken over where it
+        // stands, so the home is recorded before the first step touches it
+        // (`crate::lifecycle::run`). A materialised adoption makes a home instead of
+        // changing one, and there is nothing yet to record.
+        Source::InPlace => plan.recording(params.unit.id, home.clone()),
         Source::Materialized { base_path, from } => plan
             .then(new::Materialize {
                 base: base_path.clone(),
@@ -755,7 +760,7 @@ fn standing_environment(unit: UnitId, checkout: &Path, at: Timestamp) -> Environ
         id: EnvId::from_ulid(ulid::Ulid::new()),
         unit_id: unit,
         attempt: 1,
-        home: guard::resolve(checkout),
+        home: paths::resolve(checkout),
         managed: false,
         base_id: None,
         ws_fp_materialized: None,

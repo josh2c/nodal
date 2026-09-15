@@ -201,9 +201,64 @@ line, and `init` writes each gap as a comment above the empty key it belongs to.
 `schemas/v1/recipe.json`.
 
 ## CLI
-`init, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, run, ps, start, note, ask,
+`init, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, mcp, run, ps, start, note, ask,
 handoff, sync, done, merge, prune, reclaim, reclaim --check, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
 `--json`; `status --watch` emits newline-delimited JSON. Global `--store` and `--no-hooks`.
+
+`nodal done --wip` says on standard error what the flag sends — every uncommitted and untracked file of
+the home — before the push, not after it.
+
+`nodal handoff [--unit <unit>] "<text>"` records one stated handoff on a unit and prints it. It takes no
+lock, enters no home and writes no file in one: the unit's memory is compiled from the registry by the
+commands that read a unit. A handoff whose text is empty or blank is refused. The actor is read the way
+every event reads it, so a handoff an agent states is the agent's.
+
+## The tool surface
+`nodal mcp` answers an agent's tool calls as a model context protocol server. One JSON-RPC 2.0 message per
+line on standard input, one answer per line on standard output, synchronous: a request is read, answered and
+written before the next line is read. There is no runtime and no daemon, and stdio is the only transport.
+Standard output carries answers and nothing else; everything a command would say to a person goes to standard
+error.
+
+Methods: `initialize`, `tools/list`, `tools/call`, `ping`. A message with no `id` is a notification and is
+never answered.
+
+Tools: `ls`, `show`, `check`, `new`, `handoff`, `done`. **A tool result is what the matching
+`nodal <verb> --json` writes.** The content is one text block holding that document. There is no second
+representation, and `ci/acceptance-mcp.sh` compares the two documents.
+
+The `done` tool sends the unit's branch and nothing else. It takes no `wip`: that flag sends the
+work-in-progress snapshot, which carries every uncommitted and untracked file of the home, and it stays
+on the command line where the person who types it is the person whose work it is.
+
+`reclaim`, `merge`, `gc`, `uninstall` and `base` are not tools. They are absent from `tools/list`, and
+`tools/call` on one of them answers with a result marked `isError: true`, naming the verb, the reason it
+is not offered, and the command a person runs instead — the same shape a refusal of the work takes, so
+the agent that asked for it reads the answer.
+
+**A refusal and a bad message are different answers.** The work saying no — no such unit, a held unit, a
+handoff with nothing in it, a verb that is not offered — comes back as the tool's own result with
+`isError: true`, carrying the sentence the command line prints, because a model has to read it to act on
+it and several clients never show a protocol error to a model. A message that is wrong — an argument the tool does not take, one of
+the wrong type, a required one missing, an unknown tool — is `-32602`. A line that is not a request, a
+batch, a missing `jsonrpc` or `method`, or an id that is not a string, a number or null, is `-32600`,
+answered under the id the line carried. Arguments are checked against the tool's own published schema,
+so what `tools/list` states and what the server enforces are one thing.
+
+Each call opens the registry the way the matching command does, resolves what an interrupted operation left,
+and closes it again. A tool runs in the directory the server was started in; no tool takes a path to work in.
+
+`nodal init --claude-hooks` declares the server in the project's own `.mcp.json`, under
+`mcpServers.nodal`, as `"command": "nodal"` with the argument `mcp`. It names the program and never the
+path of the binary that wrote it: the file is committed in most projects, and an absolute path would put
+one person's home directory in the repository and hand every teammate a server that is not there. It is
+one marked region, written the way the hooks are, so `nodal uninstall` takes it out and leaves the file
+byte for byte the file it was, with every other server somebody declared still in it; a file somebody has
+since reformatted is read and written again instead, which changes its formatting and no other member of
+it. `nodal init` reads both files before it writes either, so a malformed `.mcp.json` refuses the command
+rather than leaving the hooks installed and the declaration missing. It says on standard error that the
+declaration runs `nodal mcp`, so whoever opens the project needs `nodal` on their own PATH. `nodal mcp --tools` prints the listing; the committed copy is
+`schemas/mcp/tools.json` and `ci/schema-diff.sh` fails on a change that is not committed with it.
 
 Nodal asks whether it shares file blocks under the state root **once**, when the state root is made. The
 command that makes that directory is the one that asks: the first registry open creates it, and `nodal init`
@@ -432,9 +487,16 @@ did not integrate. A reclaim that refuses leaves the unit where it is. The merge
 done, and the report says so.
 
 `doctor` reads and never writes. It reports worktrees, stale build caches, exited containers,
-unreferenced volumes, orphan databases and a project over the open-unit threshold, each with a size, in two
+unreferenced volumes, orphan databases, a project over the open-unit threshold, and the unit homes that
+hold work no other copy has, each with a size, in two
 sections: this project, and a separate section for another project's leftovers that carries names and sizes
-only. A worktree another tool holds a lock on is reported as locked and read no further. Removal of
+only.
+
+A unit home is read the way a reclaim reads it (`reclaim --check`, one evaluator), and the row says how
+many of its commits are only here and how many nothing has checked. The row carries the unit's
+objective as its intent. A home that could not be read is a row too. So the closing sentence of the
+first section — nothing of this project is left behind — is printed only where every home of the
+project read clean, and it is never the answer for a machine holding the only copy of a morning. A worktree another tool holds a lock on is reported as locked and read no further. Removal of
 unmanaged state is a later command.
 
 The report opens with one line about the state root, in every case. Doctor reads the record and writes
@@ -555,6 +617,14 @@ recipe and opens no registry. This is the state of every project between `init` 
 A checkout with neither a recipe nor a registry row gets the verdict on its worktrees (see The
 verdict). A directory that is not a checkout either is in no project, and `nodal ls` refuses. A bare
 `nodal` prints the help for that fourth state only.
+
+**What a home holds is a walk of it, and a list does not take one.** The `disk` of a unit is either
+what a walk found or the reason nothing walked it, and it is never an empty column. `nodal ls` and a
+bare `nodal` say `not measured`; `nodal show` walks the home and states apparent bytes. The figure is
+the one `nodal reclaim --check` prints for the same kind of claim: apparent bytes, whether the walk
+read everything, and the sentence that a home shares blocks with the base it was copied from, so this
+is not what a removal gives back. The two commands do not print one number: `nodal show` measures the
+whole home, and the preflight measures the paths a reclaim has an opinion about.
 
 ## The verdict
 `nodal`, in a checkout Nodal holds no row for, prints one row for each other worktree of the
@@ -734,6 +804,25 @@ that machine's to release.
 
 The process that took a hold is recorded and reported. Nothing signals it. No hold is released because
 the process is gone: a lock names an actor, and an actor outlives any one shell.
+
+A report says whether that actor is still there. The holder carries a `state`: `live`, `gone`, or
+`unknown` with the reason it could not be read — the hold is on another machine, the row records no
+process, or this host has no process table. The reading is the process table and never a signal. It is
+two questions in this order: whether a process of that actor stands in the home, and whether the
+recorded process is still there. The first is the one that matters, because the identifier a row
+carries is the command that entered the home and that command ends; a hold both readings answer no for
+is a session that is gone.
+
+`gone` is printed where a reading contradicts the row, and nowhere else. A hold this host could not
+read a process for is printed the way the row states it, because a reading nobody could take is not
+evidence against the row: on a host with no readable process table — macOS today, where the process
+scan is not implemented — every hold reads `holds`, as it always did, and `--json` carries `unknown`
+with the reason. `nodal show` states the process and the reason under the WHO line.
+
+The state changes no refusal: a held unit refuses the write verbs until the hold lapses or `--take`
+moves it, whatever became of the process. The refusal says what this host read — "pid 4120 that took
+it is gone from this host" — because a person refused over a session that ended can take the unit at
+once, and one refused over a session at work waits.
 
 A lock row written before locks carried an actor names a host and holds nobody. It refuses no one, and
 the next entry into that home rewrites it.
@@ -986,6 +1075,35 @@ again, so removing it leaves the file byte for byte the file it was, with every 
 somebody else installed still in it. A file that was reformatted since the install loses the hooks by a
 re-rendering of the document instead, which is the only path that is not byte-identical. A file holding
 nothing but Nodal's hooks is removed, and `.claude/` goes with it when that empties the directory.
+
+## Snapshots
+Nodal records a unit's home before it changes it. The runner takes one commit before the first step of
+any operation that changes a unit's tree or its refs: `merge`, an `adopt` of a checkout that is already
+here, and `reclaim`. The commit goes on `refs/nodal/<unit>/pre/<operation>`, named by the run in the
+journal, so a second run never writes over the record of the first. `nodal done` and
+`nodal reclaim --force` write the work-in-progress ref `refs/nodal/<unit>/wip` as before.
+
+The commit is built in an index file of its own, so the person's staged work is untouched and no
+tracked file is written. A home with no commit yet has nothing to build on and is not recorded, which
+is not a failure. A home that is not on the disk, and a directory Git cannot open, are not recorded
+either. Any other failure stops the operation before its first step.
+
+A snapshot is a ref in the home and it never leaves this machine. Nothing pushes one. `nodal done
+--wip` sends the work-in-progress ref, by name, and sends nothing else of the namespace.
+
+`nodal show --json` lists them as `snapshots`: the ref, the commit, when it was taken, and what took
+it — the operation, with the kind the journal recorded, or the work-in-progress ref.
+
+There is no restore verb. Reading one back is `git`, in the home or in the trashed copy of it:
+
+```
+git fetch <path-to-home> refs/nodal/<unit>/pre/<operation>
+git checkout FETCH_HEAD            # look at it
+git restore --source FETCH_HEAD -- <path>   # take one file back
+```
+
+A reclaim moves the home to the trash, and the refs go with it; `nodal gc` removing that home is what
+finally lets go of them.
 
 ## Reclaim, trash and gc
 Every destructive path calls one uniqueness check. It reports three things: uncommitted changes,

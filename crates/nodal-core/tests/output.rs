@@ -26,15 +26,16 @@ use nodal_core::model::recipe::{ToolName, ToolVersion};
 use nodal_core::model::{
     Actor, ActorKind, ActorName, Base, BaseId, BranchName, CommitId, Digest, EnvId, EnvName,
     EnvState, Epistemic, Event, EventId, EventKind, FingerprintPart, HostName, Missing, Needs,
-    Objective, Platform, PortName, Ports, ProjectId, ProjectName, Slug, Timestamp, UnitId,
-    UnitStatus, Version, Want, WorkspaceFp,
+    Objective, OperationState, Platform, PortName, Ports, ProjectId, ProjectName, Slug, Timestamp,
+    UnitId, UnitStatus, Version, Want, WorkspaceFp,
 };
 use nodal_core::output::view::verdict::{Behind, RowKind, Verdict, WorktreeRow};
 use nodal_core::output::view::{
     Arrival, BaseList, BaseRow, Created, Done, EnvLine, EventLog, Exclusion, Explained, Freshness,
-    Holder, InitReport, Invalidation, Origin, PortLine, Ps, Remote, Running, SharedResource,
-    StandInLine, Status, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
+    Holder, HolderState, InitReport, Invalidation, Origin, PortLine, Ps, Remote, Running,
+    SharedResource, StandInLine, Status, ToolSessions, UnitDetail, UnitList, UnitRow, WorkTree,
 };
+use nodal_core::output::view::{Disk, Snapshot, Taker, Unmeasured};
 use nodal_core::output::{Format, Render, render, watch};
 use nodal_core::recipe::gap::{Gap, GapKey};
 use nodal_core::runtime::attribute::{Attributed, Confidence, Kind, Note, Source};
@@ -77,10 +78,16 @@ fn holder(name: &str) -> Holder {
         actor: ActorName::parse(name).expect("an actor name"),
         host: HostName::parse("workshop").expect("a host name"),
         pid: Some(4_120),
+        state: HolderState::Live,
         taken_at: at("2026-09-06T09:40:00Z"),
         refreshed_at: at("2026-09-06T14:21:40Z"),
         expires_at: at("2026-09-06T22:21:40Z"),
     }
+}
+
+/// What a walk of a home found, as a report carries it.
+fn bytes(apparent: u64, complete: bool) -> nodal_core::doctor::size::Bytes {
+    nodal_core::doctor::size::Bytes::of(apparent, complete)
 }
 
 /// The revision every row in these snapshots is measured against.
@@ -133,7 +140,7 @@ fn units() -> Vec<UnitRow> {
                 state: EnvState::Stopped,
                 managed: true,
                 made_by: Some(Version::parse("0.1.0").expect("a sample version")),
-                disk_bytes: Some(287_000_000),
+                disk: Disk::measured(bytes(287_000_000, true)),
                 ports: ports(&[("app", 41_230)]),
                 running: Vec::new(),
             }),
@@ -174,7 +181,7 @@ fn units() -> Vec<UnitRow> {
                 state: EnvState::Running,
                 managed: true,
                 made_by: Some(Version::parse("0.1.0").expect("a sample version")),
-                disk_bytes: Some(301_000_000),
+                disk: Disk::Unmeasured { why: Unmeasured::NotAsked },
                 ports: ports(&[("app", 41_231), ("postgrest", 54_401)]),
                 running: vec![Running { command: String::from("next dev"), port: Some(41_231) }],
             }),
@@ -625,9 +632,39 @@ fn an_adoption_with_nothing_missing_still_says_what_it_did() {
     both("created_adopted_complete", &adopted);
 }
 
+/// What Nodal recorded of the home, in the two shapes a snapshot has: one taken by the
+/// runner before an operation, and the work-in-progress ref a `done` writes.
+fn snapshots() -> Vec<Snapshot> {
+    vec![
+        Snapshot {
+            reference: String::from(
+                "refs/nodal/01J9X2K4Q7QW8QG4M2N5B3T6HP/pre/01J9X4A1B2C3D4E5F6G7H8J9K0",
+            ),
+            commit: String::from("3c1d9a7b5e2f4086ab19cd37e5f0a2b4c6d8e0f1"),
+            taken_at: at("2026-09-06T11:02:00Z"),
+            taken_by: Taker::Operation {
+                operation: String::from("01J9X4A1B2C3D4E5F6G7H8J9K0"),
+                op: Some(String::from("merge")),
+                outcome: Some(OperationState::RolledBack),
+            },
+        },
+        Snapshot {
+            reference: String::from("refs/nodal/01J9X2K4Q7QW8QG4M2N5B3T6HP/wip"),
+            commit: String::from("9b4e7c2a1d5f8360be27ac41f9e0d3b5a7c9e1f2"),
+            taken_at: at("2026-09-06T13:40:00Z"),
+            taken_by: Taker::WorkInProgress,
+        },
+    ]
+}
+
 #[test]
 fn unit_detail_renders_both_ways() {
-    let detail = UnitDetail { now: now(), unit: units().swap_remove(0), history: history() };
+    let detail = UnitDetail {
+        now: now(),
+        unit: units().swap_remove(0),
+        snapshots: snapshots(),
+        history: history(),
+    };
     both("unit_detail", &detail);
 }
 
@@ -641,7 +678,7 @@ fn the_detail_of_an_adopted_unit_says_it_is_one() {
         environment.managed = false;
         environment.home = PathBuf::from("/home/j/code/app/.claude/worktrees/payroll");
     }
-    let detail = UnitDetail { now: now(), unit, history: Vec::new() };
+    let detail = UnitDetail { now: now(), unit, snapshots: Vec::new(), history: Vec::new() };
     both("unit_detail_adopted", &detail);
 }
 

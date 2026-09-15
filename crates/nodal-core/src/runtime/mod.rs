@@ -27,6 +27,7 @@ pub mod actor;
 pub mod attribute;
 pub mod entry;
 pub mod explain;
+pub mod handoff;
 pub mod init;
 pub mod lock;
 pub mod ls;

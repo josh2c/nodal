@@ -29,6 +29,10 @@ pub struct Done {
     pub json: bool,
 }
 
+/// What `--wip` puts on the remote, said before it goes.
+const WIP_SENDS: &str = "--wip sends the work-in-progress snapshot as well as the branch: \
+     every uncommitted and untracked file of the home goes to the remote";
+
 impl Done {
     /// Push the branch, and put the unit up for review.
     ///
@@ -42,6 +46,26 @@ impl Done {
     /// push goes to, a push the remote refused, and whatever Git or the registry
     /// reported.
     pub fn run(&self, store: &mut Store) -> nodal_core::Result<ExitCode> {
+        let text = self.rendered(store, Format::from_json_flag(self.json))?;
+        crate::commands::emit(&text)?;
+        Ok(ExitCode::SUCCESS)
+    }
+
+    /// What this command writes, in the format asked for.
+    ///
+    /// One operation and one rendering, for the person's command and for the tool
+    /// surface `nodal mcp` answers on.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the push, the registry or Git reported.
+    pub fn rendered(&self, store: &mut Store, format: Format) -> nodal_core::Result<String> {
+        if self.wip {
+            // Before the push, not after it. The snapshot carries every uncommitted and
+            // untracked file of the home, and a person who reads this after the fact
+            // reads it too late.
+            eprintln!("nodal: {WIP_SENDS}");
+        }
         let request = Request {
             target: self.unit.clone(),
             remote: self.remote.clone(),
@@ -53,7 +77,6 @@ impl Done {
         if let Some(project) = &project {
             context::refresh(store, project);
         }
-        output::write(&report, Format::from_json_flag(self.json), &mut std::io::stdout())?;
-        Ok(ExitCode::SUCCESS)
+        output::render(&report, format)
     }
 }

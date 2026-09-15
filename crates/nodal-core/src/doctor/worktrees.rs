@@ -54,8 +54,8 @@ use std::path::Path;
 
 use crate::doctor::{Section, intent, size};
 use crate::git::Git;
-use crate::lifecycle::guard;
 use crate::output::view::doctor::{Finding, Kind};
+use crate::paths;
 use crate::{Result, git};
 
 /// Git's word for a worktree whose record points at a location that is not there.
@@ -81,10 +81,10 @@ pub fn find(root: &Path, sessions: Option<&Path>, section: Section) -> Result<Ve
     let Ok(git) = Git::open(root) else {
         return Ok(Vec::new());
     };
-    let root = guard::resolve(root);
+    let root = paths::resolve(root);
     let mut findings = Vec::new();
     for mut registered in git.worktrees()? {
-        registered.path = guard::resolve(&registered.path);
+        registered.path = paths::resolve(&registered.path);
         if registered.path == root {
             continue;
         }

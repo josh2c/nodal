@@ -4,11 +4,12 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::doctor::size::Bytes;
 use crate::git::integration::{Divergence, Integration};
 use crate::model::{
     ActorName, BranchName, EnvId, EnvState, Environment, Epistemic, Event, FingerprintPart,
-    HostName, Lock, Needs, Objective, Ports, ProjectName, Slug, Timestamp, Unit, UnitId,
-    UnitStatus, Version,
+    HostName, Lock, Needs, Objective, OperationState, Ports, ProjectName, Slug, Timestamp, Unit,
+    UnitId, UnitStatus, Version,
 };
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, NONE, Table};
@@ -85,11 +86,81 @@ pub struct ToolSessions {
     pub count: u32,
 }
 
+/// What became of the process that took a hold.
+///
+/// A lock row is a record and a record outlives the process that wrote it. The row says
+/// who holds the unit; this says whether the process that took it is still there, so
+/// that a report never prints "holds" about a session that ended. Nothing here releases
+/// a hold: a hold lapses on its own two clocks and `--take` moves it, and neither of
+/// those is a reading (`docs/contracts.md`, Locks).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum HolderState {
+    /// The process that took the hold is in this host's process table.
+    Live,
+    /// It is not there. The hold stands until it lapses, and the work in the home is
+    /// whatever that session left.
+    Gone,
+    /// Nothing here can say, and [`Unknowable`] says what stopped the reading. This is
+    /// not "gone": a reading that could not be taken proves nothing.
+    Unknown {
+        /// What stopped the reading.
+        why: Unknowable,
+    },
+}
+
+/// Why liveness could not be read for a hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unknowable {
+    /// The hold was taken on another machine, where a process identifier of this one
+    /// means nothing.
+    AnotherHost,
+    /// The row records no process. A row written before locks carried one, or a hold
+    /// taken by something that did not say.
+    NoPid,
+    /// This host publishes no process table this account may read.
+    NoProcessTable,
+}
+
+impl Unknowable {
+    /// Why the reading could not be taken, in one clause.
+    #[must_use]
+    pub const fn why(self) -> &'static str {
+        match self {
+            Self::AnotherHost => "the hold was taken on another machine",
+            Self::NoPid => "the lock row records no process",
+            Self::NoProcessTable => "this host has no process table to read",
+        }
+    }
+}
+
+impl HolderState {
+    /// The word a report puts between the actor and the clock.
+    ///
+    /// "gone" is said where a reading contradicts the row, and nowhere else. A hold this
+    /// host could not read a process for is printed the way the registry states it,
+    /// because a reading nobody could take is not evidence against the row: on a host
+    /// with no readable process table every hold would otherwise read as ended, which is
+    /// the same fault as the one this type was made to remove, pointing the other way.
+    /// `nodal show` and `--json` carry which of the two it was, and why.
+    #[must_use]
+    pub const fn verb(&self) -> &'static str {
+        match self {
+            Self::Live | Self::Unknown { .. } => "holds",
+            Self::Gone => "gone,",
+        }
+    }
+}
+
 /// The actor holding the write on a unit, as a report shows it.
 ///
 /// This is the first half of WHO, and it is read from the registry rather than from the
 /// process table. The process table does not cross Linux accounts, so on a host two
 /// engineers share it cannot see the other person at all. A lock row can.
+///
+/// The process table is read for one thing and one thing only: whether the process the
+/// row names is still there ([`HolderState`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Holder {
     /// Who holds it. A row that records no actor holds nobody, so it never becomes a
@@ -99,6 +170,12 @@ pub struct Holder {
     pub host: HostName,
     /// The process that took it. Recorded so a person can look; nothing signals it.
     pub pid: Option<u32>,
+    /// Whether that process is still on this host, when this host can say.
+    ///
+    /// The identifier is carried once, above, rather than again inside the state: two
+    /// fields for one process are two fields that can disagree.
+    #[serde(flatten)]
+    pub state: HolderState,
     /// When the hold began.
     pub taken_at: Timestamp,
     /// When an entry last touched the home, which the idle window runs from.
@@ -114,14 +191,18 @@ impl Holder {
     /// `None` for a lock that holds nobody: a row written before locks carried an actor
     /// names a host rather than a writer, and a report that printed it as a holder would
     /// be naming somebody the registry never recorded.
+    ///
+    /// `state` is read by the producer ([`crate::runtime::lock::liveness`]), because a
+    /// view holds what was read and takes no reading of its own.
     #[must_use]
-    pub fn from_lock(lock: &Lock, idle_hours: u32) -> Option<Self> {
+    pub fn from_lock(lock: &Lock, idle_hours: u32, state: HolderState) -> Option<Self> {
         let idle =
             Timestamp::from_unix_seconds(lock.idle_deadline(idle_hours)).unwrap_or(lock.expires_at);
         Some(Self {
             actor: lock.actor.as_ref()?.name.clone(),
             host: lock.host.clone(),
             pid: lock.pid,
+            state,
             taken_at: lock.taken_at,
             refreshed_at: lock.refreshed_at,
             expires_at: lock.expires_at.min(idle),
@@ -149,8 +230,8 @@ pub struct EnvLine {
     pub state: EnvState,
     /// Whether Nodal created the home, or adopted a checkout it must never reclaim.
     pub managed: bool,
-    /// What the home occupies, when it has been measured.
-    pub disk_bytes: Option<u64>,
+    /// What the home occupies, or why nothing measured it.
+    pub disk: Disk,
     /// The ports allocated to it.
     pub ports: Ports,
     /// Processes attributed to it.
@@ -171,7 +252,7 @@ impl EnvLine {
             home: environment.home.clone(),
             state: environment.state,
             managed: environment.managed,
-            disk_bytes: None,
+            disk: Disk::unmeasured(environment.state),
             ports: environment.ports.clone(),
             running: Vec::new(),
             made_by: made_by(&environment.home),
@@ -186,6 +267,81 @@ impl EnvLine {
 /// answers nothing rather than answering a guess.
 fn made_by(home: &std::path::Path) -> Option<Version> {
     crate::env::files::read_manifest(home).ok().map(|manifest| manifest.binary_version)
+}
+
+/// What a home occupies, or why the figure is not there.
+///
+/// A byte count of a home costs a walk of it, and the list is the command with a startup
+/// budget, so the list does not take one. What it must not do is print an empty column
+/// that reads as "nothing": an absent figure carries the reason it is absent, and
+/// `nodal show` takes the walk.
+///
+/// The figure itself is [`Bytes`], which is the type `nodal reclaim --check` reports, so
+/// the three readings are the same kind of claim in the same words. They are not the same
+/// number and are not meant to be: this is the whole home, and a preflight's groups are
+/// the paths a reclaim has an opinion about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Disk {
+    /// What a walk of the home found.
+    Measured {
+        /// The figure, with what is not known about it.
+        #[serde(flatten)]
+        bytes: Bytes,
+    },
+    /// Nothing walked it, and this is why.
+    Unmeasured {
+        /// What stopped the reading.
+        why: Unmeasured,
+    },
+}
+
+/// Why a home was not measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unmeasured {
+    /// The reader did not ask for one. A list does not walk a home.
+    NotAsked,
+    /// There is no home on the disk to walk.
+    NoHome,
+}
+
+impl Unmeasured {
+    /// Why the figure is not there, in one clause.
+    #[must_use]
+    pub const fn why(self) -> &'static str {
+        match self {
+            Self::NotAsked => "a list does not walk a home; nodal show measures it",
+            Self::NoHome => "the unit has no home on this disk",
+        }
+    }
+
+    /// The same, in the two words a table column has room for.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NotAsked => "not measured",
+            Self::NoHome => "no home",
+        }
+    }
+}
+
+impl Disk {
+    /// The state of a home nothing has measured, which is every home a list reads.
+    #[must_use]
+    pub const fn unmeasured(state: EnvState) -> Self {
+        let why = match state {
+            EnvState::Absent => Unmeasured::NoHome,
+            EnvState::Stopped | EnvState::Running => Unmeasured::NotAsked,
+        };
+        Self::Unmeasured { why }
+    }
+
+    /// The same home, walked.
+    #[must_use]
+    pub const fn measured(bytes: Bytes) -> Self {
+        Self::Measured { bytes }
+    }
 }
 
 /// One unit, as a list shows it.
@@ -310,6 +466,51 @@ impl Render for UnitList {
     }
 }
 
+/// One commit of a home that Nodal made before it changed something, as a report lists
+/// it.
+///
+/// A snapshot is a ref in the home and nowhere else. Nothing pushes one, and there is no
+/// verb that restores one: `docs/contracts.md` states the two `git` commands that do,
+/// which work in the home and in the trashed copy of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// The ref the commit is on.
+    #[serde(rename = "ref")]
+    pub reference: String,
+    /// The commit itself.
+    pub commit: String,
+    /// When it was taken.
+    pub taken_at: Timestamp,
+    /// What took it.
+    #[serde(flatten)]
+    pub taken_by: Taker,
+}
+
+/// What wrote a snapshot ref.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "taken_by", rename_all = "snake_case")]
+pub enum Taker {
+    /// The runner, before one operation's first step.
+    Operation {
+        /// The run, as the journal identifies it.
+        operation: String,
+        /// Which operation it was, as the journal recorded it. `None` where the row is
+        /// no longer there: the ref outlives the registry row it was named after.
+        op: Option<String>,
+        /// How that run ended. A record of a run that rolled back is still a record of
+        /// the home, and it says which it is rather than leaving a reader to assume the
+        /// operation happened. `None` where the journal no longer holds the row.
+        outcome: Option<OperationState>,
+    },
+    /// The work-in-progress ref `nodal done` and a forced reclaim write.
+    WorkInProgress,
+    /// The branch as it stood before a merge squashed it.
+    PreMerge,
+    /// A ref of the unit's namespace that is not one of Nodal's snapshots: the copies a
+    /// home takes of the checkout's branches, and the ref a merge fetches its target on.
+    Other,
+}
+
 /// One unit in full: what `nodal show` answers with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnitDetail {
@@ -317,6 +518,9 @@ pub struct UnitDetail {
     pub now: Timestamp,
     /// The unit itself.
     pub unit: UnitRow,
+    /// What Nodal recorded of the home before it changed it, oldest first.
+    #[serde(default)]
+    pub snapshots: Vec<Snapshot>,
     /// What has happened in it, most recent last.
     pub history: Vec<Event>,
 }
@@ -326,11 +530,68 @@ impl Render for UnitDetail {
 
     fn doc(&self) -> Doc {
         let mut doc = Doc::from_iter([Block::fields(detail_fields(&self.unit, self.now))]);
+        if !self.snapshots.is_empty() {
+            doc.push(Block::blank());
+            doc.push(Block::table(snapshot_table(&self.snapshots, self.now)));
+        }
         if !self.history.is_empty() {
             doc.push(Block::blank());
             doc.push(Block::table(event::table(&self.history, self.now)));
         }
         doc
+    }
+}
+
+/// The columns of the snapshot table.
+const SNAPSHOT_COLUMNS: [&str; 3] = ["taken", "what it records", "ref"];
+
+/// What Nodal recorded of the home, oldest first.
+///
+/// The ref is printed whole, because the ref is what a person hands to `git` to read one
+/// back. Nothing here offers to restore anything: that is two `git` commands in
+/// `docs/contracts.md` and not a verb.
+fn snapshot_table(snapshots: &[Snapshot], now: Timestamp) -> Table {
+    let mut table = Table::new(&SNAPSHOT_COLUMNS);
+    for snapshot in snapshots {
+        table.push(vec![
+            human::since(now, snapshot.taken_at),
+            taker_cell(&snapshot.taken_by),
+            snapshot.reference.clone(),
+        ]);
+    }
+    table
+}
+
+/// How a run ended, where that is worth saying.
+///
+/// A run that committed is the ordinary case and the row says nothing about it: the
+/// record is of the home before the operation that then happened. The other three are
+/// the ones a reader must not assume, so each has a word.
+const fn ended(state: OperationState) -> Option<&'static str> {
+    match state {
+        OperationState::Committed => None,
+        OperationState::Running => Some("still running"),
+        OperationState::RolledBack => Some("rolled back"),
+        OperationState::Failed => Some("failed"),
+    }
+}
+
+/// What a snapshot records, in the words the operation is called by.
+fn taker_cell(taker: &Taker) -> String {
+    match taker {
+        Taker::Operation { op, outcome, .. } => {
+            let named = op.as_ref().map_or_else(
+                || String::from("the home before an operation"),
+                |kind| format!("the home before {kind}"),
+            );
+            match outcome.and_then(ended) {
+                Some(said) => format!("{named} ({said})"),
+                None => named,
+            }
+        }
+        Taker::WorkInProgress => String::from("the home, work in progress"),
+        Taker::PreMerge => String::from("the branch before a squash"),
+        Taker::Other => String::from("a ref of this unit"),
     }
 }
 
@@ -447,13 +708,16 @@ fn detail_fields(unit: &UnitRow, now: Timestamp) -> Vec<Field> {
     fields.push(Field::new("main", main_cell(unit)));
     fields.push(Field::new("remote", remote_cell(unit)));
     fields.push(Field::new("who", who_cell(unit, now)));
+    if let Some(line) = hold_cell(unit.holder.as_ref()) {
+        fields.push(Field::new("hold", line));
+    }
     fields.push(Field::new("age", human::span(now, unit.created_at)));
     if let Some(environment) = &unit.environment {
         fields.push(Field::new("home", environment.home.display().to_string()));
         fields.push(Field::new("env", environment_label(environment)));
         fields.push(Field::new("ports", ports_cell(environment)));
         fields.push(Field::new("running", running_cell(unit)));
-        fields.push(Field::new("disk", disk_cell(unit)));
+        fields.push(Field::new("disk", disk_field(environment)));
         fields.push(Field::new(
             "made by",
             environment
@@ -594,17 +858,81 @@ fn who_cell(unit: &UnitRow, now: Timestamp) -> String {
     human::join(&named)
 }
 
-/// One holder: who, and how long the hold has left.
+/// One holder: who, whether their process is still there, and how long the hold has
+/// left.
+///
+/// A session that is gone reads `ada gone, 6 h left`, which is the same two facts and
+/// neither of them a claim that somebody is working. Every other hold reads
+/// `ada holds 6 h`, as it always did: that is what the lock row states, and only a
+/// reading that contradicts it changes the word. What the hold does is unchanged in
+/// every case: it stands until it lapses.
 fn holds_cell(holder: &Holder, now: Timestamp) -> String {
-    format!("{} holds {}", holder.actor, human::span(holder.expires_at, now))
+    format!(
+        "{} {} {}",
+        holder.actor,
+        holder.state.verb(),
+        left(&holder.state, human::span(holder.expires_at, now))
+    )
 }
 
-/// What the unit's home occupies, when it has been measured.
+/// What is known about the holder's process, for the one report that has room for it.
+///
+/// A live hold says nothing here: the WHO line already says it. The other two states are
+/// the ones a person acts on, so each states the process it is about or the reason the
+/// reading could not be taken.
+fn hold_cell(holder: Option<&Holder>) -> Option<String> {
+    let holder = holder?;
+    let named = holder.pid.map_or_else(|| String::from("the process"), |pid| format!("pid {pid}"));
+    match &holder.state {
+        HolderState::Live => None,
+        HolderState::Gone => {
+            Some(format!("{named} is not on this host any more; the hold stands until it lapses"))
+        }
+        HolderState::Unknown { why } => Some(format!("liveness not read: {}", why.why())),
+    }
+}
+
+/// The clock half of a holder cell: how long the hold has, said as what it is.
+fn left(state: &HolderState, span: String) -> String {
+    match state {
+        HolderState::Live | HolderState::Unknown { .. } => span,
+        HolderState::Gone => format!("{span} left"),
+    }
+}
+
+/// What the unit's home occupies, or why that is not known.
+///
+/// The figure is apparent bytes and the cell says so, in the words
+/// `nodal reclaim --check` uses for the same claim. An unmeasured home prints its reason
+/// rather than the placeholder, because the placeholder reads as "nothing here".
 pub(crate) fn disk_cell(unit: &UnitRow) -> String {
-    unit.environment
-        .as_ref()
-        .and_then(|environment| environment.disk_bytes)
-        .map_or_else(|| String::from(NONE), human::bytes)
+    let Some(environment) = unit.environment.as_ref() else { return String::from(NONE) };
+    match &environment.disk {
+        Disk::Measured { bytes } => measured_cell(bytes),
+        Disk::Unmeasured { why } => why.label().to_owned(),
+    }
+}
+
+/// A measured home, as a column shows it: apparent bytes, said to be apparent, and
+/// marked as a floor where the walk could not read everything.
+fn measured_cell(bytes: &Bytes) -> String {
+    let floor = if bytes.complete { "" } else { "at least " };
+    format!("{floor}{} apparent", human::bytes(bytes.apparent))
+}
+
+/// The same figure where there is room for the whole of it: what it is, and the one
+/// thing it is not.
+///
+/// A detail is about one unit, so it carries the sentence a column cannot: apparent
+/// bytes are not what removing the home gives back to the disk, and a home that was not
+/// walked says who walks it.
+fn disk_field(environment: &EnvLine) -> String {
+    match &environment.disk {
+        Disk::Measured { bytes } => {
+            format!("{}{}{}", measured_cell(bytes), human::JOIN, bytes.exclusive_unknown)
+        }
+        Disk::Unmeasured { why } => format!("{}: {}", why.label(), why.why()),
+    }
 }
 
 /// The processes attributed to the unit, as `next dev :41231`.

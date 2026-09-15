@@ -29,12 +29,23 @@
 //! **The pid is a record, not a signal.** The process that took the hold is written down
 //! so a person can look it up. Nothing here signals it and no hold is released because
 //! the process is gone: a lock names an actor, and an actor outlives any one shell.
+//!
+//! **A record is read before it is printed.** The row outlives the process, so a report
+//! that printed the row alone said `claude-code holds 8 h` about a session that was
+//! killed hours earlier, and a fresh session had nothing to tell it otherwise.
+//! [`liveness`] asks this host's process table whether the recorded process is still
+//! there, and the answer is a word in the report and nothing else: what the lock refuses
+//! is unchanged, because a process identifier is reused and a hold that let go on a
+//! reading of one would be a hold that let go of the wrong home.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use rusqlite::Connection;
 
 use crate::model::{Actor, EventKind, HostName, Lock, Project, Recipe, Timestamp, Unit, UnitId};
+use crate::output::view::{HolderState, Unknowable};
+use crate::runtime::processes::{Presence, Processes};
 use crate::store::{events, locks};
 use crate::{Error, Result};
 
@@ -229,6 +240,54 @@ pub fn live(conn: &Connection, root: &Path, now: Timestamp) -> Result<Vec<Lock>>
         .collect())
 }
 
+/// What became of the process that took a hold, read and never signalled.
+///
+/// Three things make the answer unknown rather than gone, and each of them is a reading
+/// that could not be taken: a hold from another machine, whose process identifiers mean
+/// nothing here; a row that records no process; and a host that publishes no process
+/// table this account can read. A report says which, because "I cannot see" and "nobody
+/// is there" are different answers and only one of them is news.
+#[must_use]
+pub fn liveness(lock: &Lock, here: &HostName, seen: &Seen) -> HolderState {
+    if &lock.host != here {
+        return HolderState::Unknown { why: Unknowable::AnotherHost };
+    }
+    let Some(pid) = lock.pid else { return HolderState::Unknown { why: Unknowable::NoPid } };
+    match seen.of(pid) {
+        None => HolderState::Unknown { why: Unknowable::NoProcessTable },
+        Some(Presence::Gone) => HolderState::Gone,
+        // An identifier that came round again. The process wearing it now started after
+        // the hold was taken, so it is not the process that took it, and reporting it as
+        // the holder would put a stranger's shell in the WHO column.
+        Some(Presence::Running { started_at: Some(started) }) if started > lock.taken_at => {
+            HolderState::Gone
+        }
+        Some(Presence::Running { .. }) => HolderState::Live,
+    }
+}
+
+/// What one reading of the process table said about the identifiers a caller asked for.
+///
+/// Taken once for a whole list ([`read`]) and asked of each lock, because the reading is
+/// of one machine and a list of eight units must not read it eight times. A host that
+/// could not be read says so once, for every identifier, rather than answering `gone`.
+#[derive(Debug, Default)]
+pub struct Seen(Option<BTreeMap<u32, Presence>>);
+
+impl Seen {
+    /// Read this host's table for these identifiers.
+    #[must_use]
+    pub fn read(processes: &dyn Processes, pids: &[u32]) -> Self {
+        Self(processes.presences(pids).ok())
+    }
+
+    /// What it said about one identifier, `None` where the table could not be read.
+    #[must_use]
+    fn of(&self, pid: u32) -> Option<Presence> {
+        self.0.as_ref().map(|seen| seen.get(&pid).copied().unwrap_or(Presence::Gone))
+    }
+}
+
 /// The idle window a project's recipe asks for, or the default when it does not say.
 ///
 /// A recipe that cannot be read yields the default. The window is a convenience and a
@@ -256,10 +315,44 @@ fn absolute_expiry(now: Timestamp, idle_hours: u32) -> Timestamp {
 /// no actor holds nobody ([`Lock::holds_anyone`]) and never reaches this.
 fn refusal(unit: &Unit, held: &Lock, now: Timestamp) -> Error {
     Error::UnitLocked {
-        slug: unit.slug.to_string(),
-        actor: held.actor.as_ref().map_or_else(String::new, |actor| actor.name.to_string()),
-        host: held.host.to_string(),
-        since: crate::output::human::span(now, held.taken_at),
+        slug: unit.slug.to_string().into_boxed_str(),
+        actor: held
+            .actor
+            .as_ref()
+            .map_or_else(String::new, |actor| actor.name.to_string())
+            .into_boxed_str(),
+        host: held.host.to_string().into_boxed_str(),
+        since: crate::output::human::span(now, held.taken_at).into_boxed_str(),
+        hold: hold_line(held).into_boxed_str(),
+    }
+}
+
+/// What the refusal adds about the process that took the hold, or nothing.
+///
+/// A refusal names the holder, and the holder may be a session that ended hours ago.
+/// Saying so is the difference between a person who waits and a person who types
+/// `--take` at once, so the reading [`liveness`] takes for a report is taken here too.
+/// Only [`HolderState::Gone`] is said: a live hold needs no sentence, and a reading that
+/// could not be taken contradicts nothing the row claims.
+///
+/// The sentence says what this reading proves and no more. Whether anything of that
+/// actor is still in the home is the second reading a report takes
+/// ([`crate::runtime::ls`]), and it costs a scan of the process table against every home
+/// of the project, which is not what a refusal should pay for. So the refusal names the
+/// reading it made and names the command that makes the other one.
+fn hold_line(held: &Lock) -> String {
+    let seen =
+        Seen::read(&crate::runtime::processes::Live, &held.pid.into_iter().collect::<Vec<_>>());
+    match liveness(held, &HostName::current(), &seen) {
+        HolderState::Gone => {
+            let named =
+                held.pid.map_or_else(|| String::from("the process"), |pid| format!("pid {pid}"));
+            format!(
+                " {named} that took it is gone from this host; nodal show says whether \
+                 anything of that actor is still in the home."
+            )
+        }
+        HolderState::Live | HolderState::Unknown { .. } => String::new(),
     }
 }
 

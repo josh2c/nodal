@@ -29,20 +29,9 @@ const COLUMNS: &str = "id, kind, subject, params, recovery, state, host, pid, st
 /// Every column [`decode_step`] reads.
 const STEP_COLUMNS: &str = "position, key, state, output, updated_at";
 
-/// How far an operation got.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum State {
-    /// Started, and not yet finished by the process that started it.
-    Running,
-    /// Finished: every step applied and the registry write committed.
-    Committed,
-    /// Undone: nothing it did is left.
-    RolledBack,
-    /// An undo failed. Something it did is still out there, and every invocation says
-    /// so until a person deals with it.
-    Failed,
-}
+/// How far an operation got, which is a fact about the row and lives with the rest of
+/// them ([`crate::model::operation`]).
+pub use crate::model::OperationState as State;
 
 /// How far one step got.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

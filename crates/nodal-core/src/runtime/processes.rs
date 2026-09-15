@@ -50,6 +50,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::Result;
+use crate::model::Timestamp;
 
 /// One process, with what a scan keeps about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +102,54 @@ pub trait Processes {
     /// with no readable process table, and [`Error::Io`](crate::Error::Io) when the
     /// table itself cannot be listed.
     fn scan(&self) -> Result<Vec<Running>>;
+
+    /// What the table says about identifiers somebody wrote down.
+    ///
+    /// This is asked of numbers from lock rows rather than of processes a scan found,
+    /// and the two readings are not the same question. A scan keeps what it can read,
+    /// and it can read neither the variables nor the working directory of another
+    /// account's process, so a scan that does not name a process does not prove the
+    /// process is gone. [`Live`] therefore overrides this with the one reading that does
+    /// cross accounts, and nothing here ever signals anything.
+    ///
+    /// Every identifier is answered from one reading of the table, because the caller is
+    /// a list and a list of eight units must not read the machine eight times.
+    ///
+    /// The answer supplied here is the right one for a table a test states: that table
+    /// is the whole of the machine the test is describing, and it dates nothing.
+    ///
+    /// # Errors
+    /// Whatever [`Processes::scan`] reports, which on a host with no readable process
+    /// table is [`Error::ProcessScanUnsupported`](crate::Error::ProcessScanUnsupported):
+    /// "I cannot see" is a different answer from "it is gone".
+    fn presences(&self, pids: &[u32]) -> Result<BTreeMap<u32, Presence>> {
+        let table = self.scan()?;
+        Ok(pids
+            .iter()
+            .map(|pid| {
+                let found = table.iter().any(|running| running.pid == *pid);
+                (*pid, if found { Presence::Running { started_at: None } } else { Presence::Gone })
+            })
+            .collect())
+    }
+}
+
+/// What the process table says about one identifier somebody wrote down.
+///
+/// The instant matters as much as the answer. Identifiers are reused, so a machine that
+/// has been up for a week can hand a lock row's number to something else entirely, and a
+/// reader that only asked "is there a process" would report a session that ended months
+/// ago as being back at work. A process that started after the hold was taken is not the
+/// process that took it ([`crate::runtime::lock::liveness`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    /// No process carries that identifier now.
+    Gone,
+    /// One does, and this is when it started, where the host says so.
+    Running {
+        /// When the process started, `None` on a host that does not say.
+        started_at: Option<Timestamp>,
+    },
 }
 
 /// The processes of this machine.
@@ -110,6 +159,25 @@ pub struct Live;
 impl Processes for Live {
     fn scan(&self) -> Result<Vec<Running>> {
         scan_this_host()
+    }
+
+    /// On Linux the kernel publishes a directory per process, and the directory is there
+    /// whichever account owns the process. So this answers for a process a scan cannot
+    /// read, which is the case that matters: a lock row written by another engineer on a
+    /// host two people share. Nothing is opened for writing and nothing is signalled.
+    ///
+    /// Each process is dated as well as found, from the same two files, so a caller can
+    /// tell a hold's own process from a later one wearing its number.
+    fn presences(&self, pids: &[u32]) -> Result<BTreeMap<u32, Presence>> {
+        #[cfg(target_os = "linux")]
+        {
+            Ok(linux::presences(pids))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pids;
+            Err(crate::Error::ProcessScanUnsupported { host: std::env::consts::OS })
+        }
     }
 }
 
@@ -133,7 +201,7 @@ mod linux {
     use std::collections::BTreeMap;
     use std::path::Path;
 
-    use super::{Running, command_of};
+    use super::{Presence, Running, Timestamp, command_of};
     use crate::runtime::actor;
     use crate::{Error, Result};
 
@@ -185,6 +253,79 @@ mod linux {
         let command =
             std::fs::read(directory.join(CMDLINE)).ok().and_then(|line| command_of(&line));
         Some(Running { pid, vars, cwd, command })
+    }
+
+    /// The file that holds one process's own statistics, including when it started.
+    const STAT: &str = "stat";
+
+    /// How many fields into `stat`'s tail the start time is.
+    ///
+    /// `stat` is `pid (comm) state ...` and the command can hold spaces and brackets, so
+    /// the tail is taken from the last `)` and counted from `state`. Start time is field
+    /// 22 of the whole record, which is the twentieth of that tail.
+    const STARTTIME: usize = 19;
+
+    /// The line of the kernel's own statistics that dates the boot.
+    const BTIME: &str = "btime ";
+
+    /// What the table says about each of these identifiers, dated where it can be.
+    ///
+    /// The boot instant and the tick rate are read once for the whole set, because both
+    /// are properties of the machine and neither changes between two identifiers.
+    pub(super) fn presences(pids: &[u32]) -> BTreeMap<u32, Presence> {
+        let clock = Clock::of_this_host();
+        pids.iter()
+            .map(|pid| {
+                let directory = Path::new(PROC).join(pid.to_string());
+                if !directory.is_dir() {
+                    return (*pid, Presence::Gone);
+                }
+                (*pid, Presence::Running { started_at: clock.started(&directory) })
+            })
+            .collect()
+    }
+
+    /// What turns a process's start, which the kernel counts in ticks since the boot,
+    /// into an instant.
+    struct Clock {
+        /// When this machine booted, in seconds since the epoch.
+        booted_at: Option<i64>,
+        /// How many of the kernel's ticks make one second.
+        ticks: i64,
+    }
+
+    impl Clock {
+        /// This machine's own.
+        fn of_this_host() -> Self {
+            Self { booted_at: booted_at(), ticks: ticks_per_second() }
+        }
+
+        /// When the process in `directory` started, `None` when this cannot be read or
+        /// this host does not date its boot.
+        fn started(&self, directory: &Path) -> Option<Timestamp> {
+            let booted_at = self.booted_at?;
+            let record = std::fs::read_to_string(directory.join(STAT)).ok()?;
+            let tail = record.rsplit_once(')')?.1;
+            let ticks: i64 = tail.split_whitespace().nth(STARTTIME)?.parse().ok()?;
+            Timestamp::from_unix_seconds(booted_at.checked_add(ticks / self.ticks)?).ok()
+        }
+    }
+
+    /// When this machine booted, from the kernel's own record of it.
+    fn booted_at() -> Option<i64> {
+        let record = std::fs::read_to_string(Path::new(PROC).join("stat")).ok()?;
+        record.lines().find_map(|line| line.strip_prefix(BTIME))?.trim().parse().ok()
+    }
+
+    /// How many kernel ticks make a second on this host.
+    ///
+    /// One is the floor, because a rate of zero would divide by zero and a host that
+    /// answers nonsense must not take a caller down with it.
+    fn ticks_per_second() -> i64 {
+        // SAFETY: `sysconf` reads one configured value and takes no pointer. A name the
+        // host does not know answers -1, which the floor below turns into 1.
+        let answered = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        answered.max(1)
     }
 
     /// Whether a variable is one a scan keeps.

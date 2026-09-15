@@ -163,6 +163,40 @@ fn done_pushes_the_branch_and_leaves_the_snapshot_here() {
     assert!(kept.contains("notes.txt"), "and the snapshot in the home does: {kept}");
 }
 
+/// A record the runner took before an operation stays on this machine, whatever a push
+/// is asked to send. `--wip` names one ref and one only, and nothing widens that to the
+/// namespace it sits in.
+#[test]
+fn a_pre_operation_record_never_leaves_the_machine() {
+    let workspace = workspace();
+    let home = workspace.unit_home("worker-import");
+    commit(&home, "fixed\n");
+    // A record of the shape the runner writes, put here by hand so that this asserts the
+    // push and not the operation that would have taken one.
+    let head = git(&home, &["rev-parse", "HEAD"]);
+    let unit = git(&home, &["for-each-ref", "--format=%(refname)", "refs/nodal/"]);
+    let unit = unit.lines().next().map_or_else(
+        || String::from("refs/nodal/01ARZ3NDEKTSV4RRFFQ69G5FAV/pre/01ARZ3NDEKTSV4RRFFQ69G5FAW"),
+        |name| {
+            let id = name.trim_start_matches("refs/nodal/").split('/').next().unwrap_or("unit");
+            format!("refs/nodal/{id}/pre/01ARZ3NDEKTSV4RRFFQ69G5FAW")
+        },
+    );
+    drop(git(&home, &["update-ref", &unit, head.trim()]));
+
+    drop(stdout(&workspace.nodal(&["done", "worker-import", "--wip"])));
+
+    let refs = workspace.remote_refs();
+    assert!(
+        !refs.iter().any(|name| name.contains("/pre/")),
+        "a pre-operation record left the machine: {refs:?}"
+    );
+    assert!(
+        git(&home, &["for-each-ref", "--format=%(refname)", "refs/nodal/"]).contains("/pre/"),
+        "and it is still here"
+    );
+}
+
 #[test]
 fn done_with_wip_sends_the_snapshot_as_well() {
     let workspace = workspace();

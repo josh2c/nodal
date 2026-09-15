@@ -724,3 +724,68 @@ fn reclaim_of_a_done_adopted_worktree_prints_the_removal_line_and_yes_runs_it() 
     assert!(!listed.contains(gone.to_str().unwrap()), "git no longer names it: {listed}");
     assert!(listed.contains(stays.to_str().unwrap()), "the unconfirmed worktree remains: {listed}");
 }
+
+// ------------------------------------------- what the runner records before it acts
+
+/// Every operation that changes a unit's tree or its refs records the home first, on a
+/// ref named by the run. A reclaim moves a home away, so the record travels with it into
+/// the trash and is what a person reads a file back out of.
+///
+/// This is the ordinary reclaim, with nothing unique in the home and no `--force`. The
+/// work-in-progress ref is a forced reclaim's; this one is the runner's.
+#[test]
+fn an_ordinary_reclaim_records_the_home_before_it_moves_it() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (id, _) = workspace.one_unit_and_home();
+
+    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+
+    let trashed = workspace.trashed().pop().expect("the home is in the trash");
+    let refs =
+        git(&trashed, &["for-each-ref", "--format=%(refname)", &format!("refs/nodal/{id}/")]);
+    let recorded: Vec<&str> =
+        refs.lines().filter(|name| name.contains(&format!("/{id}/pre/"))).collect();
+    assert_eq!(recorded.len(), 1, "one record per run: {refs}");
+
+    let listed = git(&trashed, &["ls-tree", "-r", "--name-only", recorded[0]]);
+    assert!(listed.contains("app/main.txt"), "the record holds the home: {listed}");
+
+    let operation = recorded[0].rsplit('/').next().unwrap();
+    let store = workspace.store();
+    let run = journal::get(store.conn(), operation.parse().unwrap()).unwrap().unwrap();
+    assert_eq!(run.kind, "reclaim", "the ref is named by the run that took it");
+}
+
+/// Nothing about the record reaches the working tree or the index. The commit is built
+/// in an index of its own, so a person's staged work is exactly as they left it — which
+/// is the whole reason the snapshot is plumbing and not `git add -A`.
+#[test]
+fn the_record_touches_neither_the_index_nor_the_working_tree() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (id, home) = workspace.one_unit_and_home();
+    std::fs::write(home.join("staged.txt"), "staged\n").unwrap();
+    drop(git(&home, &["add", "staged.txt"]));
+    drop(git(
+        &home,
+        &["-c", "user.email=t@example.invalid", "-c", "user.name=test", "commit", "-m", "staged"],
+    ));
+    std::fs::write(home.join("app").join("main.txt"), "edited\n").unwrap();
+    std::fs::write(home.join("second.txt"), "also staged\n").unwrap();
+    drop(git(&home, &["add", "second.txt"]));
+    let before = git(&home, &["status", "--porcelain"]);
+
+    drop(stdout(&workspace.nodal(&["reclaim", "worker-import", "--force"])));
+
+    let trashed = workspace.trashed().pop().expect("the home is in the trash");
+    assert_eq!(git(&trashed, &["status", "--porcelain"]), before, "the record changed the tree");
+    assert_eq!(
+        std::fs::read_to_string(trashed.join("app").join("main.txt")).unwrap(),
+        "edited\n",
+        "the record rewrote a file of the home"
+    );
+    let refs =
+        git(&trashed, &["for-each-ref", "--format=%(refname)", &format!("refs/nodal/{id}/")]);
+    assert!(refs.contains(&format!("/{id}/pre/")), "the run left no record: {refs}");
+}

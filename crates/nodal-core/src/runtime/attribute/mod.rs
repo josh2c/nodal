@@ -52,7 +52,7 @@
 //! So a path is resolved once, at the edge: every home root on the way into [`Scope`],
 //! and every path handed to [`Scope::at`] or [`Scope::containing`] on the way in from a
 //! signal. Past that edge every path here is the name the filesystem itself uses. The
-//! resolver is [`guard::resolve`](crate::lifecycle::guard::resolve), which is the one
+//! resolver is [`paths::resolve`](crate::paths::resolve), which is the one
 //! place in Nodal a path is normalised before it is compared with another; attribution
 //! does not have a rule of its own about this.
 
@@ -65,8 +65,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::lifecycle::guard;
 use crate::model::{EnvId, Ports, Slug, UnitId};
+use crate::paths;
 
 /// One home on this host, and what the registry says belongs to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +103,7 @@ impl Scope {
     pub fn new(homes: Vec<Home>) -> Self {
         let homes = homes
             .into_iter()
-            .map(|home| Home { root: guard::resolve(&home.root), ..home })
+            .map(|home| Home { root: paths::resolve(&home.root), ..home })
             .collect();
         Self { homes }
     }
@@ -114,7 +114,7 @@ impl Scope {
     /// written when the home was created and never resolved.
     #[must_use]
     pub fn at(&self, root: &Path) -> Option<&Home> {
-        let root = guard::resolve(root);
+        let root = paths::resolve(root);
         self.homes.iter().find(|home| home.root == root)
     }
 
@@ -136,7 +136,7 @@ impl Scope {
     /// registry row which followed none cannot name one home two ways.
     #[must_use]
     pub fn containing(&self, path: &Path) -> Option<&Home> {
-        let path = guard::resolve(path);
+        let path = paths::resolve(path);
         self.homes
             .iter()
             .filter(|home| path.starts_with(&home.root))

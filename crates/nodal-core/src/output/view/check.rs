@@ -29,7 +29,8 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-use crate::lifecycle::assess::{Assessment, Bytes, CommitGroup, PathGroup, Runtime};
+use crate::doctor::size::Bytes;
+use crate::lifecycle::assess::{Assessment, CommitGroup, PathGroup, Runtime};
 use crate::lifecycle::uniqueness::Witness;
 use crate::model::Timestamp;
 use crate::output::Render;
@@ -292,9 +293,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::Preflight;
-    use crate::lifecycle::assess::{
-        Assessment, Bytes, CommitGroup, Copies, Held, PathGroup, Runtime,
-    };
+    use crate::doctor::size::Bytes;
+    use crate::lifecycle::assess::{Assessment, CommitGroup, Copies, Held, PathGroup, Runtime};
     use crate::lifecycle::uniqueness::Witness;
     use crate::model::Timestamp;
     use crate::output::Render;

@@ -7,12 +7,12 @@ use std::process::ExitCode;
 use clap::Args;
 use nodal_core::context::survey::{self, Snapshot};
 use nodal_core::doctor::intent;
-use nodal_core::lifecycle::guard;
 use nodal_core::lifecycle::ops::new;
 use nodal_core::lifecycle::states;
 use nodal_core::model::{Project, ProjectName, Timestamp};
 use nodal_core::output::view::{UnitList, Verdict, WorktreeRow};
 use nodal_core::output::{self, Format};
+use nodal_core::paths;
 use nodal_core::runtime::{entry, lock, ls, processes, verdict};
 use nodal_core::store::Store;
 
@@ -113,6 +113,22 @@ impl Ls {
     /// [`nodal_core::Error::ProjectNotFound`] when the directory is in no project Nodal
     /// records, and whatever the registry or Git reported.
     pub fn run(&self, store: Option<&Store>) -> nodal_core::Result<ExitCode> {
+        let text = self.rendered(store, Format::from_json_flag(self.json))?;
+        crate::commands::emit(&text)?;
+        Ok(ExitCode::SUCCESS)
+    }
+
+    /// What this command writes, in the format asked for.
+    ///
+    /// The reading, the two writes the command layer makes, and one rendering. A second
+    /// caller — the tool surface `nodal mcp` answers on — asks for the JSON form here
+    /// rather than building an answer of its own, so the two cannot drift apart.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the registry or Git reported, and [`verdict::nowhere`] for a directory
+    /// that is neither a project nor a checkout.
+    pub fn rendered(&self, store: Option<&Store>, format: Format) -> nodal_core::Result<String> {
         let path = self.directory()?;
         match self.read(store)? {
             Reading::Listed(mut listing) => {
@@ -123,10 +139,10 @@ impl Ls {
                     listing.settle(store);
                     listing.compile();
                 }
-                self.print(&listing.list)
+                output::render(&listing.list, format)
             }
-            Reading::Declared(empty) => self.print(empty.as_ref()),
-            Reading::Checkout(seen) => self.print(seen.as_ref()),
+            Reading::Declared(empty) => output::render(empty.as_ref(), format),
+            Reading::Checkout(seen) => output::render(seen.as_ref(), format),
             Reading::Unknown => Err(verdict::nowhere(&path)),
         }
     }
@@ -203,7 +219,7 @@ impl Ls {
         now: Timestamp,
     ) -> nodal_core::Result<ls::Held> {
         let held = lock::live(store.conn(), &project.root, now)?;
-        Ok(ls::Held::of(&held, lock::idle_hours(&project.root)))
+        Ok(ls::Held::of(&held, lock::idle_hours(&project.root), &processes::Live))
     }
 
     /// The verdict on a checkout the registry holds nothing about.
@@ -241,7 +257,7 @@ impl Ls {
         let homes: HashSet<PathBuf> = surveyed
             .iter()
             .filter_map(|subject| subject.home.as_ref())
-            .map(|environment| guard::resolve(&environment.home))
+            .map(|environment| paths::resolve(&environment.home))
             .collect();
         seen.rows.into_iter().filter(|row| !homes.contains(&row.path)).collect()
     }
