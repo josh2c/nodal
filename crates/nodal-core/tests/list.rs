@@ -427,12 +427,19 @@ fn a_hold_whose_process_is_running_is_reported_as_held() {
     drop(fixture.directory);
 }
 
-/// A hold belongs to an actor, not to one process of theirs. The identifier a lock row
-/// carries is the command that entered the home, and that command ends; the session it
-/// belonged to does not. So a hold whose recorded process is gone is live while a process
-/// of the same actor is still in the home.
+/// F-3 of the third reclaim proof, and the rule this reverses.
+///
+/// A hold whose recorded process was gone used to be read as live while a process of the
+/// same actor stood in the home, because a hold belongs to an actor and an actor outlives
+/// any one process of theirs. The proof killed an agent and left its child standing in
+/// the home: the list reported the killed holder live with seven hours to run, which is
+/// the opposite of what had happened, for exactly the case the advisor's question names.
+///
+/// The orphan carries the unit's own `NODAL_ID`, because Nodal wrote it into the home its
+/// parent was killed in. So it is not better evidence than the actor name was; it is
+/// evidence about a different question. The two readings are now reported as two facts.
 #[test]
-fn a_hold_is_live_while_the_actor_is_in_the_home_whatever_became_of_the_process() {
+fn a_killed_holder_that_left_an_orphan_is_gone_and_the_orphan_is_said_beside_it() {
     let fixture = Fixture::build();
     let (unit, home) = fixture.units["ahead"].clone();
     hold(&fixture, "ahead", HostName::current(), Some(4_294_967_000));
@@ -440,9 +447,13 @@ fn a_hold_is_live_while_the_actor_is_in_the_home_whatever_became_of_the_process(
 
     let list = fixture.list(&table);
     let row = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
+    let holder = row.holder.as_ref().expect("the row carries the holder");
 
-    assert_eq!(row.holder.as_ref().unwrap().state, HolderState::Live);
-    assert!(who(&list, "ahead").contains("claude-code holds"), "{}", who(&list, "ahead"));
+    assert_eq!(holder.state, HolderState::Gone, "the process that took the hold is gone");
+    assert!(holder.orphan, "and something of that actor is still standing in the home");
+    let cell = who(&list, "ahead");
+    assert!(cell.contains("claude-code gone"), "{cell}");
+    assert!(!cell.contains("holds"), "a killed holder is reported as holding: {cell}");
     drop(fixture.directory);
 }
 
