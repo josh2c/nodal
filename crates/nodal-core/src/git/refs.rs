@@ -71,6 +71,17 @@ pub fn pre(unit_id: &str, operation: &str) -> String {
     format!("{NAMESPACE}{unit_id}/{PRE}{operation}")
 }
 
+/// The run a pre-operation record is named after, `None` for any other ref.
+///
+/// The inverse of [`pre`], and the one place a record's name is read. Two callers ask
+/// this question — the report that says what a snapshot records, and the sweep that
+/// removes the records of runs that are over — and a second reading of the same name is
+/// a second answer that can disagree with the first.
+#[must_use]
+pub fn operation_in<'a>(reference: &'a str, unit_id: &str) -> Option<&'a str> {
+    reference.strip_prefix(&format!("{NAMESPACE}{unit_id}/{PRE}"))
+}
+
 /// The ref that holds a unit's branch as it was before a merge squashed it.
 ///
 /// The one place the commits a squash folded stay reachable. It is written before the
@@ -249,7 +260,7 @@ fn for_each_ref(repo: &Path, prefix: Option<&str>) -> Result<Vec<Ref>> {
 mod tests {
     use std::path::Path;
 
-    use super::{last_moved, moment, wip};
+    use super::{last_moved, moment, operation_in, pre, wip};
 
     /// A reflog line as Git writes one, with a name and an address that hold spaces.
     const LINE: &str =
@@ -265,6 +276,15 @@ mod tests {
     #[test]
     fn wip_refs_live_in_the_nodal_namespace() {
         assert_eq!(wip("01JABC"), "refs/nodal/01JABC/wip");
+    }
+
+    /// The name a record is written under is the name it is read back by.
+    #[test]
+    fn a_record_names_the_run_that_wrote_it_and_nothing_else_does() {
+        assert_eq!(operation_in(&pre("01JABC", "01JRUN"), "01JABC"), Some("01JRUN"));
+        assert_eq!(operation_in(&wip("01JABC"), "01JABC"), None);
+        assert_eq!(operation_in(&pre("01JABC", "01JRUN"), "01JOTHER"), None);
+        assert_eq!(operation_in("refs/heads/main", "01JABC"), None);
     }
 
     /// The name and the address of whoever moved a ref may hold spaces, so the instant is

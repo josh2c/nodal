@@ -78,21 +78,20 @@ fn snapshots(conn: &Connection, row: &UnitRow, unit: &Unit) -> Vec<Snapshot> {
 
 /// What wrote one ref of a unit's namespace.
 fn taker(conn: &Connection, reference: &str, unit: &Unit) -> Taker {
-    let namespace = format!("{}{}/", refs::NAMESPACE, unit.id);
-    let Some(rest) = reference.strip_prefix(&namespace) else { return Taker::Other };
-    if rest == "wip" {
-        return Taker::WorkInProgress;
+    let unit_id = unit.id.to_string();
+    if let Some(operation) = refs::operation_in(reference, &unit_id) {
+        let run =
+            OperationId::parse(operation).ok().and_then(|id| journal::get(conn, id).ok().flatten());
+        return Taker::Operation {
+            operation: operation.to_owned(),
+            outcome: run.as_ref().map(|run| run.state),
+            op: run.map(|run| run.kind),
+        };
     }
-    if rest == "premerge" {
-        return Taker::PreMerge;
-    }
-    let Some(operation) = rest.strip_prefix(refs::PRE) else { return Taker::Other };
-    let run =
-        OperationId::parse(operation).ok().and_then(|id| journal::get(conn, id).ok().flatten());
-    Taker::Operation {
-        operation: operation.to_owned(),
-        outcome: run.as_ref().map(|run| run.state),
-        op: run.map(|run| run.kind),
+    match reference.strip_prefix(&format!("{}{unit_id}/", refs::NAMESPACE)) {
+        Some("wip") => Taker::WorkInProgress,
+        Some("premerge") => Taker::PreMerge,
+        _ => Taker::Other,
     }
 }
 

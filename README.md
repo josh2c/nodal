@@ -158,6 +158,26 @@ would have been made untouched. It never claims to have copied work it left behi
 A base is rebuilt only when the inputs that define an environment move: lockfiles,
 toolchain, migrations, service definitions. An ordinary source commit moves nothing.
 
+## Why not a branch and a container?
+
+If you do one task at a time, a branch and a container are enough. Git gives you the
+branch. The container gives you the services. Nodal replaces neither.
+
+Two tasks at once change the question. One checkout holds one state. The second task
+waits for the first. You stash the work, or you switch the branch, or you build a second
+environment by hand. The checkout has become a queue.
+
+A container for each task removes the queue and leaves the rest by hand. You copy the
+repository yourself. You give each copy its own ports. You write the environment file for
+each copy. You keep the list of what runs. You remove what you stopped using.
+
+Nodal answers a question neither tool answers. Which folders does this machine hold?
+Which of them is disposable? What does one task need to be ready to run? Git tracks
+commits. Docker runs images. Neither one reads the folders on your disk. Neither one
+tells you which folder holds work that exists nowhere else.
+
+Nodal runs a project's services in Docker itself.
+
 ## Commands
 
 Everyday:

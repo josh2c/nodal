@@ -944,8 +944,10 @@ fn project_of(conn: &Connection, unit: &Unit) -> Result<Project> {
 /// project's chosen retention and its hooks, and the defaults are the safe values for
 /// both: fourteen days, and no command.
 ///
-/// `super::gc` reads it for the same retention, so that the window a merged unit keeps
-/// its home for and the window its trashed home keeps are one setting and not two.
+/// `super::gc` reads the same key, but reads it itself and once for the whole sweep, so
+/// that one sweep runs inference once per project rather than once per question. A
+/// recipe it cannot load is a line of its report; here it is the safe defaults, because
+/// a reclaim a person asked for must not fail over a file it only needed a number from.
 pub(super) fn recipe_of(root: &Path) -> Recipe {
     crate::recipe::load(root).map(|effective| effective.recipe).unwrap_or_default()
 }

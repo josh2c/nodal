@@ -27,6 +27,7 @@ use nodal_core::model::recipe::{
 };
 use nodal_core::recipe::gap::GapKey;
 use nodal_core::recipe::{self, Effective};
+use nodal_fixture::polyglot;
 
 /// Infer over a freshly written fixture in its own temporary directory.
 fn fixture_recipe() -> (tempfile::TempDir, Effective) {
@@ -427,9 +428,74 @@ fn a_polyglot_project_names_every_manager_it_carries() {
     let (_directory, effective) = polyglot();
     assert_eq!(
         effective.recipe.package_manager,
-        [PackageManager::Pnpm, PackageManager::Cargo, PackageManager::Uv]
+        [PackageManager::Cargo, PackageManager::Pnpm, PackageManager::Uv]
+    );
+}
+
+/// The primary is the manager whose root manifest declares the build the recipe takes.
+///
+/// This fixture's `package.json` declares no build, so `cargo build` is the build and
+/// Cargo leads the list. Taking the first lockfile instead made a Rust-led repository
+/// resolve a bare script name against its Node half.
+#[test]
+fn a_rust_led_project_leads_with_cargo() {
+    let (_directory, effective) = polyglot();
+    assert_eq!(effective.recipe.package_manager.first().copied(), Some(PackageManager::Cargo));
+    assert_eq!(
+        effective.recipe.commands.build.as_ref().map(ToString::to_string).as_deref(),
+        Some("cargo build"),
+        "the primary is the half that declares the build"
+    );
+}
+
+/// A Node half that declares a build of its own takes the build command, and the primary
+/// with it.
+///
+/// The same tree, with one script added. The Node half's `build` is the command the
+/// recipe ends up with, so pnpm runs the build and pnpm leads the list.
+#[test]
+fn a_node_led_project_leads_with_the_manager_that_runs_its_build() {
+    let (_directory, effective) = polyglot_declaring_a_build(polyglot::PACKAGE_MANAGER_PIN);
+    assert_eq!(effective.recipe.package_manager.first().copied(), Some(PackageManager::Pnpm));
+    assert_eq!(
+        effective.recipe.package_manager,
+        [PackageManager::Pnpm, PackageManager::Cargo, PackageManager::Uv],
+        "the managers behind the primary keep their order"
+    );
+}
+
+/// The build command leads the list over a field that names another manager, which is
+/// the agreement the rule exists for.
+///
+/// A `packageManager` field naming a program of another ecosystem, beside a Node build
+/// script and a `Cargo.toml`. The recipe is built by `pnpm run build`, so pnpm leads it:
+/// the manager that runs the build is the manager a bare script name belongs to.
+#[test]
+fn the_build_command_leads_the_list_over_a_field_that_names_another_manager() {
+    let (_directory, effective) = polyglot_declaring_a_build("cargo@1.88.0");
+    assert_eq!(
+        effective.recipe.commands.build.as_ref().map(ToString::to_string).as_deref(),
+        Some("pnpm run build"),
+        "the Node half declares the build"
     );
     assert_eq!(effective.recipe.package_manager.first().copied(), Some(PackageManager::Pnpm));
+}
+
+/// The polyglot fixture with a `build` script in its script table and `pin` in its
+/// `packageManager` field.
+fn polyglot_declaring_a_build(pin: &str) -> (tempfile::TempDir, Effective) {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = polyglot::write(directory.path());
+    let declared = std::fs::read_to_string(root.join("package.json"))
+        .expect("the fixture manifest")
+        .replace(polyglot::PACKAGE_MANAGER_PIN, pin)
+        .replace(
+            r#""dev": "node cli/index.mjs","#,
+            r#""dev": "node cli/index.mjs", "build": "node cli/build.mjs","#,
+        );
+    std::fs::write(root.join("package.json"), declared).expect("a manifest with a build");
+    let effective = recipe::load(&root).expect("a readable project");
+    (directory, effective)
 }
 
 /// Two lockfiles of one ecosystem are a repository mid-way through changing manager.
@@ -443,7 +509,7 @@ fn only_one_manager_of_an_ecosystem_is_proposed() {
     let effective = recipe::load(&root).expect("a readable project");
     assert_eq!(
         effective.recipe.package_manager,
-        [PackageManager::Pnpm, PackageManager::Cargo, PackageManager::Uv],
+        [PackageManager::Cargo, PackageManager::Pnpm, PackageManager::Uv],
         "npm was proposed beside pnpm"
     );
 }
