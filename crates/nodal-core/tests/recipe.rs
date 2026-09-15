@@ -427,9 +427,48 @@ fn a_polyglot_project_names_every_manager_it_carries() {
     let (_directory, effective) = polyglot();
     assert_eq!(
         effective.recipe.package_manager,
-        [PackageManager::Pnpm, PackageManager::Cargo, PackageManager::Uv]
+        [PackageManager::Cargo, PackageManager::Pnpm, PackageManager::Uv]
     );
+}
+
+/// The primary is the manager whose root manifest declares the build the recipe takes.
+///
+/// This fixture's `package.json` declares no build, so `cargo build` is the build and
+/// Cargo leads the list. Taking the first lockfile instead made a Rust-led repository
+/// resolve a bare script name against its Node half.
+#[test]
+fn a_rust_led_project_leads_with_cargo() {
+    let (_directory, effective) = polyglot();
+    assert_eq!(effective.recipe.package_manager.first().copied(), Some(PackageManager::Cargo));
+    assert_eq!(
+        effective.recipe.commands.build.as_ref().map(ToString::to_string).as_deref(),
+        Some("cargo build"),
+        "the primary is the half that declares the build"
+    );
+}
+
+/// Where both root manifests declare a build, the `packageManager` field decides.
+///
+/// The same tree, with one script added: the Node half now declares a build of its own,
+/// so the two halves tie and the manager the root manifest names leads the list.
+#[test]
+fn a_node_led_project_leads_with_the_manager_its_manifest_names() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = nodal_fixture::polyglot::write(directory.path());
+    let declared =
+        std::fs::read_to_string(root.join("package.json")).expect("the fixture manifest").replace(
+            r#""dev": "node cli/index.mjs","#,
+            r#""dev": "node cli/index.mjs", "build": "node cli/build.mjs","#,
+        );
+    std::fs::write(root.join("package.json"), declared).expect("a manifest with a build");
+
+    let effective = recipe::load(&root).expect("a readable project");
     assert_eq!(effective.recipe.package_manager.first().copied(), Some(PackageManager::Pnpm));
+    assert_eq!(
+        effective.recipe.package_manager,
+        [PackageManager::Pnpm, PackageManager::Cargo, PackageManager::Uv],
+        "the managers behind the primary keep their order"
+    );
 }
 
 /// Two lockfiles of one ecosystem are a repository mid-way through changing manager.
@@ -443,7 +482,7 @@ fn only_one_manager_of_an_ecosystem_is_proposed() {
     let effective = recipe::load(&root).expect("a readable project");
     assert_eq!(
         effective.recipe.package_manager,
-        [PackageManager::Pnpm, PackageManager::Cargo, PackageManager::Uv],
+        [PackageManager::Cargo, PackageManager::Pnpm, PackageManager::Uv],
         "npm was proposed beside pnpm"
     );
 }
