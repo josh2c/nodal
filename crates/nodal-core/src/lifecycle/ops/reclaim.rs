@@ -428,6 +428,11 @@ fn commit_of(params: &Params) -> Commit {
         }
         environments::update_state(tx, environment.id, EnvState::Absent, now)?;
         units::update_status(tx, unit.id, UnitStatus::Archived, now)?;
+        // The name goes back to the project here, in the same write that ends the unit,
+        // so there is no moment in which the unit is archived and still holds its
+        // handle. The row keeps its identifier and the trash entry keeps the name a
+        // person typed ([`units::release_slug`]).
+        units::release_slug(tx, &unit, now)?;
         // The home has gone, so a row naming its writer would name the writer of
         // nothing. Only this host's hold is given up: a claim another machine took is
         // that machine's to release.

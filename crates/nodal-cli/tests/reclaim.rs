@@ -349,6 +349,65 @@ fn a_reclaimed_unit_is_listed_as_archived_with_no_home_and_no_complaint() {
     assert!(!listed.contains("git status"), "the list has nothing to complain about: {listed}");
 }
 
+/// F-7 of the third reclaim proof: a reclaimed unit went on holding its name, so
+/// making the unit again gave `<name>-2` on the branch the archived unit already had.
+/// Two units then shared `nodal/<name>`.
+#[test]
+fn a_reclaimed_units_name_is_free_again_and_the_archived_row_keeps_its_own_identity() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "alpha3"])));
+    let archived = slug_id(&workspace, "alpha3");
+    drop(stdout(&workspace.nodal(&["reclaim", "alpha3"])));
+
+    // Until somebody takes the name, it still reaches the unit that had it, so a person
+    // who reclaims twice is told what happened rather than that there is no such unit.
+    let again = workspace.nodal(&["reclaim", "alpha3"]);
+    assert!(!again.status.success());
+    assert!(stderr(&again).contains("was reclaimed already"), "{}", stderr(&again));
+
+    drop(stdout(&workspace.nodal(&["new", "--name", "alpha3"])));
+
+    let listed = json(&workspace.nodal(&["ls", "--json"]));
+    let units = listed["units"].as_array().expect("the list has units");
+    let made = units
+        .iter()
+        .find(|row| row["slug"] == "alpha3")
+        .expect("the name was free, so the new unit has it");
+    assert_eq!(made["branch"], "nodal/alpha3", "and the branch is the one the name makes");
+    assert_ne!(made["id"], serde_json::json!(archived), "it is a new unit, not the archived one");
+    assert!(
+        !units.iter().any(|row| row["slug"] == "alpha3-2"),
+        "no unit was pushed onto a suffix: {listed}"
+    );
+
+    // The archived row is still there, under a handle that cannot collide, with its own
+    // identifier and the branch it always had.
+    let kept = units
+        .iter()
+        .find(|row| row["id"] == serde_json::json!(archived))
+        .expect("the archived unit is still on the list");
+    assert_eq!(kept["status"], "archived", "{kept}");
+    assert_ne!(kept["slug"], "alpha3", "it gave the name back: {kept}");
+    assert!(
+        kept["slug"].as_str().expect("a handle").starts_with("alpha3-"),
+        "and the name it had is still readable in the one it took: {kept}"
+    );
+    assert_eq!(kept["branch"], "nodal/alpha3", "the archived unit keeps its own branch");
+}
+
+/// The identifier of the unit that holds this handle now.
+fn slug_id(workspace: &Workspace, slug: &str) -> String {
+    let listed = json(&workspace.nodal(&["ls", "--json"]));
+    listed["units"]
+        .as_array()
+        .expect("the list has units")
+        .iter()
+        .find(|row| row["slug"] == slug)
+        .and_then(|row| row["id"].as_str())
+        .expect("the unit is on the list")
+        .to_owned()
+}
+
 #[test]
 fn a_unit_that_has_been_reclaimed_is_not_reclaimed_again() {
     let workspace = workspace();
@@ -657,7 +716,8 @@ fn a_checkout_adopted_in_place_is_unregistered_and_never_trashed() {
     let unit = units::list(store.conn(), projects::list(store.conn()).unwrap()[0].id)
         .unwrap()
         .into_iter()
-        .find(|unit| unit.slug.as_str() == "in-place")
+        // The reclaim released the handle, so the row is found by the handle it took.
+        .find(|unit| unit.slug.as_str().starts_with("in-place"))
         .expect("the unit is still on record");
     assert_eq!(unit.status, UnitStatus::Archived, "it is unregistered, not forgotten");
     let environment =
