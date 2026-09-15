@@ -505,6 +505,38 @@ fn a_reclaimed_units_name_is_free_again_and_the_archived_row_keeps_its_own_ident
     assert_eq!(kept["branch"], "nodal/worker-import", "the archived unit keeps its own branch");
 }
 
+/// A name made, reclaimed, made again and reclaimed again leaves two archived units
+/// whose released handles both come from it. The name means the last unit that held it.
+#[test]
+fn a_name_reclaimed_twice_reaches_the_unit_that_held_it_last() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let first = slug_id(&workspace, "worker-import");
+    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let second = slug_id(&workspace, "worker-import");
+    assert_ne!(first, second, "the second unit is a new one");
+    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+
+    // Both archived rows carry a handle built from the name, and neither is wrong.
+    let listed = json(&workspace.nodal(&["ls", "--json"]));
+    let units = listed["units"].as_array().expect("the list has units");
+    let released: Vec<&str> = units
+        .iter()
+        .filter_map(|row| row["slug"].as_str())
+        .filter(|slug| slug.starts_with("worker-import-"))
+        .collect();
+    assert_eq!(released.len(), 2, "two units gave the name back: {listed}");
+
+    // The name reaches the one that held it last, and the answer is the same every time
+    // it is asked.
+    let refused = workspace.nodal(&["reclaim", "worker-import"]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("was reclaimed already"), "{}", stderr(&refused));
+    let shown = json(&workspace.nodal(&["show", "worker-import", "--json"]));
+    assert_eq!(shown["unit"]["id"], serde_json::json!(second), "the newest of the two: {shown}");
+}
+
 /// The identifier of the unit that holds this handle now.
 fn slug_id(workspace: &Workspace, slug: &str) -> String {
     let listed = json(&workspace.nodal(&["ls", "--json"]));

@@ -120,15 +120,14 @@ pub fn list(
 pub struct Held {
     /// Who holds each unit.
     holders: BTreeMap<UnitId, Holder>,
-    /// The processes the registry recorded for each materialisation, from its open
+    /// The process groups the registry recorded for each materialisation, from its open
     /// session rows.
     ///
-    /// The list reads these for the same reason `nodal reclaim --check` does: Nodal's
-    /// own tether wrapper carries no identifier in its own environment, so the record is
-    /// the only thing that says the process standing in a home is Nodal's own
+    /// The list reads these for the same reason `nodal reclaim --check` does: a process
+    /// inside a group Nodal recorded is not a stranger standing in the home
     /// ([`assess::Own`]). The list and the preflight print the same word over the same
     /// process, so they read the same inputs.
-    recorded: BTreeMap<EnvId, Vec<u32>>,
+    groups: BTreeMap<EnvId, Vec<u32>>,
 }
 
 impl Held {
@@ -147,19 +146,19 @@ impl Held {
                     Some((lock.unit_id, Holder::from_lock(lock, idle_hours, state)?))
                 })
                 .collect(),
-            recorded: BTreeMap::new(),
+            groups: BTreeMap::new(),
         }
     }
 
-    /// The same, with the processes the registry recorded for each materialisation.
+    /// The same, with the process groups the registry recorded for each materialisation.
     ///
     /// One query for the whole list, because a list of eight units must not put eight
     /// statements to the registry to answer one column.
     #[must_use]
     pub fn recording(mut self, sessions: &[Session]) -> Self {
         for session in sessions {
-            if let Some(pid) = session.pid {
-                self.recorded.entry(session.environment_id).or_default().push(pid);
+            if let Some(pgid) = session.pgid {
+                self.groups.entry(session.environment_id).or_default().push(pgid);
             }
         }
         self
@@ -171,9 +170,9 @@ impl Held {
         self.holders.get(&unit).cloned()
     }
 
-    /// The processes the registry recorded for one materialisation.
+    /// The process groups the registry recorded for one materialisation.
     fn of_environment(&self, environment: EnvId) -> &[u32] {
-        self.recorded.get(&environment).map_or(&[], Vec::as_slice)
+        self.groups.get(&environment).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -190,7 +189,7 @@ pub fn rows(
     // Each home with the unit it belongs to, because a process carrying another unit's
     // identifier is a bystander here and the predicate has to be asked with this one's
     // ([`assess::bystander`]).
-    let homes: Vec<Placed> = surveyed
+    let homes: Vec<Placed<'_>> = surveyed
         .iter()
         .filter_map(|subject| {
             let environment = subject.home.as_ref()?;
@@ -439,31 +438,27 @@ impl Seen {
 /// The home is carried twice on purpose: resolved, which is the form the predicate asks
 /// for because the kernel's reading of a working directory has every link taken out, and
 /// as the registry names it, which is the key every other reading of the list uses.
-struct Placed {
-    /// The unit whose home this is, and the processes recorded for it.
+struct Placed<'a> {
+    /// The unit whose home this is.
     unit: UnitId,
-    /// Those processes.
-    recorded: Vec<u32>,
+    /// The process groups the registry recorded for it, borrowed from the one reading
+    /// the list already took ([`Held::recording`]).
+    groups: &'a [u32],
     /// The home, with every link on the way to it followed.
     resolved: PathBuf,
     /// The home, as the registry names it.
     home: PathBuf,
 }
 
-impl Placed {
+impl<'a> Placed<'a> {
     /// One home, resolved once for the whole list.
-    fn new(unit: UnitId, home: &Path, recorded: &[u32]) -> Self {
-        Self {
-            unit,
-            recorded: recorded.to_vec(),
-            resolved: paths::resolve(home),
-            home: home.to_path_buf(),
-        }
+    fn new(unit: UnitId, home: &Path, groups: &'a [u32]) -> Self {
+        Self { unit, groups, resolved: paths::resolve(home), home: home.to_path_buf() }
     }
 
-    /// What the registry says is this unit's own.
+    /// What the registry says about this unit.
     fn own(&self) -> assess::Own<'_> {
-        assess::Own::of(self.unit, &self.recorded)
+        assess::Own::of(self.unit, self.groups)
     }
 }
 
@@ -480,7 +475,7 @@ impl Placed {
 /// so they have to be reading the same predicate — including over a process that carries
 /// **another** unit's identifier, which is Nodal's own and is still nothing this unit may
 /// signal or move a home out from under.
-fn scan(processes: &dyn Processes, homes: &[Placed], notices: &mut Vec<Notice>) -> Seen {
+fn scan(processes: &dyn Processes, homes: &[Placed<'_>], notices: &mut Vec<Notice>) -> Seen {
     let running = match processes.scan() {
         Ok(running) => running,
         Err(error) => {

@@ -146,8 +146,14 @@ pub fn release_slug(conn: &Connection, unit: &Unit, at: Timestamp) -> Result<Slu
 /// Asked only after no unit holds the handle. The released form is the handle with the
 /// unit's own identifier after it ([`released`]), so the question is put the way it was
 /// answered: for each of the project's archived units, what would this handle have
-/// become in its hands, and is that the handle it has. One row can match, because the
-/// identifier in the form is that unit's own.
+/// become in its hands, and is that the handle it has.
+///
+/// **More than one row can match, and the newest wins.** A name that is made, reclaimed,
+/// made again and reclaimed again leaves two archived units whose released handles both
+/// come from it. They are told apart by their own identifiers and neither is wrong; what
+/// the name means is the last unit that held it, so that is the one answered. Unit
+/// identifiers are ordered by the moment they were made, so the last match in the
+/// registry's own order is that unit.
 ///
 /// Nothing else records the released name. A reclaim of a checkout adopted in place
 /// writes no trash entry, so a record kept there would answer for some reclaims and not
@@ -160,12 +166,13 @@ pub fn find_released_by_slug(
     project_id: ProjectId,
     slug: &Slug,
 ) -> Result<Option<Unit>> {
+    let mut newest = None;
     for unit in list_by_status(conn, project_id, UnitStatus::Archived)? {
         if released(slug, unit.id)? == unit.slug {
-            return Ok(Some(unit));
+            newest = Some(unit);
         }
     }
-    Ok(None)
+    Ok(newest)
 }
 
 /// The handle a released unit takes: its own, with its identifier after it.
@@ -178,13 +185,10 @@ fn released(slug: &Slug, id: UnitId) -> Result<Slug> {
     if slug.as_str().ends_with(&id) {
         return Ok(slug.clone());
     }
-    let room = SLUG_MAX_LEN - id.len() - 1;
+    let room = (Slug::MAX_LEN as usize).saturating_sub(id.len() + 1);
     let kept = slug.as_str().get(..room).unwrap_or(slug.as_str()).trim_end_matches('-');
     Slug::parse(format!("{kept}-{id}"))
 }
-
-/// How long a handle may be, which the released form has to stay inside.
-const SLUG_MAX_LEN: usize = 64;
 
 /// Move a unit to another state; `false` when there is no such row.
 ///

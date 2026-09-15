@@ -230,6 +230,12 @@ macro_rules! string_newtype {
             #[doc = concat!("What this value is called when it is rejected: `", $kind, "`.")]
             pub const KIND: &'static str = $kind;
 
+            /// The longest this value may be, which is its shape's own limit.
+            ///
+            /// Here so that a caller building one of these has the limit from the shape
+            /// rather than from a number of its own that the shape could move under.
+            pub const MAX_LEN: u32 = $shape.max_len;
+
             #[doc = concat!("Validate `value` and wrap it as a [`", stringify!($name), "`].")]
             ///
             /// # Errors

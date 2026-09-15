@@ -281,28 +281,34 @@ fn a_tether_outlives_the_nodal_run_that_started_it_and_is_still_stopped() {
 /// A `nodal run --tether` wrapper is the unit's own, and does not block the unit it
 /// tethers.
 ///
-/// The wrapper writes `NODAL_ID` into the environment of the command it starts and
-/// carries none in its own. Read by working directory alone it is indistinguishable from
-/// a stranger, so a reclaim said it would refuse to move the home, in the same report
-/// that said it would stop the group that same wrapper leads. The registry recorded the
-/// wrapper when it started it, and that record is what tells the two apart.
+/// The wrapper builds the home's environment for the command it starts and used to carry
+/// none of it itself, so it stood in the home carrying nothing that said which unit it
+/// served. Read by working directory alone it is indistinguishable from a stranger, and a
+/// reclaim said it would refuse to move the home, in the same report that said it would
+/// stop the group that same wrapper leads.
+///
+/// The wrapper is the `nodal run` process, not the command it starts. The command has
+/// carried the identifier all along, because it is started from the home's environment;
+/// the wrapper is the process that did not, and it is the one asserted here.
 ///
 /// **Both hosts are asserted.** Where the process table can be read, the wrapper is the
-/// unit's own and is named as such. Where it cannot — macOS publishes no `/proc` — the
-/// answer is "I could not look", which is a different answer from "nothing is there":
-/// the reading is empty, a note says which signal went unread, and nothing is reported
-/// as standing in the home. The recorded group is a registry fact rather than a reading,
-/// so it is named on both.
+/// unit's own and nothing is standing in the home. Where it cannot — macOS publishes no
+/// `/proc` — the answer is "I could not look", which is a different answer from "nothing
+/// is there": the reading is empty and a note says which signal went unread. The recorded
+/// group is a registry row rather than a reading, so it is named on both.
 #[test]
 fn the_tether_wrapper_is_the_units_own_and_does_not_block_the_unit_it_tethers() {
     let workspace = workspace();
     let (home, environment) = workspace.unit_home("tethered");
     let mut command = workspace.quiet(&["run", "--tether", "sleep", "600"], &home);
     let mut run = Owned::spawn(&mut command);
+    // The `nodal run` process itself, which is the wrapper this test is about.
+    let wrapper = run.pid();
     wait_for("the tether to be recorded", || !workspace.tethers(environment).is_empty());
     let session = workspace.tethers(environment)[0].clone();
-    let wrapper = session.pid.expect("the row records the process that took the tether");
     let group = session.pgid.expect("the row records a group");
+    let commanded = session.pid.expect("the row records the command it started");
+    assert_ne!(commanded, wrapper, "the row records the command, not the wrapper");
     let _held = backstop(&[group]);
 
     // The exit code of `--check` carries the verdict, so the answer is read whatever it
@@ -322,48 +328,68 @@ fn the_tether_wrapper_is_the_units_own_and_does_not_block_the_unit_it_tethers() 
         .collect();
     assert!(groups.contains(&u64::from(group)), "the recorded group is named: {report}");
 
-    // Whatever the host, the wrapper is never reported as something standing in the home
-    // that a reclaim would refuse to move: either it is read as the unit's own, or it is
-    // not read at all.
-    let standing: Vec<u64> = runtime["bystanders"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|row| row["pid"].as_u64())
-        .collect();
-    assert!(
-        !standing.contains(&u64::from(wrapper)),
-        "the wrapper is not a stranger standing in the home: {report}"
-    );
-
-    let owned: Vec<u64> = runtime["processes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(serde_json::Value::as_u64)
-        .collect();
     if can_see_processes() {
-        assert!(owned.contains(&u64::from(wrapper)), "the wrapper is the unit's own: {report}");
-        assert!(
-            !report.to_string().contains("not signalled"),
-            "so nothing says a reclaim would refuse to move the home: {report}"
-        );
+        assert_read(report_ref(&report), wrapper, commanded);
     } else {
-        // A host with no process table read nothing, and says so rather than implying the
-        // machine was empty. Claiming the wrapper was owned here would be a claim this
-        // host did not earn.
-        assert!(owned.is_empty(), "nothing was read, so nothing is attributed: {report}");
-        assert!(standing.is_empty(), "and nothing is reported as standing: {report}");
-        let notes = runtime["notes"].as_array().unwrap();
-        assert!(
-            notes.iter().any(|note| note["signal"] == "environment"),
-            "the note says which signal went unread: {report}"
-        );
+        assert_unread(report_ref(&report));
     }
 
     // The tether is in a group of its own and outlives its wrapper on purpose, so the
     // backstop is what ends it.
     run.reclaim();
+}
+
+/// The runtime section of a check report.
+fn report_ref(report: &serde_json::Value) -> &serde_json::Value {
+    &report["runtime"]
+}
+
+/// The identifiers one list of the runtime section holds.
+fn listed(runtime: &serde_json::Value, list: &str) -> Vec<u64> {
+    runtime[list]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row.as_u64().or_else(|| row["pid"].as_u64()))
+        .collect()
+}
+
+/// What a host that can read its process table says about the wrapper.
+///
+/// The wrapper is vouched for by the group it started and is signalled by nothing. A
+/// reclaim reaches the group as a group, and the wrapper ends when the group it is
+/// waiting on does, so putting it in the list a teardown signals would be a second way of
+/// being certain that the registry never earned.
+fn assert_read(runtime: &serde_json::Value, wrapper: u32, commanded: u32) {
+    let standing = listed(runtime, "bystanders");
+    assert!(
+        !standing.contains(&u64::from(wrapper)),
+        "the `nodal run` wrapper is not a stranger standing in the home: {runtime}"
+    );
+    assert!(standing.is_empty(), "and nothing else is either: {runtime}");
+
+    let owned = listed(runtime, "processes");
+    assert!(
+        !owned.contains(&u64::from(wrapper)),
+        "and it is not a target a teardown signals: {runtime}"
+    );
+    assert!(
+        owned.contains(&u64::from(commanded)),
+        "the command it started carries the unit and is one: {runtime}"
+    );
+}
+
+/// What a host with no process table says: "I could not look", which is a different
+/// answer from "nothing is there". Claiming the wrapper was owned here would be a claim
+/// this host did not earn.
+fn assert_unread(runtime: &serde_json::Value) {
+    assert!(listed(runtime, "processes").is_empty(), "nothing was read: {runtime}");
+    assert!(listed(runtime, "bystanders").is_empty(), "and nothing stands: {runtime}");
+    let notes = runtime["notes"].as_array().unwrap();
+    assert!(
+        notes.iter().any(|note| note["signal"] == "environment"),
+        "the note says which signal went unread: {runtime}"
+    );
 }
 
 /// Whether this host can see the processes a unit is running.
