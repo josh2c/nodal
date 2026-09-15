@@ -99,6 +99,15 @@ pub(crate) const ENV_NAME: Shape = Shape {
 pub(crate) const TOKEN: Shape =
     Shape { name: "token", pattern: "^[\\x21-\\x7E]+$", max_len: 255, structure: is_token };
 
+/// A program's version: dot-separated numbers, with a pre-release or build after them.
+/// Nine digits a number, because a tenth is not a version component.
+pub(crate) const VERSION: Shape = Shape {
+    name: "version",
+    pattern: "^[0-9]{1,9}(\\.[0-9]{1,9}){0,3}([-+][0-9A-Za-z.-]+)?$",
+    max_len: 64,
+    structure: is_version,
+};
+
 /// A single line of text for a person to read: anything printable, on one line.
 pub(crate) const LINE: Shape = Shape {
     name: "line",
@@ -109,8 +118,18 @@ pub(crate) const LINE: Shape = Shape {
 
 /// Every shape, so that the agreement test cannot miss one.
 #[cfg(test)]
-pub(crate) const SHAPES: &[&Shape] =
-    &[&ULID, &DIGEST, &OBJECT_ID, &SLUG, &SQL_IDENTIFIER, &ENV_NAME, &BRANCH, &TOKEN, &LINE];
+pub(crate) const SHAPES: &[&Shape] = &[
+    &ULID,
+    &DIGEST,
+    &OBJECT_ID,
+    &SLUG,
+    &SQL_IDENTIFIER,
+    &ENV_NAME,
+    &BRANCH,
+    &TOKEN,
+    &LINE,
+    &VERSION,
+];
 
 /// The alphabet of a canonical ULID: Crockford base-32 without `I`, `L`, `O` and `U`.
 fn is_crockford_upper(byte: u8) -> bool {
@@ -123,6 +142,20 @@ fn is_canonical_ulid(value: &str) -> bool {
     bytes.len() == 26
         && matches!(bytes[0], b'0'..=b'7')
         && bytes.iter().copied().all(is_crockford_upper)
+}
+
+/// Dot-separated groups of one to nine digits, then an optional pre-release or build.
+fn is_version(value: &str) -> bool {
+    let cut = value.find(['-', '+']).unwrap_or(value.len());
+    let (head, tail) = value.split_at(cut);
+    let numbers: Vec<&str> = head.split('.').collect();
+    let sound =
+        |group: &&str| (1..=9).contains(&group.len()) && group.bytes().all(|b| b.is_ascii_digit());
+    (1..=4).contains(&numbers.len())
+        && numbers.iter().all(sound)
+        && (tail.is_empty()
+            || (tail.len() > 1
+                && tail[1..].bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')))
 }
 
 fn is_hex_digest(value: &str) -> bool {

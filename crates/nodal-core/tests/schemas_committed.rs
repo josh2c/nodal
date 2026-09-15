@@ -32,6 +32,13 @@ const EMBEDDED_TYPES: &[&str] = &[
     "Sync",
     // A line of a manifest's missing-name report, published inside `Manifest`.
     "Missing",
+    // Whether a working copy is ready, published inside the report of whatever was
+    // asked about: a created unit, or a base.
+    "Readiness",
+    // What built a base and with what, published inside `Base`.
+    "Provenance",
+    // A program's version, which is a scalar with an order rather than a record.
+    "Version",
 ];
 
 fn model_dir() -> PathBuf {

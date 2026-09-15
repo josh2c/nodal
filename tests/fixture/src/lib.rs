@@ -31,6 +31,7 @@
 #![allow(dead_code, reason = "each caller uses the part of the fixture it needs")]
 
 mod files;
+pub mod polyglot;
 pub mod read_only;
 pub mod shapes;
 

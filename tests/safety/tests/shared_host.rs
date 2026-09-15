@@ -290,6 +290,7 @@ fn a_project_row_with_no_remote_is_given_one_from_its_own_checkout() {
                  ALTER TABLE lock DROP COLUMN pid;\n\
                  ALTER TABLE lock DROP COLUMN taken_at;\n\
                  ALTER TABLE lock DROP COLUMN refreshed_at;\n\
+                 ALTER TABLE base DROP COLUMN provenance;\n\
                  PRAGMA user_version = 8;",
             )
             .unwrap();

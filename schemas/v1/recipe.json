@@ -634,11 +634,14 @@
           "$ref": "#/$defs/PackageManager"
         },
         {
-          "type": "null"
+          "items": {
+            "$ref": "#/$defs/PackageManager"
+          },
+          "type": "array"
         }
       ],
-      "default": null,
-      "description": "The package manager."
+      "default": [],
+      "description": "Every package manager the project installs with, the primary first.\n\nWritten as one name or as a list of them. A repository of more than one\necosystem has more than one, and a base installs each of them in this order.\nThe first is the primary: the one a bare script name resolves against."
     },
     "package_manager_pin": {
       "anyOf": [

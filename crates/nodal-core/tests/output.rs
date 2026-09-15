@@ -20,11 +20,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use nodal_core::git::integration::{Divergence, Integration, Reason};
+use nodal_core::model::base::Provenance;
+use nodal_core::model::readiness::{Readiness, State};
+use nodal_core::model::recipe::{ToolName, ToolVersion};
 use nodal_core::model::{
     Actor, ActorKind, ActorName, Base, BaseId, BranchName, CommitId, Digest, EnvId, EnvName,
     EnvState, Epistemic, Event, EventId, EventKind, FingerprintPart, HostName, Missing, Needs,
     Objective, Platform, PortName, Ports, ProjectId, ProjectName, Slug, Timestamp, UnitId,
-    UnitStatus, Want, WorkspaceFp,
+    UnitStatus, Version, Want, WorkspaceFp,
 };
 use nodal_core::output::view::verdict::{Behind, RowKind, Verdict, WorktreeRow};
 use nodal_core::output::view::{
@@ -129,6 +132,7 @@ fn units() -> Vec<UnitRow> {
                 home: PathBuf::from("/home/j/.nodal/project/e/01J9X2K4"),
                 state: EnvState::Stopped,
                 managed: true,
+                made_by: Some(Version::parse("0.1.0").expect("a sample version")),
                 disk_bytes: Some(287_000_000),
                 ports: ports(&[("app", 41_230)]),
                 running: Vec::new(),
@@ -169,6 +173,7 @@ fn units() -> Vec<UnitRow> {
                 home: PathBuf::from("/home/j/.nodal/project/e/01J9X3M8"),
                 state: EnvState::Running,
                 managed: true,
+                made_by: Some(Version::parse("0.1.0").expect("a sample version")),
                 disk_bytes: Some(301_000_000),
                 ports: ports(&[("app", 41_231), ("postgrest", 54_401)]),
                 running: vec![Running { command: String::from("next dev"), port: Some(41_231) }],
@@ -310,9 +315,25 @@ fn base_list() -> BaseList {
                 path: PathBuf::from("/home/j/.nodal/project/base/7f3e"),
                 built_at: at("2026-09-05T09:00:00Z"),
                 last_used: at("2026-09-06T13:22:00Z"),
+                provenance: Some(Provenance {
+                    nodal_version: Version::parse("0.1.0").expect("a version"),
+                    install: vec![vec![String::from("pnpm"), String::from("install")]],
+                    warm: vec![String::from("pnpm"), String::from("run"), String::from("build")],
+                    tools: std::collections::BTreeMap::from([(
+                        ToolName::parse("pnpm").expect("a tool name"),
+                        ToolVersion::parse("9.12.3").expect("a tool version"),
+                    )]),
+                    recipe: digest("c1d2e3f405"),
+                }),
             },
             pins: 1,
             disk_bytes: Some(1_160_000_000),
+            readiness: Readiness {
+                dependencies: State::Ready,
+                build: State::Unknown {
+                    why: String::from("a `pnpm` build names no output directory this can check"),
+                },
+            },
         }],
     }
 }
@@ -552,6 +573,14 @@ fn a_created_unit_renders_both_ways() {
             EnvName::parse("REDIS_URL").expect("an env name"),
             EnvName::parse("SUPABASE_URL").expect("an env name"),
         ],
+        readiness: Readiness {
+            dependencies: State::Cold {
+                why: String::from("node_modules is not there; `pnpm` has not run here"),
+            },
+            build: State::Unknown {
+                why: String::from("a `pnpm` build names no output directory this can check"),
+            },
+        },
     };
     both("created", &created);
 }
@@ -575,6 +604,7 @@ fn an_adopted_unit_closes_with_a_summary_of_what_happened() {
         missing: missing(),
         kept: Vec::new(),
         stand_ins: Vec::new(),
+        readiness: Readiness { dependencies: State::Ready, build: State::Ready },
     };
     both("created_adopted", &adopted);
 }
@@ -590,6 +620,7 @@ fn an_adoption_with_nothing_missing_still_says_what_it_did() {
         missing: Vec::new(),
         kept: Vec::new(),
         stand_ins: Vec::new(),
+        readiness: Readiness { dependencies: State::Ready, build: State::Ready },
     };
     both("created_adopted_complete", &adopted);
 }

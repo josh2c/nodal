@@ -1,0 +1,21 @@
+-- 0012 base provenance: what built a base, and with what.
+--
+-- A base recorded where it came from and when, and nothing about what made it. So a
+-- base that behaved unlike a fresh one could not be compared with one: which release
+-- built it, which installs it ran, which tools answered them and which recipe it read
+-- were all gone the moment the build finished.
+--
+-- One column, holding the whole record as JSON, the way `environment.ports` already
+-- holds a table. The record is written and read as one value, and nothing queries a
+-- part of it, so one column says that and five would invite a reader to think some
+-- part of it could be set without the rest.
+--
+-- Null for a row written before this migration, which is what makes the presence rule
+-- structural: a base either has a provenance or has none, and a base with none is
+-- exactly what this record exists to make visible. Nothing is invented for such a row
+-- and nothing is rebuilt because of one.
+--
+-- None of this is part of a base's key. A base is keyed by its workspace fingerprint
+-- and its platform, and it stays warm across a change to anything in here.
+
+ALTER TABLE base ADD COLUMN provenance TEXT;

@@ -29,6 +29,8 @@ pub mod build;
 pub mod lru;
 pub mod pin;
 pub mod progress;
+pub mod provenance;
+pub mod warmth;
 
 pub use crate::substrate::bases::{Outcome, Request, ensure, evict, gc, list, pins, resolve};
 pub use crate::substrate::build::{BaseBuild, Origin, Params};

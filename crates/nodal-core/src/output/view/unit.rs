@@ -8,7 +8,7 @@ use crate::git::integration::{Divergence, Integration};
 use crate::model::{
     ActorName, BranchName, EnvId, EnvState, Environment, Epistemic, Event, FingerprintPart,
     HostName, Lock, Needs, Objective, Ports, ProjectName, Slug, Timestamp, Unit, UnitId,
-    UnitStatus,
+    UnitStatus, Version,
 };
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, NONE, Table};
@@ -155,6 +155,11 @@ pub struct EnvLine {
     pub ports: Ports,
     /// Processes attributed to it.
     pub running: Vec<Running>,
+    /// The Nodal that made this home, as its own manifest records it. `None` when the
+    /// manifest cannot be read, which is what a home made before homes recorded one,
+    /// and a home whose manifest has gone, both look like.
+    #[serde(default)]
+    pub made_by: Option<Version>,
 }
 
 impl EnvLine {
@@ -169,8 +174,18 @@ impl EnvLine {
             disk_bytes: None,
             ports: environment.ports.clone(),
             running: Vec::new(),
+            made_by: made_by(&environment.home),
         }
     }
+}
+
+/// The version of Nodal a home's own manifest says made it.
+///
+/// One small read of one file per row, which is the same cost as the `stat` calls a
+/// list already makes of every home, and no process. A home with no readable manifest
+/// answers nothing rather than answering a guess.
+fn made_by(home: &std::path::Path) -> Option<Version> {
+    crate::env::files::read_manifest(home).ok().map(|manifest| manifest.binary_version)
 }
 
 /// One unit, as a list shows it.
@@ -439,6 +454,13 @@ fn detail_fields(unit: &UnitRow, now: Timestamp) -> Vec<Field> {
         fields.push(Field::new("ports", ports_cell(environment)));
         fields.push(Field::new("running", running_cell(unit)));
         fields.push(Field::new("disk", disk_cell(unit)));
+        fields.push(Field::new(
+            "made by",
+            environment
+                .made_by
+                .as_ref()
+                .map_or_else(|| String::from(NONE), |version| format!("nodal {version}")),
+        ));
     }
     fields.push(Field::new("last", last_cell(unit, now)));
     fields

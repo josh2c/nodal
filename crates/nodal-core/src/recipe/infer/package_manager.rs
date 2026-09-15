@@ -1,10 +1,16 @@
-//! Which package manager the project installs with, and the version it pins.
+//! Which package managers the project installs with, and the version it pins.
 //!
 //! The lockfile is the evidence: it is committed, it is the file CI installs from, and
-//! it names exactly one manager. The order below is the order of specificity, so a
-//! repository that carries two lockfiles resolves to the one its own tooling would use.
+//! it names exactly one manager. A repository of one ecosystem carries one; a repository
+//! of a Rust binary, a Node CLI and a Python tool carries three, and every one of them
+//! has to be installed or the base is warm for a third of the tree.
+//!
+//! So every lockfile present is proposed, in the order below, and the first is the
+//! primary: the manager a bare script name resolves against. The order is the order of
+//! specificity inside an ecosystem, so a repository that carries both a `pnpm-lock.yaml`
+//! and a `package-lock.json` still installs with the one its own tooling would use.
 
-use crate::model::recipe::{PackageManager, Recipe, ToolVersion};
+use crate::model::recipe::{Ecosystem, PackageManager, Recipe, ToolVersion};
 use crate::recipe::infer::{Confidence, Project, Proposal};
 
 /// The lockfile each package manager writes, most specific first.
@@ -19,11 +25,22 @@ const LOCKFILES: &[(&str, PackageManager)] = &[
 ];
 
 /// Propose `package_manager` and `package_manager_pin`.
+///
+/// One manager per ecosystem. Two lockfiles of one ecosystem are a repository mid-way
+/// through changing manager, and installing with both would write two dependency trees
+/// over each other, so the more specific one wins and the other is not proposed.
 #[must_use]
 pub fn infer(project: &Project, _so_far: &Recipe) -> Proposal {
     let mut proposal = Proposal::default();
-    if let Some((_, manager)) = LOCKFILES.iter().find(|(lockfile, _)| project.exists(lockfile)) {
-        proposal.recipe.package_manager = Some(*manager);
+    let mut ecosystems: Vec<Ecosystem> = Vec::new();
+    for (lockfile, manager) in LOCKFILES {
+        if !project.exists(lockfile) || ecosystems.contains(&manager.ecosystem()) {
+            continue;
+        }
+        ecosystems.push(manager.ecosystem());
+        proposal.recipe.package_manager.push(*manager);
+    }
+    if !proposal.recipe.package_manager.is_empty() {
         proposal = proposal.sure("package_manager", Confidence::High);
     }
     proposal.recipe.package_manager_pin = project
@@ -34,9 +51,12 @@ pub fn infer(project: &Project, _so_far: &Recipe) -> Proposal {
     proposal
 }
 
-/// The command that runs a named script, in the package manager the recipe settled on.
+/// The command that runs a script a `package.json` declares.
+///
+/// The manager that reads that file, not the primary: a repository whose primary is
+/// Cargo still runs its `package.json` scripts with its Node manager.
 #[must_use]
 pub fn run_script(recipe: &Recipe, script: &str) -> String {
-    let program = recipe.package_manager.unwrap_or(PackageManager::Npm).program();
+    let program = recipe.script_manager().unwrap_or(PackageManager::Npm).program();
     format!("{program} run {script}")
 }

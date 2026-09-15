@@ -27,6 +27,8 @@
 
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
+
 use crate::model::recipe::{PackageManager, Recipe};
 use crate::{Error, Result};
 
@@ -51,28 +53,39 @@ pub trait Host {
     fn version(&self, program: &str) -> Option<String>;
 }
 
-/// How a base build runs the package manager's install.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// How a base build runs one package manager's install.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Install {
-    /// The program and its arguments. Empty when the project has no package manager.
+    /// Whose install this is. The step it becomes is named after it, so a build of a
+    /// repository of three ecosystems has three named steps rather than three called
+    /// the same thing.
+    pub manager: PackageManager,
+    /// The program and its arguments.
     pub argv: Vec<String>,
     /// Variables the install needs, on top of the ones it inherits.
     pub env: Vec<(String, String)>,
 }
 
-/// The install a base build runs, with the pin acted on.
+/// Every install a base build runs, in the recipe's order, with each pin acted on.
+///
+/// One per package manager the recipe names, because a repository of three ecosystems
+/// whose base installed one of them is a base that is warm for a third of its tree.
+/// They run one after another; the price of "warm" being true is a longer build.
 ///
 /// # Errors
 /// [`Error::ToolPin`] when the project pins a version this host cannot run and nothing
 /// on the path can fetch it. The caller has not made a directory yet, which is why this
 /// is called where it is.
-pub fn install(recipe: &Recipe, host: &dyn Host) -> Result<Install> {
-    let argv = super::build::install_argv(recipe);
-    let (Some(manager), Some(pin)) = (recipe.package_manager, pinned(recipe)) else {
-        return Ok(Install { argv, env: Vec::new() });
-    };
-    let Some((program, rest)) = argv.split_first() else {
-        return Ok(Install { argv, env: Vec::new() });
+pub fn installs(recipe: &Recipe, host: &dyn Host) -> Result<Vec<Install>> {
+    recipe.package_manager.iter().map(|manager| install(recipe, *manager, host)).collect()
+}
+
+/// The install one manager runs, with its own pin acted on.
+fn install(recipe: &Recipe, manager: PackageManager, host: &dyn Host) -> Result<Install> {
+    let argv = super::build::install_argv(manager);
+    let plain = |argv: Vec<String>| Install { manager, argv, env: Vec::new() };
+    let (Some(pin), Some((program, rest))) = (pinned(recipe, manager), argv.split_first()) else {
+        return Ok(plain(argv));
     };
     let wanted = version_of(&pin, program);
 
@@ -80,7 +93,8 @@ pub fn install(recipe: &Recipe, host: &dyn Host) -> Result<Install> {
         let mut through = vec![String::from("corepack"), format!("{program}@{wanted}")];
         through.extend_from_slice(rest);
         let (name, value) = NO_DOWNLOAD_PROMPT;
-        return Ok(Install { argv: through, env: vec![(name.to_owned(), value.to_owned())] });
+        let env = vec![(name.to_owned(), value.to_owned())];
+        return Ok(Install { manager, argv: through, env });
     }
 
     if host.on_path("mise") {
@@ -91,11 +105,11 @@ pub fn install(recipe: &Recipe, host: &dyn Host) -> Result<Install> {
             String::from("--"),
         ];
         through.extend_from_slice(&argv);
-        return Ok(Install { argv: through, env: Vec::new() });
+        return Ok(plain(through));
     }
 
     match satisfied(host, program, &wanted) {
-        Verdict::Runnable => Ok(Install { argv, env: Vec::new() }),
+        Verdict::Runnable => Ok(plain(argv)),
         Verdict::Refused { found } => {
             Err(Error::ToolPin { tool: program.clone(), wanted: stated(&pin, program), found })
         }
@@ -139,16 +153,26 @@ const fn corepack_owns(manager: PackageManager) -> bool {
     matches!(manager, PackageManager::Pnpm | PackageManager::Yarn | PackageManager::Npm)
 }
 
-/// The version a project pins its package manager to, as the manifest writes it.
+/// The version a project pins one of its package managers to, as the manifest writes it.
 ///
 /// The dedicated key first, then the toolchain table under the tool's own name and
 /// under the `engines` name a `package.json` gives it. One of the three, whichever the
 /// project's manifests supplied.
-fn pinned(recipe: &Recipe) -> Option<String> {
+///
+/// `package_manager_pin` comes from a `packageManager` field, which names its own
+/// program, so it belongs to the manager it names. A repository whose primary is Cargo
+/// and whose `package.json` pins pnpm must not have that pin read as Cargo's. A pin
+/// that names no program is the primary manager's, for the reason the module doc gives.
+fn pinned(recipe: &Recipe, manager: PackageManager) -> Option<String> {
+    let program = manager.program();
     if let Some(pin) = recipe.package_manager_pin.as_ref() {
-        return Some(pin.as_str().to_owned());
+        let text = pin.as_str();
+        let named = text.starts_with(&format!("{program}@"));
+        let bare = !text.contains('@') && recipe.package_manager.first() == Some(&manager);
+        if named || bare {
+            return Some(text.to_owned());
+        }
     }
-    let program = recipe.package_manager?.program();
     for key in [program.to_owned(), format!("engines.{program}")] {
         if let Some((_, version)) = recipe.toolchain.iter().find(|(name, _)| name.as_str() == key) {
             return Some(version.as_str().to_owned());
@@ -217,9 +241,9 @@ fn runnable(path: &Path) -> bool {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 mod tests {
-    use super::{Host, Install, install};
-    use crate::Error;
+    use super::{Host, Install, installs};
     use crate::model::recipe::{PackageManager, Recipe, ToolName, ToolVersion};
+    use crate::{Error, Result};
 
     /// A host that answers whatever the test says, and starts nothing.
     struct Fake {
@@ -243,9 +267,16 @@ mod tests {
         Fake { tools: Vec::new(), version: Some("10.4.1") }
     }
 
+    /// The one install a recipe of a single manager produces.
+    fn only(recipe: &Recipe, host: &dyn Host) -> Result<Install> {
+        let mut resolved = installs(recipe, host)?;
+        assert_eq!(resolved.len(), 1, "this helper is for a recipe of one manager");
+        Ok(resolved.remove(0))
+    }
+
     fn pinned_recipe(pin: &str) -> Recipe {
         Recipe {
-            package_manager: Some(PackageManager::Pnpm),
+            package_manager: vec![PackageManager::Pnpm],
             package_manager_pin: Some(ToolVersion::parse(pin.to_owned()).unwrap()),
             ..Recipe::default()
         }
@@ -253,15 +284,16 @@ mod tests {
 
     #[test]
     fn a_project_with_no_pin_installs_as_it_always_did() {
-        let recipe = Recipe { package_manager: Some(PackageManager::Pnpm), ..Recipe::default() };
-        let resolved = install(&recipe, &bare_host()).unwrap();
-        assert_eq!(resolved, Install { argv: vec!["pnpm".into(), "install".into()], env: vec![] });
+        let recipe = Recipe { package_manager: vec![PackageManager::Pnpm], ..Recipe::default() };
+        let resolved = only(&recipe, &bare_host()).unwrap();
+        assert_eq!(resolved.argv, ["pnpm", "install"]);
+        assert!(resolved.env.is_empty());
     }
 
     #[test]
     fn corepack_runs_the_install_at_the_pinned_version() {
         let host = Fake { tools: vec!["corepack", "mise"], version: Some("10.4.1") };
-        let resolved = install(&pinned_recipe("11.7.0"), &host).unwrap();
+        let resolved = only(&pinned_recipe("11.7.0"), &host).unwrap();
         assert_eq!(resolved.argv, ["corepack", "pnpm@11.7.0", "install"]);
         assert_eq!(resolved.env, [(String::from("COREPACK_ENABLE_DOWNLOAD_PROMPT"), "0".into())]);
     }
@@ -269,20 +301,20 @@ mod tests {
     #[test]
     fn mise_runs_the_install_when_there_is_no_corepack() {
         let host = Fake { tools: vec!["mise"], version: Some("10.4.1") };
-        let resolved = install(&pinned_recipe("11.7.0"), &host).unwrap();
+        let resolved = only(&pinned_recipe("11.7.0"), &host).unwrap();
         assert_eq!(resolved.argv, ["mise", "exec", "pnpm@11.7.0", "--", "pnpm", "install"]);
     }
 
     #[test]
     fn a_host_of_the_pinned_major_series_installs_directly() {
         let host = Fake { tools: Vec::new(), version: Some("11.9.2") };
-        let resolved = install(&pinned_recipe("11.7.0"), &host).unwrap();
+        let resolved = only(&pinned_recipe("11.7.0"), &host).unwrap();
         assert_eq!(resolved.argv, ["pnpm", "install"]);
     }
 
     #[test]
     fn a_host_of_another_major_series_is_refused_by_name_and_version() {
-        let refused = install(&pinned_recipe("11.7.0"), &bare_host()).unwrap_err();
+        let refused = only(&pinned_recipe("11.7.0"), &bare_host()).unwrap_err();
         let told = refused.to_string();
         assert!(matches!(refused, Error::ToolPin { .. }), "the wrong error: {told}");
         assert_eq!(told, "needs pnpm 11.7.0; host has 10.x; install it or run `corepack enable`");
@@ -291,26 +323,26 @@ mod tests {
     #[test]
     fn a_host_without_the_tool_at_all_is_refused_too() {
         let host = Fake { tools: Vec::new(), version: None };
-        let refused = install(&pinned_recipe("11.7.0"), &host).unwrap_err();
+        let refused = only(&pinned_recipe("11.7.0"), &host).unwrap_err();
         assert!(refused.to_string().contains("host has nothing"), "{refused}");
     }
 
     #[test]
     fn a_pin_written_as_the_manifest_writes_it_is_read_the_same_way() {
         let host = Fake { tools: vec!["corepack"], version: Some("10.4.1") };
-        let resolved = install(&pinned_recipe("pnpm@11.7.0"), &host).unwrap();
+        let resolved = only(&pinned_recipe("pnpm@11.7.0"), &host).unwrap();
         assert_eq!(resolved.argv, ["corepack", "pnpm@11.7.0", "install"]);
     }
 
     #[test]
     fn a_range_is_compared_by_its_major_and_refused_in_the_words_it_was_written_in() {
-        let refused = install(&pinned_recipe("^11.0.0"), &bare_host()).unwrap_err();
+        let refused = only(&pinned_recipe("^11.0.0"), &bare_host()).unwrap_err();
         assert!(refused.to_string().contains("needs pnpm ^11.0.0"), "{refused}");
     }
 
     #[test]
     fn a_refusal_names_the_tool_once_when_the_pin_names_it_too() {
-        let refused = install(&pinned_recipe("pnpm@11.7.0"), &bare_host()).unwrap_err();
+        let refused = only(&pinned_recipe("pnpm@11.7.0"), &bare_host()).unwrap_err();
         assert_eq!(
             refused.to_string(),
             "needs pnpm 11.7.0; host has 10.x; install it or run `corepack enable`"
@@ -320,31 +352,97 @@ mod tests {
     #[test]
     fn a_toolchain_row_pins_the_package_manager_when_no_dedicated_key_does() {
         let mut recipe =
-            Recipe { package_manager: Some(PackageManager::Pnpm), ..Recipe::default() };
+            Recipe { package_manager: vec![PackageManager::Pnpm], ..Recipe::default() };
         recipe.toolchain.insert(
             ToolName::parse(String::from("engines.pnpm")).unwrap(),
             ToolVersion::parse(String::from("11.7.0")).unwrap(),
         );
-        let refused = install(&recipe, &bare_host()).unwrap_err();
+        let refused = only(&recipe, &bare_host()).unwrap_err();
         assert!(refused.to_string().contains("needs pnpm 11.7.0"), "{refused}");
     }
 
     #[test]
     fn a_version_neither_side_can_be_read_from_is_left_alone() {
         let host = Fake { tools: Vec::new(), version: Some("a nightly build") };
-        let resolved = install(&pinned_recipe("11.7.0"), &host).unwrap();
+        let resolved = only(&pinned_recipe("11.7.0"), &host).unwrap();
         assert_eq!(resolved.argv, ["pnpm", "install"]);
+    }
+
+    /// A repository of three ecosystems installs three times, in the recipe's order.
+    #[test]
+    fn every_manager_the_recipe_names_gets_its_own_install() {
+        let recipe = Recipe {
+            package_manager: vec![PackageManager::Cargo, PackageManager::Pnpm, PackageManager::Uv],
+            ..Recipe::default()
+        };
+        let resolved = installs(&recipe, &bare_host()).unwrap();
+        let argvs: Vec<Vec<String>> = resolved.iter().map(|one| one.argv.clone()).collect();
+        assert_eq!(argvs, [["cargo", "fetch"], ["pnpm", "install"], ["uv", "sync"]]);
+        assert_eq!(resolved[1].manager, PackageManager::Pnpm);
+    }
+
+    /// A `packageManager` field names its own program, so the pin it states belongs to
+    /// the manager it names and to no other.
+    #[test]
+    fn a_pin_that_names_its_program_is_not_read_as_another_managers() {
+        let recipe = Recipe {
+            package_manager: vec![PackageManager::Cargo, PackageManager::Pnpm],
+            package_manager_pin: Some(ToolVersion::parse(String::from("pnpm@11.7.0")).unwrap()),
+            ..Recipe::default()
+        };
+        let refused = installs(&recipe, &bare_host()).unwrap_err();
+        assert!(refused.to_string().contains("needs pnpm 11.7.0"), "{refused}");
+
+        let cargo_only = Recipe { package_manager: vec![PackageManager::Cargo], ..recipe.clone() };
+        let resolved = installs(&cargo_only, &bare_host()).unwrap();
+        assert_eq!(resolved[0].argv, ["cargo", "fetch"], "pnpm's pin was read as cargo's");
     }
 
     #[test]
     fn corepack_is_not_asked_to_fetch_a_package_manager_it_does_not_own() {
         let host = Fake { tools: vec!["corepack"], version: Some("0.5.1") };
         let recipe = Recipe {
-            package_manager: Some(PackageManager::Uv),
+            package_manager: vec![PackageManager::Uv],
             package_manager_pin: Some(ToolVersion::parse(String::from("1.2.3")).unwrap()),
             ..Recipe::default()
         };
-        let refused = install(&recipe, &host).unwrap_err();
+        let refused = only(&recipe, &host).unwrap_err();
         assert!(refused.to_string().contains("needs uv 1.2.3"), "{refused}");
+    }
+
+    /// A pin that names no program says nothing about the managers behind the primary.
+    /// Read as every manager's, this recipe would refuse the whole build because the
+    /// host's Cargo is not version 11.
+    #[test]
+    fn a_pin_that_names_no_program_binds_to_the_primary_manager_only() {
+        let recipe = Recipe {
+            package_manager: vec![PackageManager::Pnpm, PackageManager::Cargo],
+            package_manager_pin: Some(ToolVersion::parse(String::from("11.7.0")).unwrap()),
+            ..Recipe::default()
+        };
+        let refused = installs(&recipe, &bare_host()).unwrap_err();
+        assert!(refused.to_string().contains("needs pnpm 11.7.0"), "the primary: {refused}");
+
+        let cargo_first = Recipe {
+            package_manager: vec![PackageManager::Cargo, PackageManager::Pnpm],
+            ..recipe.clone()
+        };
+        let resolved = installs(&cargo_first, &bare_host()).unwrap_err();
+        assert!(resolved.to_string().contains("needs cargo 11.7.0"), "{resolved}");
+    }
+
+    /// The same recipe with the pin removed installs both managers and refuses neither.
+    #[test]
+    fn a_manager_behind_the_primary_is_not_refused_over_the_primarys_bare_pin() {
+        let recipe = Recipe {
+            package_manager: vec![PackageManager::Pnpm, PackageManager::Cargo],
+            package_manager_pin: Some(ToolVersion::parse(String::from("10.4.1")).unwrap()),
+            ..Recipe::default()
+        };
+        // The host answers 10.4.1, so the primary's pin is satisfied and cargo, which
+        // the pin says nothing about, is installed rather than refused.
+        let resolved = installs(&recipe, &bare_host()).unwrap();
+        let argvs: Vec<Vec<String>> = resolved.iter().map(|one| one.argv.clone()).collect();
+        assert_eq!(argvs, [["pnpm", "install"], ["cargo", "fetch"]]);
     }
 }

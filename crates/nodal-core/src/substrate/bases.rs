@@ -20,7 +20,8 @@ use crate::lifecycle;
 use crate::lifecycle::journal;
 use crate::model::recipe::Recipe;
 use crate::model::{
-    Base, BaseId, CommitId, OperationId, Platform, Project, ProjectId, Timestamp, WorkspaceFp,
+    Base, BaseId, CommitId, OperationId, Platform, Project, ProjectId, Timestamp, Version,
+    WorkspaceFp,
 };
 use crate::output::view::BaseRow;
 use crate::store::{Store, bases, environments};
@@ -28,6 +29,8 @@ use crate::substrate::build::{self, Origin, Params, ThisHost};
 use crate::substrate::lru;
 use crate::substrate::pin;
 use crate::substrate::progress::Reporter;
+use crate::substrate::provenance;
+use crate::substrate::warmth;
 use crate::workspace::home;
 use crate::workspace::remove::tree as remove_tree;
 use crate::{Error, Result};
@@ -91,15 +94,15 @@ pub fn ensure(
     let commit = CommitId::parse(git.rev_parse("HEAD")?.to_string())?;
     let fingerprint = workspace_key(&git, &platform)?;
     if let Some(base) = warm(store, request.project.id, &fingerprint, &platform)? {
-        progress.line(&format!("base {id} is warm for this workspace", id = base.id));
+        report(&base, &request.recipe, progress);
         return Ok(Outcome { base, fingerprint, origin: None });
     }
-    let install = pin::install(&request.recipe, &ThisHost)?;
+    let installs = pin::installs(&request.recipe, &ThisHost)?;
     let key = Key { fingerprint, platform, commit };
     if let Some(outcome) = carried_on(store, &key, progress)? {
         return Ok(outcome);
     }
-    build_one(store, request, &key, &install, progress)
+    build_one(store, request, &key, &installs, progress)
 }
 
 /// Offer the person what a failed attempt at this base left, and use it if they agree.
@@ -112,7 +115,25 @@ fn carried_on(
     key: &Key,
     progress: &Arc<dyn Reporter>,
 ) -> Result<Option<Outcome>> {
-    let Some(stopped) = stopped_at(store, key)? else { return Ok(None) };
+    let stopped = match stopped_at(store, key)? {
+        None => return Ok(None),
+        // A row this release cannot read is named rather than passed over. Nothing can
+        // be resumed from it, so the build starts again; what it says is where the
+        // earlier attempt's work is, so that a person can look at it or remove it
+        // rather than discover the directory months later with nothing to explain it.
+        Some(Attempt::Unreadable { destination, why }) => {
+            progress.line(&format!(
+                "an earlier build of this base was recorded by another version of nodal \
+                 and cannot be carried on: {why}"
+            ));
+            progress.line(&format!(
+                "starting again; what that build made is still at {kept}",
+                kept = build::kept_at(&destination).display()
+            ));
+            return Ok(None);
+        }
+        Some(Attempt::Resumable(stopped)) => *stopped,
+    };
     progress.line(&format!(
         "an earlier build of this base stopped at the {step} step: {why}",
         step = stopped.step,
@@ -136,6 +157,22 @@ fn carried_on(
     }))
 }
 
+/// What a failed build of this base amounts to for the invocation that found it.
+enum Attempt {
+    /// Its parameters read back, so it can be carried on. Boxed, because a whole set
+    /// of build parameters beside a path and a sentence is a lopsided value to move.
+    Resumable(Box<Stopped>),
+    /// Its parameters were written in a shape this release does not read. Nothing can
+    /// be rebuilt from them, and the directory the attempt left is named so that it is
+    /// not silently orphaned.
+    Unreadable {
+        /// Where that attempt was assembling its base.
+        destination: std::path::PathBuf,
+        /// Why the parameters could not be read.
+        why: String,
+    },
+}
+
 /// A failed build of the base this workspace wants, and where it got to.
 struct Stopped {
     /// The run, as the journal names it.
@@ -148,22 +185,51 @@ struct Stopped {
     why: String,
 }
 
+/// The three fields of a build's parameters that every release has written.
+///
+/// Read on their own, and before the whole, so that a row written in a shape this
+/// release does not read can still be recognised as this workspace's. Reading only the
+/// whole would make such a row invisible: it would be passed over as somebody else's,
+/// a new build would start, and the directory the earlier attempt left would stand
+/// there with nothing to say what it was.
+#[derive(serde::Deserialize)]
+struct Recognisable {
+    /// The workspace key the attempt was building for.
+    fingerprint: WorkspaceFp,
+    /// The platform it was building on.
+    platform: Platform,
+    /// Where it was assembling the base.
+    destination: std::path::PathBuf,
+}
+
 /// The newest failed build for this workspace key whose work is still on the disk.
 ///
 /// Still on the disk is half of the question. A person who removed what the attempt
 /// left by hand has answered it, and being asked about a directory that is not there
 /// would be a question with no good answer.
-fn stopped_at(store: &Store, key: &Key) -> Result<Option<Stopped>> {
+fn stopped_at(store: &Store, key: &Key) -> Result<Option<Attempt>> {
     for record in journal::failed(store.conn(), build::KIND)? {
-        let Ok(params) = serde_json::from_value::<Params>(record.params.clone()) else { continue };
-        if params.fingerprint != key.fingerprint || params.platform != key.platform {
+        let Ok(known) = serde_json::from_value::<Recognisable>(record.params.clone()) else {
+            continue;
+        };
+        if known.fingerprint != key.fingerprint || known.platform != key.platform {
             continue;
         }
-        if !build::unfinished(&params.destination) {
+        if !build::unfinished(&known.destination) {
             continue;
         }
+        let params = match serde_json::from_value::<Params>(record.params.clone()) {
+            Ok(params) => params,
+            Err(error) => {
+                return Ok(Some(Attempt::Unreadable {
+                    destination: known.destination,
+                    why: error.to_string(),
+                }));
+            }
+        };
         let Some((step, why)) = failing_step(store, record.id)? else { continue };
-        return Ok(Some(Stopped { operation: record.id, params, step, why }));
+        let stopped = Stopped { operation: record.id, params, step, why };
+        return Ok(Some(Attempt::Resumable(Box::new(stopped))));
     }
     Ok(None)
 }
@@ -233,12 +299,40 @@ fn warm(
     Ok(Some(base))
 }
 
+/// Say what the base this call found actually holds.
+///
+/// A row and a directory say a build finished. They do not say a package manager ever
+/// wrote anything, and a base cloned from a release that installed one manager of three
+/// is two thirds empty with a row that calls it warm. So the tree is asked, and a part
+/// a file proves is missing is named.
+///
+/// It is named and nothing more. The base is not deleted, and nothing is rebuilt on
+/// account of it: a cold part is information a person acts on, and a create that
+/// refused here would be a refusal nothing asked for.
+fn report(base: &Base, recipe: &Recipe, progress: &Arc<dyn Reporter>) {
+    let readiness = warmth::of(recipe, &base.path);
+    let cold = readiness.cold();
+    // The headline is the worst of the two parts. A part nothing can answer does not
+    // make a base cold — a Cargo base with every crate fetched holds no file that says
+    // so — so an unknown part is a line under the headline and not the headline itself.
+    if cold.is_empty() {
+        progress.line(&format!("base {id} is warm for this workspace", id = base.id));
+    } else {
+        progress.line(&format!("base {id} answers this workspace but is not ready", id = base.id));
+    }
+    for (part, state) in readiness.parts() {
+        if let Some(why) = state.why() {
+            progress.line(&format!("  {part}: {why}"));
+        }
+    }
+}
+
 /// Plan and run one build, then read back the row it committed.
 fn build_one(
     store: &mut Store,
     request: &Request,
     key: &Key,
-    install: &pin::Install,
+    installs: &[pin::Install],
     progress: &Arc<dyn Reporter>,
 ) -> Result<Outcome> {
     let id = BaseId::from_ulid(ulid::Ulid::new());
@@ -254,8 +348,10 @@ fn build_one(
         origin: origin.clone(),
         objects: request.source.clone(),
         excludes: request.recipe.base.exclude.clone(),
-        install: install.argv.clone(),
-        install_env: install.env.clone(),
+        installs: installs.to_vec(),
+        nodal_version: Version::of_this_binary(),
+        tools: provenance::of(&request.recipe, &ThisHost),
+        recipe_digest: fingerprint::compute_recipe(&request.recipe)?,
         warm: build::warm_argv(&request.recipe, request.warm),
         planned_at: Timestamp::now(),
     };
@@ -326,11 +422,12 @@ fn distance(base: &Base, commit: &CommitId) -> Option<u32> {
 ///
 /// # Errors
 /// Whatever the registry reports.
-pub fn list(store: &Store, project: ProjectId) -> Result<Vec<BaseRow>> {
+pub fn list(store: &Store, project: ProjectId, recipe: &Recipe) -> Result<Vec<BaseRow>> {
     let mut rows = Vec::new();
     for base in bases::list_for_project(store.conn(), project)? {
         let pins = environments::count_for_base(store.conn(), base.id)?;
-        rows.push(BaseRow { base, pins, disk_bytes: None });
+        let readiness = warmth::of(recipe, &base.path);
+        rows.push(BaseRow { base, pins, disk_bytes: None, readiness });
     }
     rows.reverse();
     Ok(rows)
@@ -395,14 +492,13 @@ pub fn gc(
     keep: usize,
     progress: &dyn Reporter,
 ) -> Result<Vec<Base>> {
-    let candidates: Vec<lru::Candidate> = list(store, project)?
-        .into_iter()
-        .map(|row| lru::Candidate {
-            id: row.base.id,
-            last_used: row.base.last_used,
-            pins: row.pins,
-        })
-        .collect();
+    // The registry rows and no more: eviction is decided by age and by holds, and a
+    // sweep has no recipe to ask a tree about.
+    let mut candidates: Vec<lru::Candidate> = Vec::new();
+    for base in bases::list_for_project(store.conn(), project)? {
+        let pins = environments::count_for_base(store.conn(), base.id)?;
+        candidates.push(lru::Candidate { id: base.id, last_used: base.last_used, pins });
+    }
     lru::evictable(&candidates, keep).into_iter().map(|id| evict(store, id, progress)).collect()
 }
 

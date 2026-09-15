@@ -3,6 +3,7 @@
 use rusqlite::{Connection, Row, params};
 
 use crate::Result;
+use crate::model::base::Provenance;
 use crate::model::{Base, BaseId, CommitId, Platform, ProjectId, Timestamp, WorkspaceFp};
 use crate::store::row;
 
@@ -11,7 +12,10 @@ const TABLE: &str = "base";
 
 /// Every column [`decode`] reads.
 const COLUMNS: &str =
-    "id, project_id, ws_fingerprint, platform, commit_id, path, built_at, last_used";
+    "id, project_id, ws_fingerprint, platform, commit_id, path, built_at, last_used, provenance";
+
+/// What a provenance column is called when the store refuses to encode one.
+const PROVENANCE: &str = "base provenance";
 
 /// Record a built base. One base exists per fingerprint and platform.
 ///
@@ -22,7 +26,7 @@ pub fn insert(conn: &Connection, base: &Base) -> Result<()> {
     row::write(
         conn,
         "INSERT INTO base (id, project_id, ws_fingerprint, platform, commit_id, path, built_at, \
-         last_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         last_used, provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             base.id.to_string(),
             base.project_id.to_string(),
@@ -32,6 +36,7 @@ pub fn insert(conn: &Connection, base: &Base) -> Result<()> {
             row::path_of(&base.path)?,
             base.built_at.unix_seconds(),
             base.last_used.unix_seconds(),
+            base.provenance.as_ref().map(|built| row::json_of(built, PROVENANCE)).transpose()?,
         ],
     )?;
     Ok(())
@@ -110,5 +115,6 @@ fn decode(row: &Row<'_>) -> Result<Base> {
         path: row::path(row, TABLE, "path")?,
         built_at: row::stamp(row, TABLE, "built_at")?,
         last_used: row::stamp(row, TABLE, "last_used")?,
+        provenance: row::json_opt::<Provenance>(row, TABLE, "provenance")?,
     })
 }

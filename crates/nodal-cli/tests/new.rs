@@ -682,3 +682,34 @@ fn a_unit_made_from_a_base_with_no_stale_cache_has_nothing_to_report() {
 fn reference<'a>(event: &'a Event, name: &str) -> Option<&'a str> {
     event.refs.get(&name.parse().unwrap()).map(String::as_str)
 }
+
+/// A create says whether the home it just made is ready to work in, part by part.
+///
+/// The build part is the one a file can answer here: the recipe states a Cargo build,
+/// `nodal new` does not run one ([`WARM_BUILD`] in `lifecycle::ops::new`), so the home
+/// has no `target` and the report has to say so. Nothing is refused for it: the unit is
+/// made, and the line is what saves a person the hour a build that fails for an unnamed
+/// reason costs.
+#[test]
+fn a_create_says_which_part_of_the_home_is_not_ready_yet() {
+    // A build command and no package manager: the create has nothing to install, so
+    // the test turns on the one part a file can answer here rather than on a host that
+    // happens to hold Cargo.
+    let workspace = Workspace::with_recipe(state::BINARY, "[commands]\nbuild = \"cargo build\"\n");
+
+    let made = workspace.nodal(&["new", "a readiness probe", "--name", "probe", "--json"]);
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&made.stdout).unwrap();
+    assert_eq!(json["readiness"]["build"]["state"], "cold", "{json}");
+    assert!(
+        json["readiness"]["build"]["why"].as_str().unwrap().contains("target/debug"),
+        "the line names the directory a person would look for: {json}"
+    );
+    assert_eq!(
+        json["readiness"]["dependencies"]["state"], "unknown",
+        "the project names no manager, so no file can answer: {json}"
+    );
+
+    let human = stdout(&workspace.nodal(&["show", "probe"]));
+    assert!(human.contains("made by"), "a home says which nodal made it: {human}");
+}

@@ -26,6 +26,7 @@
 //! So the directory takes the base's own name from the clone onwards, and a mark
 //! beside it says it is not a base yet until the last step takes the mark off.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -36,9 +37,13 @@ use crate::git::{self, Git, scrub};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::step::{Output, Outputs, nothing};
 use crate::lifecycle::{Plan, Rebuild, Recovery, Step};
-use crate::model::recipe::{PackageManager, Recipe};
+use crate::model::Digest;
+use crate::model::base::Provenance;
+use crate::model::recipe::{PackageManager, Recipe, ToolName, ToolVersion};
+use crate::model::version::Version;
 use crate::model::{Base, BaseId, CommitId, Platform, ProjectId, Timestamp, WorkspaceFp};
 use crate::store::bases;
+use crate::substrate::pin::Install;
 use crate::substrate::progress::Reporter;
 use crate::workspace::remove::tree as remove_tree;
 use crate::workspace::sharing::Sharing;
@@ -254,19 +259,19 @@ pub struct Params {
     pub objects: PathBuf,
     /// Paths the recipe keeps out of a copy.
     pub excludes: Vec<PathBuf>,
-    /// The package manager's install, as an argument list. Empty when the project has
-    /// no package manager, and written through `corepack` or `mise` when the project
-    /// pins a version and one of those is on the path ([`super::pin`]).
-    pub install: Vec<String>,
-    /// Variables the install needs on top of the ones it inherits.
-    ///
-    /// Defaulted when it is absent, because a journal row an older build wrote has no
-    /// such key and an interrupted build must still be finishable by a newer one.
-    #[serde(default)]
-    pub install_env: Vec<(String, String)>,
+    /// Every package manager's install, in the order they run. Empty when the project
+    /// has no package manager, and each is written through `corepack` or `mise` when
+    /// the project pins a version and one of those is on the path ([`super::pin`]).
+    pub installs: Vec<Install>,
     /// The project's build command, as an argument list. Empty unless a warm build was
     /// asked for and the command can run without a shell.
     pub warm: Vec<String>,
+    /// The version of the Nodal that planned the build.
+    pub nodal_version: Version,
+    /// What every tool the recipe names answered when it was asked, at the plan.
+    pub tools: BTreeMap<ToolName, ToolVersion>,
+    /// The effective recipe the build was planned from, by content.
+    pub recipe_digest: Digest,
     /// The instant the build was planned, which is what the row is stamped with.
     pub planned_at: Timestamp,
 }
@@ -283,6 +288,13 @@ impl Params {
             path: self.destination.clone(),
             built_at: self.planned_at,
             last_used: self.planned_at,
+            provenance: Some(Provenance {
+                nodal_version: self.nodal_version.clone(),
+                install: self.installs.iter().map(|install| install.argv.clone()).collect(),
+                warm: self.warm.clone(),
+                tools: self.tools.clone(),
+                recipe: self.recipe_digest.clone(),
+            }),
         }
     }
 }
@@ -314,30 +326,61 @@ pub fn plan(params: &Params, progress: &Arc<dyn Reporter>) -> Result<Plan> {
             objects: params.objects.clone(),
             progress: Arc::clone(progress),
         });
-    for (name, argv, note) in tools(params) {
-        if !argv.is_empty() {
-            let env = if name == "install" { params.install_env.clone() } else { Vec::new() };
-            plan = plan.then(Tool {
-                destination: params.destination.clone(),
-                name,
-                argv,
-                env,
-                note,
-                progress: Arc::clone(progress),
-            });
+    for tool in tools(params) {
+        if tool.argv.is_empty() {
+            continue;
         }
+        plan = plan.then(Tool {
+            destination: params.destination.clone(),
+            name: tool.name,
+            argv: tool.argv,
+            env: tool.env,
+            note: tool.note,
+            progress: Arc::clone(progress),
+        });
     }
     Ok(plan
         .then(Promote { destination: params.destination.clone(), progress: Arc::clone(progress) }))
 }
 
-/// The tool steps a build has, in order: install first, then the warm build that needs
-/// what the install put there.
-fn tools(params: &Params) -> [(&'static str, Vec<String>, String); 2] {
-    [
-        ("install", params.install.clone(), phrase("installing dependencies", &params.install)),
-        ("warm", params.warm.clone(), phrase("warming the build", &params.warm)),
-    ]
+/// One tool step of a build: what it is called in the journal, what it runs, and the
+/// line a person watching it reads.
+struct ToolStep {
+    /// The journal key, which is what a resumed build and a failure report name.
+    name: String,
+    /// The program and its arguments.
+    argv: Vec<String>,
+    /// Variables it needs on top of the ones it inherits.
+    env: Vec<(String, String)>,
+    /// The progress line.
+    note: String,
+}
+
+/// The tool steps a build has, in order: every install, then the warm build that needs
+/// what the installs put there.
+///
+/// Each install is named after its own package manager, so that a repository of three
+/// ecosystems has three keys in the journal rather than one key three times. A resumed
+/// build then restarts at the manager it stopped on and does not repeat the two before
+/// it.
+fn tools(params: &Params) -> Vec<ToolStep> {
+    let mut steps: Vec<ToolStep> = params
+        .installs
+        .iter()
+        .map(|install| ToolStep {
+            name: format!("install.{program}", program = install.manager.program()),
+            argv: install.argv.clone(),
+            env: install.env.clone(),
+            note: phrase("installing dependencies", &install.argv),
+        })
+        .collect();
+    steps.push(ToolStep {
+        name: String::from("warm"),
+        argv: params.warm.clone(),
+        env: Vec::new(),
+        note: phrase("warming the build", &params.warm),
+    });
+    steps
 }
 
 /// A progress line naming what is about to run.
@@ -579,8 +622,9 @@ impl Step for Checkout {
 struct Tool {
     /// Where it runs.
     destination: PathBuf,
-    /// What the step is called in the journal.
-    name: &'static str,
+    /// What the step is called in the journal. One install step per package manager,
+    /// so the name carries which manager it belongs to.
+    name: String,
     /// The program and its arguments.
     argv: Vec<String>,
     /// Variables it needs on top of the ones it inherits.
@@ -593,7 +637,7 @@ struct Tool {
 
 impl Step for Tool {
     fn key(&self) -> String {
-        String::from(self.name)
+        self.name.clone()
     }
 
     fn apply(&self) -> Result<Output> {
@@ -757,17 +801,14 @@ fn remove(path: &Path) -> Result<()> {
     remove_tree(path)
 }
 
-/// Installing dependencies, as the recipe's package manager spells it.
+/// Installing dependencies, as one package manager spells it.
 ///
 /// Plain `install` rather than a frozen or offline form: a base is built for a
 /// workspace fingerprint that includes the lockfile, so the lockfile is exactly what
 /// the install is being asked to realise, and a base built for a branch that is
 /// updating its dependencies must still build.
 #[must_use]
-pub fn install_argv(recipe: &Recipe) -> Vec<String> {
-    let Some(manager) = recipe.package_manager else {
-        return Vec::new();
-    };
+pub fn install_argv(manager: PackageManager) -> Vec<String> {
     let verb = match manager {
         PackageManager::Cargo => "fetch",
         PackageManager::Uv => "sync",
@@ -814,27 +855,22 @@ mod tests {
     use super::{argv, install_argv, warm_argv};
     use crate::model::recipe::{CommandLine, PackageManager, Recipe};
 
-    fn recipe(manager: Option<PackageManager>, build: Option<&str>) -> Recipe {
-        let mut recipe = Recipe { package_manager: manager, ..Recipe::default() };
+    fn recipe(managers: &[PackageManager], build: Option<&str>) -> Recipe {
+        let mut recipe = Recipe { package_manager: managers.to_vec(), ..Recipe::default() };
         recipe.commands.build = build.map(|line| CommandLine::parse(line).unwrap());
         recipe
     }
 
     #[test]
     fn each_package_manager_installs_in_its_own_words() {
-        assert_eq!(install_argv(&recipe(Some(PackageManager::Pnpm), None)), ["pnpm", "install"]);
-        assert_eq!(install_argv(&recipe(Some(PackageManager::Cargo), None)), ["cargo", "fetch"]);
-        assert_eq!(install_argv(&recipe(Some(PackageManager::Uv), None)), ["uv", "sync"]);
-    }
-
-    #[test]
-    fn a_project_with_no_package_manager_has_nothing_to_install() {
-        assert!(install_argv(&recipe(None, None)).is_empty());
+        assert_eq!(install_argv(PackageManager::Pnpm), ["pnpm", "install"]);
+        assert_eq!(install_argv(PackageManager::Cargo), ["cargo", "fetch"]);
+        assert_eq!(install_argv(PackageManager::Uv), ["uv", "sync"]);
     }
 
     #[test]
     fn a_warm_build_runs_only_when_it_was_asked_for() {
-        let recipe = recipe(Some(PackageManager::Pnpm), Some("pnpm run build"));
+        let recipe = recipe(&[PackageManager::Pnpm], Some("pnpm run build"));
         assert!(warm_argv(&recipe, false).is_empty());
         assert_eq!(warm_argv(&recipe, true), ["pnpm", "run", "build"]);
     }

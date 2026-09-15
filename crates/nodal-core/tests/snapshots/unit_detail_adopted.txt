@@ -12,4 +12,5 @@
   ports      app 41231 · postgrest 54401
   running    next dev :41231
   disk       301 MB
+  made by    nodal 0.1.0
   last       now

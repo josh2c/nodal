@@ -41,7 +41,7 @@ fn init_writes_the_recipe_and_names_every_gap() {
     }
 
     let written = std::fs::read_to_string(root.join("nodal.toml")).unwrap();
-    assert!(written.contains("package_manager = \"pnpm\""), "{written}");
+    assert!(written.contains("package_manager = [\"pnpm\"]"), "{written}");
     assert!(written.contains("# GAP:"), "{written}");
 }
 

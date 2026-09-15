@@ -99,12 +99,12 @@ mod tests {
         let mut inferred = Recipe::default();
         inferred.commands.test = Some(line("pnpm run test"));
         inferred.commands.dev = Some(line("pnpm run dev"));
-        inferred.package_manager = Some(PackageManager::Pnpm);
+        inferred.package_manager = vec![PackageManager::Pnpm];
 
         let merged = explicit.merge(inferred);
         assert_eq!(merged.commands.test, Some(line("cargo test")));
         assert_eq!(merged.commands.dev, Some(line("pnpm run dev")));
-        assert_eq!(merged.package_manager, Some(PackageManager::Pnpm));
+        assert_eq!(merged.package_manager, [PackageManager::Pnpm]);
     }
 
     #[test]

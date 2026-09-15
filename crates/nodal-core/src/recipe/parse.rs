@@ -34,13 +34,30 @@ mod tests {
     fn reads_the_keys_it_is_given_and_leaves_the_rest_unset() {
         let recipe =
             parse("package_manager = \"pnpm\"\n[commands]\ntest = \"just test\"\n", "x").unwrap();
-        assert_eq!(recipe.package_manager, Some(PackageManager::Pnpm));
+        assert_eq!(recipe.package_manager, [PackageManager::Pnpm]);
         assert_eq!(
             recipe.commands.test.as_ref().map(ToString::to_string),
             Some("just test".into())
         );
         assert_eq!(recipe.backend, None);
         assert_eq!(recipe.backend(), Backend::Native);
+    }
+
+    /// A recipe written before a project had more than one ecosystem still loads, and
+    /// a recipe that names several installs them in the order it wrote.
+    #[test]
+    fn the_package_manager_key_is_read_as_one_manager_or_as_several() {
+        let one = parse("package_manager = \"pnpm\"\n", "x").unwrap();
+        assert_eq!(one.package_manager, [PackageManager::Pnpm]);
+        assert_eq!(one.package_manager.first().copied(), Some(PackageManager::Pnpm));
+
+        let many = parse("package_manager = [\"cargo\", \"pnpm\", \"uv\"]\n", "x").unwrap();
+        assert_eq!(
+            many.package_manager,
+            [PackageManager::Cargo, PackageManager::Pnpm, PackageManager::Uv]
+        );
+        assert_eq!(many.package_manager.first().copied(), Some(PackageManager::Cargo));
+        assert_eq!(many.script_manager(), Some(PackageManager::Pnpm));
     }
 
     #[test]

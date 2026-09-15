@@ -79,7 +79,43 @@ pub enum PackageManager {
     Poetry,
 }
 
+/// The dependency tree a package manager writes.
+///
+/// Two managers of one ecosystem write the same tree, so a project installs with at
+/// most one of them, and every question of the form "which half of this repository is
+/// this manager about" is this one answer. It is not a recipe key: nothing writes it
+/// down, because a manager already says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Ecosystem {
+    /// `node_modules`.
+    Node,
+    /// The Cargo registry cache.
+    Rust,
+    /// A virtual environment.
+    Python,
+}
+
 impl PackageManager {
+    /// Which dependency tree this manager writes.
+    #[must_use]
+    pub const fn ecosystem(self) -> Ecosystem {
+        match self {
+            Self::Pnpm | Self::Yarn | Self::Npm | Self::Bun => Ecosystem::Node,
+            Self::Cargo => Ecosystem::Rust,
+            Self::Uv | Self::Poetry => Ecosystem::Python,
+        }
+    }
+
+    /// Whether this manager runs the scripts a `package.json` declares.
+    ///
+    /// A repository with a Node manager and a Cargo manager has two script vocabularies
+    /// in it, and a name out of `package.json` has to be run by the manager that reads
+    /// that file.
+    #[must_use]
+    pub const fn runs_package_json_scripts(self) -> bool {
+        matches!(self.ecosystem(), Ecosystem::Node)
+    }
+
     /// The binary this package manager is invoked as.
     #[must_use]
     pub fn program(self) -> &'static str {
@@ -92,6 +128,50 @@ impl PackageManager {
             Self::Uv => "uv",
             Self::Poetry => "poetry",
         }
+    }
+}
+
+/// Read the `package_manager` key in either spelling a recipe may write it in.
+///
+/// Reading only. A list writes itself, so the key always comes out as a list and the
+/// two spellings exist on the way in and nowhere else.
+mod written {
+    use serde::{Deserialize, Deserializer};
+
+    use super::PackageManager;
+
+    /// One manager, or several. The shape a recipe file may hold, and no part of the
+    /// model: [`deserialize`] turns it into the list before anything else sees it.
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        /// `package_manager = "pnpm"`.
+        One(PackageManager),
+        /// `package_manager = ["cargo", "pnpm"]`.
+        Many(Vec<PackageManager>),
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        input: D,
+    ) -> Result<Vec<PackageManager>, D::Error> {
+        Ok(match OneOrMany::deserialize(input)? {
+            OneOrMany::One(manager) => vec![manager],
+            OneOrMany::Many(managers) => managers,
+        })
+    }
+
+    /// What the published schema says the key accepts.
+    ///
+    /// Written here rather than derived from the reading type above, so that the schema
+    /// describes the shape a recipe file may hold and names nothing of this program's
+    /// own.
+    pub(super) fn schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let manager = generator.subschema_for::<PackageManager>();
+        let value = serde_json::json!({
+            "description": "One package manager, or several with the primary first.",
+            "anyOf": [manager, { "type": "array", "items": manager }],
+        });
+        schemars::Schema::try_from(value).unwrap_or_default()
     }
 }
 
@@ -277,8 +357,14 @@ pub struct LockPolicy {
 pub struct Recipe {
     /// Where commands run.
     pub backend: Option<Backend>,
-    /// The package manager.
-    pub package_manager: Option<PackageManager>,
+    /// Every package manager the project installs with, the primary first.
+    ///
+    /// Written as one name or as a list of them. A repository of more than one
+    /// ecosystem has more than one, and a base installs each of them in this order.
+    /// The first is the primary: the one a bare script name resolves against.
+    #[serde(deserialize_with = "written::deserialize")]
+    #[schemars(schema_with = "written::schema")]
+    pub package_manager: Vec<PackageManager>,
     /// The exact package-manager version the project pins, as written in its manifest.
     pub package_manager_pin: Option<ToolVersion>,
     /// Whether the repository holds more than one package.
@@ -319,6 +405,12 @@ impl Recipe {
     #[must_use]
     pub fn backend(&self) -> Backend {
         self.backend.unwrap_or(Backend::Native)
+    }
+
+    /// The manager that runs what a `package.json` declares, when the project has one.
+    #[must_use]
+    pub fn script_manager(&self) -> Option<PackageManager> {
+        self.package_manager.iter().copied().find(|m| m.runs_package_json_scripts())
     }
 
     /// Whether the repository holds more than one package.

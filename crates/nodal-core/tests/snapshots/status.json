@@ -44,7 +44,8 @@
         "ports": {
           "app": 41230
         },
-        "running": []
+        "running": [],
+        "made_by": "0.1.0"
       },
       "created_at": "2026-09-04T09:15:00Z",
       "holder": null,
@@ -101,7 +102,8 @@
             "command": "next dev",
             "port": 41231
           }
-        ]
+        ],
+        "made_by": "0.1.0"
       },
       "created_at": "2026-09-06T09:40:00Z",
       "holder": {

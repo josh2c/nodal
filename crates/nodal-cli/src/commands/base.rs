@@ -121,8 +121,8 @@ impl Base {
 
 /// Every base of the project, with the units holding each one.
 fn ls(common: &Common, store: &mut Store) -> Result<ExitCode> {
-    let (project, _) = common.project(store)?;
-    let bases = substrate::list(store, project.id)?;
+    let (project, recipe) = common.project(store)?;
+    let bases = substrate::list(store, project.id, &recipe)?;
     write(&BaseList { now: Timestamp::now(), bases }, common.json)
 }
 
@@ -139,11 +139,12 @@ fn build_one(args: &Build, store: &mut Store) -> Result<ExitCode> {
     };
     let outcome = substrate::ensure(store, &request, &common.progress())?;
     let pins = substrate::pins(store, outcome.base.id)?;
+    let readiness = substrate::warmth::of(&request.recipe, &outcome.base.path);
     let answer = BaseBuild {
         now: Timestamp::now(),
         built: outcome.built(),
         origin: outcome.origin.as_ref().map(substrate::Origin::describe),
-        base: BaseRow { base: outcome.base, pins, disk_bytes: None },
+        base: BaseRow { base: outcome.base, pins, disk_bytes: None, readiness },
     };
     write(&answer, common.json)
 }
