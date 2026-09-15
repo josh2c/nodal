@@ -66,7 +66,7 @@ use serde::{Deserialize, Serialize};
 use crate::Result;
 use crate::git::Oid;
 use crate::lifecycle::assess;
-use crate::lifecycle::witness::Elsewhere;
+use crate::lifecycle::witness::{Checkout, Elsewhere};
 
 /// How many paths or commits one finding names before it says how many more there are.
 ///
@@ -276,10 +276,10 @@ impl Uniqueness {
 
 /// Read `home` and report everything in it that exists nowhere else.
 ///
-/// `elsewhere` is the project's own checkout, when this machine still has one. Commits
-/// it already has are not unique to the home, whatever the remotes say. A checkout that
-/// is not there, or is no longer a repository, simply is not asked: the answer is then
-/// the stricter one, which is the safe direction to be wrong in.
+/// `elsewhere` is the project's own checkout, read once, when this machine still has
+/// one. Commits it already has are not unique to the home, whatever the remotes say. A
+/// checkout that is not there, or is no longer a repository, simply is not asked: the
+/// answer is then the stricter one, which is the safe direction to be wrong in.
 ///
 /// This is a projection of [`crate::lifecycle::assess`], which is the one reading, and
 /// it asks for the part a refusal rests on and nothing else. The read-only preflight
@@ -290,7 +290,7 @@ impl Uniqueness {
 /// # Errors
 /// [`crate::Error::Git`] when the status or the revision could not be read, and
 /// [`crate::Error::NotARepository`] when `home` is not one.
-pub fn check(home: &Path, elsewhere: Option<&Path>) -> Result<Uniqueness> {
+pub fn check(home: &Path, elsewhere: Option<&Checkout>) -> Result<Uniqueness> {
     let assessed = assess::assess(&assess::Input::refusal(home, elsewhere))?;
     Ok(Uniqueness { home: home.to_path_buf(), findings: assessed.findings() })
 }

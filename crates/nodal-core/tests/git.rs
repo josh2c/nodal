@@ -338,6 +338,38 @@ fn deleting_an_unmerged_branch_needs_force() {
     assert!(!git.branch_exists("nodal/work").unwrap());
 }
 
+/// A snapshot killed part way through must not block the next snapshot of that home.
+///
+/// `git` guards an index with a lock file beside it, makes it before it writes and
+/// renames it away after, so a process killed inside `read-tree` leaves the temporary
+/// index and that lock. Writing the two files is the whole of what the kill leaves, and
+/// writing them is how the case is reached without a race to lose.
+///
+/// Before this was handled, the next `read-tree` refused the home with "Unable to
+/// create ... File exists", so a person who interrupted one `nodal reclaim --force`
+/// could never force that home again until they found and deleted the file themselves.
+#[test]
+fn a_snapshot_killed_part_way_through_does_not_block_the_next_one() {
+    let repo = Repo::seeded();
+    let git = repo.git_facade();
+    repo.write("work.txt", "work no commit holds\n");
+    let staged = repo.git(&["status", "--porcelain"]);
+
+    let index = repo.path().join(".git/nodal-wip-index");
+    let lock = repo.path().join(".git/nodal-wip-index.lock");
+    std::fs::write(&index, b"half of a written index").unwrap();
+    std::fs::write(&lock, b"").unwrap();
+
+    let reference = refs::wip("01JABCDEF");
+    let taken = git.snapshot(&reference, "the home after a killed run").unwrap();
+    let taken = taken.expect("a seeded repository has a commit to build on");
+    assert!(taken.had_changes, "the snapshot did not record the uncommitted work");
+    assert_eq!(git.read_ref(&reference).unwrap(), Some(taken.commit));
+    assert!(!index.exists(), "the temporary index was left behind");
+    assert!(!lock.exists(), "the lock was left behind");
+    assert_eq!(repo.git(&["status", "--porcelain"]), staged, "the person's index was touched");
+}
+
 /// Refs round-trip through read, write, list and delete.
 #[test]
 fn refs_round_trip_in_the_nodal_namespace() {

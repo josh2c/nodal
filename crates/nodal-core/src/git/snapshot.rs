@@ -23,9 +23,32 @@
 //! file of its own, named by `GIT_INDEX_FILE`: `read-tree` fills it from `HEAD`,
 //! `add -A` records the working tree into it, `write-tree` turns it into a tree object,
 //! and `commit-tree` makes the commit. The repository's own index is never opened.
+//!
+//! # A killed snapshot must not block the next one
+//!
+//! `git` guards an index with a lock file beside it, `<index>.lock`, which it makes
+//! before it writes and renames away after. A run killed inside [`take`] leaves that
+//! lock where it is, and `git read-tree` then refuses the home with "Unable to create
+//! ... File exists" for as long as the file is there. The verb that pays is
+//! `nodal reclaim --force`: it snapshots the work before it moves the home, so a person
+//! who forced a reclaim once and interrupted it could not force it again, and nothing
+//! told them the reason was one stale file.
+//!
+//! So [`take`] clears both files on entry as well as on exit, and a lock of this name
+//! at entry is treated as the residue of a run that ended. Two facts make that sound.
+//! [`INDEX_FILE`] is Nodal's own name: no other tool and no other part of Nodal writes
+//! it, so a lock of that name was written by a `take` of this home. And a `take` runs
+//! inside a lifecycle operation, which the registry's single writer and the home's own
+//! one-writer hold ([`crate::runtime::lock`]) keep to one actor at a time.
+//!
+//! The case those two do not cover is one actor running two operations on one home from
+//! two terminals at the same instant. That was already broken here — the second `take`
+//! failed outright — and it stays the narrow case: the window is one `git` invocation
+//! wide, and what it can cost is one snapshot commit built from the wrong index, not a
+//! lost working tree.
 
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::cmd;
 use super::oid::Oid;
@@ -36,7 +59,13 @@ const INDEX_VAR: &str = "GIT_INDEX_FILE";
 
 /// The name of the index the snapshot builds in, inside the repository's Git directory
 /// so that it is on the same filesystem and goes away with the repository.
+///
+/// The name is Nodal's own, which is what lets [`take`] clear a lock beside it: nothing
+/// else on the machine writes a file of this name.
 const INDEX_FILE: &str = "nodal-wip-index";
+
+/// What `git` appends to an index's name for the lock it holds while it writes.
+const LOCK_SUFFIX: &str = ".lock";
 
 /// The reflog reason the ref carries, so `git reflog` says where the commit came from.
 const REASON: &str = "nodal: work-in-progress snapshot";
@@ -75,10 +104,14 @@ pub struct Snapshot {
 /// A repository whose `HEAD` has no commit yet cannot be snapshotted — there is nothing
 /// to parent the commit on and nothing committed to lose — and answers `None`.
 ///
+/// A run killed inside this function leaves its index and `git`'s lock beside it. Both
+/// are cleared on entry as well as on exit, so an interrupted snapshot costs the next
+/// one nothing. The module says why a lock of this name is always the older run's.
+///
 /// # Errors
 /// [`crate::Error::Git`] when any of the four plumbing commands failed,
 /// [`crate::Error::GitOid`] when one of them did not answer with an object id, and
-/// [`crate::Error::Io`] when the temporary index could not be removed.
+/// [`crate::Error::Io`] when the temporary index or its lock could not be removed.
 pub fn take(
     repo: &Path,
     git_dir: &Path,
@@ -87,6 +120,7 @@ pub fn take(
 ) -> Result<Option<Snapshot>> {
     let Some(head) = head_commit(repo)? else { return Ok(None) };
     let index = git_dir.join(INDEX_FILE);
+    remove(&index)?;
     let taken = build(repo, &index, &head, message);
     remove(&index)?;
     let (tree, commit) = taken?;
@@ -173,12 +207,28 @@ fn tree_of(repo: &Path, commit: &Oid) -> Result<Oid> {
     Oid::parse(cmd::run_ok(repo, &["rev-parse", "--verify", peeled.as_str()])?.text()?)
 }
 
-/// Remove the temporary index. One that is not there is not a failure: the build may
-/// have failed before `git` created it.
+/// Remove the temporary index and the lock `git` keeps beside it.
+///
+/// Both, because a killed run leaves both and the lock is the one that stops the next
+/// `read-tree`. Either one missing is not a failure: the build may have failed before
+/// `git` made it, and an uninterrupted `git` renames its own lock away.
 fn remove(index: &Path) -> Result<()> {
-    match std::fs::remove_file(index) {
+    delete(index)?;
+    delete(&lock_beside(index))
+}
+
+/// The lock `git` writes beside an index while it changes it.
+fn lock_beside(index: &Path) -> PathBuf {
+    let mut name = index.as_os_str().to_owned();
+    name.push(LOCK_SUFFIX);
+    PathBuf::from(name)
+}
+
+/// Remove one file. One that is not there is not a failure.
+fn delete(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(crate::Error::io(index)(error)),
+        Err(error) => Err(crate::Error::io(path)(error)),
     }
 }
