@@ -121,15 +121,36 @@ fn unit_here(conn: &Connection, cwd: &Path) -> Result<Unit> {
 }
 
 /// The one unit a slug names, searching the project the caller stands in first.
+///
+/// A unit that holds the handle now answers first, and a unit that gave the handle back
+/// when it was reclaimed answers only when no unit holds it ([`released`]). That order
+/// is what makes a remade name mean the new unit and a name nobody remade still mean the
+/// unit a person is asking about.
 fn unit_of(conn: &Connection, slug: &Slug, cwd: &Path) -> Result<Unit> {
-    let unit = match project_at(conn, cwd)? {
+    let project = project_at(conn, cwd)?;
+    let unit = match &project {
         Some(project) => units::find_by_slug(conn, project.id, slug)?,
         None => None,
     };
-    match unit {
-        Some(unit) => Ok(unit),
-        None => search_every_project(conn, slug),
+    if let Some(unit) = unit {
+        return Ok(unit);
     }
+    if let Some(project) = &project
+        && let Some(unit) = released(conn, project, slug)?
+    {
+        return Ok(unit);
+    }
+    search_every_project(conn, slug)
+}
+
+/// The unit that held this handle until a reclaim gave it back to the project.
+///
+/// The handle is gone from the unit row, because a reclaim releases it. The handle the
+/// unit took in its place is built from the one it gave up, so the name goes on naming
+/// the unit it named, and `nodal reclaim <name>` on a unit already reclaimed says so
+/// rather than saying there is no such unit.
+fn released(conn: &Connection, project: &Project, slug: &Slug) -> Result<Option<Unit>> {
+    units::find_released_by_slug(conn, project.id, slug)
 }
 
 /// The project a directory belongs to, if the registry knows one.
