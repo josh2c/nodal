@@ -45,6 +45,7 @@
 //! | a current reading is a remote proof | `a_commit_a_current_reading_reaches_is_proved_on_the_remote` |
 //! | an older, partial or unread witness proves nothing | `a_witness_that_cannot_answer_leaves_the_commits_not_checked` |
 //! | a name is not an object store | `a_ref_with_no_object_behind_it_proves_nothing` |
+//! | a reading that failed proves nothing | `a_checkout_whose_object_store_will_not_answer_proves_nothing` |
 //! | the remote on this disk is read directly | `a_remote_that_is_this_disk_is_read_directly` |
 //! | squash-absorbed objects are a keep | `squash_absorbed_work_whose_objects_are_only_here_is_a_keep` |
 //! | heavy ignored state is reconstructable | `heavy_ignored_state_is_reconstructable_and_priced_as_apparent` |
@@ -57,6 +58,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use nodal_core::lifecycle::journal;
@@ -80,6 +82,12 @@ const TRACKED: &str = "apps/web/app/page.tsx";
 
 /// The branch a home pushes its work to, as a review branch on the remote.
 const TOPIC: &str = "topic";
+
+/// The branch the checkout is left holding an object it cannot read on.
+const DAMAGED: &str = "damaged";
+
+/// What a loose object is set to before it is overwritten. Git writes them read-only.
+const WRITABLE: u32 = 0o644;
 
 /// Only the local file transport, so no property here can reach a network.
 const ONLY_LOCAL: (&str, &str) = ("GIT_ALLOW_PROTOCOL", "file");
@@ -329,6 +337,63 @@ fn a_ref_with_no_object_behind_it_proves_nothing() {
     assert_eq!(count(commits(&answer, "remote_proved")), 0, "a name proved a copy");
     assert_eq!(count(commits(&answer, "second_local_copy")), 0, "a name proved a copy");
     reclaim_also_refuses(&machine, SLUG, "commits no current reading proves a remote has (1)");
+    intact(&machine, &home, &tip);
+}
+
+/// Leave the checkout a ref whose object it cannot read, and change nothing else.
+///
+/// `git for-each-ref` prints the object a ref names without opening it, so the refs
+/// still list and the checkout still reads as a repository. `git rev-list` opens the
+/// object and stops. That is the shape a half-written or pruned store has.
+///
+/// The commit is made with `commit-tree` from the tree `HEAD` already has, so the
+/// working tree and the branch a person is on are untouched.
+fn damage_a_ref(checkout: &Path) {
+    let tree = git(checkout, &["rev-parse", "HEAD^{tree}"]);
+    let made = git(checkout, &["commit-tree", &tree, "-m", "an object that will not read"]);
+    git(checkout, &["update-ref", &format!("refs/heads/{DAMAGED}"), &made]);
+    let (directory, file) = made.split_at(2);
+    let object = checkout.join(".git/objects").join(directory).join(file);
+    std::fs::set_permissions(&object, std::fs::Permissions::from_mode(WRITABLE)).unwrap();
+    std::fs::write(&object, b"this is not a Git object").unwrap();
+}
+
+/// A reading that failed is not a reading that found nothing.
+///
+/// The set-up is `a_remote_that_is_this_disk_is_read_directly` exactly: the project has
+/// no remote of its own, so the home's `origin` is the person's checkout, and reading
+/// that checkout is reading the remote. That is what earns the settled words "only
+/// here". The one difference is that the checkout cannot answer for its own object
+/// store any more.
+///
+/// Every one of those words rests on a reading of a second object store. A `rev-list`
+/// that did not run is not that reading, and treating its silence as an empty answer
+/// puts a claim on the report that nothing earned: the reading says the checkout holds
+/// none of the commits it names, which is the sentence that makes a home look like the
+/// only copy. It is worse now that one reading is taken for a whole survey, because one
+/// checkout Git cannot answer for would say it about every home under it.
+///
+/// So the failure is carried. The commits are `not_checked`, which is neither safe nor
+/// a claim, and the reclaim refuses over the same home for the honest reason.
+#[test]
+fn a_checkout_whose_object_store_will_not_answer_proves_nothing() {
+    let machine = Machine::new().with_env(ONLY_LOCAL).with_env(NO_PROXY);
+    let home = machine.unit(SLUG);
+    std::fs::write(home.join(ONLY), "the only copy\n").unwrap();
+    git(&home, &["add", "--all"]);
+    git(&home, &["commit", "--quiet", "--message", "work only this home has"]);
+    let tip = git(&home, &["rev-parse", "HEAD"]);
+    damage_a_ref(&machine.source);
+
+    let answer = check(&machine, SLUG);
+    assert_eq!(answer["safe_to_reclaim"], Value::Bool(false), "{answer:#}");
+    assert_eq!(count(commits(&answer, "only_here")), 0, "a claim the reading did not earn");
+    assert!(count(commits(&answer, "not_checked")) >= 1, "{answer:#}");
+    let group = commits(&answer, "not_checked").unwrap();
+    assert_eq!(group["copies"]["witness"]["kind"], Value::from("unchecked"), "{answer:#}");
+    assert_eq!(answer["reasons"][0]["needs"], Value::from("unknown_evidence"), "{answer:#}");
+
+    reclaim_also_refuses(&machine, SLUG, "commits no current reading proves a remote has");
     intact(&machine, &home, &tip);
 }
 

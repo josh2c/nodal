@@ -103,10 +103,12 @@
 //!
 //! Nothing here writes, and nothing here reaches a network.
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::Result;
 use crate::doctor::unique::{Evidence, RemoteTip, Subject, Trusted, believed};
 use crate::doctor::{inspect, origin};
 use crate::git::{Git, Oid, union};
@@ -190,15 +192,29 @@ impl Elsewhere {
 /// A checkout that Git will not read, and a shallow one, witness nothing: [`elsewhere`]
 /// stops at the evidence and asks them nothing further. So nothing further is read of
 /// them here either, and the fields below are empty rather than unknown.
-#[derive(Debug, Clone)]
+///
+/// # A reading that failed is not a reading that found nothing
+///
+/// One reading is taken here and many homes are judged against it, so a failure that
+/// was once one home's is now every home's. An empty `held` would say "the checkout
+/// holds none of the commits it names", which is a claim, and a `rev-list` that did not
+/// run has not earned it. So a failure is written into
+/// [`Evidence::unreadable`], which is the field that already means "this repository
+/// could not be read", and [`elsewhere`] treats it exactly as it treats a checkout Git
+/// would not open: nothing is believed, and every commit of the home is reported as not
+/// checked. That is a refusal, which is what the failure earned before.
+#[derive(Debug)]
 pub struct Checkout {
     /// Where it is.
     path: PathBuf,
-    /// What it can say about where its commits also live.
+    /// What it can say about where its commits also live, or why it could not be read.
     evidence: Evidence,
     /// The grouping name of its `origin`, `None` when it has none to read.
     origin: Option<String>,
     /// The commits of its own tips that its object store really holds ([`holds`]).
+    ///
+    /// Empty is a fact about the store and never a reading that failed: a failure is in
+    /// `evidence.unreadable` instead.
     held: Vec<Oid>,
 }
 
@@ -208,15 +224,21 @@ impl Checkout {
     /// Four `git` invocations for the evidence, one for the name of `origin`, and one
     /// that looks for every tip it names in its own object store. A caller that reads
     /// one home pays what it always paid; a caller that reads many pays it once.
+    ///
+    /// A checkout that could not be read is read no further, and says why.
     #[must_use]
     pub fn read(path: &Path) -> Self {
-        let evidence = inspect::evidence(path);
+        let mut evidence = inspect::evidence(path);
         let path = path.to_path_buf();
-        if evidence.unreadable.is_some() || evidence.shallow {
-            return Self { path, evidence, origin: None, held: Vec::new() };
+        let mut origin = None;
+        let mut held = Vec::new();
+        if evidence.unreadable.is_none() && !evidence.shallow {
+            origin = named(&path);
+            match holds(&path, &evidence.tips) {
+                Ok(found) => held = found,
+                Err(why) => evidence.unreadable = Some(why.to_string()),
+            }
         }
-        let origin = named(&path);
-        let held = holds(&path, &evidence.tips);
         Self { path, evidence, origin, held }
     }
 
@@ -255,7 +277,9 @@ pub fn elsewhere(home: &Path, checkout: Option<&Checkout>) -> Elsewhere {
     }
     let relation = relation(home, checkout);
     let trusted = vouched(home, &checkout.path, relation, evidence.clone());
-    let held = holdings(checkout, &trusted.tips);
+    let Ok(held) = holdings(checkout, &trusted.tips) else {
+        return Elsewhere::default();
+    };
     let carried: BTreeSet<&Oid> = held.iter().collect();
     let own: Vec<Oid> = evidence.own.iter().filter(|oid| carried.contains(oid)).cloned().collect();
     let remote: Vec<Oid> =
@@ -274,17 +298,20 @@ pub fn elsewhere(home: &Path, checkout: Option<&Checkout>) -> Elsewhere {
 /// The tips the checkout really holds, out of its own and whatever a witness added.
 ///
 /// [`Checkout::read`] already looked for every tip the checkout names, which is the
-/// whole of the set wherever nobody witnesses. A witness adds the commits it vouches
-/// for, and the ones of those the checkout does not already name are looked for here —
-/// so the ordinary home costs no invocation at all, and a witnessed one costs the same
-/// single invocation it always did.
-fn holdings(checkout: &Checkout, trusted: &[Oid]) -> Vec<Oid> {
+/// whole of the set wherever nobody witnesses, and is borrowed rather than copied. A
+/// witness adds the commits it vouches for, and the ones of those the checkout does not
+/// already name are looked for here — so the ordinary home costs no invocation at all,
+/// and a witnessed one costs the same single invocation it always did.
+///
+/// A reading that failed is an error and never an empty list, for the reason
+/// [`Checkout`] states: the caller turns it into a refusal.
+fn holdings<'a>(checkout: &'a Checkout, trusted: &[Oid]) -> Result<Cow<'a, [Oid]>> {
     let named: BTreeSet<&Oid> = checkout.evidence.tips.iter().collect();
     let extra: Vec<Oid> = trusted.iter().filter(|oid| !named.contains(oid)).cloned().collect();
     if extra.is_empty() {
-        return checkout.held.clone();
+        return Ok(Cow::Borrowed(&checkout.held));
     }
-    union(&checkout.held, &holds(&checkout.path, &extra))
+    Ok(Cow::Owned(union(&checkout.held, &holds(&checkout.path, &extra)?)))
 }
 
 /// What a witness will vouch for, and nothing at all when there is no witness.
@@ -332,9 +359,17 @@ fn witness(
 ///
 /// So the whole set is looked for where it was read, in one process, before any of it
 /// counts. What survives is a commit in a second object store, which is the only thing
-/// that makes removing a directory safe. A repository that will not answer holds nothing.
-fn holds(repo: &Path, tips: &[Oid]) -> Vec<Oid> {
-    Git::at(repo).held(tips).unwrap_or_default()
+/// that makes removing a directory safe.
+///
+/// A repository that will not answer is an error and not an empty answer. The two look
+/// the same in a list of commits and they are not the same fact: one says the store
+/// holds none of these, the other says nobody asked it. Only the first may make a home
+/// look safe, so the failure is raised and every caller turns it into a refusal.
+///
+/// # Errors
+/// [`crate::Error::Git`] when `rev-list` failed.
+fn holds(repo: &Path, tips: &[Oid]) -> Result<Vec<Oid>> {
+    Git::at(repo).held(tips)
 }
 
 /// Whether the checkout read `origin` after the home last wrote its own reading of it.

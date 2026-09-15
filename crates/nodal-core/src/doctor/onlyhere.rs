@@ -21,12 +21,14 @@
 //! the cheapest of the three readings: the refusal and nothing it does not act on, with
 //! no dispositions, no state classification and no process scan.
 //!
-//! **The checkout is read once for the project, not once for each home.** What a reading
-//! asks of the checkout — its git directory, its refs, its `origin`, and which of its
-//! tips it really holds — is the same question whichever home is being read, and asking
-//! it per home was six `git` invocations per home for one answer. [`Checkout::read`]
-//! takes it once and every home of the project is read against that one reading. It is
-//! the same evidence, so no row moves.
+//! **The checkout is read once for the project, not once for each home, and not at all
+//! until a home needs it.** What a reading asks of the checkout — its git directory, its
+//! refs, its `origin`, and which of its tips it really holds — is the same question
+//! whichever home is being read, and asking it per home was six `git` invocations per
+//! home for one answer. [`Checkout::read`] takes it once, on the first home of the
+//! project that is there to read, and every home after it is read against that one
+//! reading. A project whose homes are all gone reads nothing, which is what it cost
+//! before. It is the same evidence, so no row moves.
 //!
 //! **A home that could not be read is a row.** It is not silence and it is not a clean
 //! verdict: doctor's closing line for the section says nothing was left behind, and a
@@ -56,13 +58,14 @@ pub fn find(conn: &Connection, scope: &Scope) -> crate::Result<Vec<(Section, Fin
         if scope.section(&known.root) == Section::Elsewhere {
             continue;
         }
-        let checkout = Checkout::read(&known.root);
+        let mut checkout = None;
         for unit in open_units(conn, known)? {
             for environment in environments::list_for_unit(conn, unit.id)? {
                 if !environment.home.is_dir() {
                     continue;
                 }
-                if let Some(finding) = read(&environment.home, &checkout, &unit) {
+                let read_once = checkout.get_or_insert_with(|| Checkout::read(&known.root));
+                if let Some(finding) = read(&environment.home, read_once, &unit) {
                     rows.push((Section::Here, finding));
                 }
             }

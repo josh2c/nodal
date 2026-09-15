@@ -34,6 +34,11 @@
 #     directory and the registry's rows exactly as it found them;
 #   - doctor: the checkout, a worktree of that checkout that lives beside it rather than
 #     inside it, and the whole state directory are the same bytes afterwards;
+#   - one reading per survey: doctor's only-here section reads the project's checkout
+#     once however many homes it has, reads it not at all for a project whose homes are
+#     gone, and still gives each home its own verdict. The `git` processes are counted
+#     with the shim `ci/measure.sh` uses, so the claim is measured and not asserted from
+#     the shape of the code;
 #   - a kept clone: an install that fails leaves the clone and the half-built base, and
 #     the attempt after it carries on with that one rather than cloning again;
 #   - a reason with every error: a failed install's message carries what the tool wrote
@@ -77,6 +82,7 @@ mkdir -p "$work/real"
 ln -s "$work/real" "$work/by-another-name"
 TMPDIR="$work/by-another-name" cargo test --locked -p nodal-safety -- --nocapture
 
+echo "acceptance (safety): doctor reads a project's checkout once per survey, not once per home;"
 echo "acceptance (safety): two units of one project cannot reach each other, under a linked path too;"
 echo "acceptance (safety): a failed base build keeps its clone and says why it failed;"
 echo "acceptance (safety): a warm base runs the build where it hands the base over;"
