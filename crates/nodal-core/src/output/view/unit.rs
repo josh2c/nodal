@@ -138,14 +138,17 @@ impl Unknowable {
 impl HolderState {
     /// The word a report puts between the actor and the clock.
     ///
-    /// "holds" is said for [`HolderState::Live`] and for nothing else, which is the
-    /// whole of this type: a session that was killed must not read as one at work.
+    /// "gone" is said where a reading contradicts the row, and nowhere else. A hold this
+    /// host could not read a process for is printed the way the registry states it,
+    /// because a reading nobody could take is not evidence against the row: on a host
+    /// with no readable process table every hold would otherwise read as ended, which is
+    /// the same fault as the one this type was made to remove, pointing the other way.
+    /// `nodal show` and `--json` carry which of the two it was, and why.
     #[must_use]
     pub const fn verb(&self) -> &'static str {
         match self {
-            Self::Live => "holds",
+            Self::Live | Self::Unknown { .. } => "holds",
             Self::Gone => "gone,",
-            Self::Unknown { .. } => "held,",
         }
     }
 }
@@ -832,9 +835,11 @@ fn who_cell(unit: &UnitRow, now: Timestamp) -> String {
 /// One holder: who, whether their process is still there, and how long the hold has
 /// left.
 ///
-/// `ada holds 6 h` is said of a live session and of nothing else. A session that is gone
-/// reads `ada gone, 6 h left`, which is the same two facts and neither of them a claim
-/// that somebody is working. What the hold does is unchanged: it stands until it lapses.
+/// A session that is gone reads `ada gone, 6 h left`, which is the same two facts and
+/// neither of them a claim that somebody is working. Every other hold reads
+/// `ada holds 6 h`, as it always did: that is what the lock row states, and only a
+/// reading that contradicts it changes the word. What the hold does is unchanged in
+/// every case: it stands until it lapses.
 fn holds_cell(holder: &Holder, now: Timestamp) -> String {
     format!(
         "{} {} {}",
@@ -864,8 +869,8 @@ fn hold_cell(holder: Option<&Holder>) -> Option<String> {
 /// The clock half of a holder cell: how long the hold has, said as what it is.
 fn left(state: &HolderState, span: String) -> String {
     match state {
-        HolderState::Live => span,
-        HolderState::Gone | HolderState::Unknown { .. } => format!("{span} left"),
+        HolderState::Live | HolderState::Unknown { .. } => span,
+        HolderState::Gone => format!("{span} left"),
     }
 }
 

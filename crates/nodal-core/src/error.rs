@@ -682,18 +682,33 @@ pub enum Error {
     /// reason. The lock is advisory: nothing here stops an editor, `git`, or any other
     /// program from working in the home.
     #[error(
-        "{slug:?} is held by {actor} on {host} since {since}; --take to take it. \
+        "{slug:?} is held by {actor} on {host} since {since}.{hold} --take to take it. \
          The lock is advisory: it refuses the write verbs and stops nothing else"
     )]
     UnitLocked {
         /// The slug of the unit being held.
-        slug: String,
+        slug: Box<str>,
         /// Who holds it.
-        actor: String,
+        actor: Box<str>,
         /// The host they hold it from.
-        host: String,
+        host: Box<str>,
         /// How long ago the hold began, already in words.
-        since: String,
+        since: Box<str>,
+        /// What became of the process that took the hold, where a reading says so, with
+        /// a leading space; empty where nothing contradicts the row.
+        ///
+        /// This is the sentence a person needs most and the row cannot give them: a
+        /// refusal over a session that ended is a refusal they can act on at once,
+        /// and one over a session at work is a reason to wait.
+        ///
+        /// Every field of this variant is boxed, and that is a measurement rather than a
+        /// preference. This is the widest variant of the error, the error is in every
+        /// `Result` of both crates, and one more `String` here added 26 kB to the
+        /// release binary — `ci/measure.sh` is where that showed up. Four boxed fields
+        /// and a fifth are narrower than the four `String`s they replace, so the whole
+        /// enum is smaller than it was before this sentence was added. Nothing here is
+        /// read after the message is rendered once.
+        hold: Box<str>,
     },
 
     /// A process scan was asked for on a host whose process table Nodal cannot read.

@@ -286,10 +286,42 @@ fn absolute_expiry(now: Timestamp, idle_hours: u32) -> Timestamp {
 /// no actor holds nobody ([`Lock::holds_anyone`]) and never reaches this.
 fn refusal(unit: &Unit, held: &Lock, now: Timestamp) -> Error {
     Error::UnitLocked {
-        slug: unit.slug.to_string(),
-        actor: held.actor.as_ref().map_or_else(String::new, |actor| actor.name.to_string()),
-        host: held.host.to_string(),
-        since: crate::output::human::span(now, held.taken_at),
+        slug: unit.slug.to_string().into_boxed_str(),
+        actor: held
+            .actor
+            .as_ref()
+            .map_or_else(String::new, |actor| actor.name.to_string())
+            .into_boxed_str(),
+        host: held.host.to_string().into_boxed_str(),
+        since: crate::output::human::span(now, held.taken_at).into_boxed_str(),
+        hold: hold_line(held).into_boxed_str(),
+    }
+}
+
+/// What the refusal adds about the process that took the hold, or nothing.
+///
+/// A refusal names the holder, and the holder may be a session that ended hours ago.
+/// Saying so is the difference between a person who waits and a person who types
+/// `--take` at once, so the reading [`liveness`] takes for a report is taken here too.
+/// Only [`HolderState::Gone`] is said: a live hold needs no sentence, and a reading that
+/// could not be taken contradicts nothing the row claims.
+///
+/// The sentence says what this reading proves and no more. Whether anything of that
+/// actor is still in the home is the second reading a report takes
+/// ([`crate::runtime::ls`]), and it costs a scan of the process table against every home
+/// of the project, which is not what a refusal should pay for. So the refusal names the
+/// reading it made and names the command that makes the other one.
+fn hold_line(held: &Lock) -> String {
+    match liveness(held, &HostName::current(), &crate::runtime::processes::Live) {
+        HolderState::Gone => {
+            let named =
+                held.pid.map_or_else(|| String::from("the process"), |pid| format!("pid {pid}"));
+            format!(
+                " {named} that took it is gone from this host; nodal show says whether \
+                 anything of that actor is still in the home."
+            )
+        }
+        HolderState::Live | HolderState::Unknown { .. } => String::new(),
     }
 }
 

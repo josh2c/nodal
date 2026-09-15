@@ -84,6 +84,17 @@ fn a_second_actor_is_refused_the_write_verbs_and_told_who_holds_the_unit() {
             said.contains("advisory"),
             "the refusal does not say what it does not stop: {said}"
         );
+        // What became of the holder's process, where this host can read it. The hold was
+        // taken by the `nodal new` that made the unit, and that command has ended, so a
+        // person reading the refusal is told they can take it now rather than left to
+        // guess whether somebody is at work. A host with no readable process table says
+        // nothing here rather than something it did not read.
+        if cfg!(target_os = "linux") {
+            assert!(
+                said.contains("is gone from this host"),
+                "the refusal does not say what became of the holder: {said}"
+            );
+        }
     }
 }
 
@@ -264,17 +275,40 @@ fn the_list_names_the_writer_before_what_the_process_table_saw() {
     let listed = workspace.nodal(&["ls"]);
     assert!(listed.status.success(), "{}", stderr(&listed));
     let said = stdout(&listed);
-    // "gone" and not "holds", and that is the reading rather than a defect: the process
-    // that took this hold was the `nodal new` that made the unit, and it ended when the
-    // command ended. The hold is still the actor's until it lapses; what the column says
-    // is that nothing of that actor is in the home now.
-    assert!(said.contains(&format!("{FIRST} gone")), "the list names no writer: {said}");
+    // The writer is named on every host. Which word follows the name is the second
+    // reading, and it is the one thing here that a host decides: where the process table
+    // can be read, the `nodal new` that took this hold has ended and the column says
+    // `gone`; where it cannot, nothing contradicts the row and the column says `holds`,
+    // as it always did. Both are the same claim about the same lock, which stands until
+    // it lapses either way.
+    assert!(said.contains(FIRST), "the list names no writer: {said}");
+    let expected = if cfg!(target_os = "linux") { "gone" } else { "holds" };
+    assert!(
+        said.contains(&format!("{FIRST} {expected}")),
+        "the list does not say what became of the writer: {said}"
+    );
 
     let json = workspace.nodal(&["ls", "--json"]);
     let document: serde_json::Value = serde_json::from_str(&stdout(&json)).unwrap();
     let row = &document["units"][0];
     assert_eq!(row["holder"]["actor"], FIRST, "--json carries no holder: {row}");
-    assert_eq!(row["holder"]["state"], "gone", "--json carries no liveness: {row}");
+    liveness_of(&row["holder"]);
     assert!(row["holder"]["expires_at"].is_string(), "the holder carries no expiry: {row}");
     assert!(row["sessions"].is_array(), "--json lost the process attribution: {row}");
+}
+
+/// The liveness `--json` carries for a hold whose process has ended.
+///
+/// Whichever reading this host could take, it is written out: the one that contradicts
+/// the row says `gone`, and the one that could not be taken says `unknown` and why. What
+/// is never written is silence.
+fn liveness_of(holder: &serde_json::Value) {
+    let state = holder["state"].as_str().unwrap_or_default();
+    assert!(!state.is_empty(), "--json carries no liveness: {holder}");
+    if cfg!(target_os = "linux") {
+        assert_eq!(state, "gone", "{holder}");
+    } else {
+        assert_eq!(state, "unknown", "{holder}");
+        assert_eq!(holder["why"], "no_process_table", "{holder}");
+    }
 }

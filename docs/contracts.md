@@ -782,15 +782,24 @@ that machine's to release.
 The process that took a hold is recorded and reported. Nothing signals it. No hold is released because
 the process is gone: a lock names an actor, and an actor outlives any one shell.
 
-A report says whether that actor is still there, and it says `holds` for nothing else. The holder
-carries a `state`: `live`, `gone`, or `unknown` with the reason it could not be read — the hold is on
-another machine, the row records no process, or this host has no process table. The reading is the
-process table and never a signal. It is two questions in this order: whether a process of that actor
-stands in the home, and whether the recorded process is still there. The first is the one that
-matters, because the identifier a row carries is the command that entered the home and that command
-ends; a hold both readings answer no for is a session that is gone. `nodal show` states the process
-and the reason under the WHO line. The state changes no refusal: a held unit refuses the write verbs
-until the hold lapses or `--take` moves it, whatever became of the process.
+A report says whether that actor is still there. The holder carries a `state`: `live`, `gone`, or
+`unknown` with the reason it could not be read — the hold is on another machine, the row records no
+process, or this host has no process table. The reading is the process table and never a signal. It is
+two questions in this order: whether a process of that actor stands in the home, and whether the
+recorded process is still there. The first is the one that matters, because the identifier a row
+carries is the command that entered the home and that command ends; a hold both readings answer no for
+is a session that is gone.
+
+`gone` is printed where a reading contradicts the row, and nowhere else. A hold this host could not
+read a process for is printed the way the row states it, because a reading nobody could take is not
+evidence against the row: on a host with no readable process table — macOS today, where the process
+scan is not implemented — every hold reads `holds`, as it always did, and `--json` carries `unknown`
+with the reason. `nodal show` states the process and the reason under the WHO line.
+
+The state changes no refusal: a held unit refuses the write verbs until the hold lapses or `--take`
+moves it, whatever became of the process. The refusal says what this host read — "pid 4120 that took
+it is gone from this host" — because a person refused over a session that ended can take the unit at
+once, and one refused over a session at work waits.
 
 A lock row written before locks carried an actor names a host and holds nobody. It refuses no one, and
 the next entry into that home rewrites it.
