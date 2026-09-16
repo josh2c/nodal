@@ -11,6 +11,7 @@
 //! that writes. The plan is what `--print` shows, so what a person reviews is what
 //! lands.
 
+pub mod change;
 pub mod gap;
 pub mod infer;
 pub mod merge;
@@ -22,6 +23,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::model::recipe::Recipe;
+use crate::recipe::change::Change;
 use crate::recipe::gap::Gap;
 use crate::recipe::infer::{Confidence, Project};
 use crate::recipe::merge::Merge;
@@ -40,8 +42,13 @@ pub struct Effective {
     /// How sure inference was, by key path. A key the file states is not listed: it is
     /// not a guess.
     pub confidence: BTreeMap<String, Confidence>,
-    /// Whether the project has a `nodal.toml` at all.
-    pub written: bool,
+    /// The text of the project's own `nodal.toml`, `None` when it has none.
+    ///
+    /// The bytes and not a flag saying there were some. `nodal init --force` says which
+    /// lines it changes, and the only file that answers that is the one that is there
+    /// now. Read once, here, so the command that reports the change and the command
+    /// that parsed the recipe read one file one time.
+    pub file: Option<String>,
 }
 
 /// Read `root`'s recipe: its file if it has one, over what its files imply.
@@ -53,16 +60,16 @@ pub struct Effective {
 pub fn load(root: impl AsRef<Path>) -> Result<Effective> {
     let root = root.as_ref();
     let path = root.join(FILE_NAME);
-    let (explicit, written) = match std::fs::read_to_string(&path) {
-        Ok(text) => (parse::parse(&text, &path)?, true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Recipe::default(), false),
+    let (explicit, file) = match std::fs::read_to_string(&path) {
+        Ok(text) => (parse::parse(&text, &path)?, Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Recipe::default(), None),
         Err(error) => return Err(Error::io(&path)(error)),
     };
 
     let proposed = infer::infer(&Project::open(root));
     let recipe = explicit.merge(proposed.recipe);
     let gaps = proposed.gaps.into_iter().filter(|gap| !gap.key.is_answered_by(&recipe)).collect();
-    Ok(Effective { recipe, gaps, confidence: proposed.confidence, written })
+    Ok(Effective { recipe, gaps, confidence: proposed.confidence, file })
 }
 
 /// What `nodal init` would write, and what it would leave for a person.
@@ -74,9 +81,10 @@ pub struct InitPlan {
     pub contents: String,
     /// The questions the file will carry.
     pub gaps: Vec<Gap>,
-    /// Whether a recipe was already there. Its keys are in `contents`: init proposes
-    /// around what a person wrote, it never drops it.
-    pub existed: bool,
+    /// The text of the recipe that is there now, `None` when the project has none. Its
+    /// keys are in `contents`: init proposes around what a person wrote, it never drops
+    /// them. Its comments are not, which is what [`InitPlan::changes`] reports.
+    pub existing: Option<String>,
     /// The lifecycle hooks the effective recipe declares. `nodal init` approves them as
     /// a set when it writes the file, and they are here so that it does not have to
     /// read the recipe a second time to know what it is approving.
@@ -95,9 +103,27 @@ pub fn plan_init(root: impl AsRef<Path>) -> Result<InitPlan> {
         path: root.join(FILE_NAME),
         contents: render::render(&effective.recipe, &effective.gaps),
         gaps: effective.gaps,
-        existed: effective.written,
+        existing: effective.file,
         hooks: effective.recipe.hooks,
     })
+}
+
+impl InitPlan {
+    /// Which lines writing this plan would change in the file that is there now.
+    ///
+    /// Empty where the plan and the file hold the same lines, which is what says a
+    /// rewrite would change nothing. A project with no recipe yet has every line of the
+    /// plan added, because that is what writing it does.
+    #[must_use]
+    pub fn changes(&self) -> Vec<Change> {
+        change::lines(self.existing.as_deref().unwrap_or_default(), &self.contents)
+    }
+
+    /// Whether a recipe is already there.
+    #[must_use]
+    pub const fn existed(&self) -> bool {
+        self.existing.is_some()
+    }
 }
 
 /// Write the planned file. Idempotent: writing the same plan twice leaves the same

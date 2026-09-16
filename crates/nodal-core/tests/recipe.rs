@@ -46,7 +46,10 @@ fn the_fixture_infers_with_zero_gaps() {
     let (_directory, effective) = fixture_recipe();
     let unanswered: Vec<GapKey> = effective.gaps.iter().map(|gap| gap.key).collect();
     assert_eq!(unanswered, Vec::<GapKey>::new(), "the fixture should leave nothing to a person");
-    assert!(effective.written, "the fixture carries the recipe that answers its one judgement");
+    assert!(
+        effective.file.is_some(),
+        "the fixture carries the recipe that answers its one judgement"
+    );
 }
 
 #[test]
@@ -264,11 +267,12 @@ fn init_writes_once_refuses_twice_and_keeps_what_a_person_wrote() {
     let root = root.as_path();
 
     let plan = recipe::plan_init(root).expect("a plan");
-    assert!(!plan.existed);
+    assert!(!plan.existed());
     recipe::apply_init(&plan, false).expect("the first write");
 
     let second = recipe::plan_init(root).expect("a plan over the written file");
-    assert!(second.existed);
+    assert!(second.existed());
+    assert!(second.changes().is_empty(), "init over its own output changes no line");
     assert!(recipe::apply_init(&second, false).is_err(), "an existing recipe is not overwritten");
     recipe::apply_init(&second, true).expect("--force rewrites it");
 

@@ -835,7 +835,7 @@ pub enum Error {
     /// A recipe hook was reached whose exact command line nobody has approved.
     #[error(
         "the {phase} hook of {project} is not approved: {command:?}; \
-         run `nodal init` in that project to approve the hooks it declares",
+         run `nodal approve` in that project to accept the hooks it declares",
         phase = phase.key(),
         project = project.display()
     )]

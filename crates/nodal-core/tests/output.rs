@@ -37,6 +37,7 @@ use nodal_core::output::view::{
 };
 use nodal_core::output::view::{Disk, Snapshot, Taker, Unmeasured};
 use nodal_core::output::{Format, Render, render, watch};
+use nodal_core::recipe::change;
 use nodal_core::recipe::gap::{Gap, GapKey};
 use nodal_core::runtime::attribute::{Attributed, Confidence, Kind, Note, Source};
 use nodal_core::workspace::tracked::Kept;
@@ -355,7 +356,20 @@ fn init_report() -> InitReport {
             Gap::new(GapKey::Toolchain),
             Gap::new(GapKey::EnvRequiredLocal).note("45 names declared"),
         ],
+        changes: Vec::new(),
     }
+}
+
+/// The same report for `nodal init --force`: a recipe that is already there, and the
+/// lines the rewrite takes out of it and puts in.
+fn rewritten_init_report() -> InitReport {
+    let mut report = init_report();
+    report.existed = true;
+    report.changes = change::lines(
+        "# ours: the staging copy needs the seed step\npackage_manager = \"npm\"\n",
+        &report.contents,
+    );
+    report
 }
 
 // ------------------------------------------------------------------ snapshots
@@ -781,6 +795,12 @@ fn init_report_renders_both_ways() {
     both("init_report", &init_report());
 }
 
+/// A rewrite names every line it changes, in both renderings.
+#[test]
+fn a_rewritten_recipe_names_the_lines_it_changes() {
+    both("init_report_rewritten", &rewritten_init_report());
+}
+
 #[test]
 fn a_pushed_unit_renders_both_ways() {
     let report = Done {
@@ -894,6 +914,8 @@ fn every_snapshot_file_is_claimed_by_a_test() {
         "explanation_adopted.txt",
         "init_report.json",
         "init_report.txt",
+        "init_report_rewritten.json",
+        "init_report_rewritten.txt",
         "ps.json",
         "ps.txt",
         "ps_unreadable.json",

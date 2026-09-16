@@ -1,0 +1,8 @@
+  rewrote    /home/j/code/project/nodal.toml
+  needs you  toolchain: which tool versions this project needs; no pin file and no engines field to read
+             env.required_local: which declared environment names local development needs; the declared file is a superset of what a working copy uses
+
+  lines this rewrite changes: 2 removed, 1 added
+  -1 # ours: the staging copy needs the seed step
+  -2 package_manager = "npm"
+  +1 package_manager = "pnpm"

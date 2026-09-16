@@ -5,6 +5,7 @@
 //! value rather than two code paths.
 
 pub mod adopt;
+pub mod approve;
 pub mod base;
 pub mod cd;
 pub mod claude_code;

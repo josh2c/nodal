@@ -1,0 +1,34 @@
+{
+  "path": "/home/j/code/project/nodal.toml",
+  "existed": true,
+  "contents": "package_manager = \"pnpm\"\n",
+  "gaps": [
+    {
+      "key": "toolchain",
+      "note": null,
+      "candidates": []
+    },
+    {
+      "key": "env_required_local",
+      "note": "45 names declared",
+      "candidates": []
+    }
+  ],
+  "changes": [
+    {
+      "edit": "removed",
+      "at": 1,
+      "text": "# ours: the staging copy needs the seed step"
+    },
+    {
+      "edit": "removed",
+      "at": 2,
+      "text": "package_manager = \"npm\""
+    },
+    {
+      "edit": "added",
+      "at": 1,
+      "text": "package_manager = \"pnpm\""
+    }
+  ]
+}

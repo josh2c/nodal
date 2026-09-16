@@ -200,8 +200,13 @@ ignored. Most keys are inferred by `nodal init` from the project's own files; on
 line, and `init` writes each gap as a comment above the empty key it belongs to. Published as
 `schemas/v1/recipe.json`.
 
+`nodal init --force` rewrites a recipe that is already there. It keeps every key the file sets and
+renders the file from the merged recipe, so it writes the template's comments over the ones a person
+wrote. It names every line it takes out and every line it puts in, with the line number of the file
+each belongs to; `--json` carries the same list as `changes`.
+
 ## CLI
-`init, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, mcp, run, ps, start, note, ask,
+`init, approve, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, mcp, run, ps, start, note, ask,
 handoff, sync, done, merge, prune, reclaim, reclaim --check, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
 `--json`; `status --watch` emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
@@ -963,14 +968,17 @@ A value that holds a character the shell reads as syntax is refused, and the hoo
 message names the variable and the character. Quote the variable in the command to pass a value that
 holds a space.
 
-Hook commands require approval. `nodal init` approves the set the project declares. It pins each
+Hook commands require approval. `nodal approve` accepts the set the project declares, and writes
+the approval record and nothing else: it never writes `nodal.toml`. `nodal init` approves the same
+set when it writes a recipe, because a person who runs it has just read the file they are writing.
+`nodal approve --print` shows the commands and records none. Approval pins each
 command by the digest of its exact text. The record is per person, in
 `~/.config/nodal/hooks.toml`; `NODAL_HOOKS_FILE` moves that file, and a machine that still holds
 `<state>/hooks.toml` and has no file under `~/.config` reads the old path. An approval says that
 this person accepts the command running on their account, so it is never shared through a state
 root a group owns. A command that has changed refuses to run, and the message
-shows the command. A command nobody approved refuses in the same way. `--no-hooks` runs no hook
-and needs no approval.
+shows the command, and names `nodal approve`. A command nobody approved refuses in the same way.
+`--no-hooks` runs no hook and needs no approval.
 
 ## Claude Code
 Claude Code fires named events at commands declared in a `.claude/settings.json`. There are two such
