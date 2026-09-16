@@ -22,10 +22,12 @@ use state::Machine;
 /// A project with a recipe a person wrote, comments and all, and a hook in it.
 ///
 /// The hook writes a file, because what proves an approval is that the command ran.
+///
+/// The project names no package manager and carries no lockfile, so a base build of it
+/// runs no install. This suite is about the approval record, and a fixture that made
+/// `nodal new` reach for `pnpm` would need that program on every host the suite runs on.
 fn write_project(root: &Path) {
-    std::fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
-    std::fs::write(root.join("package.json"), "{ \"scripts\": { \"test\": \"vitest\" } }\n")
-        .unwrap();
+    std::fs::write(root.join("README.md"), "# the project\n").unwrap();
     std::fs::write(root.join("nodal.toml"), RECIPE).unwrap();
     git(root, &["init", "--initial-branch", "main"]);
     git(root, &["config", "user.email", "test@example.invalid"]);
@@ -36,7 +38,7 @@ fn write_project(root: &Path) {
 
 /// The recipe the person wrote. The comment is the thing `init --force` would take.
 const RECIPE: &str = "# ours: the post_new hook installs the python half\n\
-                      package_manager = [\"pnpm\"]\n\
+                      backend = \"native\"\n\
                       \n\
                       [hooks]\n\
                       post_new = \"touch hook-ran\"\n";
