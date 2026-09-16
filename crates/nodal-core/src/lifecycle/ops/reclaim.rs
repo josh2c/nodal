@@ -186,14 +186,19 @@ pub struct Params {
     /// such field and still has to be rebuilt and finished rather than refused.
     #[serde(default)]
     pub tethers: Vec<u32>,
-    /// The processes the unit's open recorded sessions name — the `nodal run` a tether
-    /// is driven by among them. Read with the groups, and for the same reason: Nodal's
-    /// own wrapper carries no identifier in its own environment, so the record is the
-    /// only thing that says the process standing in the home is Nodal's own.
+    /// The `nodal run` each of those groups hangs off, resolved while the groups were
+    /// still alive.
+    ///
+    /// A reclaim stops the groups before it moves the home, and the relation that says
+    /// "this process is the one that started that group" cannot be read once the group
+    /// has gone. So it is read here, before anything is stopped, and each answer is
+    /// pinned to the instant that process started ([`assess::Wrapper`]). Nothing here is
+    /// ever signalled: it only stops Nodal's own wrapper being mistaken for a stranger in
+    /// the moment between its group ending and itself ending.
     ///
     /// Defaulted on the way in, for the reason the groups are.
     #[serde(default)]
-    pub recorded: Vec<u32>,
+    pub wrappers: Vec<assess::Wrapper>,
     /// Whether the home is moved although something Nodal did not start is standing in
     /// it. Journalled, because the step that refuses the move is the one a rebuilt plan
     /// runs again, and it has to refuse the same way.
@@ -223,6 +228,9 @@ pub fn reclaim(store: &mut Store, request: &Request) -> Result<Reclaimed> {
     // registry write would close the row and the group would be exactly the invisible
     // process the recording exists to prevent.
     prepared.params.tethers = tethers(store.conn(), prepared.params.environment.id)?;
+    // Before the plan, and therefore before anything is stopped, which is the only time
+    // this relation can be read.
+    prepared.params.wrappers = assess::wrappers_of(&prepared.params.tethers);
     let params = &prepared.params;
     // Before the home moves, because the remote is reached through the repository in
     // it, and after the hook, because a hook that refuses stops the reclaim and nothing
@@ -259,7 +267,9 @@ pub fn check(store: &Store, request: &Request) -> Result<Preflight> {
     let project = project_of(store.conn(), &unit)?;
     let placed = placement(&environment)?;
     let groups = tethers(store.conn(), environment.id)?;
-    let assessment = read(&placed, &project, &environment, Own::of(unit.id, &groups))?;
+    let wrappers = assess::wrappers_of(&groups);
+    let assessment =
+        read(&placed, &project, &environment, Own::of(unit.id, &groups).and_wrappers(&wrappers))?;
     let trash = would_trash(&placed, &project, &environment)?;
     Ok(Preflight::new(Timestamp::now(), unit.slug.to_string(), trash, assessment))
 }
@@ -399,6 +409,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
             unit: params.unit.id,
             environment: params.environment.clone(),
             tethers: params.tethers.clone(),
+            wrappers: params.wrappers.clone(),
         });
     let Some(entry) = &params.entry else {
         if params.environment.managed {
@@ -414,6 +425,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
             path: entry.path.clone(),
             force: params.force,
             groups: params.tethers.clone(),
+            wrappers: params.wrappers.clone(),
         })
         .then(TrashPrune { path: entry.path.clone() }))
 }
@@ -555,6 +567,8 @@ struct StopRuntime {
     environment: Environment,
     /// The process groups its tethers hold, from the journal rather than the machine.
     tethers: Vec<u32>,
+    /// The `nodal run` each of them hangs off, from the journal for the same reason.
+    wrappers: Vec<assess::Wrapper>,
 }
 
 impl Step for StopRuntime {
@@ -565,7 +579,7 @@ impl Step for StopRuntime {
     /// Repeatable: a second run finds nothing attributed and stops nothing.
     fn apply(&self) -> Result<Output> {
         let mut seen = attributed(
-            Own::of(self.unit, &self.tethers),
+            Own::of(self.unit, &self.tethers).and_wrappers(&self.wrappers),
             std::slice::from_ref(&self.environment.home),
         );
         let stopped = stop::processes(&stop::Live, &self.targets(&seen), stop::GRACE);
@@ -625,6 +639,10 @@ struct TrashHome {
     /// The process groups the registry recorded for the unit, so a process inside one is
     /// not the stranger the move refuses to act over.
     groups: Vec<u32>,
+    /// The `nodal run` each group hangs off. This step runs after the groups were
+    /// stopped, which is exactly when that relation can no longer be read, so it is
+    /// carried here from before.
+    wrappers: Vec<assess::Wrapper>,
 }
 
 impl Step for TrashHome {
@@ -665,9 +683,12 @@ impl TrashHome {
     /// What is standing in the home at the probable level, and nothing when the process
     /// table could not be read.
     fn bystanders(&self) -> Vec<Standing> {
-        scan(Own::of(self.unit, &self.groups), std::slice::from_ref(&self.home))
-            .map(|(_, standing)| standing)
-            .unwrap_or_default()
+        scan(
+            Own::of(self.unit, &self.groups).and_wrappers(&self.wrappers),
+            std::slice::from_ref(&self.home),
+        )
+        .map(|(_, standing)| standing)
+        .unwrap_or_default()
     }
 }
 
@@ -844,7 +865,7 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
         environment,
         entry,
         tethers: Vec::new(),
-        recorded: Vec::new(),
+        wrappers: Vec::new(),
         force: request.force,
     };
     Ok(Prepared { params, findings, runner })
@@ -1041,7 +1062,10 @@ fn running(params: &Params, leftovers: &mut Vec<Leftover>) -> Vec<Note> {
             leftovers.push(Leftover::new("tether", pgid.to_string()));
         }
     }
-    let seen = attributed(Own::of(params.unit.id, &params.tethers), &watched(params));
+    let seen = attributed(
+        Own::of(params.unit.id, &params.tethers).and_wrappers(&params.wrappers),
+        &watched(params),
+    );
     let spared = stop::spared();
     for pid in seen.processes.iter().filter(|pid| !spared.contains(pid)) {
         leftovers.push(Leftover::new("process", pid.to_string()));
