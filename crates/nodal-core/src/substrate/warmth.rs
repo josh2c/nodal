@@ -9,8 +9,11 @@
 //! install writes into the Cargo home, which is outside the tree and shared by every
 //! base on the host, so no file under a Cargo base says whether its dependencies are
 //! fetched. Poetry is the same unless the project asked for the environment in the
-//! project directory, and `pip` is the same unless the tree holds the environment it
-//! installed into. Those are [`State::Unknown`] with the reason, never a guess.
+//! project directory. That is [`State::Unknown`] with the reason, never a guess.
+//!
+//! `pip` answers, because a base build makes the environment it installs into and puts
+//! it in the tree ([`crate::substrate::pin::Install::prepare`]). A tree with no `.venv`
+//! is one `pip` has not run in, which is cold.
 //!
 //! # An ecosystem the recipe has no manager for
 //!
@@ -32,13 +35,10 @@
 use std::path::Path;
 
 use crate::model::readiness::{Readiness, State};
-use crate::model::recipe::{Ecosystem, PackageManager, Recipe};
+use crate::model::recipe::{Ecosystem, PackageManager, Recipe, VENV};
 
 /// Where a Node install puts what it installed.
 const NODE_MODULES: &str = "node_modules";
-
-/// Where a Python install puts its environment, when it puts it in the project.
-const VENV: &str = ".venv";
 
 /// Poetry's own configuration file, and the key that moves its environment into the
 /// project directory.
@@ -116,18 +116,6 @@ fn installed(manager: PackageManager, tree: &Path) -> State {
                 why: String::from(
                     "poetry keeps its environment outside the tree unless \
                      virtualenvs.in-project is set",
-                ),
-            }
-        }
-        // pip installs into whichever interpreter is on the path, which is the host's
-        // own unless the tree carries the environment. A tree that carries one answers;
-        // a tree that does not cannot, and saying cold would send a person to install
-        // what may already be installed.
-        Ecosystem::Python if manager == PackageManager::Pip && !tree.join(VENV).is_dir() => {
-            State::Unknown {
-                why: String::from(
-                    "pip installs into the interpreter on the path, and this tree \
-                     holds no .venv to read",
                 ),
             }
         }
@@ -306,24 +294,25 @@ mod tests {
         assert_eq!(state.why(), Some("the project names no package manager"));
     }
 
-    /// EV-4: the fixture's Python half was a `requirements.txt`, which no value of
-    /// `package_manager` named, so nothing installed it and nothing said so.
+    /// A `requirements.txt` half once had no manager at all, so nothing installed it
+    /// and nothing said so. `pip` installs it into an environment the base build makes
+    /// in the tree, so the tree can answer for it.
     #[test]
-    fn pip_answers_only_where_the_tree_carries_the_environment_it_installed_into() {
+    fn a_pip_tree_is_ready_when_it_carries_the_environment_and_cold_when_it_does_not() {
         let root = tree(&[]);
         std::fs::write(root.path().join("requirements.txt"), "flask\n").unwrap();
         let recipe = recipe(&[PackageManager::Pip], None);
 
         let state = of(&recipe, root.path()).dependencies;
-        assert!(matches!(state, State::Unknown { .. }), "{state:?}");
-        assert!(state.why().unwrap().contains("interpreter on the path"), "{state:?}");
+        assert!(matches!(state, State::Cold { .. }), "{state:?}");
+        assert!(state.why().unwrap().contains(".venv"), "{state:?}");
 
         std::fs::create_dir_all(root.path().join(".venv")).unwrap();
         assert_eq!(of(&recipe, root.path()).dependencies, State::Ready);
     }
 
-    /// The other half of EV-4: a half of the repository that no manager covers is named,
-    /// rather than left out of the answer.
+    /// A half of the repository that no manager covers is named, rather than left out of
+    /// the answer.
     #[test]
     fn an_ecosystem_with_a_manifest_and_no_manager_is_named() {
         let root = tree(&["node_modules"]);

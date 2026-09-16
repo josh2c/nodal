@@ -1010,6 +1010,24 @@ pub enum Error {
         /// the tool is not on the path at all.
         found: String,
     },
+
+    /// A package manager installs into an environment it does not make, and this host
+    /// has no interpreter to make one with.
+    ///
+    /// Refused before a base is cloned, for the reason [`Self::ToolPin`] is. The
+    /// alternative is worse than a refusal: `pip` with no environment installs into
+    /// whatever interpreter the path holds, which writes into the host rather than into
+    /// the base.
+    #[error(
+        "{manager} installs into a virtual environment and this host has none of {tried}; \
+         install python, or name a manager that makes its own environment"
+    )]
+    NoInterpreter {
+        /// The package manager that needs one.
+        manager: &'static str,
+        /// The programs that were looked for, in the order they were tried.
+        tried: String,
+    },
 }
 
 /// The tail of a finished process's two streams.

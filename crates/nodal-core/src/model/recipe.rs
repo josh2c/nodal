@@ -103,6 +103,13 @@ pub enum Ecosystem {
     Python,
 }
 
+/// Where a Python install puts its environment, when it puts it in the project.
+///
+/// One name, because three parts of the program mean the same directory by it: the base
+/// build makes it for `pip`, warmth reads it to say whether a tree is installed, and
+/// Poetry is asked whether it was told to use it.
+pub const VENV: &str = ".venv";
+
 impl Ecosystem {
     /// Every ecosystem, so that a reader can ask about the ones a recipe left out.
     pub const ALL: &'static [Self] = &[Self::Node, Self::Rust, Self::Python];
