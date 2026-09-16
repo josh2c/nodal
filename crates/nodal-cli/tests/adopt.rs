@@ -123,20 +123,14 @@ impl Workspace {
     }
 
     /// The unit with this handle, as the registry holds it.
-    ///
-    /// A reclaim releases the handle and the row takes one built from it, so a unit that
-    /// has been reclaimed is found under the handle it took.
     fn unit(&self, slug: &str) -> nodal_core::model::Unit {
         let store = self.store();
         let project = projects::list(store.conn()).unwrap().pop().expect("the project is known");
-        let units = units::list(store.conn(), project.id).unwrap();
-        let released = format!("{slug}-");
-        units
-            .iter()
+        units::list(store.conn(), project.id)
+            .unwrap()
+            .into_iter()
             .find(|unit| unit.slug.as_str() == slug)
-            .or_else(|| units.iter().find(|unit| unit.slug.as_str().starts_with(&released)))
             .unwrap_or_else(|| panic!("no unit is called {slug}"))
-            .clone()
     }
 
     /// That unit's newest materialisation.

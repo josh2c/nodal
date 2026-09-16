@@ -462,6 +462,10 @@ fn a_reclaimed_unit_is_listed_as_archived_with_no_home_and_no_complaint() {
 /// A reclaimed unit used to go on holding its name, so making the unit again gave
 /// `<name>-2` on the branch the archived unit already had. Two units then shared
 /// `nodal/<name>`.
+///
+/// A handle is unique among the units that hold one, and an archived unit holds none, so
+/// the name is free the moment the unit is archived. Nothing of the archived row is
+/// rewritten to free it: it keeps the name a person typed, its identifier and its branch.
 #[test]
 fn a_reclaimed_units_name_is_free_again_and_the_archived_row_keeps_its_own_identity() {
     let workspace = workspace();
@@ -481,7 +485,7 @@ fn a_reclaimed_units_name_is_free_again_and_the_archived_row_keeps_its_own_ident
     let units = listed["units"].as_array().expect("the list has units");
     let made = units
         .iter()
-        .find(|row| row["slug"] == "worker-import")
+        .find(|row| row["slug"] == "worker-import" && row["status"] != "archived")
         .expect("the name was free, so the new unit has it");
     assert_eq!(made["branch"], "nodal/worker-import", "and the branch is the one the name makes");
     assert_ne!(made["id"], serde_json::json!(archived), "it is a new unit, not the archived one");
@@ -490,23 +494,19 @@ fn a_reclaimed_units_name_is_free_again_and_the_archived_row_keeps_its_own_ident
         "no unit was pushed onto a suffix: {listed}"
     );
 
-    // The archived row is still there, under a handle that cannot collide, with its own
-    // identifier and the branch it always had.
+    // The archived row is still there, with the name a person typed, its own identifier
+    // and the branch it always had.
     let kept = units
         .iter()
         .find(|row| row["id"] == serde_json::json!(archived))
         .expect("the archived unit is still on the list");
     assert_eq!(kept["status"], "archived", "{kept}");
-    assert_ne!(kept["slug"], "worker-import", "it gave the name back: {kept}");
-    assert!(
-        kept["slug"].as_str().expect("a handle").starts_with("worker-import-"),
-        "and the name it had is still readable in the one it took: {kept}"
-    );
+    assert_eq!(kept["slug"], "worker-import", "nothing was renamed to free the name: {kept}");
     assert_eq!(kept["branch"], "nodal/worker-import", "the archived unit keeps its own branch");
 }
 
 /// A name made, reclaimed, made again and reclaimed again leaves two archived units
-/// whose released handles both come from it. The name means the last unit that held it.
+/// under it. The name means the last unit that held it.
 #[test]
 fn a_name_reclaimed_twice_reaches_the_unit_that_held_it_last() {
     let workspace = workspace();
@@ -518,15 +518,18 @@ fn a_name_reclaimed_twice_reaches_the_unit_that_held_it_last() {
     assert_ne!(first, second, "the second unit is a new one");
     drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
 
-    // Both archived rows carry a handle built from the name, and neither is wrong.
+    // Two archived units carry the name and the branch, and neither is wrong.
     let listed = json(&workspace.nodal(&["ls", "--json"]));
     let units = listed["units"].as_array().expect("the list has units");
-    let released: Vec<&str> = units
+    let both: Vec<&serde_json::Value> = units
         .iter()
-        .filter_map(|row| row["slug"].as_str())
-        .filter(|slug| slug.starts_with("worker-import-"))
+        .filter(|row| row["slug"] == "worker-import" && row["status"] == "archived")
         .collect();
-    assert_eq!(released.len(), 2, "two units gave the name back: {listed}");
+    assert_eq!(both.len(), 2, "two units held the name and gave it back: {listed}");
+    assert!(
+        both.iter().all(|row| row["branch"] == "nodal/worker-import"),
+        "each keeps the branch its name made: {listed}"
+    );
 
     // The name reaches the one that held it last, and the answer is the same every time
     // it is asked.
@@ -538,13 +541,16 @@ fn a_name_reclaimed_twice_reaches_the_unit_that_held_it_last() {
 }
 
 /// The identifier of the unit that holds this handle now.
+///
+/// A handle an archived unit also carries is the case this is asked in, so the row that
+/// holds it is the row that is not archived.
 fn slug_id(workspace: &Workspace, slug: &str) -> String {
     let listed = json(&workspace.nodal(&["ls", "--json"]));
     listed["units"]
         .as_array()
         .expect("the list has units")
         .iter()
-        .find(|row| row["slug"] == slug)
+        .find(|row| row["slug"] == slug && row["status"] != "archived")
         .and_then(|row| row["id"].as_str())
         .expect("the unit is on the list")
         .to_owned()
@@ -858,8 +864,7 @@ fn a_checkout_adopted_in_place_is_unregistered_and_never_trashed() {
     let unit = units::list(store.conn(), projects::list(store.conn()).unwrap()[0].id)
         .unwrap()
         .into_iter()
-        // The reclaim released the handle, so the row is found by the handle it took.
-        .find(|unit| unit.slug.as_str().starts_with("in-place"))
+        .find(|unit| unit.slug.as_str() == "in-place")
         .expect("the unit is still on record");
     assert_eq!(unit.status, UnitStatus::Archived, "it is unregistered, not forgotten");
     let environment =

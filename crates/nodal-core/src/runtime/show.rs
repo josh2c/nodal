@@ -33,6 +33,11 @@ const HISTORY: u32 = 20;
 
 /// Everything known about one unit: its row of `listed`, and its log under it.
 ///
+/// The row is found by the unit's identifier and never by its name. A project can carry
+/// several units under one name — a reclaimed unit keeps the name a person typed, and
+/// the next unit takes it — and the caller has already decided which of them this is
+/// ([`crate::runtime::entry`]).
+///
 /// # Errors
 /// [`Error::UnitNotFound`] when the list has no such unit, and [`Error::Store`] when the
 /// log could not be read.
@@ -41,7 +46,7 @@ pub fn detail(conn: &Connection, listed: UnitList, unit: &Unit) -> Result<UnitDe
     let mut row = listed
         .units
         .into_iter()
-        .find(|row| row.slug == unit.slug)
+        .find(|row| row.id == unit.id)
         .ok_or_else(|| Error::UnitNotFound { slug: unit.slug.to_string() })?;
     measure(&mut row);
     let mut history = events::list_recent(conn, unit.id, HISTORY)?;

@@ -18,13 +18,18 @@
 //! 3. a value a later migration added is filled in by that migration rather than left
 //!    for a reader to guess. `objective_epistemic` arrived in migration 6, and a v1 unit
 //!    that carries an objective is `stated` afterwards, because an objective a person
-//!    typed is the only kind v1 could hold.
+//!    typed is the only kind v1 could hold;
+//! 4. a rule a later migration relaxed is relaxed for the rows that are already there.
+//!    Migration 13 makes the handle unique among the units that hold one, and the file
+//!    it has to cross is one an earlier Nodal filled while the rule was stricter.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
 use std::path::{Path, PathBuf};
 
-use nodal_core::model::{ActorKind, EnvState, Epistemic, EventKind, Timestamp, UnitStatus};
+use nodal_core::model::{
+    ActorKind, BranchName, EnvState, Epistemic, EventKind, Slug, Timestamp, Unit, UnitStatus,
+};
 use nodal_core::store::migrations::MIGRATIONS;
 use nodal_core::store::{SCHEMA_VERSION, Store, environments, events, projects, sessions, units};
 use tempfile::TempDir;
@@ -186,4 +191,117 @@ fn migrating_a_registry_twice_is_migrating_it_once() {
 
     assert_eq!(after_first.len(), 1, "a second open did not repeat a migration");
     assert_eq!(version_of(&path), SCHEMA_VERSION);
+}
+
+// ---------------------------------------------------------------------------
+// Migration 13: a handle is unique among the units that hold one.
+// ---------------------------------------------------------------------------
+
+/// The unit the fixture archives, which is the row this migration has to carry.
+const RECLAIMED: &str = "01J8Z6H0000000000000000008";
+/// The unit the old rule pushed onto a suffix, because the archived one kept its name.
+const SUFFIXED: &str = "01J8Z6H0000000000000000009";
+/// The unit a person makes after the migration, under the name that is free again.
+const REMADE: &str = "01J8Z6H0000000000000000010";
+
+/// The two rows a v12 Nodal wrote when a unit was reclaimed and the name was wanted
+/// again: the archived unit keeps `worker-import`, and the new one is `worker-import-2`
+/// on the branch the archived one already has.
+const V12_ROWS: &str = "
+INSERT INTO project (id, root, name, recipe_hash, created_at)
+VALUES ('01J8Z6H0000000000000000001', '/home/dev/acme', 'acme', '0f1e2d', 1788688800);
+
+INSERT INTO unit (id, project_id, slug, objective, objective_epistemic, branch,
+                  parent_branch, status, created_at, updated_at)
+VALUES ('01J8Z6H0000000000000000008', '01J8Z6H0000000000000000001', 'worker-import',
+        'import the workers', 'stated', 'nodal/worker-import', 'main', 'archived',
+        1788688860, 1788688900),
+       ('01J8Z6H0000000000000000009', '01J8Z6H0000000000000000001', 'worker-import-2',
+        'import the workers', 'stated', 'nodal/worker-import', 'main', 'open',
+        1788688960, 1788688960);
+";
+
+/// Write a registry file as a Nodal one version before the handle rule changed.
+fn v12_registry(directory: &Path) -> PathBuf {
+    let path = directory.join("registry.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for migration in MIGRATIONS.iter().filter(|migration| migration.version <= 12) {
+        conn.execute_batch(migration.sql).unwrap();
+    }
+    conn.execute_batch(V12_ROWS).unwrap();
+    conn.pragma_update(None, "user_version", 12_u32).unwrap();
+    conn.close().unwrap();
+    assert_eq!(version_of(&path), 12, "the fixture is a version 12 file");
+    path
+}
+
+/// A unit of the fixture's project, for a row written after the migration.
+fn made(id: &str, slug: &str, branch: &str) -> Unit {
+    let at = Timestamp::parse("2026-09-06T11:00:00Z").unwrap();
+    Unit {
+        id: id.parse().unwrap(),
+        project_id: PROJECT.parse().unwrap(),
+        slug: Slug::parse(slug).unwrap(),
+        objective: None,
+        objective_epistemic: None,
+        branch: BranchName::parse(branch).unwrap(),
+        parent_branch: None,
+        base_commit: None,
+        status: UnitStatus::Open,
+        created_at: at,
+        updated_at: at,
+    }
+}
+
+/// The rows a v12 file holds are kept, and nothing is renamed to relax the rule.
+#[test]
+fn the_units_a_v12_registry_held_keep_their_handles() {
+    let directory = TempDir::new().unwrap();
+    let path = v12_registry(directory.path());
+
+    let store = Store::open(&path).unwrap();
+
+    assert_eq!(version_of(&path), SCHEMA_VERSION, "the file is at the current version");
+    let reclaimed =
+        units::get(store.conn(), RECLAIMED.parse().unwrap()).unwrap().expect("the archived unit");
+    assert_eq!(reclaimed.slug.as_str(), "worker-import", "the archived row keeps its name");
+    assert_eq!(reclaimed.status, UnitStatus::Archived);
+    assert_eq!(reclaimed.branch.as_str(), "nodal/worker-import");
+    let suffixed =
+        units::get(store.conn(), SUFFIXED.parse().unwrap()).unwrap().expect("the suffixed unit");
+    assert_eq!(suffixed.slug.as_str(), "worker-import-2", "and the row beside it keeps its own");
+}
+
+/// The name an archived unit carries is free for a new unit, and two units hold one
+/// handle only when one of them has given it up.
+///
+/// The suffixed unit is reclaimed first, which is what a person does with the row the
+/// old rule left them. Both names are then free, and the one they wanted is taken.
+#[test]
+fn a_name_an_archived_unit_carries_is_free_after_the_migration() {
+    let directory = TempDir::new().unwrap();
+    let store = Store::open(v12_registry(directory.path())).unwrap();
+    let now = Timestamp::parse("2026-09-06T11:00:00Z").unwrap();
+    units::update_status(store.conn(), SUFFIXED.parse().unwrap(), UnitStatus::Archived, now)
+        .unwrap();
+
+    units::insert(store.conn(), &made(REMADE, "worker-import", "nodal/worker-import"))
+        .expect("the archived unit holds no handle, so the name is free");
+
+    // Two rows now carry `worker-import`, and the one that holds it is the open one.
+    let found = units::find_by_slug(
+        store.conn(),
+        PROJECT.parse().unwrap(),
+        &Slug::parse("worker-import").unwrap(),
+    )
+    .unwrap()
+    .expect("the name reaches a unit");
+    assert_eq!(found.id.to_string(), REMADE, "the unit that holds the handle answers first");
+
+    // The rule that is left still holds: two units cannot hold one handle.
+    let second = made("01J8Z6H0000000000000000011", "worker-import", "nodal/worker-import-again");
+    assert!(
+        units::insert(store.conn(), &second).is_err(),
+        "a handle is unique among the units that hold one"
+    );
 }

@@ -1120,6 +1120,16 @@ the checkout are not records of a run, and no retention applies to them. `nodal 
 record the sweep removed.
 
 ## Reclaim, trash and gc
+**A handle belongs to the unit that holds it.** A unit's handle is unique among the units of a
+project that hold one. A reclaimed unit holds none, so the name is free for the next unit the moment
+the reclaim archives it, and `nodal new --name <name>` takes it rather than `<name>-2`.
+
+Nothing is renamed to free it. The archived row keeps the name a person typed, its identifier, its
+branch, its objective and its place in the log. So a project can carry several archived units under
+one name, and every command that takes a name reads them in one order: the unit that holds the handle
+answers, and where nobody holds it, the unit that held it last. That is what makes `nodal reclaim
+<name>` on a reclaimed unit say it was reclaimed already.
+
 Every destructive path calls one uniqueness check. It reports three things: uncommitted changes,
 untracked files that no ignore rule covers, and commits that no remote and no other tree on this
 machine has. A hit refuses the operation and names the paths. `--force` does not skip the check.
