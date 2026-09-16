@@ -246,14 +246,16 @@ impl MachineReport {
 
     /// How many clones had no fresher clone of their remote here to check their refs.
     ///
-    /// Their uniqueness is proved: another copy on this machine holds every commit they
-    /// hold. What no reading here could answer is whether the remote has the work.
+    /// Their uniqueness is proved: another copy in this checkout or the clones beside it
+    /// holds every commit they hold. What no reading here could answer is whether the
+    /// remote has the work.
     fn not_witnessed(&self) -> Option<Block> {
         let clones: usize = self.groups.iter().map(|group| group.unwitnessed).sum();
         (clones > 0).then(|| {
             Block::line(format!(
-                "{} had no fresher clone of their remote here; another copy on this machine \
-                 holds their commits, and whether a remote does was not checked",
+                "{} had no fresher clone of their remote here; another copy in this \
+                 checkout or the clones beside it holds their commits, and whether a \
+                 remote does was not checked",
                 plural(clones, "clone")
             ))
         })
@@ -345,9 +347,11 @@ fn details(group: &Group) -> Vec<Block> {
         return Vec::new();
     }
     let mut blocks = vec![Block::blank(), Block::line(group.name.clone())];
-    blocks.extend(listing("unique work, the only copy on this machine", &only, |row| {
-        row.only_copy.unwrap_or(0)
-    }));
+    blocks.extend(listing(
+        "unique work, the only copy in this checkout and the clones beside it",
+        &only,
+        |row| row.only_copy.unwrap_or(0),
+    ));
     blocks.extend(listing("on no remote, held by another clone here", &off, off_remote));
     blocks.extend(unreadable(&unread));
     if !only.is_empty() {

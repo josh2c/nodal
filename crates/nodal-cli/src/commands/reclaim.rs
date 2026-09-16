@@ -33,13 +33,14 @@ pub struct Reclaim {
     pub unit: Option<String>,
 
     /// Report what a reclaim would do and do none of it: what is only here, what has
-    /// another copy on this machine, what a reading of the remote proves, what a tool
-    /// writes again, what would be stopped, and whether it would go ahead. It changes
-    /// nothing. The exit code is the verdict.
+    /// another copy in this checkout and the clones beside it, what a reading of the
+    /// remote proves, what a tool writes again, what would be stopped, and whether it
+    /// would go ahead. It changes nothing. The exit code is the verdict.
     ///
-    /// "Another copy on this machine" is the project's checkout and the other
-    /// repositories beside it, two directory levels under its parent. A copy counts only
-    /// where that repository's own object store holds the commit.
+    /// "This checkout and the clones beside it" is the project's checkout and the other
+    /// repositories beside it, two directory levels under its parent. It is not this
+    /// host: `nodal ps` reads the host, and these are two scopes and now two phrases. A
+    /// copy counts only where that repository's own object store holds the commit.
     #[arg(long, conflicts_with_all = ["force", "yes"])]
     pub check: bool,
 

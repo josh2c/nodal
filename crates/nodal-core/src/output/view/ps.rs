@@ -1,4 +1,4 @@
-//! What is running on this machine, and whose it is: what `nodal ps` answers with.
+//! What is running on this host, and whose it is: what `nodal ps` answers with.
 
 use serde::{Deserialize, Serialize};
 

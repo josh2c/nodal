@@ -1216,16 +1216,24 @@ history is on the remote, and reporting all of it would bury the few that are no
 | disposition | what it means | does removing the home lose it |
 |---|---|---|
 | `remote_proved` | a witnessed reading of the remote reaches it | no, while the remote keeps the branch |
-| `second_local_copy` | another object store on this disk holds it | no, and no server is involved |
+| `second_local_copy` | another object store in this checkout or the clones beside it holds it | no, and no server is involved |
 | `not_checked` | nothing here read the remote, and nothing here holds it | unknown, so it is kept |
 | `only_here` | the reading was taken and it is still nowhere else | yes |
 
-**Which object stores "another object store on this disk" means.** Two: the project's checkout, and the
-other repositories beside it. The second set is found by walking the checkout's parent directory, two
-levels down, which reaches a clone put next to the checkout (`<parent>/mirror`) and one put a directory
-below (`<parent>/siblings/mirror`). The walk does not enter the checkout itself or Nodal's state
-directory, and it is the same bound for every project: this reading is taken before every destructive
-step, so what it costs is paid on the safe path. It is not the walk `nodal doctor --machine` makes.
+**Which object stores "this checkout and the clones beside it" means.** Two: the project's checkout,
+and the other repositories beside it. The second set is found by walking the checkout's parent
+directory, two levels down, which reaches a clone put next to the checkout (`<parent>/mirror`) and one
+put a directory below (`<parent>/siblings/mirror`). The walk does not enter the checkout itself or
+Nodal's state directory, and it is the same bound for every project: this reading is taken before every
+destructive step, so what it costs is paid on the safe path. It is not the walk `nodal doctor --machine`
+makes.
+
+This scope is not the host, and the two are said in two phrases. `nodal ps` reads **this host**: it
+lists what is running anywhere on the machine, units of other projects included. `reclaim --check`
+reads **this checkout and the clones beside it**: a clone of the same project somewhere else on the
+same host is outside the walk and is not counted as a second copy. One phrase for one scope, because
+the same words for both said that a commit held by a clone the walk never reached was held "on this
+machine" and safe.
 
 A project whose checkout sits directly in a home directory is the widest case this reaches, because the
 parent is then the home directory itself. Two levels is what keeps that bounded. There is no way to turn
