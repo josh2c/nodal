@@ -300,6 +300,29 @@ const fn parent_id() -> u32 {
     0
 }
 
+/// The process group a process is in, or `None` where this host will not say.
+///
+/// A reading of the machine now, which is the only way a recorded group number means
+/// anything: the number alone is reused, and a leader is replaced while its group lives
+/// ([`crate::lifecycle::assess::Own`]).
+#[cfg(unix)]
+#[must_use]
+pub fn group_of(pid: u32) -> Option<u32> {
+    let pid = i32::try_from(pid).ok()?;
+    // SAFETY: `getpgid` takes one integer and no pointer. A process that has gone, and
+    // one this account may not ask about, are both a return value of -1 rather than
+    // undefined behaviour.
+    let group = unsafe { libc::getpgid(pid) };
+    u32::try_from(group).ok()
+}
+
+/// The same, on a host with no process groups to read.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn group_of(_pid: u32) -> Option<u32> {
+    None
+}
+
 /// The process group this process is in.
 #[cfg(unix)]
 fn own_group() -> u32 {

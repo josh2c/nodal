@@ -121,6 +121,10 @@ fn unit_here(conn: &Connection, cwd: &Path) -> Result<Unit> {
 }
 
 /// The one unit a slug names, searching the project the caller stands in first.
+///
+/// The unit that holds the handle answers first and a reclaimed unit answers when
+/// nobody holds it, which is one question to the registry rather than two
+/// ([`units::find_by_slug`]).
 fn unit_of(conn: &Connection, slug: &Slug, cwd: &Path) -> Result<Unit> {
     let unit = match project_at(conn, cwd)? {
         Some(project) => units::find_by_slug(conn, project.id, slug)?,

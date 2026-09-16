@@ -183,6 +183,19 @@ pub struct Holder {
     /// When the hold lapses: the earlier of the absolute expiry and the end of the idle
     /// window, because either one releases it.
     pub expires_at: Timestamp,
+    /// Whether a process of the holder's actor is still standing in the home although
+    /// the process that took the hold has gone.
+    ///
+    /// The second fact of two, and never a correction of the first. A killed agent that
+    /// left a child behind is a holder that is gone and an orphan that is there, and the
+    /// two used to be merged into the one word `live`. They are reported apart because a
+    /// person acts on them apart: the hold is nobody's to refresh, and something is
+    /// still writing in the home.
+    ///
+    /// False wherever the holder is not gone, because the question is only asked of a
+    /// hold whose own process has ended ([`crate::runtime::ls`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub orphan: bool,
 }
 
 impl Holder {
@@ -206,6 +219,9 @@ impl Holder {
             taken_at: lock.taken_at,
             refreshed_at: lock.refreshed_at,
             expires_at: lock.expires_at.min(idle),
+            // Read afterwards, against the process table, by the one reader that has
+            // taken that scan ([`crate::runtime::ls`]). A view takes no reading.
+            orphan: false,
         })
     }
 }
@@ -885,10 +901,24 @@ fn hold_cell(holder: Option<&Holder>) -> Option<String> {
     let named = holder.pid.map_or_else(|| String::from("the process"), |pid| format!("pid {pid}"));
     match &holder.state {
         HolderState::Live => None,
-        HolderState::Gone => {
-            Some(format!("{named} is not on this host any more; the hold stands until it lapses"))
-        }
+        HolderState::Gone => Some(format!(
+            "{named} is not on this host any more; the hold stands until it lapses{}",
+            orphan_clause(holder)
+        )),
         HolderState::Unknown { why } => Some(format!("liveness not read: {}", why.why())),
+    }
+}
+
+/// The second fact about a hold whose process is gone, when there is one.
+///
+/// Said as its own clause and never folded into the first. "The holder is gone" and
+/// "something of that actor is still in the home" are two readings of two things, and
+/// the sentence keeps them two.
+fn orphan_clause(holder: &Holder) -> String {
+    if holder.orphan {
+        format!("; an orphan of {} stands in the home", holder.actor)
+    } else {
+        String::new()
     }
 }
 

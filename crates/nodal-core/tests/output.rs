@@ -82,6 +82,7 @@ fn holder(name: &str) -> Holder {
         taken_at: at("2026-09-06T09:40:00Z"),
         refreshed_at: at("2026-09-06T14:21:40Z"),
         expires_at: at("2026-09-06T22:21:40Z"),
+        orphan: false,
     }
 }
 

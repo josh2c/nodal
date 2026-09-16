@@ -248,6 +248,116 @@ fn a_commit_no_other_tree_has_refuses_a_reclaim_and_a_shared_one_does_not() {
     assert!(accepted.status.success(), "{}", stderr(&accepted));
 }
 
+/// A second clone beside the checkout, which is the layout this reading was missing.
+///
+/// A clone under `siblings/` held a unit's commit and `--check` called that commit "only
+/// here", because the reading asked the project's checkout and nothing else while the
+/// help promised the machine. The mislabel was conservative and could not cause a
+/// false-safe, and it was still a wrong answer to the question a person asks before they
+/// clear a machine.
+///
+/// The commit is proved in the sibling's own object store. A repository that only names
+/// it counts for nothing, which is the second half of this test.
+#[test]
+fn a_commit_a_sibling_clone_on_this_machine_holds_is_not_only_here() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (_, home) = workspace.one_unit_and_home();
+    std::fs::write(home.join("app").join("main.txt"), "the duplicated commit\n").unwrap();
+    drop(git(&home, &["config", "user.email", "unit@example.invalid"]));
+    drop(git(&home, &["config", "user.name", "Test"]));
+    drop(git(&home, &["add", "-A"]));
+    drop(git(&home, &["commit", "-qm", "work this home and one sibling have"]));
+    let commit = git(&home, &["rev-parse", "HEAD"]).trim().to_owned();
+
+    // Nothing beside the checkout holds it yet, so it is the only copy and the refusal
+    // says so. This is the reading Nodal made before it asked the siblings.
+    let refused = workspace.nodal(&["reclaim", "worker-import", "--check"]);
+    assert!(!refused.status.success(), "{}", answer(&refused));
+    let before = answer(&refused);
+    assert!(before.contains("only"), "the commit is the only copy: {before}");
+
+    // A second clone beside the checkout, one directory down. It fetches the commit, so
+    // its own object store holds it.
+    let siblings = workspace.root().join("siblings");
+    std::fs::create_dir_all(&siblings).unwrap();
+    let mirror = siblings.join("mirror");
+    drop(git(
+        workspace.root(),
+        &["clone", "-q", workspace.source.to_str().unwrap(), mirror.to_str().unwrap()],
+    ));
+    drop(git(
+        &mirror,
+        &["fetch", "-q", home.to_str().unwrap(), &format!("{commit}:refs/heads/partial-copy")],
+    ));
+
+    let answered = workspace.nodal(&["reclaim", "worker-import", "--check"]);
+    let after = answer(&answered);
+    assert!(answered.status.success(), "the verdict is the exit code: {after}");
+    assert!(after.contains("second local copy"), "the commit has a second copy: {after}");
+
+    // The report names the repository that holds it, so a person can go and look, and no
+    // group calls the commit the only copy any more.
+    let report = json(&workspace.nodal(&["reclaim", "worker-import", "--check", "--json"]));
+    let groups = report["commits"].as_array().expect("the report carries commit groups");
+    assert!(
+        !groups.iter().any(|group| group["copies"]["kind"] == "only_here"),
+        "no group calls it the only copy: {report}"
+    );
+    let held_by: Vec<&str> = report["commits"]
+        .as_array()
+        .expect("the report carries commit groups")
+        .iter()
+        .filter_map(|group| group["copies"]["held_by"].as_str())
+        .collect();
+    assert!(
+        held_by.iter().any(|path| resolved(Path::new(path)) == resolved(&mirror)),
+        "the sibling that holds it is named: {held_by:?}"
+    );
+}
+
+/// A sibling that names a commit without holding it proves nothing.
+///
+/// This is the invariant the reading rests on: a refusal is weakened by an object in a
+/// second store, proved by `git rev-list` in that store, and never by a name. A clone
+/// that has been `reflog expire`d and garbage collected keeps names over an empty store,
+/// and that is the case that must not weaken anything.
+#[test]
+fn a_sibling_that_names_a_commit_without_holding_it_does_not_weaken_the_refusal() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (_, home) = workspace.one_unit_and_home();
+    std::fs::write(home.join("app").join("main.txt"), "the unique commit\n").unwrap();
+    drop(git(&home, &["config", "user.email", "unit@example.invalid"]));
+    drop(git(&home, &["config", "user.name", "Test"]));
+    drop(git(&home, &["add", "-A"]));
+    drop(git(&home, &["commit", "-qm", "work only this home has"]));
+    let commit = git(&home, &["rev-parse", "HEAD"]).trim().to_owned();
+
+    // A clone beside the checkout that carries the name and not the object.
+    let siblings = workspace.root().join("siblings");
+    std::fs::create_dir_all(&siblings).unwrap();
+    let mirror = siblings.join("mirror");
+    drop(git(
+        workspace.root(),
+        &["clone", "-q", workspace.source.to_str().unwrap(), mirror.to_str().unwrap()],
+    ));
+    // The ref is written as a file rather than through `update-ref`, because Git refuses
+    // to name an object it does not have. This is the state `reflog expire` and
+    // `gc --prune=now` leave: the objects are taken and the names stay.
+    let named = mirror.join(".git").join("refs").join("heads").join("partial-copy");
+    std::fs::create_dir_all(named.parent().unwrap()).unwrap();
+    std::fs::write(&named, format!("{commit}\n")).unwrap();
+
+    let refused = workspace.nodal(&["reclaim", "worker-import", "--check"]);
+    assert!(!refused.status.success(), "a name is not a second copy: {}", answer(&refused));
+    let told = answer(&refused);
+    assert!(
+        !told.contains(mirror.to_str().unwrap()),
+        "and the repository that only names it is not offered as a copy: {told}"
+    );
+}
+
 #[test]
 fn a_forced_reclaim_commits_the_work_before_it_moves_the_home() {
     let workspace = workspace();
@@ -347,6 +457,103 @@ fn a_reclaimed_unit_is_listed_as_archived_with_no_home_and_no_complaint() {
     assert!(listed.contains("archived"), "{listed}");
     assert!(!listed.contains("No such file or directory"), "{listed}");
     assert!(!listed.contains("git status"), "the list has nothing to complain about: {listed}");
+}
+
+/// A reclaimed unit used to go on holding its name, so making the unit again gave
+/// `<name>-2` on the branch the archived unit already had. Two units then shared
+/// `nodal/<name>`.
+///
+/// A handle is unique among the units that hold one, and an archived unit holds none, so
+/// the name is free the moment the unit is archived. Nothing of the archived row is
+/// rewritten to free it: it keeps the name a person typed, its identifier and its branch.
+#[test]
+fn a_reclaimed_units_name_is_free_again_and_the_archived_row_keeps_its_own_identity() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let archived = slug_id(&workspace, "worker-import");
+    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+
+    // Until somebody takes the name, it still reaches the unit that had it, so a person
+    // who reclaims twice is told what happened rather than that there is no such unit.
+    let again = workspace.nodal(&["reclaim", "worker-import"]);
+    assert!(!again.status.success());
+    assert!(stderr(&again).contains("was reclaimed already"), "{}", stderr(&again));
+
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+
+    let listed = json(&workspace.nodal(&["ls", "--json"]));
+    let units = listed["units"].as_array().expect("the list has units");
+    let made = units
+        .iter()
+        .find(|row| row["slug"] == "worker-import" && row["status"] != "archived")
+        .expect("the name was free, so the new unit has it");
+    assert_eq!(made["branch"], "nodal/worker-import", "and the branch is the one the name makes");
+    assert_ne!(made["id"], serde_json::json!(archived), "it is a new unit, not the archived one");
+    assert!(
+        !units.iter().any(|row| row["slug"] == "worker-import-2"),
+        "no unit was pushed onto a suffix: {listed}"
+    );
+
+    // The archived row is still there, with the name a person typed, its own identifier
+    // and the branch it always had.
+    let kept = units
+        .iter()
+        .find(|row| row["id"] == serde_json::json!(archived))
+        .expect("the archived unit is still on the list");
+    assert_eq!(kept["status"], "archived", "{kept}");
+    assert_eq!(kept["slug"], "worker-import", "nothing was renamed to free the name: {kept}");
+    assert_eq!(kept["branch"], "nodal/worker-import", "the archived unit keeps its own branch");
+}
+
+/// A name made, reclaimed, made again and reclaimed again leaves two archived units
+/// under it. The name means the last unit that held it.
+#[test]
+fn a_name_reclaimed_twice_reaches_the_unit_that_held_it_last() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let first = slug_id(&workspace, "worker-import");
+    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let second = slug_id(&workspace, "worker-import");
+    assert_ne!(first, second, "the second unit is a new one");
+    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+
+    // Two archived units carry the name and the branch, and neither is wrong.
+    let listed = json(&workspace.nodal(&["ls", "--json"]));
+    let units = listed["units"].as_array().expect("the list has units");
+    let both: Vec<&serde_json::Value> = units
+        .iter()
+        .filter(|row| row["slug"] == "worker-import" && row["status"] == "archived")
+        .collect();
+    assert_eq!(both.len(), 2, "two units held the name and gave it back: {listed}");
+    assert!(
+        both.iter().all(|row| row["branch"] == "nodal/worker-import"),
+        "each keeps the branch its name made: {listed}"
+    );
+
+    // The name reaches the one that held it last, and the answer is the same every time
+    // it is asked.
+    let refused = workspace.nodal(&["reclaim", "worker-import"]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("was reclaimed already"), "{}", stderr(&refused));
+    let shown = json(&workspace.nodal(&["show", "worker-import", "--json"]));
+    assert_eq!(shown["unit"]["id"], serde_json::json!(second), "the newest of the two: {shown}");
+}
+
+/// The identifier of the unit that holds this handle now.
+///
+/// A handle an archived unit also carries is the case this is asked in, so the row that
+/// holds it is the row that is not archived.
+fn slug_id(workspace: &Workspace, slug: &str) -> String {
+    let listed = json(&workspace.nodal(&["ls", "--json"]));
+    listed["units"]
+        .as_array()
+        .expect("the list has units")
+        .iter()
+        .find(|row| row["slug"] == slug && row["status"] != "archived")
+        .and_then(|row| row["id"].as_str())
+        .expect("the unit is on the list")
+        .to_owned()
 }
 
 #[test]

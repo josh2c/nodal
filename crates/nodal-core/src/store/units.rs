@@ -58,12 +58,29 @@ pub fn get(conn: &Connection, id: UnitId) -> Result<Option<Unit>> {
     row::one(conn, &sql, params![id.to_string()], decode)
 }
 
-/// The unit a slug names, `None` when there is none.
+/// The unit a handle names, `None` when no unit of this project ever held it.
+///
+/// **The unit that holds the handle answers first.** A handle is unique among the units
+/// that hold one, and an archived unit holds none (`unit_slug`, migration 13). So a name
+/// that was reclaimed and made again names the new unit, and a name nobody remade still
+/// names the unit a person is asking about, which is what makes `nodal reclaim <name>`
+/// on a reclaimed unit say what happened rather than that there is no such unit.
+///
+/// **More than one archived unit can match, and the newest wins.** A name made,
+/// reclaimed, made again and reclaimed again leaves two archived units under it. Neither
+/// is wrong; what the name means is the unit that held it last. Unit identifiers are
+/// ordered by the moment they were made, so the largest identifier is that unit.
+///
+/// A caller that has to know whether the handle is *held* reads the status of the answer
+/// ([`crate::lifecycle::ops::new`]).
 ///
 /// # Errors
 /// As [`get`].
 pub fn find_by_slug(conn: &Connection, project_id: ProjectId, slug: &Slug) -> Result<Option<Unit>> {
-    let sql = format!("SELECT {COLUMNS} FROM unit WHERE project_id = ? AND slug = ?");
+    let sql = format!(
+        "SELECT {COLUMNS} FROM unit WHERE project_id = ? AND slug = ? \
+         ORDER BY (status = 'archived'), id DESC LIMIT 1"
+    );
     row::one(conn, &sql, params![project_id.to_string(), slug.as_str()], decode)
 }
 

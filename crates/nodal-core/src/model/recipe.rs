@@ -135,29 +135,52 @@ impl PackageManager {
 ///
 /// Reading only. A list writes itself, so the key always comes out as a list and the
 /// two spellings exist on the way in and nowhere else.
+///
+/// **Why a visitor and not an untagged enum.** An untagged enum answers a value it
+/// cannot read with the name of its own type: `pip` in the list made `data did not
+/// match any variant of untagged enum OneOrMany`, which names neither the key, nor the
+/// word that was wrong, nor the words that are right. A person reading that has to read
+/// this program's source to fix their own file.
+///
+/// The visitor below reads the two shapes and hands each word to
+/// [`PackageManager`]'s own reader, which holds the list of managers already. So the
+/// failure names the line, the column, the word and every word that is accepted, and
+/// the list of managers is written once: in the enum.
 mod written {
-    use serde::{Deserialize, Deserializer};
+    use std::fmt;
+
+    use serde::Deserialize;
+    use serde::de::{Deserializer, Error, IntoDeserializer, SeqAccess, Visitor};
 
     use super::PackageManager;
 
-    /// One manager, or several. The shape a recipe file may hold, and no part of the
-    /// model: [`deserialize`] turns it into the list before anything else sees it.
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OneOrMany {
-        /// `package_manager = "pnpm"`.
-        One(PackageManager),
-        /// `package_manager = ["cargo", "pnpm"]`.
-        Many(Vec<PackageManager>),
+    /// The two shapes a recipe file may hold: one word, or a list of them.
+    struct OneOrMany;
+
+    impl<'de> Visitor<'de> for OneOrMany {
+        type Value = Vec<PackageManager>;
+
+        fn expecting(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(out, "one package manager, or a list of them")
+        }
+
+        fn visit_str<E: Error>(self, word: &str) -> Result<Self::Value, E> {
+            Ok(vec![PackageManager::deserialize(word.into_deserializer())?])
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut managers = Vec::with_capacity(seq.size_hint().unwrap_or_default());
+            while let Some(manager) = seq.next_element()? {
+                managers.push(manager);
+            }
+            Ok(managers)
+        }
     }
 
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         input: D,
     ) -> Result<Vec<PackageManager>, D::Error> {
-        Ok(match OneOrMany::deserialize(input)? {
-            OneOrMany::One(manager) => vec![manager],
-            OneOrMany::Many(managers) => managers,
-        })
+        input.deserialize_any(OneOrMany)
     }
 
     /// What the published schema says the key accepts.

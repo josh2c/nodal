@@ -191,6 +191,25 @@ fn scan_this_host() -> Result<Vec<Running>> {
     Err(crate::Error::ProcessScanUnsupported { host: std::env::consts::OS })
 }
 
+/// The process that started `pid`, when this host publishes it.
+///
+/// A reading of the machine now, taken once per recorded group rather than once per
+/// process: it answers whether a process is the `nodal run` that a group Nodal recorded
+/// hangs off ([`crate::lifecycle::assess::Own`]). A host that publishes no process table
+/// answers `None`, which leaves the stricter reading standing.
+#[must_use]
+pub fn parent_of(pid: u32) -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::parent_of(pid)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// Reading the process table of a Linux host, which publishes it as `/proc`.
 ///
 /// Everything a `/proc` scan needs is here, including which variables it keeps: a host
@@ -257,6 +276,19 @@ mod linux {
 
     /// The file that holds one process's own statistics, including when it started.
     const STAT: &str = "stat";
+
+    /// How many fields into `stat`'s tail the parent's identifier is.
+    ///
+    /// `stat` is `pid (comm) state ppid ...`, and the tail is taken from the last `)`, so
+    /// the parent is the second field of that tail.
+    const PPID: usize = 1;
+
+    /// The process that started this one, `None` when the host will not say.
+    pub(super) fn parent_of(pid: u32) -> Option<u32> {
+        let record =
+            std::fs::read_to_string(Path::new(PROC).join(pid.to_string()).join(STAT)).ok()?;
+        record.rsplit_once(')')?.1.split_whitespace().nth(PPID)?.parse().ok()
+    }
 
     /// How many fields into `stat`'s tail the start time is.
     ///

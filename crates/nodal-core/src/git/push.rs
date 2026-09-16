@@ -24,17 +24,26 @@ use std::path::Path;
 use super::cmd;
 use crate::error::Result;
 
-/// Send `refspecs` to `remote`.
+/// Send `refspecs` to `remote`, and record where the branch went.
 ///
 /// `--no-verify` is deliberately *not* passed: a person's own pre-push hook is theirs
-/// and runs. Nothing is set that a person's `git push` would not set.
+/// and runs.
+///
+/// `--set-upstream` is passed, which is the one thing here a plain `git push` does not
+/// do by default. A branch pushed without it has no upstream, so every later reading of
+/// "what does the remote have of this" — `git status`, the REMOTE column of `nodal ls`,
+/// the `work.remote` field of `nodal show --json` — answers nothing about a branch that
+/// is on the remote. The person who ran `done` would then have to set by hand the very
+/// fact the command just established. Git sets it for each pushed ref that is a local
+/// branch and skips the rest, so the work-in-progress snapshot under `refs/nodal/` takes
+/// no upstream and does not need to be pushed separately.
 ///
 /// # Errors
 /// [`Error::GitSpawn`](crate::Error::GitSpawn) when `git` could not be started,
 /// [`Error::Git`](crate::Error::Git) when the push was refused or the remote could not
 /// be reached.
 pub(super) fn push(repo: &Path, remote: &str, refspecs: &[String]) -> Result<()> {
-    let mut args = vec!["push", "--porcelain", "--", remote];
+    let mut args = vec!["push", "--porcelain", "--set-upstream", "--", remote];
     args.extend(refspecs.iter().map(String::as_str));
     cmd::run_ok(repo, &args)?;
     Ok(())

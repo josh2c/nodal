@@ -115,7 +115,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::survey::Bases;
 use crate::git::{Git, refs};
-use crate::lifecycle::assess::{self, Assessment, Runtime, attributed, scan};
+use crate::lifecycle::assess::{self, Assessment, Own, Runtime, attributed, scan};
 use crate::lifecycle::hooks::{
     self, Approvals, Context, Ownership, Phase, Ran, Registered, Runner,
 };
@@ -186,6 +186,19 @@ pub struct Params {
     /// such field and still has to be rebuilt and finished rather than refused.
     #[serde(default)]
     pub tethers: Vec<u32>,
+    /// The `nodal run` each of those groups hangs off, resolved while the groups were
+    /// still alive.
+    ///
+    /// A reclaim stops the groups before it moves the home, and the relation that says
+    /// "this process is the one that started that group" cannot be read once the group
+    /// has gone. So it is read here, before anything is stopped, and each answer is
+    /// pinned to the instant that process started ([`assess::Wrapper`]). Nothing here is
+    /// ever signalled: it only stops Nodal's own wrapper being mistaken for a stranger in
+    /// the moment between its group ending and itself ending.
+    ///
+    /// Defaulted on the way in, for the reason the groups are.
+    #[serde(default)]
+    pub wrappers: Vec<assess::Wrapper>,
     /// Whether the home is moved although something Nodal did not start is standing in
     /// it. Journalled, because the step that refuses the move is the one a rebuilt plan
     /// runs again, and it has to refuse the same way.
@@ -215,6 +228,9 @@ pub fn reclaim(store: &mut Store, request: &Request) -> Result<Reclaimed> {
     // registry write would close the row and the group would be exactly the invisible
     // process the recording exists to prevent.
     prepared.params.tethers = tethers(store.conn(), prepared.params.environment.id)?;
+    // Before the plan, and therefore before anything is stopped, which is the only time
+    // this relation can be read.
+    prepared.params.wrappers = assess::wrappers_of(&prepared.params.tethers);
     let params = &prepared.params;
     // Before the home moves, because the remote is reached through the repository in
     // it, and after the hook, because a hook that refuses stops the reclaim and nothing
@@ -251,7 +267,9 @@ pub fn check(store: &Store, request: &Request) -> Result<Preflight> {
     let project = project_of(store.conn(), &unit)?;
     let placed = placement(&environment)?;
     let groups = tethers(store.conn(), environment.id)?;
-    let assessment = read(&placed, &project, &environment, (unit.id, &groups))?;
+    let wrappers = assess::wrappers_of(&groups);
+    let assessment =
+        read(&placed, &project, &environment, Own::of(unit.id, &groups).and_wrappers(&wrappers))?;
     let trash = would_trash(&placed, &project, &environment)?;
     Ok(Preflight::new(Timestamp::now(), unit.slug.to_string(), trash, assessment))
 }
@@ -261,9 +279,8 @@ fn read(
     placed: &Placement,
     project: &Project,
     environment: &Environment,
-    unit: (UnitId, &[u32]),
+    own: Own<'_>,
 ) -> Result<Assessment> {
-    let (id, groups) = unit;
     let Some(home) = placed.path() else {
         return Ok(Assessment {
             home: environment.home.clone(),
@@ -277,13 +294,17 @@ fn read(
     assess::assess(&assess::Input {
         home,
         checkout: Some(&Checkout::read(&project.root)),
+        // The rest of what "another copy on this machine" promises: the other
+        // repositories beside the project's checkout, proved by their own object stores
+        // and never by a name.
+        siblings: &crate::doctor::scan::siblings(&project.root),
         state: true,
         // The preflight is what a person reads, so it pays for the two readings that say
         // where else each commit lives. The reclaim itself acts on the refusal alone.
         dispositions: true,
         // A checkout adopted in place is unregistered and left exactly where it is, so
         // nothing is moved out from under anybody standing in it.
-        runtime: Some(assess::Attribution { unit: id, groups, moves: environment.managed }),
+        runtime: Some(assess::Attribution { own, moves: environment.managed }),
     })
 }
 
@@ -387,6 +408,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
             unit: params.unit.id,
             environment: params.environment.clone(),
             tethers: params.tethers.clone(),
+            wrappers: params.wrappers.clone(),
         });
     let Some(entry) = &params.entry else {
         if params.environment.managed {
@@ -401,6 +423,8 @@ pub fn plan(params: &Params) -> Result<Plan> {
             home: entry.home.clone(),
             path: entry.path.clone(),
             force: params.force,
+            groups: params.tethers.clone(),
+            wrappers: params.wrappers.clone(),
         })
         .then(TrashPrune { path: entry.path.clone() }))
 }
@@ -427,6 +451,10 @@ fn commit_of(params: &Params) -> Commit {
             sessions::end(tx, session.id, now)?;
         }
         environments::update_state(tx, environment.id, EnvState::Absent, now)?;
+        // The unit is archived here, and that is the whole of giving the name back: a
+        // handle is unique among the units that hold one, and an archived unit holds
+        // none ([`units::find_by_slug`]). The row keeps its name, its identifier, its
+        // branch and its place in the log.
         units::update_status(tx, unit.id, UnitStatus::Archived, now)?;
         // The home has gone, so a row naming its writer would name the writer of
         // nothing. Only this host's hold is given up: a claim another machine took is
@@ -537,6 +565,8 @@ struct StopRuntime {
     environment: Environment,
     /// The process groups its tethers hold, from the journal rather than the machine.
     tethers: Vec<u32>,
+    /// The `nodal run` each of them hangs off, from the journal for the same reason.
+    wrappers: Vec<assess::Wrapper>,
 }
 
 impl Step for StopRuntime {
@@ -546,7 +576,10 @@ impl Step for StopRuntime {
 
     /// Repeatable: a second run finds nothing attributed and stops nothing.
     fn apply(&self) -> Result<Output> {
-        let mut seen = attributed(self.unit, std::slice::from_ref(&self.environment.home));
+        let mut seen = attributed(
+            Own::of(self.unit, &self.tethers).and_wrappers(&self.wrappers),
+            std::slice::from_ref(&self.environment.home),
+        );
         let stopped = stop::processes(&stop::Live, &self.targets(&seen), stop::GRACE);
         let containers = match docker::remove(&docker::Cli, &seen.containers) {
             Ok(removed) => {
@@ -601,6 +634,13 @@ struct TrashHome {
     path: PathBuf,
     /// Whether the move goes ahead over a process standing in the home.
     force: bool,
+    /// The process groups the registry recorded for the unit, so a process inside one is
+    /// not the stranger the move refuses to act over.
+    groups: Vec<u32>,
+    /// The `nodal run` each group hangs off. This step runs after the groups were
+    /// stopped, which is exactly when that relation can no longer be read, so it is
+    /// carried here from before.
+    wrappers: Vec<assess::Wrapper>,
 }
 
 impl Step for TrashHome {
@@ -641,9 +681,12 @@ impl TrashHome {
     /// What is standing in the home at the probable level, and nothing when the process
     /// table could not be read.
     fn bystanders(&self) -> Vec<Standing> {
-        scan(self.unit, std::slice::from_ref(&self.home))
-            .map(|(_, standing)| standing)
-            .unwrap_or_default()
+        scan(
+            Own::of(self.unit, &self.groups).and_wrappers(&self.wrappers),
+            std::slice::from_ref(&self.home),
+        )
+        .map(|(_, standing)| standing)
+        .unwrap_or_default()
     }
 }
 
@@ -814,8 +857,15 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
         approvals: Approvals::open(hooks::path_in(&state_dir))?,
         enabled: request.hooks,
     };
-    let params =
-        Params { project, unit, environment, entry, tethers: Vec::new(), force: request.force };
+    let params = Params {
+        project,
+        unit,
+        environment,
+        entry,
+        tethers: Vec::new(),
+        wrappers: Vec::new(),
+        force: request.force,
+    };
     Ok(Prepared { params, findings, runner })
 }
 
@@ -882,7 +932,11 @@ fn placement(environment: &Environment) -> Result<Placement> {
 /// carried into the report, and the caller takes a snapshot before it goes on.
 fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Result<Vec<Finding>> {
     let Some(home) = placed.path() else { return Ok(Vec::new()) };
-    let found = uniqueness::check(home, Some(&Checkout::read(source)))?;
+    let found = uniqueness::check(
+        home,
+        Some(&Checkout::read(source)),
+        &crate::doctor::scan::siblings(source),
+    )?;
     if found.is_clear() || force {
         return Ok(found.findings);
     }
@@ -1006,7 +1060,10 @@ fn running(params: &Params, leftovers: &mut Vec<Leftover>) -> Vec<Note> {
             leftovers.push(Leftover::new("tether", pgid.to_string()));
         }
     }
-    let seen = attributed(params.unit.id, &watched(params));
+    let seen = attributed(
+        Own::of(params.unit.id, &params.tethers).and_wrappers(&params.wrappers),
+        &watched(params),
+    );
     let spared = stop::spared();
     for pid in seen.processes.iter().filter(|pid| !spared.contains(pid)) {
         leftovers.push(Leftover::new("process", pid.to_string()));

@@ -96,10 +96,10 @@ use crate::git::status::{Entry, State, Summary};
 use crate::git::{Git, Oid, union};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
 use crate::lifecycle::witness::{self, Checkout};
-use crate::model::{Needs, UnitId};
+use crate::model::{Needs, Timestamp, UnitId};
 use crate::paths;
 use crate::runtime::attribute::{Note, Source, Standing};
-use crate::runtime::processes;
+use crate::runtime::processes::{self, Processes as _};
 use crate::runtime::stop;
 use crate::services::docker;
 use crate::workspace::prune;
@@ -118,12 +118,13 @@ pub const UNIT_LABEL: &str = "nodal.unit";
 /// later, inside its own plan, where the answer decides what to signal.
 #[derive(Debug, Clone, Copy)]
 pub struct Attribution<'a> {
-    /// The unit, which is the identifier a process carries when it is certainly the
-    /// unit's.
-    pub unit: UnitId,
-    /// The process groups the registry recorded for it: a tether, or a group a recipe
-    /// hook left behind.
-    pub groups: &'a [u32],
+    /// The unit, the groups the registry recorded for it, and the wrapper each group
+    /// hangs off.
+    ///
+    /// One value rather than the unit and the groups apart, because it is one value:
+    /// [`scan`] asks it as one, and a second shape here would be a conversion that can
+    /// drop a field the reading needs ([`Own`]).
+    pub own: Own<'a>,
     /// Whether a reclaim would move this home, which is the whole of what decides
     /// whether a bystander blocks.
     ///
@@ -153,6 +154,21 @@ pub struct Input<'a> {
     /// its tips it really holds. A caller that assesses many homes reads it once
     /// ([`Checkout::read`]) and pays for it once.
     pub checkout: Option<&'a Checkout>,
+    /// The other repositories on this machine that may hold a copy of a commit, beside
+    /// the project's own checkout.
+    ///
+    /// The reading used to ask the project's checkout and nothing else, so a commit a
+    /// clone two directories away held was reported as the only copy, while the help of
+    /// `nodal reclaim --check` promised the machine. These are the stores that answer
+    /// the rest of that promise.
+    ///
+    /// Read by the caller and handed in, so that a caller assessing many homes discovers
+    /// them once, and so that a caller which cannot afford the reading passes none and
+    /// gets the stricter answer. An empty slice is exactly the reading Nodal made before.
+    ///
+    /// A store is only ever believed when it holds the object, proved by `git rev-list`
+    /// in that repository ([`local_copies`]). A name never counts.
+    pub siblings: &'a [PathBuf],
     /// Whether to classify the ignored state the home holds.
     pub state: bool,
     /// Whether to say where else each commit lives, rather than only which commits
@@ -180,8 +196,12 @@ impl<'a> Input<'a> {
     /// would not move. The refusal a reclaim raises is about the work in a home, and it
     /// is the same refusal for a home Nodal made and for a checkout adopted in place.
     #[must_use]
-    pub const fn refusal(home: &'a Path, checkout: Option<&'a Checkout>) -> Self {
-        Self { home, checkout, state: false, dispositions: false, runtime: None }
+    pub const fn refusal(
+        home: &'a Path,
+        checkout: Option<&'a Checkout>,
+        siblings: &'a [PathBuf],
+    ) -> Self {
+        Self { home, checkout, siblings, state: false, dispositions: false, runtime: None }
     }
 }
 
@@ -458,9 +478,9 @@ pub struct Runtime {
 /// moment it is supposed to speak: after the registry write, `ps` would attribute nothing
 /// to the unit whether or not anything was still running.
 #[must_use]
-pub fn attributed(unit: UnitId, homes: &[PathBuf]) -> Runtime {
+pub fn attributed(own: Own<'_>, homes: &[PathBuf]) -> Runtime {
     let mut seen = Runtime::default();
-    match scan(unit, homes) {
+    match scan(own, homes) {
         Ok((processes, bystanders)) => {
             seen.processes = processes;
             seen.bystanders = bystanders;
@@ -468,7 +488,7 @@ pub fn attributed(unit: UnitId, homes: &[PathBuf]) -> Runtime {
         Err(error) => seen.notes.push(Note::new(Source::Environment, error.to_string())),
     }
     match docker::survey(&docker::Cli) {
-        Ok(docker::Survey::Ran(containers)) => seen.containers = labelled(containers, unit),
+        Ok(docker::Survey::Ran(containers)) => seen.containers = labelled(containers, own.unit),
         Ok(docker::Survey::Unavailable { why }) => {
             seen.notes.push(Note::new(Source::Docker, why));
         }
@@ -494,21 +514,21 @@ fn labelled(containers: Vec<docker::Container>, unit: UnitId) -> Vec<String> {
 /// wrote into the home's environment and nothing else writes. The second is probable:
 /// each process stands in the home and says nothing about working on *this* unit.
 ///
-/// Both halves are one predicate each, [`owned_by`] and [`bystander`], so that `nodal ls`
+/// Both halves are one predicate each, [`owns`] and [`bystander`], so that `nodal ls`
 /// reaches the same rule rather than writing a second one.
 ///
 /// # Errors
 /// Whatever the process table reported, which on a host that has none is
 /// [`Error::ProcessScanUnsupported`].
-pub fn scan(unit: UnitId, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)> {
+pub fn scan(own: Own<'_>, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)> {
     let placed: Vec<PathBuf> = homes.iter().map(|home| paths::resolve(home)).collect();
     let spared = stop::spared();
     let mut certain = Vec::new();
     let mut standing = Vec::new();
     for process in processes::Processes::scan(&processes::Live)? {
-        if owned_by(&process, unit) {
+        if owns(&process, own) {
             certain.push(process.pid);
-        } else if bystander(&process, unit, &placed, &spared) {
+        } else if bystander(&process, own, &placed, &spared) {
             standing.push(Standing::new(process.pid, process.command.clone()));
         }
     }
@@ -539,19 +559,161 @@ pub fn scan(unit: UnitId, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)
 #[must_use]
 pub fn bystander(
     process: &processes::Running,
-    unit: UnitId,
+    own: Own<'_>,
     placed: &[PathBuf],
     spared: &[u32],
 ) -> bool {
-    !owned_by(process, unit) && !spared.contains(&process.pid) && in_one_of(process, placed)
+    !owns(process, own)
+        && !spared.contains(&process.pid)
+        && in_one_of(process, placed)
+        && !vouched_for_by_a_group(process, own)
+}
+
+/// A unit, and the process groups the registry recorded for it.
+///
+/// The unit's identifier is what says a process is the unit's own. The groups are not a
+/// second way of saying that, and nothing here ever makes one into a signal target: they
+/// answer a narrower question, which is whether a process standing in the home is a
+/// stranger. A process inside a group Nodal recorded is not a stranger, and a reclaim
+/// already reaches it as [`crate::runtime::stop::Target::Group`].
+///
+/// **Why a group and not a process identifier.** A session row records the leader of the
+/// group it opened, and the leader is replaced while the group lives, so the recorded
+/// number stops naming the process it named. A process identifier is also reused. Reading
+/// that number back as "this is the unit's own" would claim whatever wears it now — and,
+/// because the certain level is what a teardown signals, it would make a stranger's
+/// process a signal target. So the number is never read as a name. It is read as a group:
+/// the machine is asked which group a process is in, and which process a group hangs off
+/// ([`vouched_for_by_a_group`]). The answer only ever takes a process out of the stranger
+/// list.
+#[derive(Debug, Clone, Copy)]
+pub struct Own<'a> {
+    /// The unit.
+    pub unit: UnitId,
+    /// The process groups the registry recorded for this unit's materialisation: a
+    /// tether, or a group a recipe hook left behind.
+    pub groups: &'a [u32],
+    /// The `nodal run` that each of those groups hangs off, resolved while the group was
+    /// still alive ([`Wrapper`]). Empty for a caller that took no such reading.
+    pub wrappers: &'a [Wrapper],
+}
+
+/// A `nodal run` that started a group Nodal recorded, and when it started.
+///
+/// **Why the instant is here.** The relation that identifies this process — it is the
+/// parent of the leader of a recorded group — can only be read while that leader is
+/// alive, and a reclaim stops the group before it moves the home. So the relation is
+/// resolved once, while it is still readable, and what is carried forward is the answer.
+///
+/// A carried process identifier is exactly the stale number this module refuses to treat
+/// as a name, so it is not treated as one: it counts only when the process wearing it now
+/// started at the instant this one did. An identifier that came round again belongs to a
+/// process that started later, so it cannot match, and a host that does not date its
+/// processes matches nothing at all. Being wrong in that direction leaves a refusal
+/// standing, which is the safe one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wrapper {
+    /// Its process identifier when the reading was taken.
+    pub pid: u32,
+    /// When it started, from this host's own record. `None` where the host does not say,
+    /// and then nothing matches it.
+    pub started_at: Option<Timestamp>,
+}
+
+impl<'a> Own<'a> {
+    /// The unit and the groups the registry recorded for it.
+    #[must_use]
+    pub const fn of(unit: UnitId, groups: &'a [u32]) -> Self {
+        Self { unit, groups, wrappers: &[] }
+    }
+
+    /// The same, with the `nodal run` each group hangs off already resolved.
+    #[must_use]
+    pub const fn and_wrappers(mut self, wrappers: &'a [Wrapper]) -> Self {
+        self.wrappers = wrappers;
+        self
+    }
 }
 
 /// Whether a process is this unit's own, which is attribution's certain level.
 ///
 /// It carries `NODAL_ID`, Nodal wrote that into the home's environment, and nothing else
 /// writes it. The identifier has to be this unit's: another unit's is another unit's.
-fn owned_by(process: &processes::Running, unit: UnitId) -> bool {
-    process.var(crate::env::vars::ID).is_some_and(|carried| carried == unit.to_string())
+///
+/// This is the whole of the rule, and it stays the whole of it, because this is the
+/// predicate a teardown signals on. Nothing that is not the unit's own identifier may
+/// widen it ([`Own`]).
+///
+/// Public for the same reason [`bystander`] is: `nodal ls` and `nodal reclaim --check`
+/// say the same word over the same process, so they ask one predicate rather than
+/// writing two.
+#[must_use]
+pub fn owns(process: &processes::Running, own: Own<'_>) -> bool {
+    process.var(crate::env::vars::ID).is_some_and(|carried| carried == own.unit.to_string())
+}
+
+/// Whether a group the registry recorded vouches for this process.
+///
+/// Two ways, and both are readings of this machine taken now. The process is **in** the
+/// group: the operating system is asked which group it is in ([`stop::group_of`]) and the
+/// answer is one Nodal recorded. Or the process **leads to** the group: it is the parent
+/// of the group's leader ([`processes::parent_of`]), which is what `nodal run --tether`
+/// is — the wrapper that started the group and stands in the home while it runs.
+///
+/// A recorded number is never read as a name. A process identifier is reused and a group
+/// leader is replaced while its group lives, so the number alone proves nothing; what
+/// proves something is the relation the machine reports between a process now and that
+/// number now.
+///
+/// **This takes a process out of the stranger list and puts it in no other.** It is not
+/// [`owns`], it never reaches [`Runtime::processes`], and nothing signals a process
+/// because of it. A reclaim already reaches the group as
+/// [`crate::runtime::stop::Target::Group`], which is the target the registry recorded,
+/// and the wrapper ends when the group it is waiting on does.
+fn vouched_for_by_a_group(process: &processes::Running, own: Own<'_>) -> bool {
+    if stop::group_of(process.pid).is_some_and(|group| own.groups.contains(&group)) {
+        return true;
+    }
+    if own.groups.iter().any(|leader| processes::parent_of(*leader) == Some(process.pid)) {
+        return true;
+    }
+    own.wrappers.iter().any(|wrapper| is_still(process.pid, *wrapper))
+}
+
+/// Whether the process wearing this identifier now is the one the reading was taken of.
+///
+/// The instant it started is the whole of the proof, and both sides have to have one: an
+/// identifier that came round again belongs to a process that started later, and a host
+/// that dates nothing proves nothing. Either way the answer is no, which leaves the
+/// stricter reading standing.
+fn is_still(pid: u32, wrapper: Wrapper) -> bool {
+    pid == wrapper.pid && wrapper.started_at.is_some() && started_at(pid) == wrapper.started_at
+}
+
+/// When the process wearing this identifier now started, from this host's own record.
+///
+/// `None` where the host publishes no process table, where the process has gone, and
+/// where the host dates no process. Each of those is "I could not read it", and every
+/// caller here treats that as proof of nothing.
+fn started_at(pid: u32) -> Option<Timestamp> {
+    match processes::Live.presences(&[pid]).ok()?.get(&pid) {
+        Some(processes::Presence::Running { started_at }) => *started_at,
+        _ => None,
+    }
+}
+
+/// The `nodal run` each of these groups hangs off, read while the groups are alive.
+///
+/// Taken by the caller that still can — before anything is stopped — because the relation
+/// is unreadable afterwards ([`Wrapper`]).
+#[must_use]
+pub fn wrappers_of(groups: &[u32]) -> Vec<Wrapper> {
+    groups
+        .iter()
+        .filter_map(|leader| processes::parent_of(*leader))
+        .filter(|pid| *pid > 1)
+        .map(|pid| Wrapper { pid, started_at: started_at(pid) })
+        .collect()
 }
 
 /// Whether a process stands in one of these directories, which is the whole of the
@@ -809,7 +971,7 @@ fn history(git: &Git, input: &Input<'_>) -> Result<(Vec<CommitGroup>, Vec<String
     let found = witness::elsewhere(input.home, input.checkout);
     let checkout = input.checkout.map(Checkout::path);
     if !input.dispositions {
-        let refused = refusing(git, checkout, &found, &remotes)?;
+        let refused = refusing(git, checkout, input.siblings, &found, &remotes)?;
         return Ok((refused, remotes));
     }
     let ours = git.commits_outside("HEAD", &found.own)?;
@@ -821,10 +983,10 @@ fn history(git: &Git, input: &Input<'_>) -> Result<(Vec<CommitGroup>, Vec<String
     let unproved = git.commits_outside("HEAD", &found.tips())?;
     let proved = difference(&ours, &off_remote);
     let second = difference(&off_remote, &unproved);
-    let (fetched, only) = local_copies(checkout, unproved);
+    let (held, only) = local_copies(checkout, input.siblings, unproved);
     let mut groups = Vec::new();
     groups.extend(commit_group(Copies::RemoteProved { witness: witness.clone() }, proved));
-    groups.extend(second_group(checkout, union(&second, &fetched)));
+    groups.extend(second_groups(checkout, second, held));
     groups.extend(commit_group(unreached(&witness), only));
     Ok((groups, remotes))
 }
@@ -844,6 +1006,7 @@ fn history(git: &Git, input: &Input<'_>) -> Result<(Vec<CommitGroup>, Vec<String
 fn refusing(
     git: &Git,
     checkout: Option<&Path>,
+    siblings: &[PathBuf],
     found: &witness::Elsewhere,
     remotes: &[String],
 ) -> Result<Vec<CommitGroup>> {
@@ -851,7 +1014,7 @@ fn refusing(
     if unproved.is_empty() {
         return Ok(Vec::new());
     }
-    let (_, only) = local_copies(checkout, unproved);
+    let (_, only) = local_copies(checkout, siblings, unproved);
     let witness = Witness::of(remotes, found);
     Ok(commit_group(unreached(&witness), only).into_iter().collect())
 }
@@ -875,15 +1038,37 @@ fn unreached(witness: &Witness) -> Copies {
 ///
 /// A checkout that cannot be read, or that will not answer, holds nothing as far as this
 /// is concerned, which is the strict direction.
-fn local_copies(checkout: Option<&Path>, unproved: Vec<Oid>) -> (Vec<Oid>, Vec<Oid>) {
-    let Some(git) = checkout.and_then(|path| Git::open(path).ok()) else {
-        return (Vec::new(), unproved);
-    };
-    let Ok(held) = git.held(&unproved) else {
-        return (Vec::new(), unproved);
-    };
-    let held: BTreeSet<Oid> = held.into_iter().collect();
-    unproved.into_iter().partition(|oid| held.contains(oid))
+fn local_copies(
+    checkout: Option<&Path>,
+    siblings: &[PathBuf],
+    unproved: Vec<Oid>,
+) -> (Vec<(PathBuf, Vec<Oid>)>, Vec<Oid>) {
+    let mut left = unproved;
+    let mut found = Vec::new();
+    for store in checkout.into_iter().chain(siblings.iter().map(PathBuf::as_path)) {
+        if left.is_empty() {
+            break;
+        }
+        let holds = holds_of(store, &left);
+        if holds.is_empty() {
+            continue;
+        }
+        let (held, rest) = left.into_iter().partition(|oid| holds.contains(oid));
+        found.push((store.to_path_buf(), held));
+        left = rest;
+    }
+    (found, left)
+}
+
+/// Which of these commits one repository's object store really holds.
+///
+/// A repository that will not open, and a `rev-list` that would not run, both answer
+/// with nothing. That is the stricter reading and it is the safe direction: a store
+/// nobody could read has proved no second copy of anything, and the commit stays in the
+/// group a refusal is raised over.
+fn holds_of(store: &Path, commits: &[Oid]) -> BTreeSet<Oid> {
+    let Some(git) = Git::open(store).ok() else { return BTreeSet::new() };
+    git.held(commits).map(|held| held.into_iter().collect()).unwrap_or_default()
 }
 
 /// The members of `all` that `fewer` does not have, in the order `all` has them.
@@ -901,10 +1086,27 @@ fn commit_group(copies: Copies, commits: Vec<Oid>) -> Option<CommitGroup> {
     Some(CommitGroup { copies, count, sample: commits.into_iter().take(SAMPLE).collect() })
 }
 
-/// The group of commits a second object store on this machine holds.
-fn second_group(checkout: Option<&Path>, commits: Vec<Oid>) -> Option<CommitGroup> {
-    let held_by = checkout?.to_path_buf();
-    commit_group(Copies::SecondLocalCopy { held_by }, commits)
+/// One group per object store on this machine that holds a second copy.
+///
+/// The checkout's own group carries the commits it names under a ref nothing vouched for
+/// as well as the ones its store was found to hold, because both are the same claim
+/// about the same repository and two rows would read as two findings.
+fn second_groups(
+    checkout: Option<&Path>,
+    named_by_checkout: Vec<Oid>,
+    mut held: Vec<(PathBuf, Vec<Oid>)>,
+) -> Vec<CommitGroup> {
+    if let Some(checkout) = checkout
+        && !named_by_checkout.is_empty()
+    {
+        match held.iter_mut().find(|(store, _)| store == checkout) {
+            Some((_, commits)) => *commits = union(commits, &named_by_checkout),
+            None => held.insert(0, (checkout.to_path_buf(), named_by_checkout)),
+        }
+    }
+    held.into_iter()
+        .filter_map(|(held_by, commits)| commit_group(Copies::SecondLocalCopy { held_by }, commits))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -914,8 +1116,8 @@ fn second_group(checkout: Option<&Path>, commits: Vec<Oid>) -> Option<CommitGrou
 /// What is running against this home, at attribution's two levels, with the groups the
 /// registry recorded added to it.
 fn running(asked: Attribution<'_>, home: &Path) -> Runtime {
-    let seen = attributed(asked.unit, std::slice::from_ref(&home.to_path_buf()));
-    Runtime { groups: asked.groups.to_vec(), ..seen }
+    let seen = attributed(asked.own, std::slice::from_ref(&home.to_path_buf()));
+    Runtime { groups: asked.own.groups.to_vec(), ..seen }
 }
 
 // ---------------------------------------------------------------------------
@@ -965,10 +1167,131 @@ mod tests {
 
     use std::path::PathBuf;
 
-    use super::{Assessment, CommitGroup, Copies, Held, Needs, PathGroup, Reason, reasons};
+    use std::collections::BTreeMap;
+
+    use super::{
+        Assessment, CommitGroup, Copies, Held, Needs, Own, PathGroup, Reason, Timestamp, Wrapper,
+        bystander, owns, reasons,
+    };
     use crate::git::Oid;
     use crate::git::status::{Change, Entry, State, Submodule};
     use crate::lifecycle::uniqueness::{Finding, Witness};
+    use crate::model::UnitId;
+
+    /// A recorded group never widens what a teardown signals.
+    ///
+    /// The certain level is the list a teardown sends signals to, so anything that could
+    /// put a process there has to be the unit's own identifier and nothing else. A group
+    /// number is a record, it is reused, and the leader it named is replaced while the
+    /// group lives — so reading it as a name would hand a stranger's process to the stop
+    /// ladder. It never reaches this predicate.
+    #[test]
+    fn a_recorded_group_never_makes_a_process_the_units_own() {
+        let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+        let stranger = crate::runtime::processes::Running::new(4_023_598, BTreeMap::new())
+            .in_directory("/homes/worker-import")
+            .running("somebody else's shell");
+
+        // Its identifier is one the registry recorded as a group.
+        let groups = [4_023_598];
+        assert!(
+            !owns(&stranger, Own::of(unit, &groups)),
+            "a recorded number is not an identity, and this is the list a teardown signals"
+        );
+        assert!(
+            !owns(&stranger, Own::of(unit, &[])),
+            "and without the record the answer is the same"
+        );
+    }
+
+    /// The identifier is the whole of the certain level.
+    #[test]
+    fn a_process_carrying_the_units_identifier_is_the_units_own() {
+        let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+        let mut vars = BTreeMap::new();
+        vars.insert(String::from("NODAL_ID"), unit.to_string());
+        let theirs = crate::runtime::processes::Running::new(11, vars).running("node dev");
+        assert!(owns(&theirs, Own::of(unit, &[])));
+
+        let other = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FB1").unwrap();
+        assert!(!owns(&theirs, Own::of(other, &[])), "another unit's is another unit's");
+    }
+
+    /// The reading that has to survive the group it came from.
+    ///
+    /// A reclaim stops the recorded groups and then moves the home. Between those two
+    /// things the `nodal run` that started a group is still alive and the group is not,
+    /// so the relation that identifies it — parent of that group's leader — can no longer
+    /// be read. The answer is therefore resolved before the stop and carried, pinned to
+    /// the instant the process started.
+    ///
+    /// This test is the mechanism rather than the timing: the group's leader does not
+    /// exist here at all, which is exactly the state the move sees.
+    ///
+    /// **Both hosts are asserted.** A host that publishes no process table dates no
+    /// process, so a carried reading proves nothing there and the stricter answer stands.
+    /// That is the same rule as everywhere else here: what could not be read is not
+    /// evidence.
+    #[test]
+    fn a_wrapper_resolved_before_its_group_was_stopped_is_still_not_a_stranger() {
+        let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+        let home = std::path::PathBuf::from("/homes/worker-import");
+        // This test's own process stands in for the wrapper, because it is the one
+        // process here whose start time the host will answer for if it answers at all.
+        let pid = std::process::id();
+        let standing = crate::runtime::processes::Running::new(pid, BTreeMap::new())
+            .in_directory(&home)
+            .running("nodal run");
+        let asked = |wrappers: &[Wrapper]| {
+            bystander(
+                &standing,
+                Own::of(unit, &[]).and_wrappers(wrappers),
+                std::slice::from_ref(&home),
+                &[],
+            )
+        };
+
+        let started_at = super::started_at(pid);
+        let Some(started_at) = started_at else {
+            // No process table, so nothing is dated and nothing can be vouched for.
+            assert!(
+                asked(&[Wrapper { pid, started_at: None }]),
+                "a host that dates no process vouches for none"
+            );
+            return;
+        };
+
+        // No group to read: the reclaim stopped it. The carried answer is what is left.
+        assert!(
+            !asked(&[Wrapper { pid, started_at: Some(started_at) }]),
+            "the wrapper is not a stranger once its group has gone"
+        );
+
+        // The instant is the whole of the proof. An identifier that came round again
+        // belongs to a process that started later, so it matches nothing.
+        let earlier = Timestamp::from_unix_seconds(started_at.unix_seconds() - 60).ok();
+        assert!(
+            asked(&[Wrapper { pid, started_at: earlier }]),
+            "a number that came round again proves nothing"
+        );
+
+        // And an undated reading is not evidence either.
+        assert!(asked(&[Wrapper { pid, started_at: None }]), "an undated reading is not evidence");
+    }
+
+    /// A stranger in the home still blocks a move, whatever the registry recorded.
+    #[test]
+    fn a_stranger_in_the_home_is_still_a_bystander() {
+        let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+        let home = std::path::PathBuf::from("/homes/worker-import");
+        let stranger = crate::runtime::processes::Running::new(5_000, BTreeMap::new())
+            .in_directory(&home)
+            .running("somebody else's editor");
+        // A group number nothing on this machine is in or hangs off, so the readings
+        // both answer no and the process is what it looks like.
+        let groups = [4_294_967_000];
+        assert!(bystander(&stranger, Own::of(unit, &groups), &[home], &[]));
+    }
 
     #[test]
     fn the_files_nodal_writes_into_a_home_are_not_a_persons_work() {

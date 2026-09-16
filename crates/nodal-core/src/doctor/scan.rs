@@ -51,6 +51,44 @@ pub struct Avoid {
     pub why: String,
 }
 
+/// How far under a project's parent a sibling clone is looked for.
+///
+/// Two levels reaches both shapes a person puts a second clone in: beside the checkout
+/// (`<parent>/mirror`) and one directory down (`<parent>/siblings/mirror`). It is not
+/// the walk `nodal doctor --machine` makes, and it must not become one: this reading is
+/// taken before every destructive step, so what it costs is paid on the safe path.
+pub const SIBLING_DEPTH: usize = 2;
+
+/// The other repositories beside a project's checkout, for the reading that asks where
+/// else a commit lives.
+///
+/// The checkout itself is not one of them, and neither is anything under Nodal's state
+/// directory:
+/// a unit home is a clone of this project and holding a commit there is not a second
+/// copy of it, it is the copy being asked about.
+///
+/// The root is the checkout's parent and the depth is [`SIBLING_DEPTH`], so the cost is
+/// bounded and the same for every project. A checkout whose parent is the home directory
+/// is the case this is widest in, and two levels is what keeps that bounded.
+///
+/// Answering with nothing is always allowed: a sibling that is not found leaves the
+/// stricter reading standing, which is the safe direction ([`crate::lifecycle::witness`]).
+#[must_use]
+pub fn siblings(checkout: &Path) -> Vec<PathBuf> {
+    let checkout = resolve(checkout);
+    let Some(parent) = checkout.parent().map(Path::to_path_buf) else { return Vec::new() };
+    let mut avoid =
+        vec![Avoid { path: checkout.clone(), why: String::from("the project's own checkout") }];
+    if let Ok(state) = crate::workspace::home::directory() {
+        avoid.push(Avoid { path: resolve(&state), why: String::from("nodal's state directory") });
+    }
+    walk(&[parent], SIBLING_DEPTH, &avoid)
+        .repositories
+        .into_iter()
+        .filter(|path| *path != checkout)
+        .collect()
+}
+
 /// Find every repository under `roots`.
 #[must_use]
 pub fn walk(roots: &[PathBuf], depth: usize, avoid: &[Avoid]) -> Found {

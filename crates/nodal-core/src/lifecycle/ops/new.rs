@@ -1132,11 +1132,21 @@ pub(super) fn choose_name(
     let branch = asked.to_string();
     for attempt in 1..=SLUG_ATTEMPTS {
         let slug = suffixed(&asked, attempt)?;
-        if units::find_by_slug(conn, project, &slug)?.is_none() {
+        if !held(conn, project, &slug)? {
             return Ok(Name { slug, branch });
         }
     }
     Err(Error::InvalidValue { kind: "unit handle", value: branch })
+}
+
+/// Whether a unit of this project holds this handle.
+///
+/// A unit that was reclaimed holds none, so its name is free for the next unit and the
+/// suffix is not reached. The archived row keeps the name and goes on answering for it
+/// until somebody takes it ([`units::find_by_slug`]).
+fn held(conn: &rusqlite::Connection, project: ProjectId, slug: &Slug) -> Result<bool> {
+    let found = units::find_by_slug(conn, project, slug)?;
+    Ok(found.is_some_and(|unit| unit.status != UnitStatus::Archived))
 }
 
 /// The handle with its attempt number, which the first attempt does not carry.

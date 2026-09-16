@@ -62,10 +62,11 @@ impl Show {
         let now = Timestamp::now();
         let surveyed = survey::project(store.conn(), &project)?;
         let held = ls::Held::of(
+            store.conn(),
             &lock::live(store.conn(), &project.root, now)?,
             lock::idle_hours(&project.root),
             &processes::Live,
-        );
+        )?;
         let mut listed = ls::rows(&surveyed, &processes::Live, &project, &held, now);
         states::settle(store.conn(), &mut listed.units, now);
         let answer = show::detail(store.conn(), listed, &unit)?;
