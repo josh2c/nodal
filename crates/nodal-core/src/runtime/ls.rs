@@ -74,7 +74,7 @@ use crate::context::survey::{self, Snapshot, Work};
 use crate::doctor::unique;
 use crate::git::Integration;
 use crate::lifecycle::{assess, witness};
-use crate::model::{ActorName, EnvId, HostName, Lock, Needs, Project, Session, Timestamp, UnitId};
+use crate::model::{ActorName, EnvId, HostName, Lock, Needs, Project, Timestamp, UnitId};
 use crate::output::notice::{self, Notice};
 use crate::output::view::{
     EnvLine, Holder, HolderState, ToolSessions, UnitList, UnitRow, WorkTree,
@@ -102,8 +102,7 @@ pub fn list(
     let surveyed = survey::project(conn, project)?;
     let held = crate::runtime::lock::live(conn, &project.root, now)?;
     let idle_hours = crate::runtime::lock::idle_hours(&project.root);
-    let open = session_rows::list_open_all(conn)?;
-    let held = Held::of(&held, idle_hours, processes).recording(&open);
+    let held = Held::of(conn, &held, idle_hours, processes)?;
     Ok(rows(&surveyed, processes, project, &held, now))
 }
 
@@ -131,14 +130,34 @@ pub struct Held {
 }
 
 impl Held {
-    /// The holders of these locks, as a report shows them.
-    #[must_use]
-    pub fn of(locks: &[Lock], idle_hours: u32, processes: &dyn Processes) -> Self {
+    /// The holders of these locks, with the groups the registry recorded beside them.
+    ///
+    /// The registry is read here and not by the caller. A caller that did not read it
+    /// would ask the predicate with no groups, and the list would say `blocked` over the
+    /// process the preflight calls the unit's own.
+    ///
+    /// One query for the whole list, because a list of eight units must not put eight
+    /// statements to the registry to answer one column.
+    ///
+    /// # Errors
+    /// [`crate::Error::Store`] when the open session rows could not be read.
+    pub fn of(
+        conn: &Connection,
+        locks: &[Lock],
+        idle_hours: u32,
+        processes: &dyn Processes,
+    ) -> Result<Self> {
         let here = HostName::current();
         // One reading of the process table for every lock, rather than one for each.
         let pids: Vec<u32> = locks.iter().filter_map(|lock| lock.pid).collect();
         let seen = crate::runtime::lock::Seen::read(processes, &pids);
-        Self {
+        let mut groups: BTreeMap<EnvId, Vec<u32>> = BTreeMap::new();
+        for session in session_rows::list_open_all(conn)? {
+            if let Some(pgid) = session.pgid {
+                groups.entry(session.environment_id).or_default().push(pgid);
+            }
+        }
+        Ok(Self {
             holders: locks
                 .iter()
                 .filter_map(|lock| {
@@ -146,22 +165,8 @@ impl Held {
                     Some((lock.unit_id, Holder::from_lock(lock, idle_hours, state)?))
                 })
                 .collect(),
-            groups: BTreeMap::new(),
-        }
-    }
-
-    /// The same, with the process groups the registry recorded for each materialisation.
-    ///
-    /// One query for the whole list, because a list of eight units must not put eight
-    /// statements to the registry to answer one column.
-    #[must_use]
-    pub fn recording(mut self, sessions: &[Session]) -> Self {
-        for session in sessions {
-            if let Some(pgid) = session.pgid {
-                self.groups.entry(session.environment_id).or_default().push(pgid);
-            }
-        }
-        self
+            groups,
+        })
     }
 
     /// Who holds one unit, `None` when nobody does.

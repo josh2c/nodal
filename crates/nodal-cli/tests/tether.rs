@@ -296,6 +296,11 @@ fn a_tether_outlives_the_nodal_run_that_started_it_and_is_still_stopped() {
 /// `/proc` — the answer is "I could not look", which is a different answer from "nothing
 /// is there": the reading is empty and a note says which signal went unread. The recorded
 /// group is a registry row rather than a reading, so it is named on both.
+///
+/// **The preflight and the list are both asserted**, because they are one reading asked
+/// by two commands. `nodal ls` reads the recorded groups itself
+/// ([`nodal_core::runtime::ls::Held::of`]), so a unit with a tether standing in its home
+/// is not ranked `blocked`.
 #[test]
 fn the_tether_wrapper_is_the_units_own_and_does_not_block_the_unit_it_tethers() {
     let workspace = workspace();
@@ -333,6 +338,24 @@ fn the_tether_wrapper_is_the_units_own_and_does_not_block_the_unit_it_tethers() 
     } else {
         assert_unread(report_ref(&report));
     }
+
+    // The list says the same word over the same process, because it reads the same
+    // registry rows. A list that read only the process table would call the wrapper a
+    // stranger standing in the home and rank the unit `blocked`.
+    let listed = workspace.nodal(&["ls", "--json"]);
+    let text = String::from_utf8(listed.stdout.clone()).unwrap();
+    let list: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|_| panic!("{text}{}", String::from_utf8_lossy(&listed.stderr)));
+    let row = list["units"]
+        .as_array()
+        .expect("the list has units")
+        .iter()
+        .find(|row| row["slug"] == "tethered")
+        .expect("the tethered unit is on the list");
+    assert_ne!(
+        row["needs"], "blocking_runtime",
+        "the `nodal run` wrapper is not a stranger standing in the home: {row}"
+    );
 
     // The tether is in a group of its own and outlives its wrapper on purpose, so the
     // backstop is what ends it.
