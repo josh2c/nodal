@@ -81,14 +81,6 @@ pub struct Install {
     pub env: Vec<(String, String)>,
 }
 
-impl Install {
-    /// Every argument list this install runs, in the order they run.
-    #[must_use]
-    pub fn argvs(&self) -> Vec<&Vec<String>> {
-        if self.prepare.is_empty() { vec![&self.argv] } else { vec![&self.prepare, &self.argv] }
-    }
-}
-
 /// The interpreters a virtual environment is made with, in the order they are tried.
 ///
 /// `python3` first, because a host that has both means the second one by the first. A
@@ -354,13 +346,12 @@ mod tests {
         let host = Fake { tools: vec!["python3"], version: None };
         let resolved = only(&recipe, &host).unwrap();
 
-        assert_eq!(resolved.prepare, ["python3", "-m", "venv", ".venv"]);
-        assert_eq!(resolved.argv, [".venv/bin/pip", "install", "-r", "requirements.txt"]);
         assert_eq!(
-            resolved.argvs(),
-            [&resolved.prepare, &resolved.argv],
+            resolved.prepare,
+            ["python3", "-m", "venv", ".venv"],
             "the environment is made before the install runs"
         );
+        assert_eq!(resolved.argv, [".venv/bin/pip", "install", "-r", "requirements.txt"]);
     }
 
     /// A host with no `python3` is asked for `python`, and the two are tried in that
@@ -391,7 +382,6 @@ mod tests {
             let recipe = Recipe { package_manager: vec![manager], ..Recipe::default() };
             let resolved = only(&recipe, &Fake { tools: Vec::new(), version: None }).unwrap();
             assert!(resolved.prepare.is_empty(), "{manager:?}: {resolved:?}");
-            assert_eq!(resolved.argvs(), [&resolved.argv], "{manager:?}");
         }
     }
 

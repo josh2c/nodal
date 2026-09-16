@@ -293,7 +293,9 @@ impl Params {
                 install: self
                     .installs
                     .iter()
-                    .flat_map(|install| install.argvs().into_iter().cloned())
+                    .flat_map(|install| [&install.prepare, &install.argv])
+                    .filter(|argv| !argv.is_empty())
+                    .cloned()
                     .collect(),
                 warm: self.warm.clone(),
                 tools: self.tools.clone(),
