@@ -22,19 +22,16 @@
 //! to pass `--yes`, because a pipe cannot read the commands and cannot answer.
 //! `--print` shows the commands and records nothing at all.
 
-use std::io::{BufRead as _, IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Args;
+use nodal_core::ask;
 use nodal_core::lifecycle::hooks;
 use nodal_core::output::view::Approval;
 use nodal_core::output::{self, Format};
 use nodal_core::recipe;
 use nodal_core::workspace::home;
-
-/// The answers that accept the commands, as `nodal reclaim` reads them.
-const AGREED: [&str; 2] = ["y", "yes"];
 
 /// Arguments of `nodal approve`.
 #[derive(Debug, Args)]
@@ -106,24 +103,14 @@ impl Approve {
 
     /// Whether the person accepted the commands.
     ///
-    /// A host with no terminal is refused rather than asked, because it cannot answer;
-    /// the message names the flag that answers in advance.
-    ///
-    /// # Errors
-    ///
-    /// [`nodal_core::Error::Io`] when the question or the answer could not be read.
+    /// An unwatched run is refused rather than asked. It cannot have read the commands,
+    /// and accepting somebody else's command line on an account without reading it is
+    /// the thing the record exists to stop.
     fn agreed(&self) -> nodal_core::Result<bool> {
-        if self.yes {
-            return Ok(true);
-        }
-        if !std::io::stdin().is_terminal() {
-            eprintln!("nodal: nothing here can answer; read the commands and pass --yes");
-            return Ok(false);
-        }
-        eprint!("approve them? [y/N] ");
-        std::io::stderr().flush().map_err(nodal_core::Error::io("<stderr>"))?;
-        let mut answer = String::new();
-        std::io::stdin().lock().read_line(&mut answer).map_err(nodal_core::Error::io("<stdin>"))?;
-        Ok(AGREED.contains(&answer.trim().to_lowercase().as_str()))
+        ask::agreed(
+            self.yes,
+            "approve them?",
+            ask::Unwatched::Refuse("nothing here can answer; read the commands and pass --yes"),
+        )
     }
 }

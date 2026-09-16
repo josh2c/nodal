@@ -1,18 +1,15 @@
 //! `nodal merge`: commit, squash, rebase, fast-forward and remove, in one command.
 
-use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Args;
+use nodal_core::ask;
 use nodal_core::lifecycle::ops::merge::{self, Request, STAGES, Stages};
 use nodal_core::output::{self, Format};
 use nodal_core::store::Store;
 
 use crate::commands::context;
-
-/// What a person types to agree to the plan.
-const AGREED: [&str; 2] = ["y", "yes"];
 
 /// The flags that drop one of the three stages which rewrite the unit's branch.
 ///
@@ -140,21 +137,10 @@ impl Merge {
     /// script that is not watched must never be waited on, and it says so rather than
     /// running a plan nobody saw.
     fn agreed(&self) -> nodal_core::Result<bool> {
-        if self.yes {
-            return Ok(true);
-        }
-        if !std::io::stdin().is_terminal() {
-            return Err(nodal_core::Error::InvalidValue {
-                kind: "agreement",
-                value: String::from(
-                    "nothing is watching this terminal; pass --yes to run the plan",
-                ),
-            });
-        }
-        eprint!("run this plan? [y/N] ");
-        std::io::stderr().flush().map_err(nodal_core::Error::io("<stderr>"))?;
-        let mut answer = String::new();
-        std::io::stdin().lock().read_line(&mut answer).map_err(nodal_core::Error::io("<stdin>"))?;
-        Ok(AGREED.contains(&answer.trim().to_lowercase().as_str()))
+        ask::agreed(
+            self.yes,
+            "run this plan?",
+            ask::Unwatched::Refuse("nothing is watching this terminal; pass --yes to run the plan"),
+        )
     }
 }

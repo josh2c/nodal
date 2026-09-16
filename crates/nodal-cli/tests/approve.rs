@@ -150,7 +150,8 @@ fn print_shows_the_commands_and_approves_nothing() {
 
 /// The record is never written by a run that nothing could answer. A test harness, a
 /// pipe and a hook of another tool all reach this path, and none of them read the
-/// commands.
+/// commands, so the run is refused rather than asked — the rule `nodal merge` and
+/// `nodal uninstall` already hold to.
 #[test]
 fn a_run_that_cannot_be_asked_records_nothing_and_names_the_flag() {
     let directory = tempfile::tempdir().unwrap();
@@ -163,7 +164,7 @@ fn a_run_that_cannot_be_asked_records_nothing_and_names_the_flag() {
     let said = String::from_utf8(refused.stderr).unwrap();
     assert!(said.contains("touch hook-ran"), "the commands are still shown: {said}");
     assert!(said.contains("--yes"), "the flag that answers is not named: {said}");
-    assert!(said.contains("nothing was approved"), "{said}");
+    assert!(said.contains("nothing here can answer"), "{said}");
     assert!(!machine.path().join("hooks.toml").exists(), "a record was written anyway");
 }
 

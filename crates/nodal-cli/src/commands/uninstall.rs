@@ -1,15 +1,12 @@
 //! `nodal uninstall`: take back what Nodal put on this machine.
 
-use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 use clap::Args;
+use nodal_core::ask;
 use nodal_core::output::{self, Format};
 use nodal_core::setup::plan::{self, Request};
 use nodal_core::workspace::home;
-
-/// What a person types to agree.
-const AGREED: [&str; 2] = ["y", "yes"];
 
 /// The project the command is being run in, when it is being run in one.
 ///
@@ -111,19 +108,10 @@ impl Uninstall {
     /// One question and no other, and the same rule `nodal merge` uses: a terminal is
     /// asked, and anything else is told to pass `--yes` rather than waited on.
     fn agreed(&self) -> nodal_core::Result<bool> {
-        if self.yes {
-            return Ok(true);
-        }
-        if !std::io::stdin().is_terminal() {
-            return Err(nodal_core::Error::InvalidValue {
-                kind: "agreement",
-                value: String::from("nothing is watching this terminal; pass --yes to remove it"),
-            });
-        }
-        eprint!("remove all of this? [y/N] ");
-        std::io::stderr().flush().map_err(nodal_core::Error::io("<stderr>"))?;
-        let mut answer = String::new();
-        std::io::stdin().lock().read_line(&mut answer).map_err(nodal_core::Error::io("<stdin>"))?;
-        Ok(AGREED.contains(&answer.trim().to_lowercase().as_str()))
+        ask::agreed(
+            self.yes,
+            "remove all of this?",
+            ask::Unwatched::Refuse("nothing is watching this terminal; pass --yes to remove it"),
+        )
     }
 }
