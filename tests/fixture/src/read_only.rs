@@ -105,6 +105,16 @@ pub fn read_attribute(path: &Path, name: &str) -> Option<Vec<u8>> {
     platform::get(path, name)
 }
 
+/// How many extended attributes a path carries, of every name.
+///
+/// A test that counts the attributes a copy put across counts against this, taken
+/// before it writes its own. The platform can put attributes of its own on a new file,
+/// so a count against a fixed number is a count of the platform and not of the copy.
+#[must_use]
+pub fn attribute_count(path: &Path) -> usize {
+    platform::count(path)
+}
+
 /// Take every write off one path: mode `0444` for a file, `0555` for a directory.
 ///
 /// This is what git does to an object and what a package manager does to a store. A
@@ -243,6 +253,32 @@ mod platform {
         Some(buffer)
     }
 
+    /// Count the attribute names, or zero when they cannot be listed.
+    pub(super) fn count(path: &Path) -> usize {
+        let Ok(path) = c(path.as_os_str().as_bytes()) else { return 0 };
+        let mut buffer = vec![0_u8; 4096];
+        // SAFETY: the path is NUL-terminated and outlives the call, and the buffer is
+        // exactly as long as the length passed with it.
+        let read = unsafe {
+            #[cfg(target_os = "linux")]
+            {
+                libc::llistxattr(path.as_ptr(), buffer.as_mut_ptr().cast(), buffer.len())
+            }
+            #[cfg(target_os = "macos")]
+            {
+                libc::listxattr(
+                    path.as_ptr(),
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len(),
+                    libc::XATTR_NOFOLLOW,
+                )
+            }
+        };
+        let Ok(read) = usize::try_from(read) else { return 0 };
+        buffer.truncate(read);
+        buffer.split(|byte| *byte == 0).filter(|name| !name.is_empty()).count()
+    }
+
     /// One C string, or nothing when the bytes hold a NUL.
     fn c(bytes: &[u8]) -> Result<CString, std::ffi::NulError> {
         CString::new(bytes)
@@ -260,5 +296,9 @@ mod platform {
 
     pub(super) fn get(_path: &Path, _name: &str) -> Option<Vec<u8>> {
         None
+    }
+
+    pub(super) fn count(_path: &Path) -> usize {
+        0
     }
 }

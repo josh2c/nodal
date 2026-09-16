@@ -271,11 +271,17 @@ mod tests {
         let destination = directory.path().join("destination");
         std::fs::write(&source, "content").unwrap();
         std::fs::write(&destination, "content").unwrap();
+        let carried = unix::names(&source).unwrap().len();
         if !holds_attributes(&source) {
             return;
         }
         unix::write(&source, OsStr::new(NAME), b"kept").unwrap();
-        assert_eq!(copy(&source, &destination).unwrap(), 1);
+        let copied = copy(&source, &destination).unwrap();
+        assert_eq!(
+            copied,
+            carried + 1,
+            "the source carried {carried} attributes before the test wrote one"
+        );
         assert_eq!(
             unix::read(&destination, OsStr::new(NAME)).unwrap().as_deref(),
             Some(&b"kept"[..])
@@ -289,6 +295,8 @@ mod tests {
         let destination = directory.path().join("destination");
         std::fs::write(&source, "content").unwrap();
         std::fs::write(&destination, "content").unwrap();
-        assert_eq!(copy(&source, &destination).unwrap(), 0);
+        let carried = unix::names(&source).unwrap().len();
+        let copied = copy(&source, &destination).unwrap();
+        assert_eq!(copied, carried, "the source carried {carried} attributes of its own");
     }
 }
