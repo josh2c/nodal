@@ -37,6 +37,7 @@ use nodal_core::output::view::{
 };
 use nodal_core::output::view::{Disk, Snapshot, Taker, Unmeasured};
 use nodal_core::output::{Format, Render, render, watch};
+use nodal_core::recipe::change;
 use nodal_core::recipe::gap::{Gap, GapKey};
 use nodal_core::runtime::attribute::{Attributed, Confidence, Kind, Note, Source};
 use nodal_core::workspace::tracked::Kept;
@@ -355,7 +356,20 @@ fn init_report() -> InitReport {
             Gap::new(GapKey::Toolchain),
             Gap::new(GapKey::EnvRequiredLocal).note("45 names declared"),
         ],
+        changes: Vec::new(),
     }
+}
+
+/// The same report for `nodal init --force`: a recipe that is already there, and the
+/// lines the rewrite takes out of it and puts in.
+fn rewritten_init_report() -> InitReport {
+    let mut report = init_report();
+    report.existed = true;
+    report.changes = change::lines(
+        "# ours: the staging copy needs the seed step\npackage_manager = \"npm\"\n",
+        &report.contents,
+    );
+    report
 }
 
 // ------------------------------------------------------------------ snapshots
@@ -669,6 +683,67 @@ fn unit_detail_renders_both_ways() {
     both("unit_detail", &detail);
 }
 
+/// A caller asked `nodal show <unit> --json` for `.home` and `.path`, read null from
+/// both, and found the home at `.unit.environment.home`.
+///
+/// The two top-level keys are not there and never have been; `jq` answers null for a key
+/// a document does not hold, and that is what was read. The shape is what the question
+/// is really about, so it is stated here rather than left to a snapshot a person can
+/// rewrite: the home has one place in this document, and a second one would be a second
+/// answer that can disagree with the first.
+#[test]
+fn the_home_has_one_place_in_the_document_show_answers_with() {
+    let detail = UnitDetail {
+        now: now(),
+        unit: units().swap_remove(0),
+        snapshots: snapshots(),
+        history: history(),
+    };
+    let document: serde_json::Value =
+        serde_json::from_str(&render(&detail, Format::Json).expect("the value encodes"))
+            .expect("the answer is one JSON document");
+
+    let object = document.as_object().expect("a document");
+    for absent in ["home", "path"] {
+        assert!(
+            !object.contains_key(absent),
+            "the document grew a top-level `{absent}`, which is a second place for the home"
+        );
+    }
+
+    let at = paths_named(&document, "home");
+    assert_eq!(at, vec![String::from(".unit.environment.home")], "one place, and this is it");
+}
+
+/// Every path in `document` whose last key is `name`, in the order they are read.
+///
+/// The whole document and not the top of it: a second place for the home anywhere under
+/// here is the thing this is looking for.
+fn paths_named(document: &serde_json::Value, name: &str) -> Vec<String> {
+    fn walk(value: &serde_json::Value, name: &str, at: &str, found: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, inner) in fields {
+                    let here = format!("{at}.{key}");
+                    if key == name {
+                        found.push(here.clone());
+                    }
+                    walk(inner, name, &here, found);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (index, inner) in items.iter().enumerate() {
+                    walk(inner, name, &format!("{at}[{index}]"), found);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    walk(document, name, "", &mut found);
+    found
+}
+
 /// The other shape of a unit: a checkout adopted where it stood, whose objective was
 /// read out of a session record rather than stated, and whose home Nodal must never
 /// move. Every one of those three facts has to be on the page.
@@ -779,6 +854,29 @@ fn status_renders_both_ways() {
 #[test]
 fn init_report_renders_both_ways() {
     both("init_report", &init_report());
+}
+
+/// A rewrite names every line it changes, and names them where a person reads them
+/// before the file is written: in the warning, and in the document a tool reads. Never
+/// in the human answer, which is about a file that already exists by the time it prints.
+#[test]
+fn a_rewritten_recipe_names_the_lines_it_changes() {
+    let report = rewritten_init_report();
+    let warning = report.warning();
+    assert_eq!(warning[0], "lines this rewrite changes: 2 removed, 1 added", "{warning:?}");
+    assert!(warning[1].contains("the staging copy needs the seed step"), "{warning:?}");
+    assert_eq!(warning.len(), 4, "the headline and one line for each change: {warning:?}");
+
+    let answer = render(&report, Format::Human).expect("the value renders");
+    assert!(!answer.contains("staging copy"), "the answer repeats the warning: {answer}");
+
+    both("init_report_rewritten", &report);
+}
+
+/// A rewrite that changes nothing has nothing to warn about.
+#[test]
+fn a_recipe_that_does_not_change_carries_no_warning() {
+    assert!(init_report().warning().is_empty());
 }
 
 #[test]
@@ -894,6 +992,8 @@ fn every_snapshot_file_is_claimed_by_a_test() {
         "explanation_adopted.txt",
         "init_report.json",
         "init_report.txt",
+        "init_report_rewritten.json",
+        "init_report_rewritten.txt",
         "ps.json",
         "ps.txt",
         "ps_unreadable.json",

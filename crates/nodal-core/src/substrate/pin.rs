@@ -37,7 +37,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::recipe::{PackageManager, Recipe};
+use crate::model::recipe::{PackageManager, Recipe, VENV};
 use crate::{Error, Result};
 
 /// The variable that stops Corepack asking a person to confirm a download.
@@ -68,11 +68,25 @@ pub struct Install {
     /// repository of three ecosystems has three named steps rather than three called
     /// the same thing.
     pub manager: PackageManager,
+    /// What makes the environment this manager installs into, for a manager that does
+    /// not make its own. Empty for every other one, which is all but `pip`.
+    ///
+    /// Its own step, before the install, so that a build killed between the two resumes
+    /// at the install rather than making the environment again.
+    #[serde(default)]
+    pub prepare: Vec<String>,
     /// The program and its arguments.
     pub argv: Vec<String>,
     /// Variables the install needs, on top of the ones it inherits.
     pub env: Vec<(String, String)>,
 }
+
+/// The interpreters a virtual environment is made with, in the order they are tried.
+///
+/// `python3` first, because a host that has both means the second one by the first. A
+/// host with neither is refused rather than left to `pip`, which would install into
+/// whatever the path holds.
+const INTERPRETERS: [&str; 2] = ["python3", "python"];
 
 /// Every install a base build runs, in the recipe's order, with each pin acted on.
 ///
@@ -91,7 +105,9 @@ pub fn installs(recipe: &Recipe, host: &dyn Host) -> Result<Vec<Install>> {
 /// The install one manager runs, with its own pin acted on.
 fn install(recipe: &Recipe, manager: PackageManager, host: &dyn Host) -> Result<Install> {
     let argv = super::build::install_argv(manager);
-    let plain = |argv: Vec<String>| Install { manager, argv, env: Vec::new() };
+    let prepare = environment_for(manager, host)?;
+    let plain =
+        |argv: Vec<String>| Install { manager, prepare: prepare.clone(), argv, env: Vec::new() };
     let (Some(pin), Some((program, rest))) = (pinned(recipe, manager), argv.split_first()) else {
         return Ok(plain(argv));
     };
@@ -102,7 +118,7 @@ fn install(recipe: &Recipe, manager: PackageManager, host: &dyn Host) -> Result<
         through.extend_from_slice(rest);
         let (name, value) = NO_DOWNLOAD_PROMPT;
         let env = vec![(name.to_owned(), value.to_owned())];
-        return Ok(Install { manager, argv: through, env });
+        return Ok(Install { manager, prepare, argv: through, env });
     }
 
     if host.on_path("mise") {
@@ -122,6 +138,30 @@ fn install(recipe: &Recipe, manager: PackageManager, host: &dyn Host) -> Result<
             Err(Error::ToolPin { tool: program.clone(), wanted: stated(&pin, program), found })
         }
     }
+}
+
+/// What makes the environment `manager` installs into, when it does not make its own.
+///
+/// `uv` and Poetry make their own; every Node manager and Cargo install into a
+/// directory rather than an interpreter. `pip` is the one that does not: handed no
+/// environment it installs into whichever interpreter the path holds, which writes into
+/// the host and not into the base. So the base makes one, and a host that cannot is
+/// refused here, before anything is cloned.
+///
+/// # Errors
+/// [`Error::NoInterpreter`] when the manager needs an environment and this host has no
+/// interpreter to make one with.
+fn environment_for(manager: PackageManager, host: &dyn Host) -> Result<Vec<String>> {
+    if manager != PackageManager::Pip {
+        return Ok(Vec::new());
+    }
+    let Some(interpreter) = INTERPRETERS.into_iter().find(|program| host.on_path(program)) else {
+        return Err(Error::NoInterpreter {
+            manager: manager.program(),
+            tried: INTERPRETERS.join(" or "),
+        });
+    };
+    Ok(vec![interpreter.to_owned(), String::from("-m"), String::from("venv"), String::from(VENV)])
 }
 
 /// Whether the host may run the install as it stands.
@@ -295,6 +335,54 @@ mod tests {
         let resolved = only(&recipe, &bare_host()).unwrap();
         assert_eq!(resolved.argv, ["pnpm", "install"]);
         assert!(resolved.env.is_empty());
+    }
+
+    /// The blocker this shape exists for: `pip` with no environment installs into
+    /// whichever interpreter the path holds, which writes into the host and not into the
+    /// base. The build makes one first, and the install runs out of it.
+    #[test]
+    fn pip_is_given_an_environment_to_install_into() {
+        let recipe = Recipe { package_manager: vec![PackageManager::Pip], ..Recipe::default() };
+        let host = Fake { tools: vec!["python3"], version: None };
+        let resolved = only(&recipe, &host).unwrap();
+
+        assert_eq!(
+            resolved.prepare,
+            ["python3", "-m", "venv", ".venv"],
+            "the environment is made before the install runs"
+        );
+        assert_eq!(resolved.argv, [".venv/bin/pip", "install", "-r", "requirements.txt"]);
+    }
+
+    /// A host with no `python3` is asked for `python`, and the two are tried in that
+    /// order.
+    #[test]
+    fn the_second_interpreter_is_tried_when_the_first_is_not_there() {
+        let recipe = Recipe { package_manager: vec![PackageManager::Pip], ..Recipe::default() };
+        let host = Fake { tools: vec!["python"], version: None };
+        assert_eq!(only(&recipe, &host).unwrap().prepare, ["python", "-m", "venv", ".venv"]);
+    }
+
+    /// Refused before the clone, for the reason a pin is: the alternative is a build
+    /// that writes into the host.
+    #[test]
+    fn a_host_with_no_interpreter_is_refused_rather_than_left_to_the_hosts_pip() {
+        let recipe = Recipe { package_manager: vec![PackageManager::Pip], ..Recipe::default() };
+        let refused = only(&recipe, &Fake { tools: Vec::new(), version: None }).unwrap_err();
+        let told = refused.to_string();
+        assert!(matches!(refused, Error::NoInterpreter { .. }), "the wrong error: {told}");
+        assert!(told.contains("python3 or python"), "{told}");
+        assert!(told.contains("virtual environment"), "{told}");
+    }
+
+    /// Every manager that makes its own environment, or needs none, is unchanged.
+    #[test]
+    fn a_manager_that_makes_its_own_environment_is_given_none() {
+        for manager in [PackageManager::Uv, PackageManager::Poetry, PackageManager::Cargo] {
+            let recipe = Recipe { package_manager: vec![manager], ..Recipe::default() };
+            let resolved = only(&recipe, &Fake { tools: Vec::new(), version: None }).unwrap();
+            assert!(resolved.prepare.is_empty(), "{manager:?}: {resolved:?}");
+        }
     }
 
     #[test]

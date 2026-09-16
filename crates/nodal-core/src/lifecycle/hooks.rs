@@ -94,9 +94,12 @@ use serde::{Deserialize, Serialize};
 use crate::fingerprint;
 use crate::lifecycle::template::Variables;
 use crate::model::{
-    Actor, ActorName, BranchName, CommandLine, Digest, EnvId, Hooks, Session, SessionId, Slug,
-    Timestamp, UnitId,
+    Actor, ActorName, BranchName, Digest, EnvId, Hooks, Session, SessionId, Slug, Timestamp, UnitId,
 };
+// The phases are the keys of the recipe's own `[hooks]` table, so they live beside that
+// table in `model` ([`crate::model::recipe`]). They are re-exported here because this is
+// the module that acts on them, and every caller that runs a hook already names it.
+pub use crate::model::recipe::{PHASES, Phase};
 use crate::paths;
 use crate::runtime::stop::{self, Signals as _, Target};
 use crate::store::sessions;
@@ -112,68 +115,6 @@ pub const PATH_VAR: &str = "NODAL_HOOKS_FILE";
 /// pipe, a `&&`, a variable — so it is given to a shell rather than split here into
 /// something that would only look like the line the person wrote.
 const SHELL: &str = "sh";
-
-/// Which hook this is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Phase {
-    /// Before a unit is created.
-    PreNew,
-    /// After a unit is created.
-    PostNew,
-    /// Before a unit is merged.
-    PreMerge,
-    /// After a unit is merged, and before it is removed.
-    PostMerge,
-    /// Before a unit is reclaimed.
-    PreReclaim,
-    /// After a unit is reclaimed.
-    PostReclaim,
-}
-
-/// Every phase, in the order they are declared and approved.
-pub const PHASES: &[Phase] = &[
-    Phase::PreNew,
-    Phase::PostNew,
-    Phase::PreMerge,
-    Phase::PostMerge,
-    Phase::PreReclaim,
-    Phase::PostReclaim,
-];
-
-impl Phase {
-    /// The key this phase has in `nodal.toml` and in the approvals file.
-    #[must_use]
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::PreNew => "pre_new",
-            Self::PostNew => "post_new",
-            Self::PreMerge => "pre_merge",
-            Self::PostMerge => "post_merge",
-            Self::PreReclaim => "pre_reclaim",
-            Self::PostReclaim => "post_reclaim",
-        }
-    }
-
-    /// The command a recipe declares for this phase, when it declares one.
-    #[must_use]
-    pub fn command(self, hooks: &Hooks) -> Option<&CommandLine> {
-        match self {
-            Self::PreNew => hooks.pre_new.as_ref(),
-            Self::PostNew => hooks.post_new.as_ref(),
-            Self::PreMerge => hooks.pre_merge.as_ref(),
-            Self::PostMerge => hooks.post_merge.as_ref(),
-            Self::PreReclaim => hooks.pre_reclaim.as_ref(),
-            Self::PostReclaim => hooks.post_reclaim.as_ref(),
-        }
-    }
-}
-
-impl core::fmt::Display for Phase {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.key())
-    }
-}
 
 /// The `NODAL_*` variables a hook is given.
 ///

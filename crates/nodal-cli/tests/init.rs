@@ -78,3 +78,61 @@ fn print_writes_nothing_and_json_carries_the_gaps() {
     assert_eq!(value["gaps"].as_array().map(Vec::len), Some(3));
     assert!(!root.join("nodal.toml").exists(), "--json must not write");
 }
+
+/// `--force` kept every key and replaced every comment with the template's own, and
+/// said nothing about it. It still writes the template's comments, because the file is
+/// rendered from the merged recipe. It now names every line it takes out, on standard
+/// error, before it takes it.
+#[test]
+fn force_names_the_line_it_takes_out_of_a_file_a_person_edited() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let machine = Machine::new();
+    write_project(root);
+    assert!(nodal(&machine, root, &[]).status.success());
+
+    let path = root.join("nodal.toml");
+    let note = "# ours: the staging copy needs the seed step";
+    let edited = format!("{note}\n{}", std::fs::read_to_string(&path).unwrap());
+    std::fs::write(&path, &edited).unwrap();
+
+    let forced = nodal(&machine, root, &["--force"]);
+    assert!(forced.status.success());
+
+    // On standard error, because it is the warning and not the answer, and because it
+    // is said while the file still holds the lines it names.
+    let warned = String::from_utf8(forced.stderr).unwrap();
+    assert!(warned.contains("lines this rewrite changes"), "{warned}");
+    assert!(warned.contains(note), "the comment it dropped is not named: {warned}");
+    let answer = String::from_utf8(forced.stdout).unwrap();
+    assert!(!answer.contains(note), "the answer repeats the warning: {answer}");
+    assert!(answer.contains("rewrote"), "{answer}");
+    assert!(!std::fs::read_to_string(&path).unwrap().contains(note), "it was dropped");
+
+    // The same reading in the document a tool reads.
+    let again = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("{note}\n{again}")).unwrap();
+    let json = nodal(&machine, root, &["--force", "--json"]);
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let changes = value["changes"].as_array().unwrap();
+    assert!(
+        changes.iter().any(|change| change["edit"] == "removed" && change["text"] == note),
+        "{value}"
+    );
+}
+
+/// A rewrite that changes nothing says so by carrying no changed line, not by claiming
+/// a change it did not make.
+#[test]
+fn force_over_a_file_init_itself_wrote_changes_no_line() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let machine = Machine::new();
+    write_project(root);
+    assert!(nodal(&machine, root, &[]).status.success());
+
+    let json = nodal(&machine, root, &["--force", "--json"]);
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(value["existed"], true);
+    assert!(value.get("changes").is_none(), "no changed line is carried: {value}");
+}

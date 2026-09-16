@@ -835,7 +835,7 @@ pub enum Error {
     /// A recipe hook was reached whose exact command line nobody has approved.
     #[error(
         "the {phase} hook of {project} is not approved: {command:?}; \
-         run `nodal init` in that project to approve the hooks it declares",
+         run `nodal approve` in that project to accept the hooks it declares",
         phase = phase.key(),
         project = project.display()
     )]
@@ -1009,6 +1009,24 @@ pub enum Error {
         /// What the host answers, as a major series such as `10.x`, or `nothing` when
         /// the tool is not on the path at all.
         found: String,
+    },
+
+    /// A package manager installs into an environment it does not make, and this host
+    /// has no interpreter to make one with.
+    ///
+    /// Refused before a base is cloned, for the reason [`Self::ToolPin`] is. The
+    /// alternative is worse than a refusal: `pip` with no environment installs into
+    /// whatever interpreter the path holds, which writes into the host rather than into
+    /// the base.
+    #[error(
+        "{manager} installs into a virtual environment and this host has none of {tried}; \
+         install python, or name a manager that makes its own environment"
+    )]
+    NoInterpreter {
+        /// The package manager that needs one.
+        manager: &'static str,
+        /// The programs that were looked for, in the order they were tried.
+        tried: String,
     },
 }
 

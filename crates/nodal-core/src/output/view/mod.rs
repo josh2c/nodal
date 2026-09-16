@@ -9,6 +9,7 @@
 //! moment they matter, and `model/` is the shape of what the registry stores.
 
 pub mod adopt;
+pub mod approve;
 pub mod base;
 pub mod check;
 pub mod created;
@@ -28,6 +29,7 @@ pub mod unit;
 pub mod verdict;
 
 pub use crate::output::view::adopt::{AdoptOutcome, AdoptedAll, AdoptedRow};
+pub use crate::output::view::approve::{Approval, Approved};
 pub use crate::output::view::base::{BaseBuild, BaseList, BaseRow, BaseSweep};
 pub use crate::output::view::check::Preflight;
 pub use crate::output::view::created::{Arrival, Created};

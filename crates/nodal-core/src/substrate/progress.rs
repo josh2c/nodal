@@ -11,11 +11,7 @@
 //! here is written to standard output: progress is standard error, and the answer is
 //! standard output.
 
-use std::io::{BufRead as _, IsTerminal as _, Write as _};
 use std::sync::{Arc, Mutex};
-
-/// Words a person types to mean yes.
-const AGREED: [&str; 2] = ["y", "yes"];
 
 /// Where the lines a build writes about itself go, and the one question it may ask.
 pub trait Reporter: Send + Sync {
@@ -65,19 +61,9 @@ impl Reporter for Stderr {
     /// prompt on a build server's log that nobody could have answered reads as though
     /// the build waited for something.
     fn agrees(&self, question: &str) -> bool {
-        let input = std::io::stdin();
-        if !input.is_terminal() {
-            return true;
-        }
-        eprint!("{question} [y/N] ");
-        if std::io::stderr().flush().is_err() {
-            return false;
-        }
-        let mut answer = String::new();
-        if input.lock().read_line(&mut answer).is_err() {
-            return false;
-        }
-        AGREED.contains(&answer.trim().to_lowercase().as_str())
+        // A question this one cannot put, or cannot read the answer to, is a question
+        // nobody answered, and the trait's answer is a bool rather than a result.
+        crate::ask::agreed(false, question, crate::ask::Unwatched::Yes).unwrap_or(false)
     }
 }
 

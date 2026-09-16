@@ -77,6 +77,14 @@ pub enum PackageManager {
     Uv,
     /// `poetry`.
     Poetry,
+    /// `pip`, which installs from a `requirements.txt`.
+    ///
+    /// The one manager here that writes no lockfile. A repository whose Python half is a
+    /// `requirements.txt` and nothing else had no value to name, so a base could install
+    /// no part of it and a warm build that needed the interpreter failed. What `pip`
+    /// installs from is committed and is the file CI installs from, which is the
+    /// evidence every other value here is chosen on.
+    Pip,
 }
 
 /// The dependency tree a package manager writes.
@@ -95,6 +103,42 @@ pub enum Ecosystem {
     Python,
 }
 
+/// Where a Python install puts its environment, when it puts it in the project.
+///
+/// One name, because three parts of the program mean the same directory by it: the base
+/// build makes it for `pip`, warmth reads it to say whether a tree is installed, and
+/// Poetry is asked whether it was told to use it.
+pub const VENV: &str = ".venv";
+
+impl Ecosystem {
+    /// Every ecosystem, so that a reader can ask about the ones a recipe left out.
+    pub const ALL: &'static [Self] = &[Self::Node, Self::Rust, Self::Python];
+
+    /// The committed files that say a repository has this ecosystem in it.
+    ///
+    /// A manifest and not a lockfile: the question these answer is "is there a half of
+    /// this repository here", which a repository answers whether or not it pins its
+    /// dependencies. A table, because it is a list of names and nothing else.
+    #[must_use]
+    pub const fn manifests(self) -> &'static [&'static str] {
+        match self {
+            Self::Node => &["package.json"],
+            Self::Rust => &["Cargo.toml"],
+            Self::Python => &["pyproject.toml", "requirements.txt", "setup.py"],
+        }
+    }
+
+    /// What this ecosystem is called in a report.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Rust => "rust",
+            Self::Python => "python",
+        }
+    }
+}
+
 impl PackageManager {
     /// Which dependency tree this manager writes.
     #[must_use]
@@ -102,7 +146,7 @@ impl PackageManager {
         match self {
             Self::Pnpm | Self::Yarn | Self::Npm | Self::Bun => Ecosystem::Node,
             Self::Cargo => Ecosystem::Rust,
-            Self::Uv | Self::Poetry => Ecosystem::Python,
+            Self::Uv | Self::Poetry | Self::Pip => Ecosystem::Python,
         }
     }
 
@@ -127,7 +171,76 @@ impl PackageManager {
             Self::Cargo => "cargo",
             Self::Uv => "uv",
             Self::Poetry => "poetry",
+            Self::Pip => "pip",
         }
+    }
+}
+
+/// Which of a recipe's `[hooks]` commands this is.
+///
+/// The keys of that table, as a type. It is here and not with the module that runs the
+/// hooks, because it is what a recipe writes: `Hooks` holds the six commands and this
+/// names them, so the table and its keys are one piece of plain data with no IO
+/// (`docs/code-structure.md`). `crate::lifecycle::hooks` re-exports it, because that is
+/// the module that acts on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    /// Before a unit is created.
+    PreNew,
+    /// After a unit is created.
+    PostNew,
+    /// Before a unit is merged.
+    PreMerge,
+    /// After a unit is merged, and before it is removed.
+    PostMerge,
+    /// Before a unit is reclaimed.
+    PreReclaim,
+    /// After a unit is reclaimed.
+    PostReclaim,
+}
+
+/// Every phase, in the order they are declared and approved.
+pub const PHASES: &[Phase] = &[
+    Phase::PreNew,
+    Phase::PostNew,
+    Phase::PreMerge,
+    Phase::PostMerge,
+    Phase::PreReclaim,
+    Phase::PostReclaim,
+];
+
+impl Phase {
+    /// The key this phase has in `nodal.toml` and in the approvals file.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::PreNew => "pre_new",
+            Self::PostNew => "post_new",
+            Self::PreMerge => "pre_merge",
+            Self::PostMerge => "post_merge",
+            Self::PreReclaim => "pre_reclaim",
+            Self::PostReclaim => "post_reclaim",
+        }
+    }
+
+    /// The command a recipe declares for this phase, when it declares one.
+    #[must_use]
+    pub fn command(self, hooks: &Hooks) -> Option<&CommandLine> {
+        match self {
+            Self::PreNew => hooks.pre_new.as_ref(),
+            Self::PostNew => hooks.post_new.as_ref(),
+            Self::PreMerge => hooks.pre_merge.as_ref(),
+            Self::PostMerge => hooks.post_merge.as_ref(),
+            Self::PreReclaim => hooks.pre_reclaim.as_ref(),
+            Self::PostReclaim => hooks.post_reclaim.as_ref(),
+        }
+    }
+}
+
+impl core::fmt::Display for Phase {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.key())
     }
 }
 
@@ -137,10 +250,10 @@ impl PackageManager {
 /// two spellings exist on the way in and nowhere else.
 ///
 /// **Why a visitor and not an untagged enum.** An untagged enum answers a value it
-/// cannot read with the name of its own type: `pip` in the list made `data did not
-/// match any variant of untagged enum OneOrMany`, which names neither the key, nor the
-/// word that was wrong, nor the words that are right. A person reading that has to read
-/// this program's source to fix their own file.
+/// cannot read with the name of its own type: a word this list does not hold made `data
+/// did not match any variant of untagged enum OneOrMany`, which names neither the key,
+/// nor the word that was wrong, nor the words that are right. A person reading that has
+/// to read this program's source to fix their own file.
 ///
 /// The visitor below reads the two shapes and hands each word to
 /// [`PackageManager`]'s own reader, which holds the list of managers already. So the

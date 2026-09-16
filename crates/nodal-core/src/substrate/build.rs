@@ -39,7 +39,7 @@ use crate::lifecycle::step::{Output, Outputs, nothing};
 use crate::lifecycle::{Plan, Rebuild, Recovery, Step};
 use crate::model::Digest;
 use crate::model::base::Provenance;
-use crate::model::recipe::{PackageManager, Recipe, ToolName, ToolVersion};
+use crate::model::recipe::{PackageManager, Recipe, ToolName, ToolVersion, VENV};
 use crate::model::version::Version;
 use crate::model::{Base, BaseId, CommitId, Platform, ProjectId, Timestamp, WorkspaceFp};
 use crate::store::bases;
@@ -290,7 +290,13 @@ impl Params {
             last_used: self.planned_at,
             provenance: Some(Provenance {
                 nodal_version: self.nodal_version.clone(),
-                install: self.installs.iter().map(|install| install.argv.clone()).collect(),
+                install: self
+                    .installs
+                    .iter()
+                    .flat_map(|install| [&install.prepare, &install.argv])
+                    .filter(|argv| !argv.is_empty())
+                    .cloned()
+                    .collect(),
                 warm: self.warm.clone(),
                 tools: self.tools.clone(),
                 recipe: self.recipe_digest.clone(),
@@ -364,16 +370,24 @@ struct ToolStep {
 /// build then restarts at the manager it stopped on and does not repeat the two before
 /// it.
 fn tools(params: &Params) -> Vec<ToolStep> {
-    let mut steps: Vec<ToolStep> = params
-        .installs
-        .iter()
-        .map(|install| ToolStep {
-            name: format!("install.{program}", program = install.manager.program()),
-            argv: install.argv.clone(),
+    let mut steps: Vec<ToolStep> = Vec::new();
+    for install in &params.installs {
+        let program = install.manager.program();
+        if !install.prepare.is_empty() {
+            steps.push(ToolStep {
+                name: format!("install.{program}.environment"),
+                argv: runnable(&install.prepare, &params.destination),
+                env: install.env.clone(),
+                note: phrase("making the environment", &install.prepare),
+            });
+        }
+        steps.push(ToolStep {
+            name: format!("install.{program}"),
+            argv: runnable(&install.argv, &params.destination),
             env: install.env.clone(),
             note: phrase("installing dependencies", &install.argv),
-        })
-        .collect();
+        });
+    }
     steps.push(ToolStep {
         name: String::from("warm"),
         argv: params.warm.clone(),
@@ -381,6 +395,27 @@ fn tools(params: &Params) -> Vec<ToolStep> {
         note: phrase("warming the build", &params.warm),
     });
     steps
+}
+
+/// The same argument list, with a program that lives inside the base named by its whole
+/// path.
+///
+/// `pip` is run out of the environment the build made for it, so its program is
+/// `.venv/bin/pip` — a path and not a name on the path. Rust does not say which
+/// directory a relative program is resolved against when a command also sets its
+/// working directory, so the one that is resolved here is the base's. A program with no
+/// separator in it is a name for the path to find, and is left alone.
+///
+/// The progress line and the journal keep the relative form, because that is what the
+/// recipe means and it is the same on every host.
+fn runnable(argv: &[String], destination: &Path) -> Vec<String> {
+    let mut resolved = argv.to_vec();
+    if let Some(program) = resolved.first_mut()
+        && program.contains('/')
+    {
+        *program = destination.join(&*program).to_string_lossy().into_owned();
+    }
+    resolved
 }
 
 /// A progress line naming what is about to run.
@@ -809,17 +844,33 @@ fn remove(path: &Path) -> Result<()> {
 /// updating its dependencies must still build.
 #[must_use]
 pub fn install_argv(manager: PackageManager) -> Vec<String> {
-    let verb = match manager {
-        PackageManager::Cargo => "fetch",
-        PackageManager::Uv => "sync",
+    // One table. `pip` is the row that is not a program on the path with a verb after
+    // it: it is named by a path into the environment the build made for it
+    // ([`super::pin::Install::prepare`]), and it is handed the file to install from.
+    // The `pip` on the path would install into the host.
+    match manager {
+        PackageManager::Pip => vec![
+            format!("{VENV}/bin/{program}", program = manager.program()),
+            String::from("install"),
+            String::from("-r"),
+            String::from(PIP_REQUIREMENTS),
+        ],
+        PackageManager::Cargo => vec![manager.program().to_owned(), String::from("fetch")],
+        PackageManager::Uv => vec![manager.program().to_owned(), String::from("sync")],
         PackageManager::Pnpm
         | PackageManager::Yarn
         | PackageManager::Npm
         | PackageManager::Bun
-        | PackageManager::Poetry => "install",
-    };
-    vec![manager.program().to_owned(), verb.to_owned()]
+        | PackageManager::Poetry => {
+            vec![manager.program().to_owned(), String::from("install")]
+        }
+    }
 }
+
+/// The file `pip` is handed. The same name the recipe reads `pip` out of
+/// (`crate::recipe::infer::package_manager`), so the file that says the manager is
+/// there is the file it installs from.
+pub const PIP_REQUIREMENTS: &str = "requirements.txt";
 
 /// The project's build command as an argument list, when a warm build was asked for.
 #[must_use]
@@ -852,7 +903,9 @@ fn argv(line: &str) -> Option<Vec<String>> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 mod tests {
-    use super::{argv, install_argv, warm_argv};
+    use std::path::Path;
+
+    use super::{argv, install_argv, runnable, warm_argv};
     use crate::model::recipe::{CommandLine, PackageManager, Recipe};
 
     fn recipe(managers: &[PackageManager], build: Option<&str>) -> Recipe {
@@ -866,6 +919,26 @@ mod tests {
         assert_eq!(install_argv(PackageManager::Pnpm), ["pnpm", "install"]);
         assert_eq!(install_argv(PackageManager::Cargo), ["cargo", "fetch"]);
         assert_eq!(install_argv(PackageManager::Uv), ["uv", "sync"]);
+        assert_eq!(
+            install_argv(PackageManager::Pip),
+            [".venv/bin/pip", "install", "-r", "requirements.txt"],
+            "pip is run out of the environment the build made, and handed its file"
+        );
+    }
+
+    /// A program named by a path is resolved against the base, because Rust does not
+    /// say which directory a relative program is resolved against when the command also
+    /// sets its working directory. A program that is a name is left for the path.
+    #[test]
+    fn a_program_inside_the_base_is_run_by_its_whole_path() {
+        let base = Path::new("/state/b/ABCD1234");
+        let inside = runnable(&install_argv(PackageManager::Pip), base);
+        assert_eq!(inside[0], "/state/b/ABCD1234/.venv/bin/pip");
+        assert_eq!(&inside[1..], ["install", "-r", "requirements.txt"]);
+
+        let named = runnable(&install_argv(PackageManager::Pnpm), base);
+        assert_eq!(named, ["pnpm", "install"], "a name is for the path to find");
+        assert!(runnable(&[], base).is_empty(), "an empty list has no program to resolve");
     }
 
     #[test]

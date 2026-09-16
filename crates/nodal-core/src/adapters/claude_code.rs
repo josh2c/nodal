@@ -316,7 +316,7 @@ pub fn worktree_create(store: &mut Store, payload: &Payload) -> Result<PathBuf> 
     if let Some((home, _)) = new::containing_home(store.conn(), &root)? {
         return answer(home);
     }
-    if !recipe::load(&root)?.written {
+    if recipe::load(&root)?.file.is_none() {
         return default_worktree(&root, payload);
     }
     let request = Request {

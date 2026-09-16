@@ -9,20 +9,17 @@
 //! to a question a person has already asked, and a command that both describes what
 //! would happen and overrides the objection to it is two commands.
 
-use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Args;
+use nodal_core::ask;
 use nodal_core::lifecycle::ops::reclaim::{self, Request};
 use nodal_core::output::view::Reclaimed;
 use nodal_core::output::{self, Format};
 use nodal_core::store::Store;
 
 use crate::commands::context;
-
-/// What a person types to agree to `git worktree remove`.
-const AGREED: [&str; 2] = ["y", "yes"];
 
 /// Arguments of `nodal reclaim`.
 #[derive(Debug, Args)]
@@ -161,17 +158,10 @@ impl Reclaim {
     }
 
     /// Whether the person agreed to remove the worktree.
+    ///
+    /// An unwatched run means no, and says nothing: the worktree stays where it is,
+    /// which is what this command does about everything else it cannot settle.
     fn agreed(&self) -> nodal_core::Result<bool> {
-        if self.yes {
-            return Ok(true);
-        }
-        if !std::io::stdin().is_terminal() {
-            return Ok(false);
-        }
-        eprint!("remove this worktree? [y/N] ");
-        std::io::stderr().flush().map_err(nodal_core::Error::io("<stderr>"))?;
-        let mut answer = String::new();
-        std::io::stdin().lock().read_line(&mut answer).map_err(nodal_core::Error::io("<stdin>"))?;
-        Ok(AGREED.contains(&answer.trim().to_lowercase().as_str()))
+        ask::agreed(self.yes, "remove this worktree?", ask::Unwatched::No)
     }
 }

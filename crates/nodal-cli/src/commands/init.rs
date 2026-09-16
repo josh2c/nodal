@@ -175,6 +175,11 @@ impl Init {
             print!("{}", plan.contents);
             return Ok(ExitCode::SUCCESS);
         }
+        // Said before the file is written, and never after. A person whose own comments
+        // are about to go needs them named while the file still holds them.
+        for line in report.warning() {
+            eprintln!("nodal: {line}");
+        }
         recipe::apply_init(&plan, self.force)?;
         approve(&plan)?;
         self.say_what_the_state_root_can_do()?;
@@ -186,9 +191,9 @@ impl Init {
 /// Approve, on this machine, the hooks the written recipe declares.
 ///
 /// This is the moment the approval is asked for: a person has just read the recipe they
-/// are writing. What is approved is the exact text of each command, so one that changes
-/// afterwards is refused until `nodal init` is run again
-/// (`nodal_core::lifecycle::hooks`).
+/// are writing, so no second question is put. What is approved is the exact text of each
+/// command, so one that changes afterwards is refused until `nodal approve` accepts the
+/// new text (`nodal_core::lifecycle::hooks`).
 ///
 /// The line goes to standard error, because the command's answer on standard output is
 /// one document.

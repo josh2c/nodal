@@ -4,6 +4,7 @@
 //! (`docs/code-structure.md`). This file re-exports module facades and holds no logic.
 
 pub mod adapters;
+pub mod ask;
 pub mod context;
 pub mod doctor;
 pub mod env;

@@ -13,6 +13,7 @@ use nodal_core::store::Store;
 use nodal_core::workspace::home;
 
 use crate::commands::adopt::Adopt;
+use crate::commands::approve::Approve;
 use crate::commands::base::Base;
 use crate::commands::cd::Cd;
 use crate::commands::claude_code::ClaudeCode;
@@ -41,6 +42,8 @@ use crate::commands::upgrade::Upgrade;
 pub enum Command {
     /// Write `nodal.toml` for this project, with a line for every gap.
     Init(Init),
+    /// Accept, on this machine, the hook commands this project declares.
+    Approve(Approve),
     /// Report what the unit home you are in is activated with.
     Env(Env),
     /// Make a unit: a branch, a home cloned from the project, and the rows for both.
@@ -130,6 +133,7 @@ impl Cli {
     pub fn dispatch(&self) -> nodal_core::Result<ExitCode> {
         match &self.command {
             Some(Command::Init(init)) => init.run(),
+            Some(Command::Approve(approve)) => approve.run(),
             Some(Command::Env(env)) => env.run(self.registry_if_present()?.as_ref()),
             Some(Command::New(new)) => new.run(&mut self.registry()?, !self.no_hooks),
             Some(Command::Adopt(adopt)) => adopt.run(&mut self.registry()?, !self.no_hooks),

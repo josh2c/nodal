@@ -200,8 +200,27 @@ ignored. Most keys are inferred by `nodal init` from the project's own files; on
 line, and `init` writes each gap as a comment above the empty key it belongs to. Published as
 `schemas/v1/recipe.json`.
 
+`package_manager` takes `pnpm`, `yarn`, `npm`, `bun`, `cargo`, `uv`, `poetry` and `pip`. One per
+ecosystem, chosen from the committed file each manager installs from; `pip` is read from a
+`requirements.txt`. A repository that carries an ecosystem's manifest and names no manager for that
+ecosystem is reported not ready, with the manifest and the ecosystem named: nothing would install
+that half, so no base is warm for it.
+
+**A base build never installs into the host.** `uv` and Poetry make their own environment; `pip` does
+not, so a base build makes one for it. The build runs `python3 -m venv .venv` as its own step and then
+runs `.venv/bin/pip install -r requirements.txt`, and a host with neither `python3` nor `python` is
+refused before anything is cloned, in the words the refusal for a package-manager pin uses. Because
+the environment is in the tree, a copy with no `.venv` is reported cold rather than unanswerable.
+
+`nodal init --force` rewrites a recipe that is already there. It keeps every key the file sets and
+renders the file from the merged recipe, so it writes the template's comments over the ones a person
+wrote. It names every line it takes out and every line it puts in, with the line number of the file
+each belongs to. Those lines go to standard error, and they go before the file is written, while it
+still holds them; standard output carries the one document about the file that now exists, and
+`--json` carries the same list as `changes`.
+
 ## CLI
-`init, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, mcp, run, ps, start, note, ask,
+`init, approve, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, mcp, run, ps, start, note, ask,
 handoff, sync, done, merge, prune, reclaim, reclaim --check, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
 `--json`; `status --watch` emits newline-delimited JSON. Global `--store` and `--no-hooks`.
 
@@ -963,14 +982,19 @@ A value that holds a character the shell reads as syntax is refused, and the hoo
 message names the variable and the character. Quote the variable in the command to pass a value that
 holds a space.
 
-Hook commands require approval. `nodal init` approves the set the project declares. It pins each
+Hook commands require approval. `nodal approve` accepts the set the project declares, and writes
+the approval record and nothing else: it never writes `nodal.toml`. It prints every command on
+standard error first and then asks, so no command is accepted before a person has read it; `--yes`
+answers in advance, and a run with no terminal is refused and told to pass it. `nodal approve
+--print` shows the commands and records none. `nodal init` approves the same set when it writes a
+recipe, because a person who runs it has just read the file they are writing. Approval pins each
 command by the digest of its exact text. The record is per person, in
 `~/.config/nodal/hooks.toml`; `NODAL_HOOKS_FILE` moves that file, and a machine that still holds
 `<state>/hooks.toml` and has no file under `~/.config` reads the old path. An approval says that
 this person accepts the command running on their account, so it is never shared through a state
 root a group owns. A command that has changed refuses to run, and the message
-shows the command. A command nobody approved refuses in the same way. `--no-hooks` runs no hook
-and needs no approval.
+shows the command, and names `nodal approve`. A command nobody approved refuses in the same way.
+`--no-hooks` runs no hook and needs no approval.
 
 ## Claude Code
 Claude Code fires named events at commands declared in a `.claude/settings.json`. There are two such

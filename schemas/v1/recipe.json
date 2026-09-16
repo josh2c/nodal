@@ -439,6 +439,11 @@
           "const": "poetry",
           "description": "`poetry`.",
           "type": "string"
+        },
+        {
+          "const": "pip",
+          "description": "`pip`, which installs from a `requirements.txt`.\n\nThe one manager here that writes no lockfile. A repository whose Python half is a\n`requirements.txt` and nothing else had no value to name, so a base could install\nno part of it and a warm build that needed the interpreter failed. What `pip`\ninstalls from is committed and is the file CI installs from, which is the\nevidence every other value here is chosen on.",
+          "type": "string"
         }
       ]
     },

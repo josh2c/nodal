@@ -60,20 +60,20 @@ mod tests {
         assert_eq!(many.script_manager(), Some(PackageManager::Pnpm));
     }
 
-    /// A recipe naming a manager that is not one of the seven.
+    /// A recipe naming a manager that is not one of the eight.
     ///
-    /// `pip` is not one of the seven managers, and the message a person got named the
-    /// reader's own type instead of their line. The three facts a correction needs are
-    /// the key, the word and the accepted words.
+    /// The message a person got named the reader's own type instead of their line. The
+    /// three facts a correction needs are the key, the word and the accepted words.
     #[test]
     fn a_package_manager_nodal_does_not_know_is_named_with_the_words_that_are_accepted() {
-        let Err(refused) = parse("package_manager = [\"npm\", \"cargo\", \"pip\"]\n", "x") else {
-            panic!("pip is not a package manager Nodal knows")
+        let Err(refused) = parse("package_manager = [\"npm\", \"cargo\", \"gradle\"]\n", "x")
+        else {
+            panic!("gradle is not a package manager Nodal knows")
         };
         let said = refused.to_string();
         assert!(said.contains("package_manager"), "the key is not named: {said}");
-        assert!(said.contains("pip"), "the value that was refused is not named: {said}");
-        for accepted in ["npm", "pnpm", "yarn", "bun", "cargo", "uv", "poetry"] {
+        assert!(said.contains("gradle"), "the value that was refused is not named: {said}");
+        for accepted in ["npm", "pnpm", "yarn", "bun", "cargo", "uv", "poetry", "pip"] {
             assert!(said.contains(accepted), "{accepted} is not offered: {said}");
         }
         assert!(!said.contains("OneOrMany"), "the reader's own type is named: {said}");
@@ -83,11 +83,11 @@ mod tests {
     /// One word is read the same way as a list of them, so the message is the same.
     #[test]
     fn one_package_manager_nodal_does_not_know_fails_the_same_way() {
-        let Err(refused) = parse("package_manager = \"pip\"\n", "x") else {
-            panic!("pip is not a package manager Nodal knows")
+        let Err(refused) = parse("package_manager = \"gradle\"\n", "x") else {
+            panic!("gradle is not a package manager Nodal knows")
         };
         let said = refused.to_string();
-        assert!(said.contains("pip"), "{said}");
+        assert!(said.contains("gradle"), "{said}");
         assert!(said.contains("poetry"), "{said}");
     }
 
