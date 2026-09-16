@@ -210,6 +210,64 @@ pub fn parent_of(pid: u32) -> Option<u32> {
     }
 }
 
+/// The POSIX session this process is in, `None` where the host will not say.
+///
+/// This is what a hold records as its lineage ([`crate::model::Lock::session`]). It is
+/// the session and not the process group because a shell with job control puts every
+/// foreground command in a group of its own: two `nodal run` commands typed one after
+/// the other are two groups, and matching on a group would make the second one a
+/// stranger. Both are in the session of the shell that started them.
+///
+/// `getsid` takes no pointer and reads one number about a process this call already is.
+#[must_use]
+pub fn current_session() -> Option<u32> {
+    // SAFETY: `getsid` reads one number about the calling process and takes no pointer.
+    // Zero names this process. A failure answers -1, which the conversion rejects.
+    let answered = unsafe { libc::getsid(0) };
+    u32::try_from(answered).ok()
+}
+
+/// Whether the session `sid` names still holds a process on this host.
+///
+/// `None` is "I cannot see", and it is never "it is gone": the two are different answers
+/// and only one of them lets a hold go ([`crate::runtime::lock::enter`]). Three things
+/// answer `None` — a host that publishes no process table, a table this call could not
+/// list, and a table holding an entry this account may not read. The last one matters on
+/// the host the lock exists for: two people on one box, where a reading that treated
+/// another account's live session as gone would hand away a hold nobody let go of.
+///
+/// A session is asked for rather than a process because the process that took a hold
+/// exits at the end of its command, while the shell that started it does not. Asking
+/// after the process would report every ordinary hold as lapsed a second after it was
+/// taken.
+#[must_use]
+pub fn session_is_live(sid: u32) -> Option<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::session_is_live(std::path::Path::new(linux::PROC), sid)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = sid;
+        None
+    }
+}
+
+/// The same reading, against a process table a test states instead of this machine's.
+///
+/// `/proc` cannot be taken away from the host a test runs on, so the directory is the
+/// seam, in the way [`Processes`] is the seam for a scan. It is what pins the answers
+/// that matter and cannot otherwise be reached: a table that cannot be listed, and a
+/// table holding a record this account cannot read.
+///
+/// # Errors
+/// None. `None` is an answer here and not a failure.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn session_is_live_in(table: &std::path::Path, sid: u32) -> Option<bool> {
+    linux::session_is_live(table, sid)
+}
+
 /// Reading the process table of a Linux host, which publishes it as `/proc`.
 ///
 /// Everything a `/proc` scan needs is here, including which variables it keeps: a host
@@ -228,7 +286,7 @@ mod linux {
     const PREFIX: &str = "NODAL_";
 
     /// Where the kernel publishes the process table.
-    const PROC: &str = "/proc";
+    pub(super) const PROC: &str = "/proc";
 
     /// The name of the file in a process's directory that holds its environment.
     const ENVIRON: &str = "environ";
@@ -277,24 +335,85 @@ mod linux {
     /// The file that holds one process's own statistics, including when it started.
     const STAT: &str = "stat";
 
-    /// How many fields into `stat`'s tail the parent's identifier is.
-    ///
-    /// `stat` is `pid (comm) state ppid ...`, and the tail is taken from the last `)`, so
-    /// the parent is the second field of that tail.
+    /// How many fields into `stat`'s tail the parent's identifier is
+    /// ([`stat_field`]): `state ppid ...`, so the second.
     const PPID: usize = 1;
+
+    /// One field of a `stat` record's tail, counted from `state`.
+    ///
+    /// `stat` is `pid (comm) state ...` and the command can hold spaces and brackets, so
+    /// every reading of it takes the tail from the last `)` rather than splitting the
+    /// whole record. The three callers differ only in which field they want, and each
+    /// names its own position.
+    fn stat_field<T: std::str::FromStr>(record: &str, nth: usize) -> Option<T> {
+        record.rsplit_once(')')?.1.split_whitespace().nth(nth)?.parse().ok()
+    }
 
     /// The process that started this one, `None` when the host will not say.
     pub(super) fn parent_of(pid: u32) -> Option<u32> {
         let record =
             std::fs::read_to_string(Path::new(PROC).join(pid.to_string()).join(STAT)).ok()?;
-        record.rsplit_once(')')?.1.split_whitespace().nth(PPID)?.parse().ok()
+        stat_field(&record, PPID)
     }
 
-    /// How many fields into `stat`'s tail the start time is.
+    /// How many fields into `stat`'s tail the session identifier is
+    /// ([`stat_field`]): `state ppid pgrp session ...`, so the fourth.
+    const SESSION: usize = 3;
+
+    /// Whether any process in `table` is still in the session `sid` names.
     ///
-    /// `stat` is `pid (comm) state ...` and the command can hold spaces and brackets, so
-    /// the tail is taken from the last `)` and counted from `state`. Start time is field
-    /// 22 of the whole record, which is the twentieth of that tail.
+    /// Every entry is read rather than stopping at the leader, because a session
+    /// outlives its leader: a shell that exits while a command it started is still
+    /// running leaves the session holding that command. Nothing is opened for writing
+    /// and nothing is signalled.
+    ///
+    /// `None` where the table could not be listed, and `None` where an entry could not
+    /// be read and nothing else matched. A `false` here lets a hold go, so it is said
+    /// only where the whole table was read and the session was not in it.
+    pub(super) fn session_is_live(table: &Path, sid: u32) -> Option<bool> {
+        let entries = std::fs::read_dir(table).ok()?;
+        let mut hidden = false;
+        for entry in entries.flatten() {
+            let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            match session_of(table, pid) {
+                Said::Session(found) if found == sid => return Some(true),
+                Said::Session(_) | Said::Gone => {}
+                Said::Hidden => hidden = true,
+            }
+        }
+        (!hidden).then_some(false)
+    }
+
+    /// What one entry of the table said about the session its process is in.
+    ///
+    /// Three answers and not two. A process that ended between the listing and the read
+    /// is `Gone`, which is ordinary on a busy machine and says nothing about any other
+    /// session; folding it in with `Hidden` would make "I cannot see" the answer almost
+    /// every time and leave a lapsed hold standing for the whole idle window.
+    enum Said {
+        /// The process is in this session.
+        Session(u32),
+        /// There is no such process any more, which is an answer.
+        Gone,
+        /// This account may not read it, or its record did not parse, so nothing is
+        /// said about it. `hidepid` and another account's process both land here.
+        Hidden,
+    }
+
+    /// What one process's record says about the session it is in.
+    fn session_of(table: &Path, pid: u32) -> Said {
+        match std::fs::read_to_string(table.join(pid.to_string()).join(STAT)) {
+            Ok(record) => stat_field(&record, SESSION).map_or(Said::Hidden, Said::Session),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Said::Gone,
+            Err(_) => Said::Hidden,
+        }
+    }
+
+    /// How many fields into `stat`'s tail the start time is ([`stat_field`]): field 22
+    /// of the whole record, which is the twentieth of the tail.
     const STARTTIME: usize = 19;
 
     /// The line of the kernel's own statistics that dates the boot.
@@ -337,8 +456,7 @@ mod linux {
         fn started(&self, directory: &Path) -> Option<Timestamp> {
             let booted_at = self.booted_at?;
             let record = std::fs::read_to_string(directory.join(STAT)).ok()?;
-            let tail = record.rsplit_once(')')?.1;
-            let ticks: i64 = tail.split_whitespace().nth(STARTTIME)?.parse().ok()?;
+            let ticks: i64 = stat_field(&record, STARTTIME)?;
             Timestamp::from_unix_seconds(booted_at.checked_add(ticks / self.ticks)?).ok()
         }
     }

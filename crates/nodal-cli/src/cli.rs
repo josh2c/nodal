@@ -68,7 +68,7 @@ pub enum Command {
     Shell(Shell),
     /// Run a command in a unit's environment and record it in the unit's log.
     Run(Run),
-    /// Report what is running on this machine and which unit each thing belongs to.
+    /// Report what is running on this host and which unit each thing belongs to.
     Ps(Ps),
     /// Leave a note on a unit for whoever continues it.
     Handoff(Handoff),

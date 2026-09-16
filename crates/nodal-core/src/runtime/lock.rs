@@ -26,17 +26,50 @@
 //! measured from the last entry, so a person working all day keeps the hold and a home
 //! nobody has touched since yesterday belongs to whoever asks next.
 //!
-//! **The pid is a record, not a signal.** The process that took the hold is written down
-//! so a person can look it up. Nothing here signals it and no hold is released because
-//! the process is gone: a lock names an actor, and an actor outlives any one shell.
+//! **Nothing is signalled; the record is read.** The process that took the hold and the
+//! session it was in are written down. Nothing here signals either of them, and no hold
+//! is released by killing anything. What changed is what the record says: a hold is an
+//! actor and a lineage, not an actor alone.
+//!
+//! **An actor is not a writer.** A fleet of agents all report as `claude-code`, so the
+//! name matched itself and the lock refused nobody: a second agent entered a home the
+//! first one held and said nothing. A second process of one actor is a second holder,
+//! and it is refused the way another actor is, with `--take` as the way through.
+//!
+//! **The lineage is the session, not the process group.** Every write verb runs in a new
+//! process — `run.rs`, `shell.rs` and `cd.rs` each call [`claim`] from one — so the
+//! recorded pid cannot be what a re-entry matches: the first `nodal run` has exited
+//! before the second one starts. A process group cannot be it either. A shell with job
+//! control puts every foreground command in a group of its own, so two `nodal run`
+//! commands typed one after the other are two groups, and a rule keyed on the group
+//! would refuse the engineer their own next command. Both commands, and the shell that
+//! started them, are in one POSIX session. That is what is recorded
+//! ([`crate::model::Lock::session`]) and what a re-entry is measured against.
+//!
+//! **A lineage that has gone has let the hold go.** Where the recorded session holds no
+//! process, the hold has lapsed for re-entry: the next actor takes it, the take is
+//! recorded as a hand-off, and the log says the lineage had gone. Where it still holds
+//! one, a second lineage is refused. `nodal run --tether` therefore keeps working: the
+//! tether stays live, and the shell that started it is in the session that took the
+//! hold, so its next command is the same holder.
+//!
+//! **A reading that could not be taken refuses nobody.** A host that publishes no
+//! process table cannot say whether a recorded session is still there, and "I cannot
+//! see" is not "it is gone". macOS publishes no `/proc`, so a same-actor re-entry there
+//! falls back to the older behaviour — the name alone — and the contract says so. A row
+//! that records no session, written before locks carried a lineage, is read the same
+//! way.
 //!
 //! **A record is read before it is printed.** The row outlives the process, so a report
 //! that printed the row alone said `claude-code holds 8 h` about a session that was
 //! killed hours earlier, and a fresh session had nothing to tell it otherwise.
-//! [`liveness`] asks this host's process table whether the recorded process is still
-//! there, and the answer is a word in the report and nothing else: what the lock refuses
-//! is unchanged, because a process identifier is reused and a hold that let go on a
-//! reading of one would be a hold that let go of the wrong home.
+//! [`liveness`] asks this host's process table whether the recorded *process* is still
+//! there, and that answer is still a word in the report and never a refusal: a process
+//! identifier is reused, and a hold that let go on a reading of one would be a hold that
+//! let go of the wrong home. The refusal reads the recorded *session* instead, which is
+//! a different question with a different failure: a session identifier that came round
+//! again names a session, and the worst it does is keep a lapsed hold held, which is the
+//! conservative direction.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -90,47 +123,174 @@ pub fn enter(
     take: bool,
     now: Timestamp,
 ) -> Result<Entered> {
-    let actor = crate::runtime::actor::current()?;
-    let host = HostName::current();
-    let idle_hours = idle_hours(&project.root);
-    let held = locks::get(conn, unit.id)?;
-    let mine = Lock {
-        unit_id: unit.id,
-        host: host.clone(),
-        actor: Some(actor.clone()),
-        pid: Some(std::process::id()),
-        taken_at: now,
-        refreshed_at: now,
-        expires_at: absolute_expiry(now, idle_hours),
+    let entry = Entry {
+        actor: crate::runtime::actor::current()?,
+        host: HostName::current(),
+        session: crate::runtime::processes::current_session(),
+        take,
+        now,
+        idle_hours: idle_hours(&project.root),
     };
-
-    let holder = held.filter(|held| held.holds_anyone(now, idle_hours));
+    let held = locks::get(conn, unit.id)?;
+    let holder = held.filter(|held| held.holds_anyone(now, entry.idle_hours));
     let Some(holder) = holder else {
         // Free, or lapsed. The statement takes it over in one write, so two processes
-        // racing for a lapsed hold make one holder rather than two.
-        let idle_deadline = mine.idle_deadline(idle_hours);
-        if locks::take(conn, &mine, now, idle_deadline)? {
+        // racing for a lapsed hold make one holder rather than two. The lineage is part
+        // of that statement's match, so two processes of one actor race like strangers.
+        let mine = entry.claim(unit.id);
+        if locks::take(conn, &mine, now, mine.idle_deadline(entry.idle_hours))? {
             return Ok(Entered::Took);
         }
-        // Somebody won the race between the read and the write. Read again and refuse
-        // with the holder they actually are, rather than reporting the row that lapsed.
-        let won = locks::get(conn, unit.id)?;
-        return match won {
-            Some(won) if won.is_held_by(&actor, &host) => Ok(Entered::Refreshed),
-            Some(won) => Err(refusal(unit, &won, now)),
-            None => Err(Error::StoreMissingRow { table: "lock", id: unit.id.to_string() }),
+        // Somebody won the race between the read and the write. Read again and answer
+        // for the holder they actually are, rather than reporting the row that lapsed.
+        let Some(won) = locks::get(conn, unit.id)? else {
+            return Err(Error::StoreMissingRow { table: "lock", id: unit.id.to_string() });
         };
+        return settle(conn, unit, &won, &entry);
     };
+    settle(conn, unit, &holder, &entry)
+}
 
-    if holder.is_held_by(&actor, &host) {
-        locks::take(conn, &mine, now, holder.idle_deadline(idle_hours))?;
-        return Ok(Entered::Refreshed);
+/// Who is entering a home, and how: one reading of this process, taken once.
+///
+/// It is a value rather than six arguments because every one of them is read from this
+/// process at the same instant and they are only ever used together. [`Entry::claim`] is
+/// the lock this entry would write, which is the one place the fields are spelled out.
+struct Entry {
+    /// Who is entering.
+    actor: Actor,
+    /// The host they are entering from.
+    host: HostName,
+    /// The POSIX session this process is in, `None` where the host will not say.
+    session: Option<u32>,
+    /// Whether `--take` was given.
+    take: bool,
+    /// The instant of the entry.
+    now: Timestamp,
+    /// The project's idle window.
+    idle_hours: u32,
+}
+
+impl Entry {
+    /// The hold this entry would write on `unit`.
+    fn claim(&self, unit: UnitId) -> Lock {
+        Lock {
+            unit_id: unit,
+            host: self.host.clone(),
+            actor: Some(self.actor.clone()),
+            pid: Some(std::process::id()),
+            session: self.session,
+            taken_at: self.now,
+            refreshed_at: self.now,
+            expires_at: absolute_expiry(self.now, self.idle_hours),
+        }
     }
-    if !take {
-        return Err(refusal(unit, &holder, now));
+}
+
+/// What the record says about the lineage a re-entry comes from.
+///
+/// Four answers and not two, because "the record does not say" and "the hold belongs to
+/// somebody still at work" are different, and only one of them refuses anybody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lineage {
+    /// The hold was taken from this session. The same worker, entering again.
+    Same,
+    /// Another session of the same actor, and it is still there: a second holder.
+    Second,
+    /// The recorded session holds no process. The hold has lapsed for re-entry.
+    Gone,
+    /// Nothing states a lineage, or this host publishes no process table.
+    Unreadable,
+}
+
+/// Which of the four a holder and this process make.
+///
+/// A row with no recorded session, and a process that cannot say which session it is in,
+/// are both `Unreadable`: the rule [`crate::model::Lock::holds_anyone`] states for an
+/// actor holds for a lineage, and a record that states nothing refuses nobody.
+fn lineage(holder: &Lock, here: Option<u32>) -> Lineage {
+    if holder.was_taken_from(here) {
+        return Lineage::Same;
     }
-    locks::hand_over(conn, &mine)?;
-    record_hand_off(conn, unit.id, &holder, &actor, &host)?;
+    let (Some(recorded), Some(_)) = (holder.session, here) else {
+        return Lineage::Unreadable;
+    };
+    match crate::runtime::processes::session_is_live(recorded) {
+        None => Lineage::Unreadable,
+        Some(true) => Lineage::Second,
+        Some(false) => Lineage::Gone,
+    }
+}
+
+/// Answer one entry against the holder the registry actually has.
+///
+/// Both questions are asked here and in this order: is this the actor who holds it, and
+/// is this the lineage the hold was taken from. An actor who matches on the name alone
+/// gets no further than a stranger does.
+fn settle(conn: &Connection, unit: &Unit, holder: &Lock, entry: &Entry) -> Result<Entered> {
+    if holder.is_held_by(&entry.actor, &entry.host) {
+        match lineage(holder, entry.session) {
+            Lineage::Same | Lineage::Unreadable => {
+                // The recorded lineage comes first, because a reading that could not be
+                // taken states nothing and must not overwrite what the row already says.
+                // Writing this process's own session here instead made the claim differ
+                // from the row, which is what [`locks::take`] matches on: the statement
+                // touched nothing and the entry reported a refresh that never happened.
+                // A row that records no lineage is upgraded by the first entry that can
+                // say what its own is.
+                let mine = Lock {
+                    session: holder.session.or(entry.session),
+                    ..entry.claim(holder.unit_id)
+                };
+                if locks::take(conn, &mine, entry.now, holder.idle_deadline(entry.idle_hours))? {
+                    return Ok(Entered::Refreshed);
+                }
+                // The statement matched nothing, so the row is no longer the one just
+                // read. A refresh that wrote nothing is not a refresh, and reporting one
+                // would tell a person their idle window moved when it did not.
+                return contested(conn, unit, entry);
+            }
+            Lineage::Gone => return take_over(conn, unit, holder, entry, Lineage::Gone),
+            Lineage::Second => {}
+        }
+    }
+    if !entry.take {
+        return Err(refusal(unit, holder, entry));
+    }
+    take_over(conn, unit, holder, entry, Lineage::Second)
+}
+
+/// Answer an entry whose write found the row already changed.
+///
+/// The row is read once more and this entry is refused, or moved by `--take`. It is not
+/// settled again: the reading that would decide is the one that has just lost a race,
+/// and a second attempt could lose the same race again. "Somebody else got there first"
+/// is a refusal a person can act on, which is the right answer and a terminating one.
+fn contested(conn: &Connection, unit: &Unit, entry: &Entry) -> Result<Entered> {
+    let Some(won) = locks::get(conn, unit.id)? else {
+        return Err(Error::StoreMissingRow { table: "lock", id: unit.id.to_string() });
+    };
+    if !entry.take {
+        return Err(refusal(unit, &won, entry));
+    }
+    take_over(conn, unit, &won, entry, Lineage::Second)
+}
+
+/// Move the hold here and write the move on the unit's log.
+///
+/// `why` is the reading [`settle`] already took, passed rather than taken again: the
+/// answer is what the note has to say, and reading `/proc` a second time to say it would
+/// pay for the same walk twice and could answer differently from the decision it
+/// describes.
+fn take_over(
+    conn: &Connection,
+    unit: &Unit,
+    from: &Lock,
+    entry: &Entry,
+    why: Lineage,
+) -> Result<Entered> {
+    locks::hand_over(conn, &entry.claim(unit.id))?;
+    record_hand_off(conn, unit.id, from, entry, why)?;
     Ok(Entered::TakenOver)
 }
 
@@ -152,6 +312,7 @@ pub fn open(conn: &Connection, unit: UnitId, idle_hours: u32, now: Timestamp) ->
         host: HostName::current(),
         actor: Some(crate::runtime::actor::current()?),
         pid: Some(std::process::id()),
+        session: crate::runtime::processes::current_session(),
         taken_at: now,
         refreshed_at: now,
         expires_at: absolute_expiry(now, idle_hours),
@@ -313,7 +474,7 @@ fn absolute_expiry(now: Timestamp, idle_hours: u32) -> Timestamp {
 /// It says a name, an instant and a way out, because a refusal without its reason is a
 /// refusal a person cannot act on. The holder always has a name here: a row that records
 /// no actor holds nobody ([`Lock::holds_anyone`]) and never reaches this.
-fn refusal(unit: &Unit, held: &Lock, now: Timestamp) -> Error {
+fn refusal(unit: &Unit, held: &Lock, entry: &Entry) -> Error {
     Error::UnitLocked {
         slug: unit.slug.to_string().into_boxed_str(),
         actor: held
@@ -322,8 +483,8 @@ fn refusal(unit: &Unit, held: &Lock, now: Timestamp) -> Error {
             .map_or_else(String::new, |actor| actor.name.to_string())
             .into_boxed_str(),
         host: held.host.to_string().into_boxed_str(),
-        since: crate::output::human::span(now, held.taken_at).into_boxed_str(),
-        hold: hold_line(held).into_boxed_str(),
+        since: crate::output::human::span(entry.now, held.taken_at).into_boxed_str(),
+        hold: hold_line(held, entry).into_boxed_str(),
     }
 }
 
@@ -340,7 +501,16 @@ fn refusal(unit: &Unit, held: &Lock, now: Timestamp) -> Error {
 /// ([`crate::runtime::ls`]), and it costs a scan of the process table against every home
 /// of the project, which is not what a refusal should pay for. So the refusal names the
 /// reading it made and names the command that makes the other one.
-fn hold_line(held: &Lock) -> String {
+fn hold_line(held: &Lock, entry: &Entry) -> String {
+    if held.is_held_by(&entry.actor, &entry.host) {
+        // The name on both sides is one name, so the refusal reads as "you hold it"
+        // unless it says which of the two processes of that name the hold belongs to.
+        let named = held.session.map_or_else(String::new, |sid| format!(" session {sid}"));
+        return format!(
+            " That is a second process of the same name: the hold belongs to{named}, \
+             and this command is in another one."
+        );
+    }
     let seen =
         Seen::read(&crate::runtime::processes::Live, &held.pid.into_iter().collect::<Vec<_>>());
     match liveness(held, &HostName::current(), &seen) {
@@ -365,15 +535,27 @@ fn record_hand_off(
     conn: &Connection,
     unit: UnitId,
     from: &Lock,
-    to: &Actor,
-    host: &HostName,
+    entry: &Entry,
+    why: Lineage,
 ) -> Result<()> {
     let was = from.actor.as_ref().map_or_else(String::new, |actor| actor.name.to_string());
+    let to = &entry.actor;
+    // Why it moved, because the two reasons read the same in the log and are not the
+    // same event: one person asked for the hold, and the other found it let go.
+    let why = match why {
+        Lineage::Gone => "the previous holder was gone",
+        Lineage::Same | Lineage::Second | Lineage::Unreadable => "asked for",
+    };
     events::note(
         conn,
         (unit, None),
         EventKind::Handoff,
-        format!("write lock taken from {was} by {}", to.name),
-        &[("from", was.clone()), ("to", to.name.to_string()), ("host", host.to_string())],
+        format!("write lock taken from {was} by {}: {why}", to.name),
+        &[
+            ("from", was.clone()),
+            ("to", to.name.to_string()),
+            ("host", entry.host.to_string()),
+            ("why", why.to_string()),
+        ],
     )
 }

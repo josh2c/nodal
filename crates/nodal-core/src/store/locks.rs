@@ -19,8 +19,8 @@ use crate::store::row;
 const TABLE: &str = "lock";
 
 /// Every column [`decode`] reads.
-const COLUMNS: &str =
-    "unit_id, host, actor_kind, actor_name, pid, taken_at, refreshed_at, expires_at";
+const COLUMNS: &str = "unit_id, host, actor_kind, actor_name, pid, session, taken_at, \
+     refreshed_at, expires_at";
 
 /// Take the write on a unit, or refresh a hold this actor already has.
 ///
@@ -36,6 +36,13 @@ const COLUMNS: &str =
 /// an actor, so it names a host and holds nobody, and the rule here is the one
 /// [`crate::model::Lock::holds_anyone`] states: a row that holds nobody refuses nobody.
 ///
+/// An actor matches only where the lineage matches as well, so that two processes of one
+/// name racing for a free lock make one holder. A row with a null `session` matches any
+/// lineage, for the same reason a null `actor_name` matches anybody: it was written
+/// before locks carried a lineage, or by a host that would not say, and a record that
+/// states nothing refuses nobody. Which of two live lineages may write is decided by
+/// [`crate::runtime::lock::enter`]; this statement only keeps a race from making two.
+///
 /// `idle_deadline` is the instant the current holder's idle window runs out, computed
 /// by the caller from the recipe. It is passed in rather than computed here because the
 /// window is a project's setting and this module reads no recipe.
@@ -45,25 +52,29 @@ const COLUMNS: &str =
 pub fn take(conn: &Connection, lock: &Lock, now: Timestamp, idle_deadline: i64) -> Result<bool> {
     let taken = row::write(
         conn,
-        "INSERT INTO lock (unit_id, host, actor_kind, actor_name, pid, taken_at, \
-         refreshed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+        "INSERT INTO lock (unit_id, host, actor_kind, actor_name, pid, session, taken_at, \
+         refreshed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT (unit_id) DO UPDATE SET host = excluded.host, \
          actor_kind = excluded.actor_kind, actor_name = excluded.actor_name, \
-         pid = excluded.pid, refreshed_at = excluded.refreshed_at, \
+         pid = excluded.pid, session = excluded.session, \
+         refreshed_at = excluded.refreshed_at, \
          expires_at = excluded.expires_at, \
          taken_at = CASE WHEN lock.host = excluded.host \
          AND lock.actor_name IS excluded.actor_name \
          AND lock.actor_kind IS excluded.actor_kind \
+         AND (lock.session IS NULL OR lock.session IS excluded.session) \
          THEN lock.taken_at ELSE excluded.taken_at END \
          WHERE lock.expires_at <= ? OR ? >= ? OR lock.actor_name IS NULL \
          OR (lock.host = excluded.host AND lock.actor_name IS excluded.actor_name \
-         AND lock.actor_kind IS excluded.actor_kind)",
+         AND lock.actor_kind IS excluded.actor_kind \
+         AND (lock.session IS NULL OR lock.session IS excluded.session))",
         params![
             lock.unit_id.to_string(),
             lock.host.as_str(),
             kind_of(lock)?,
             name_of(lock),
             lock.pid,
+            lock.session,
             lock.taken_at.unix_seconds(),
             lock.refreshed_at.unix_seconds(),
             lock.expires_at.unix_seconds(),
@@ -86,11 +97,11 @@ pub fn take(conn: &Connection, lock: &Lock, now: Timestamp, idle_deadline: i64) 
 pub fn hand_over(conn: &Connection, lock: &Lock) -> Result<()> {
     row::write(
         conn,
-        "INSERT INTO lock (unit_id, host, actor_kind, actor_name, pid, taken_at, \
-         refreshed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+        "INSERT INTO lock (unit_id, host, actor_kind, actor_name, pid, session, taken_at, \
+         refreshed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT (unit_id) DO UPDATE SET host = excluded.host, \
          actor_kind = excluded.actor_kind, actor_name = excluded.actor_name, \
-         pid = excluded.pid, taken_at = excluded.taken_at, \
+         pid = excluded.pid, session = excluded.session, taken_at = excluded.taken_at, \
          refreshed_at = excluded.refreshed_at, expires_at = excluded.expires_at",
         params![
             lock.unit_id.to_string(),
@@ -98,6 +109,7 @@ pub fn hand_over(conn: &Connection, lock: &Lock) -> Result<()> {
             kind_of(lock)?,
             name_of(lock),
             lock.pid,
+            lock.session,
             lock.taken_at.unix_seconds(),
             lock.refreshed_at.unix_seconds(),
             lock.expires_at.unix_seconds(),
@@ -179,6 +191,7 @@ fn decode(row: &Row<'_>) -> Result<Lock> {
         host: row::scalar::<HostName>(row, TABLE, "host")?,
         actor: kind.zip(name).map(|(kind, name)| Actor { kind, name }),
         pid: row::number_opt::<u32>(row, TABLE, "pid")?,
+        session: row::number_opt::<u32>(row, TABLE, "session")?,
         taken_at: row::stamp(row, TABLE, "taken_at")?,
         refreshed_at: row::stamp(row, TABLE, "refreshed_at")?,
         expires_at: row::stamp(row, TABLE, "expires_at")?,

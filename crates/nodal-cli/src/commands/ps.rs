@@ -1,4 +1,4 @@
-//! `nodal ps`: what is running on this machine, and which unit it belongs to.
+//! `nodal ps`: what is running on this host, and which unit it belongs to.
 
 use std::process::ExitCode;
 

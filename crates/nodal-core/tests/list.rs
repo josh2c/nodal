@@ -373,6 +373,7 @@ fn hold(fixture: &Fixture, branch: &str, host: HostName, pid: Option<u32>) -> Un
             name: ActorName::parse("claude-code").unwrap(),
         }),
         pid,
+        session: None,
         taken_at: now,
         refreshed_at: now,
         expires_at: Timestamp::from_unix_seconds(now.unix_seconds() + 28_800).unwrap(),
