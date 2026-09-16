@@ -11,7 +11,7 @@
 //! prints every command it is about to accept, and records the digest of each. It never
 //! writes `nodal.toml`, installs nothing, and asks nothing else of the machine.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Args;
@@ -55,7 +55,7 @@ impl Approve {
         // (`nodal_core::lifecycle::hooks`) and a report that named `.` would not say
         // which project the person just accepted a command for.
         let root =
-            nodal_core::paths::resolve(&self.path.clone().unwrap_or_else(|| PathBuf::from(".")));
+            nodal_core::paths::resolve(self.path.as_deref().unwrap_or_else(|| Path::new(".")));
         let hooks = recipe::load(&root)?.recipe.hooks;
         let state = home::directory()?;
         let record = hooks::path_in(&state);
