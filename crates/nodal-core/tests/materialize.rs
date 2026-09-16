@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use nodal_fixture::read_only::{read_attribute, set_attribute};
+use nodal_fixture::read_only::{attribute_count, read_attribute, set_attribute};
 
 use nodal_core::workspace::sharing::Sharing;
 use nodal_core::workspace::{
@@ -206,13 +206,18 @@ fn an_extended_attribute_survives_the_clone() {
     let source = case.source();
     write(&source.join("file"), "content");
     let name = "user.nodal.test";
+    let carried = attribute_count(&source.join("file"));
     if !set_attribute(&source.join("file"), name, b"kept") {
         eprintln!("this filesystem holds no extended attributes; nothing to prove here");
         return;
     }
     each_backend(&case, &source, &Excludes::default(), |label, clone, report| {
         assert_eq!(read_attribute(&clone.join("file"), name).as_deref(), Some(&b"kept"[..]));
-        assert_eq!(report.attributes, 1, "{label}");
+        assert_eq!(
+            report.attributes,
+            carried + 1,
+            "{label}: the source carried {carried} attributes before the test wrote one"
+        );
     });
 }
 
@@ -264,6 +269,7 @@ fn a_read_only_file_that_carries_an_attribute_is_cloned() {
     let locked = source.join("objects/pack/pack-0123456789abcdef.idx");
     write(&locked, "an index git wrote once");
     let name = "user.nodal.test";
+    let carried = attribute_count(&locked);
     if !set_attribute(&locked, name, b"provenance") {
         eprintln!("this filesystem holds no extended attributes; nothing to prove here");
         return;
@@ -282,7 +288,11 @@ fn a_read_only_file_that_carries_an_attribute_is_cloned() {
             Some(&b"provenance"[..]),
             "{label}: the attribute did not survive"
         );
-        assert_eq!(report.attributes, 1, "{label}");
+        assert_eq!(
+            report.attributes,
+            carried + 1,
+            "{label}: the source carried {carried} attributes before the test wrote one"
+        );
         assert_eq!(contents(&copy), "an index git wrote once", "{label}");
     });
 }
