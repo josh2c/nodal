@@ -129,26 +129,6 @@ impl PackageManager {
             Self::Poetry => "poetry",
         }
     }
-
-    /// Every manager a recipe may name, in the order a message lists them.
-    ///
-    /// The list is written once here and read by the reader and by the message it
-    /// fails with, so a manager added to the enum cannot be accepted by one and
-    /// omitted by the other.
-    pub const ALL: [Self; 7] =
-        [Self::Npm, Self::Pnpm, Self::Yarn, Self::Bun, Self::Cargo, Self::Uv, Self::Poetry];
-
-    /// The manager this word names, `None` when no manager is called that.
-    #[must_use]
-    pub fn named(word: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|manager| manager.program() == word)
-    }
-
-    /// The accepted words, for a message that has to list them.
-    #[must_use]
-    pub fn accepted() -> String {
-        Self::ALL.iter().map(|manager| manager.program()).collect::<Vec<&str>>().join(", ")
-    }
 }
 
 /// Read the `package_manager` key in either spelling a recipe may write it in.
@@ -160,17 +140,19 @@ impl PackageManager {
 /// cannot read with the name of its own type: `pip` in the list made `data did not
 /// match any variant of untagged enum OneOrMany`, which names neither the key, nor the
 /// word that was wrong, nor the words that are right. A person reading that has to read
-/// this program's source to fix their own file. The visitor below reads the two shapes
-/// itself and fails with the three facts a correction needs ([`named`]).
+/// this program's source to fix their own file.
+///
+/// The visitor below reads the two shapes and hands each word to
+/// [`PackageManager`]'s own reader, which holds the list of managers already. So the
+/// failure names the line, the column, the word and every word that is accepted, and
+/// the list of managers is written once: in the enum.
 mod written {
     use std::fmt;
 
-    use serde::de::{Deserializer, Error, SeqAccess, Visitor};
+    use serde::Deserialize;
+    use serde::de::{Deserializer, Error, IntoDeserializer, SeqAccess, Visitor};
 
     use super::PackageManager;
-
-    /// The key this reader is for, which every message it writes names.
-    const KEY: &str = "package_manager";
 
     /// The two shapes a recipe file may hold: one word, or a list of them.
     struct OneOrMany;
@@ -179,33 +161,20 @@ mod written {
         type Value = Vec<PackageManager>;
 
         fn expecting(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(out, "{KEY}: one package manager, or a list of them")
+            write!(out, "one package manager, or a list of them")
         }
 
         fn visit_str<E: Error>(self, word: &str) -> Result<Self::Value, E> {
-            Ok(vec![named(word)?])
+            Ok(vec![PackageManager::deserialize(word.into_deserializer())?])
         }
 
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
             let mut managers = Vec::with_capacity(seq.size_hint().unwrap_or_default());
-            while let Some(word) = seq.next_element::<String>()? {
-                managers.push(named(&word)?);
+            while let Some(manager) = seq.next_element()? {
+                managers.push(manager);
             }
             Ok(managers)
         }
-    }
-
-    /// The manager this word names, or the failure that says what to write instead.
-    ///
-    /// Three facts, because a correction needs all three: which key was read, which
-    /// word it could not read, and every word it can.
-    fn named<E: Error>(word: &str) -> Result<PackageManager, E> {
-        PackageManager::named(word).ok_or_else(|| {
-            E::custom(format!(
-                "{KEY}: \"{word}\" is not a package manager Nodal knows. Write one of: {}",
-                PackageManager::accepted()
-            ))
-        })
     }
 
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
