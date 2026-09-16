@@ -633,16 +633,6 @@ impl<'a> Own<'a> {
         self.wrappers = wrappers;
         self
     }
-
-    /// The unit alone, for a caller that has taken no reading of the registry.
-    ///
-    /// Every process in the home that does not carry the identifier is then a stranger,
-    /// which overstates what blocks a move and never understates it. That is the safe
-    /// direction: it refuses more often, and it signals nothing extra.
-    #[must_use]
-    pub const fn unrecorded(unit: UnitId) -> Self {
-        Self { unit, groups: &[], wrappers: &[] }
-    }
 }
 
 /// Whether a process is this unit's own, which is attribution's certain level.
@@ -697,14 +687,19 @@ fn vouched_for_by_a_group(process: &processes::Running, own: Own<'_>) -> bool {
 /// that dates nothing proves nothing. Either way the answer is no, which leaves the
 /// stricter reading standing.
 fn is_still(pid: u32, wrapper: Wrapper) -> bool {
-    if pid != wrapper.pid {
-        return false;
+    pid == wrapper.pid && wrapper.started_at.is_some() && started_at(pid) == wrapper.started_at
+}
+
+/// When the process wearing this identifier now started, from this host's own record.
+///
+/// `None` where the host publishes no process table, where the process has gone, and
+/// where the host dates no process. Each of those is "I could not read it", and every
+/// caller here treats that as proof of nothing.
+fn started_at(pid: u32) -> Option<Timestamp> {
+    match processes::Live.presences(&[pid]).ok()?.get(&pid) {
+        Some(processes::Presence::Running { started_at }) => *started_at,
+        _ => None,
     }
-    let Some(started_at) = wrapper.started_at else { return false };
-    matches!(
-        processes::Live.presences(&[pid]).ok().and_then(|seen| seen.get(&pid).copied()),
-        Some(processes::Presence::Running { started_at: Some(now) }) if now == started_at
-    )
 }
 
 /// The `nodal run` each of these groups hangs off, read while the groups are alive.
@@ -717,14 +712,7 @@ pub fn wrappers_of(groups: &[u32]) -> Vec<Wrapper> {
         .iter()
         .filter_map(|leader| processes::parent_of(*leader))
         .filter(|pid| *pid > 1)
-        .map(|pid| {
-            let started_at =
-                processes::Live.presences(&[pid]).ok().and_then(|seen| match seen.get(&pid) {
-                    Some(processes::Presence::Running { started_at }) => *started_at,
-                    _ => None,
-                });
-            Wrapper { pid, started_at }
-        })
+        .map(|pid| Wrapper { pid, started_at: started_at(pid) })
         .collect()
 }
 
@@ -1183,7 +1171,7 @@ mod tests {
 
     use super::{
         Assessment, CommitGroup, Copies, Held, Needs, Own, PathGroup, Reason, Timestamp, Wrapper,
-        bystander, owns, processes, reasons,
+        bystander, owns, reasons,
     };
     use crate::git::Oid;
     use crate::git::status::{Change, Entry, State, Submodule};
@@ -1211,7 +1199,7 @@ mod tests {
             "a recorded number is not an identity, and this is the list a teardown signals"
         );
         assert!(
-            !owns(&stranger, Own::unrecorded(unit)),
+            !owns(&stranger, Own::of(unit, &[])),
             "and without the record the answer is the same"
         );
     }
@@ -1223,10 +1211,10 @@ mod tests {
         let mut vars = BTreeMap::new();
         vars.insert(String::from("NODAL_ID"), unit.to_string());
         let theirs = crate::runtime::processes::Running::new(11, vars).running("node dev");
-        assert!(owns(&theirs, Own::unrecorded(unit)));
+        assert!(owns(&theirs, Own::of(unit, &[])));
 
         let other = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FB1").unwrap();
-        assert!(!owns(&theirs, Own::unrecorded(other)), "another unit's is another unit's");
+        assert!(!owns(&theirs, Own::of(other, &[])), "another unit's is another unit's");
     }
 
     /// The reading that has to survive the group it came from.
@@ -1263,7 +1251,7 @@ mod tests {
             )
         };
 
-        let started_at = this_process_started();
+        let started_at = super::started_at(pid);
         let Some(started_at) = started_at else {
             // No process table, so nothing is dated and nothing can be vouched for.
             assert!(
@@ -1289,16 +1277,6 @@ mod tests {
 
         // And an undated reading is not evidence either.
         assert!(asked(&[Wrapper { pid, started_at: None }]), "an undated reading is not evidence");
-    }
-
-    /// When this process started, or `None` where this host publishes no process table.
-    fn this_process_started() -> Option<Timestamp> {
-        let pid = std::process::id();
-        let seen = processes::Processes::presences(&processes::Live, &[pid]).ok()?;
-        match seen.get(&pid) {
-            Some(processes::Presence::Running { started_at }) => *started_at,
-            _ => None,
-        }
     }
 
     /// A stranger in the home still blocks a move, whatever the registry recorded.
