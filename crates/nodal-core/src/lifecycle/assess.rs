@@ -1239,54 +1239,66 @@ mod tests {
     ///
     /// This test is the mechanism rather than the timing: the group's leader does not
     /// exist here at all, which is exactly the state the move sees.
+    ///
+    /// **Both hosts are asserted.** A host that publishes no process table dates no
+    /// process, so a carried reading proves nothing there and the stricter answer stands.
+    /// That is the same rule as everywhere else here: what could not be read is not
+    /// evidence.
     #[test]
     fn a_wrapper_resolved_before_its_group_was_stopped_is_still_not_a_stranger() {
         let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
         let home = std::path::PathBuf::from("/homes/worker-import");
         // This test's own process stands in for the wrapper, because it is the one
-        // process here whose start time the host will certainly answer for.
+        // process here whose start time the host will answer for if it answers at all.
         let pid = std::process::id();
         let standing = crate::runtime::processes::Running::new(pid, BTreeMap::new())
             .in_directory(&home)
             .running("nodal run");
+        let asked = |wrappers: &[Wrapper]| {
+            bystander(
+                &standing,
+                Own::of(unit, &[]).and_wrappers(wrappers),
+                std::slice::from_ref(&home),
+                &[],
+            )
+        };
 
-        let seen = processes::Processes::presences(&processes::Live, &[pid]).unwrap();
-        let started_at = match seen.get(&pid) {
-            Some(processes::Presence::Running { started_at }) => *started_at,
-            _ => panic!("this process is running"),
+        let started_at = this_process_started();
+        let Some(started_at) = started_at else {
+            // No process table, so nothing is dated and nothing can be vouched for.
+            assert!(
+                asked(&[Wrapper { pid, started_at: None }]),
+                "a host that dates no process vouches for none"
+            );
+            return;
         };
 
         // No group to read: the reclaim stopped it. The carried answer is what is left.
-        let carried = [Wrapper { pid, started_at }];
-        let own = Own::of(unit, &[]).and_wrappers(&carried);
         assert!(
-            !bystander(&standing, own, std::slice::from_ref(&home), &[]),
+            !asked(&[Wrapper { pid, started_at: Some(started_at) }]),
             "the wrapper is not a stranger once its group has gone"
         );
 
         // The instant is the whole of the proof. An identifier that came round again
         // belongs to a process that started later, so it matches nothing.
-        let recycled = [Wrapper {
-            pid,
-            started_at: started_at
-                .and_then(|at| Timestamp::from_unix_seconds(at.unix_seconds() - 60).ok()),
-        }];
+        let earlier = Timestamp::from_unix_seconds(started_at.unix_seconds() - 60).ok();
         assert!(
-            bystander(
-                &standing,
-                Own::of(unit, &[]).and_wrappers(&recycled),
-                std::slice::from_ref(&home),
-                &[]
-            ),
+            asked(&[Wrapper { pid, started_at: earlier }]),
             "a number that came round again proves nothing"
         );
 
-        // A host that dates nothing proves nothing either, and the stricter reading stands.
-        let undated = [Wrapper { pid, started_at: None }];
-        assert!(
-            bystander(&standing, Own::of(unit, &[]).and_wrappers(&undated), &[home], &[]),
-            "an undated reading is not evidence"
-        );
+        // And an undated reading is not evidence either.
+        assert!(asked(&[Wrapper { pid, started_at: None }]), "an undated reading is not evidence");
+    }
+
+    /// When this process started, or `None` where this host publishes no process table.
+    fn this_process_started() -> Option<Timestamp> {
+        let pid = std::process::id();
+        let seen = processes::Processes::presences(&processes::Live, &[pid]).ok()?;
+        match seen.get(&pid) {
+            Some(processes::Presence::Running { started_at }) => *started_at,
+            _ => None,
+        }
     }
 
     /// A stranger in the home still blocks a move, whatever the registry recorded.
