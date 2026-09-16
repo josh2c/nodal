@@ -1,6 +1,7 @@
 //! Which lines of a file a rewrite changes.
 //!
-//! `nodal init --force` writes a recipe over one a person edited. What it keeps is
+//! `nodal init --force` writes a recipe over one a person edited, and says which lines
+//! it changes before it writes them. What it keeps is
 //! every key that file sets; what it does not keep is every comment, because the
 //! contents are rendered from the merged recipe and the render writes the template's
 //! own comments. A person who ran the command to answer one gap lost the note they
@@ -15,6 +16,11 @@
 //! "the same" is the longest common subsequence of the two line lists, which is the
 //! rule every diff uses and the only one that does not report a whole file as changed
 //! when one line is inserted at the top.
+//!
+//! The table that rule is read from costs the product of the two line counts, in time
+//! and in memory. A recipe is tens of lines, so that is tens of thousands of machine
+//! words on the largest one a project writes, and the cheaper algorithms are not worth
+//! their complexity here. This is not a general diff and nothing else calls it.
 
 use serde::{Deserialize, Serialize};
 

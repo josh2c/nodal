@@ -683,15 +683,14 @@ fn unit_detail_renders_both_ways() {
     both("unit_detail", &detail);
 }
 
-/// EV-5, met by the comparison harness: the harness asked `nodal show <unit> --json`
-/// for `.home` and `.path` and both answered null, and the home turned out to be at
-/// `.unit.environment.home`.
+/// A caller asked `nodal show <unit> --json` for `.home` and `.path`, read null from
+/// both, and found the home at `.unit.environment.home`.
 ///
 /// The two top-level keys are not there and never have been; `jq` answers null for a key
-/// a document does not hold, and that is what was read. The document's shape is what the
-/// reading is really about, so it is stated here rather than left to a snapshot a person
-/// can rewrite: the home has one place in this document, and a second one would be a
-/// second answer that can disagree with the first.
+/// a document does not hold, and that is what was read. The shape is what the question
+/// is really about, so it is stated here rather than left to a snapshot a person can
+/// rewrite: the home has one place in this document, and a second one would be a second
+/// answer that can disagree with the first.
 #[test]
 fn the_home_has_one_place_in_the_document_show_answers_with() {
     let detail = UnitDetail {
@@ -857,10 +856,27 @@ fn init_report_renders_both_ways() {
     both("init_report", &init_report());
 }
 
-/// A rewrite names every line it changes, in both renderings.
+/// A rewrite names every line it changes, and names them where a person reads them
+/// before the file is written: in the warning, and in the document a tool reads. Never
+/// in the human answer, which is about a file that already exists by the time it prints.
 #[test]
 fn a_rewritten_recipe_names_the_lines_it_changes() {
-    both("init_report_rewritten", &rewritten_init_report());
+    let report = rewritten_init_report();
+    let warning = report.warning();
+    assert_eq!(warning[0], "lines this rewrite changes: 2 removed, 1 added", "{warning:?}");
+    assert!(warning[1].contains("the staging copy needs the seed step"), "{warning:?}");
+    assert_eq!(warning.len(), 4, "the headline and one line for each change: {warning:?}");
+
+    let answer = render(&report, Format::Human).expect("the value renders");
+    assert!(!answer.contains("staging copy"), "the answer repeats the warning: {answer}");
+
+    both("init_report_rewritten", &report);
+}
+
+/// A rewrite that changes nothing has nothing to warn about.
+#[test]
+fn a_recipe_that_does_not_change_carries_no_warning() {
+    assert!(init_report().warning().is_empty());
 }
 
 #[test]

@@ -60,15 +60,28 @@ impl Render for InitReport {
         } else {
             fields.push(Field::new("needs you", questions(&self.gaps)));
         }
-        let mut doc = Doc::from_iter([Block::fields(fields)]);
-        if !self.changes.is_empty() {
-            doc.push(Block::blank());
-            doc.push(Block::line(headline(&self.changes)));
-            for change in &self.changes {
-                doc.push(Block::line(line_of(change)).at(1));
-            }
+        Doc::from_iter([Block::fields(fields)])
+    }
+}
+
+impl InitReport {
+    /// The changed lines, as the warning a person reads before the file is written.
+    ///
+    /// Lines rather than a [`Doc`], because this is not the command's answer. The answer
+    /// on standard output is one document about a file that now exists; this is what a
+    /// person needs in front of them while the file still says what they wrote, so it
+    /// goes to standard error and it goes first (`nodal_cli::commands::init`).
+    ///
+    /// Empty where nothing changes, so a rewrite that writes the same bytes says
+    /// nothing.
+    #[must_use]
+    pub fn warning(&self) -> Vec<String> {
+        if self.changes.is_empty() {
+            return Vec::new();
         }
-        doc
+        let mut lines = vec![headline(&self.changes)];
+        lines.extend(self.changes.iter().map(line_of));
+        lines
     }
 }
 
@@ -83,7 +96,7 @@ fn headline(changes: &[Change]) -> String {
 /// One changed line, said the way `diff` says it: the mark, the line number in the file
 /// the line belongs to, and the line.
 fn line_of(change: &Change) -> String {
-    format!("{}{} {}", change.edit.mark(), change.at, change.text)
+    format!("  {}{} {}", change.edit.mark(), change.at, change.text)
 }
 
 /// One question per line, so they align under the label they share.

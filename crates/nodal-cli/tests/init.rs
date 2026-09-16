@@ -79,10 +79,10 @@ fn print_writes_nothing_and_json_carries_the_gaps() {
     assert!(!root.join("nodal.toml").exists(), "--json must not write");
 }
 
-/// EV-3, met by the comparison harness: `--force` kept every key and replaced every
-/// comment with the template's own, and said nothing about it. It still writes the
-/// template's comments — the file is rendered from the merged recipe — but it now names
-/// every line it takes out before it takes it.
+/// `--force` kept every key and replaced every comment with the template's own, and
+/// said nothing about it. It still writes the template's comments, because the file is
+/// rendered from the merged recipe. It now names every line it takes out, on standard
+/// error, before it takes it.
 #[test]
 fn force_names_the_line_it_takes_out_of_a_file_a_person_edited() {
     let directory = tempfile::tempdir().unwrap();
@@ -98,9 +98,15 @@ fn force_names_the_line_it_takes_out_of_a_file_a_person_edited() {
 
     let forced = nodal(&machine, root, &["--force"]);
     assert!(forced.status.success());
-    let said = String::from_utf8(forced.stdout).unwrap();
-    assert!(said.contains("lines this rewrite changes"), "{said}");
-    assert!(said.contains(note), "the comment it dropped is not named: {said}");
+
+    // On standard error, because it is the warning and not the answer, and because it
+    // is said while the file still holds the lines it names.
+    let warned = String::from_utf8(forced.stderr).unwrap();
+    assert!(warned.contains("lines this rewrite changes"), "{warned}");
+    assert!(warned.contains(note), "the comment it dropped is not named: {warned}");
+    let answer = String::from_utf8(forced.stdout).unwrap();
+    assert!(!answer.contains(note), "the answer repeats the warning: {answer}");
+    assert!(answer.contains("rewrote"), "{answer}");
     assert!(!std::fs::read_to_string(&path).unwrap().contains(note), "it was dropped");
 
     // The same reading in the document a tool reads.
