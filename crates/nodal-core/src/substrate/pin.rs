@@ -27,22 +27,11 @@
 //!
 //! # Which manager a pin belongs to
 //!
-//! A `packageManager` field that names its program belongs to the manager it names, and
-//! [`pinned`] reads it that way. A field that names a version and no program belongs to
-//! the primary manager, because the primary is the manager the repository is driven by.
-//!
-//! That second rule is now stated against a primary the build command decides
-//! ([`crate::recipe::infer::package_manager::lead`]). So in a Rust-led repository — one
-//! built by `cargo build`, with a `package.json` beside its `Cargo.toml` — a bare
-//! `"packageManager": "9.12.3"` binds to Cargo, and a base build refuses the host's
-//! `cargo` over a version the Node half asked for. The field is a `package.json` field,
-//! so the manager whose manifest carries it is the one that meant it.
-//!
-//! It is stated rather than fixed here. The fix is to give the pin to the manager whose
-//! manifest carries it, which is a change to what the recipe records rather than to how
-//! this module reads it, and it is a follow-up of its own. A field that names its
-//! program, which is what a manifest written by any of these tools carries, is
-//! unaffected.
+//! A pin belongs to the manager whose manifest carries it. The `packageManager` field
+//! lives in `package.json`. [`pinned`] gives it to the Node manager in the list,
+//! whichever position that manager holds. A field that names its program belongs to
+//! the manager it names. A field that names a version and no program still belongs to
+//! the Node manager.
 
 use std::path::Path;
 
@@ -178,16 +167,15 @@ const fn corepack_owns(manager: PackageManager) -> bool {
 /// under the `engines` name a `package.json` gives it. One of the three, whichever the
 /// project's manifests supplied.
 ///
-/// `package_manager_pin` comes from a `packageManager` field, which names its own
-/// program, so it belongs to the manager it names. A repository whose primary is Cargo
-/// and whose `package.json` pins pnpm must not have that pin read as Cargo's. A pin
-/// that names no program is the primary manager's, for the reason the module doc gives.
+/// `package_manager_pin` comes from a `packageManager` field, so it belongs to the
+/// Node manager in the list. A field that names its program belongs to that manager.
+/// A field that names no program still belongs to the Node manager, not the primary.
 fn pinned(recipe: &Recipe, manager: PackageManager) -> Option<String> {
     let program = manager.program();
     if let Some(pin) = recipe.package_manager_pin.as_ref() {
         let text = pin.as_str();
         let named = text.starts_with(&format!("{program}@"));
-        let bare = !text.contains('@') && recipe.package_manager.first() == Some(&manager);
+        let bare = !text.contains('@') && recipe.script_manager() == Some(manager);
         if named || bare {
             return Some(text.to_owned());
         }
@@ -422,44 +410,52 @@ mod tests {
         let host = Fake { tools: vec!["corepack"], version: Some("0.5.1") };
         let recipe = Recipe {
             package_manager: vec![PackageManager::Uv],
-            package_manager_pin: Some(ToolVersion::parse(String::from("1.2.3")).unwrap()),
+            package_manager_pin: Some(ToolVersion::parse(String::from("uv@1.2.3")).unwrap()),
             ..Recipe::default()
         };
         let refused = only(&recipe, &host).unwrap_err();
         assert!(refused.to_string().contains("needs uv 1.2.3"), "{refused}");
     }
 
-    /// A pin that names no program says nothing about the managers behind the primary.
-    /// Read as every manager's, this recipe would refuse the whole build because the
-    /// host's Cargo is not version 11.
+    /// A `packageManager` field lives in `package.json`, so a version with no program
+    /// belongs to the Node manager, not the primary. A Rust-led tree therefore installs
+    /// cargo unpinned and pnpm at the pinned version.
     #[test]
-    fn a_pin_that_names_no_program_binds_to_the_primary_manager_only() {
-        let recipe = Recipe {
-            package_manager: vec![PackageManager::Pnpm, PackageManager::Cargo],
-            package_manager_pin: Some(ToolVersion::parse(String::from("11.7.0")).unwrap()),
+    fn a_rust_led_tree_with_a_bare_node_pin_installs_cargo_unpinned() {
+        let host = Fake { tools: vec!["corepack"], version: Some("10.4.1") };
+        let pin = Some(ToolVersion::parse(String::from("11.7.0")).unwrap());
+        let cargo = vec![String::from("cargo"), String::from("fetch")];
+        let pnpm =
+            vec![String::from("corepack"), String::from("pnpm@11.7.0"), String::from("install")];
+
+        let rust_led = Recipe {
+            package_manager: vec![PackageManager::Cargo, PackageManager::Pnpm],
+            package_manager_pin: pin.clone(),
             ..Recipe::default()
         };
-        let refused = installs(&recipe, &bare_host()).unwrap_err();
-        assert!(refused.to_string().contains("needs pnpm 11.7.0"), "the primary: {refused}");
+        let rust_argvs: Vec<Vec<String>> =
+            installs(&rust_led, &host).unwrap().into_iter().map(|one| one.argv).collect();
+        assert_eq!(rust_argvs, [cargo.clone(), pnpm.clone()]);
 
-        let cargo_first = Recipe {
-            package_manager: vec![PackageManager::Cargo, PackageManager::Pnpm],
-            ..recipe.clone()
+        let node_led = Recipe {
+            package_manager: vec![PackageManager::Pnpm, PackageManager::Cargo],
+            package_manager_pin: pin,
+            ..Recipe::default()
         };
-        let resolved = installs(&cargo_first, &bare_host()).unwrap_err();
-        assert!(resolved.to_string().contains("needs cargo 11.7.0"), "{resolved}");
+        let node_argvs: Vec<Vec<String>> =
+            installs(&node_led, &host).unwrap().into_iter().map(|one| one.argv).collect();
+        assert_eq!(node_argvs, [pnpm, cargo]);
     }
 
-    /// The same recipe with the pin removed installs both managers and refuses neither.
+    /// A manager the pin does not belong to is installed, not refused, when the Node
+    /// manager's pin is satisfied.
     #[test]
-    fn a_manager_behind_the_primary_is_not_refused_over_the_primarys_bare_pin() {
+    fn a_manager_the_pin_does_not_belong_to_is_not_refused() {
         let recipe = Recipe {
             package_manager: vec![PackageManager::Pnpm, PackageManager::Cargo],
             package_manager_pin: Some(ToolVersion::parse(String::from("10.4.1")).unwrap()),
             ..Recipe::default()
         };
-        // The host answers 10.4.1, so the primary's pin is satisfied and cargo, which
-        // the pin says nothing about, is installed rather than refused.
         let resolved = installs(&recipe, &bare_host()).unwrap();
         let argvs: Vec<Vec<String>> = resolved.iter().map(|one| one.argv.clone()).collect();
         assert_eq!(argvs, [["pnpm", "install"], ["cargo", "fetch"]]);
