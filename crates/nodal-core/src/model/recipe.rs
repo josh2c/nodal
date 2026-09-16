@@ -169,6 +169,74 @@ impl PackageManager {
     }
 }
 
+/// Which of a recipe's `[hooks]` commands this is.
+///
+/// The keys of that table, as a type. It is here and not with the module that runs the
+/// hooks, because it is what a recipe writes: `Hooks` holds the six commands and this
+/// names them, so the table and its keys are one piece of plain data with no IO
+/// (`docs/code-structure.md`). `crate::lifecycle::hooks` re-exports it, because that is
+/// the module that acts on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    /// Before a unit is created.
+    PreNew,
+    /// After a unit is created.
+    PostNew,
+    /// Before a unit is merged.
+    PreMerge,
+    /// After a unit is merged, and before it is removed.
+    PostMerge,
+    /// Before a unit is reclaimed.
+    PreReclaim,
+    /// After a unit is reclaimed.
+    PostReclaim,
+}
+
+/// Every phase, in the order they are declared and approved.
+pub const PHASES: &[Phase] = &[
+    Phase::PreNew,
+    Phase::PostNew,
+    Phase::PreMerge,
+    Phase::PostMerge,
+    Phase::PreReclaim,
+    Phase::PostReclaim,
+];
+
+impl Phase {
+    /// The key this phase has in `nodal.toml` and in the approvals file.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::PreNew => "pre_new",
+            Self::PostNew => "post_new",
+            Self::PreMerge => "pre_merge",
+            Self::PostMerge => "post_merge",
+            Self::PreReclaim => "pre_reclaim",
+            Self::PostReclaim => "post_reclaim",
+        }
+    }
+
+    /// The command a recipe declares for this phase, when it declares one.
+    #[must_use]
+    pub fn command(self, hooks: &Hooks) -> Option<&CommandLine> {
+        match self {
+            Self::PreNew => hooks.pre_new.as_ref(),
+            Self::PostNew => hooks.post_new.as_ref(),
+            Self::PreMerge => hooks.pre_merge.as_ref(),
+            Self::PostMerge => hooks.post_merge.as_ref(),
+            Self::PreReclaim => hooks.pre_reclaim.as_ref(),
+            Self::PostReclaim => hooks.post_reclaim.as_ref(),
+        }
+    }
+}
+
+impl core::fmt::Display for Phase {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.key())
+    }
+}
+
 /// Read the `package_manager` key in either spelling a recipe may write it in.
 ///
 /// Reading only. A list writes itself, so the key always comes out as a list and the

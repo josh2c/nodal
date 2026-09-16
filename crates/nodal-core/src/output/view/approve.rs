@@ -4,8 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::lifecycle::hooks::Phase;
-use crate::model::Hooks;
+use crate::model::{Hooks, Phase};
 use crate::output::Render;
 use crate::output::human::{Block, Doc, Table};
 
@@ -37,7 +36,7 @@ impl Approval {
     /// The report for a project whose declared hooks have just been approved.
     #[must_use]
     pub fn of(project: PathBuf, record: PathBuf, hooks: &Hooks) -> Self {
-        let commands = crate::lifecycle::hooks::PHASES
+        let commands = crate::model::recipe::PHASES
             .iter()
             .filter_map(|phase| {
                 phase
