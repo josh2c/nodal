@@ -1,0 +1,22 @@
+-- 0014 lock session: the lineage a hold was taken from, not only the actor who took it.
+--
+-- The lock named an actor, and an actor is not a writer either. A fleet of agents all
+-- report as `claude-code`, so `claude-code` matched `claude-code` and the second agent
+-- entered a home the first one held, silently. The name is not enough: what is being
+-- asked is whether this is the same worker, and a second process of one name is a
+-- second worker.
+--
+-- `session` is the POSIX session of the process that took the hold, which is the one
+-- identifier that survives the ordinary way of working. Why it is the session, and not
+-- the process group or the recorded pid, is argued once in `runtime/lock.rs`.
+--
+-- Null, and null for every row written before this migration. A row that records no
+-- session records no lineage, and the rule is the one `actor_name` already states: a
+-- row that records nobody refuses nobody. Such a row is entered as before and is
+-- rewritten with a session by that entry. Null is also what a host answers where the
+-- session cannot be read, so a reading that could not be taken and a record that was
+-- never written are one value and mean one thing.
+--
+-- Nothing is signalled. The number is read from the process table and written down.
+
+ALTER TABLE lock ADD COLUMN session INTEGER;

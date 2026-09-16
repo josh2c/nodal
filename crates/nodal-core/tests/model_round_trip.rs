@@ -181,6 +181,7 @@ fn lock() -> Lock {
             name: ActorName::parse("claude-code").expect("sample actor is a line"),
         }),
         pid: Some(4_120),
+        session: Some(4_100),
         taken_at: at("2026-09-06T09:00:00Z"),
         refreshed_at: at("2026-09-06T10:30:00Z"),
         expires_at: at("2026-09-06T11:00:00Z"),

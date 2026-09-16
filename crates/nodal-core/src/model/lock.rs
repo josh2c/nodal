@@ -39,6 +39,16 @@ pub struct Lock {
     /// The process that took the hold. Recorded so a person can look. Nothing signals
     /// it, and a lock is never expired because the process is gone.
     pub pid: Option<u32>,
+    /// The POSIX session that process was in: the lineage the hold belongs to.
+    ///
+    /// What a re-entry is measured against, because an actor name is not a writer. Why
+    /// it is the session and not the process group or the recorded pid is argued once,
+    /// in [`crate::runtime::lock`].
+    ///
+    /// `None` for a row written before locks carried a lineage, and on a host that will
+    /// not say. Both mean the same thing and get the same answer: a row that records no
+    /// lineage refuses nobody.
+    pub session: Option<u32>,
     /// When the hold began, which a hand-off resets.
     pub taken_at: Timestamp,
     /// When an entry last touched the home.
@@ -84,9 +94,24 @@ impl Lock {
     ///
     /// Both halves are required. The same name on two hosts is two writers, and a row
     /// with no actor is held by nobody, so nobody matches it.
+    ///
+    /// This answers a name and not a worker. Two processes of one actor both match it,
+    /// which is what made a fleet of agents one holder; which of them is the holder is
+    /// [`Lock::was_taken_from`], and [`crate::runtime::lock::enter`] asks both.
     #[must_use]
     pub fn is_held_by(&self, actor: &Actor, host: &HostName) -> bool {
         &self.host == host && self.actor.as_ref() == Some(actor)
+    }
+
+    /// Whether the hold was taken from the lineage `session` names.
+    ///
+    /// `false` where either side records no session, because neither a row written
+    /// before locks carried a lineage nor a host that will not say has stated one, and
+    /// a match on two absences would make every stranger the holder. The caller decides
+    /// what an unstated lineage means; this answers only "the record says yes".
+    #[must_use]
+    pub fn was_taken_from(&self, session: Option<u32>) -> bool {
+        matches!((self.session, session), (Some(recorded), Some(asking)) if recorded == asking)
     }
 }
 
@@ -109,6 +134,7 @@ mod tests {
             host: HostName::parse("laptop").unwrap(),
             actor: Some(actor("ada")),
             pid: Some(4_120),
+            session: Some(4_100),
             taken_at: Timestamp::from_unix_seconds(taken).unwrap(),
             refreshed_at: Timestamp::from_unix_seconds(refreshed).unwrap(),
             expires_at: Timestamp::from_unix_seconds(until).unwrap(),
@@ -146,6 +172,25 @@ mod tests {
             !held.is_held_by(&actor("ada"), &desktop),
             "the same name on a second host matched"
         );
+    }
+
+    /// A name is not a worker: the lineage is what says which process of that name.
+    #[test]
+    fn a_hold_is_matched_by_the_session_it_was_taken_from() {
+        let held = lock(0, 0, 1_000_000);
+        assert!(held.was_taken_from(Some(4_100)), "the recorded session did not match itself");
+        assert!(!held.was_taken_from(Some(4_101)), "a second session of one actor matched");
+    }
+
+    /// Neither an unrecorded lineage nor an unreadable one is a match, so that two
+    /// absences cannot make a stranger the holder.
+    #[test]
+    fn an_unstated_lineage_matches_nobody_on_either_side() {
+        let held = lock(0, 0, 1_000_000);
+        assert!(!held.was_taken_from(None), "a process that stated no session matched");
+        let unstated = Lock { session: None, ..lock(0, 0, 1_000_000) };
+        assert!(!unstated.was_taken_from(Some(4_100)), "a row that stated no session matched");
+        assert!(!unstated.was_taken_from(None), "two absences matched each other");
     }
 
     #[test]

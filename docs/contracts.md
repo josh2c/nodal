@@ -821,8 +821,40 @@ from and who it went to. Nothing else moves a live hold.
 A reclaim releases the unit's hold. This host releases only its own; a hold another machine took is
 that machine's to release.
 
-The process that took a hold is recorded and reported. Nothing signals it. No hold is released because
-the process is gone: a lock names an actor, and an actor outlives any one shell.
+A hold is an actor and a lineage. An actor name alone is not a writer: every agent of a fleet reports
+as `claude-code`, so the name matched itself and a second agent entered a home the first one held,
+silently. A second process of one actor is a second holder and is refused the way another actor is,
+with `--take` as the way through.
+
+The lineage is the POSIX session the hold was taken from, recorded in `lock.session`. It is neither
+the recorded process nor the process group: every write verb runs in a new process, and a shell with
+job control puts every foreground command in a new group, so both change between one command and the
+next while the session does not. So a second `nodal run`, `nodal shell` or `nodal cd` from the same
+shell is the same holder and passes, and `nodal run --tether` keeps working: the tether stays live and
+the shell that started it holds.
+
+Where the recorded session still holds a process, a second lineage of the same actor is refused, and
+the refusal says which of the two the hold belongs to. Where it holds none, the hold has lapsed for
+re-entry: the next actor takes it, the take is written on the unit's log as a hand-off, and the log
+says the previous holder was gone.
+
+A reading that could not be taken refuses nobody, and never lets a hold go. "I cannot see" is not "it
+is gone", and three things say it: a host that publishes no process table, a table this host could not
+list, and a table holding a record this account may not read. The last is the shared host the lock
+exists for — `hidepid`, or another account's process — where reading a live session as gone would hand
+away a hold nobody let go of. In every one of them a same-actor re-entry falls back to the rule that
+came before, the name alone, and passes. macOS, which publishes no `/proc`, is the first of the three.
+A row that records no session, written before locks carried a lineage, is read the same way, and the
+next entry rewrites it.
+
+Only a table that was read all the way through says a session has gone. A process that ended between
+the listing and the read is gone and says nothing about any other session; counting it as unreadable
+would make "I cannot see" the answer on any busy machine and leave every lapsed hold standing for the
+whole idle window.
+
+The process that took a hold is recorded and reported. Nothing signals it, and nothing here signals a
+session either: both numbers are read from the process table and written down. No hold is released
+because the recorded process is gone.
 
 A report says whether that actor is still there. The holder carries a `state`: `live`, `gone`, or
 `unknown` with the reason it could not be read — the hold is on another machine, the row records no
@@ -845,13 +877,20 @@ evidence against the row: on a host with no readable process table — macOS tod
 scan is not implemented — every hold reads `holds`, as it always did, and `--json` carries `unknown`
 with the reason. `nodal show` states the process and the reason under the WHO line.
 
-The state changes no refusal: a held unit refuses the write verbs until the hold lapses or `--take`
-moves it, whatever became of the process. The refusal says what this host read — "pid 4120 that took
+The state changes no refusal. This is the reading of the recorded **process**, and it stays a word in
+the report: a process identifier is reused, and a hold that let go on a reading of one would be a hold
+that let go of the wrong home. A held unit refuses the write verbs until the hold lapses or `--take`
+moves it, whatever became of that process. The refusal says what this host read — "pid 4120 that took
 it is gone from this host" — because a person refused over a session that ended can take the unit at
 once, and one refused over a session at work waits.
 
+The reading of the recorded **session** is the other one, and it does change the refusal. It is a
+different question with a different failure: a session identifier that came round again names a
+session, and the worst it does is keep a lapsed hold held, which is the conservative direction.
+
 A lock row written before locks carried an actor names a host and holds nobody. It refuses no one, and
-the next entry into that home rewrites it.
+the next entry into that home rewrites it. The same rule holds for a row that records no session: a
+record that states nothing refuses nobody.
 
 WHO is two readings, in this order: the lock rows, then the process table. The order is the point. A
 process scan reads `/proc`, which does not cross Linux accounts, so on a host two people share it

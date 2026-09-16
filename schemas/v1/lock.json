@@ -93,6 +93,15 @@
       "$ref": "#/$defs/Timestamp",
       "description": "When an entry last touched the home."
     },
+    "session": {
+      "description": "The POSIX session that process was in: the lineage the hold belongs to.\n\nWhat a re-entry is measured against, because an actor name is not a writer. Why\nit is the session and not the process group or the recorded pid is argued once,\nin [`crate::runtime::lock`].\n\n`None` for a row written before locks carried a lineage, and on a host that will\nnot say. Both mean the same thing and get the same answer: a row that records no\nlineage refuses nobody.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "taken_at": {
       "$ref": "#/$defs/Timestamp",
       "description": "When the hold began, which a hand-off resets."
