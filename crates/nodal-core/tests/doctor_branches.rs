@@ -163,10 +163,72 @@ fn the_default_rendering_is_loud_about_one_bucket_and_counts_the_other_two() {
     assert!(text.contains("importer/retry"), "{text}");
     assert!(text.contains("orphan"), "{text}");
     assert!(text.contains("gone"), "the upstream that is not there: {text}");
-    assert!(text.contains("1 merged into origin/main"), "{text}");
-    assert!(text.contains("1 unmerged, every commit on a remote"), "{text}");
+    assert!(text.contains("branches merged into origin/main: 1"), "{text}");
+    assert!(text.contains("branches unmerged, every commit on a remote: 1"), "{text}");
     assert!(!text.contains("shipped"), "a safe branch is a count, not a row: {text}");
     assert!(!text.contains("review/api"), "{text}");
+}
+
+/// EV-6, met by the comparison harness. The checkout it read held exactly the pair
+/// Worktrunk leaves behind: `live-wt-0`, whose one commit no remote has, and
+/// `live-wt-2`, which the default branch has not taken and a remote holds every commit
+/// of. `wt remove` removed both directories and kept both branches.
+///
+/// The report then printed one table row saying `UNPUSHED 1` for the first, and under it
+/// `1 unmerged, every commit on a remote`. Both lines are true and they are about
+/// different branches, and nothing in the block said so.
+#[test]
+fn a_bucket_count_cannot_be_read_as_a_second_claim_about_the_row_above_it() {
+    let machine = plant_the_pair_worktrunk_leaves();
+    let audit = machine.audit();
+
+    assert_eq!(one(&audit, "live-wt-0").standing, Standing::Unpushed);
+    assert_eq!(one(&audit, "live-wt-0").unpushed, 1);
+    assert_eq!(one(&audit, "live-wt-2").standing, Standing::OnRemote);
+
+    let text = report(audit, false);
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let row = lines.iter().position(|line| line.starts_with("live-wt-0")).expect("the row");
+    let counted = lines
+        .iter()
+        .position(|line| line.contains("unmerged, every commit on a remote"))
+        .expect("the bucket line");
+    assert!(counted > row, "the bucket line still follows the row it is not about");
+
+    // The line names what it counts before it says how many, so the `1` beside
+    // `live-wt-0` in the UNPUSHED column cannot be read as the same `1`.
+    assert_eq!(
+        lines[counted], "branches unmerged, every commit on a remote: 1",
+        "the whole line, in {text}"
+    );
+    assert!(!text.contains("1 unmerged"), "the reading that contradicted itself: {text}");
+}
+
+/// The two branches `wt remove` leaves in a checkout: one whose commit no remote has,
+/// and one whose commits a remote has and the default branch has not taken.
+fn plant_the_pair_worktrunk_leaves() -> Planted {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = directory.path();
+    let checkout = root.join("code/tallybench");
+    let remote = root.join("remote.git");
+    std::fs::create_dir_all(&checkout).unwrap();
+    git(root, &["init", "--quiet", "--bare", "--initial-branch=main", remote.to_str().unwrap()]);
+    git(&checkout, &["init", "--quiet", "--initial-branch=main", "."]);
+    git(&checkout, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    write(&checkout.join("README.md"), "# tallybench\n");
+    commit(&checkout, "the project");
+    git(&checkout, &["push", "--quiet", "origin", "main"]);
+
+    // The copy that was lived in as unpushed. `wt -y remove` took the directory and
+    // kept the branch.
+    branch(&checkout, "live-wt-0", 1);
+
+    // The copy whose commit was pushed. The remote has it; main has not taken it.
+    branch(&checkout, "live-wt-2", 1);
+    git(&checkout, &["push", "--quiet", "origin", "live-wt-2"]);
+    git(&checkout, &["checkout", "--quiet", "main"]);
+
+    Planted { directory, checkout }
 }
 
 #[test]

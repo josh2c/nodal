@@ -417,12 +417,20 @@ impl Doctor {
     }
 
     /// One safe bucket: a count, and the rows themselves under `--all`.
+    ///
+    /// The line leads with its own subject and ends with the count, and that order is
+    /// the whole of it. Written the other way round — `1 unmerged, every commit on a
+    /// remote` — the line sat under a table whose UNPUSHED column held `1` for the
+    /// branch on the row above, and it read as a second and opposite claim about that
+    /// branch. It was never about that branch: it counts the branches the table did not
+    /// print. A reader who has to know which of two readings a line is, is reading a
+    /// report that contradicts itself.
     fn safe(&self, standing: Standing) -> Vec<Block> {
         let rows = self.branches.bucket(standing);
         if rows.is_empty() {
             return Vec::new();
         }
-        let count = Block::line(format!("{} {}", rows.len(), self.bucket_name(standing)));
+        let count = Block::line(format!("branches {}: {}", self.bucket_name(standing), rows.len()));
         if !self.branches.expand {
             return vec![count];
         }
@@ -660,12 +668,14 @@ mod tests {
         assert!(text.contains("hotfix/logs"), "{text}");
     }
 
-    /// The safe buckets are counts, so that they cannot bury the loud one.
+    /// The safe buckets are counts, so that they cannot bury the loud one. Each count
+    /// names what it counts before it says how many, so that it cannot be read as a
+    /// second claim about the unpushed row above it.
     #[test]
     fn a_branch_whose_commits_are_elsewhere_is_a_count_and_not_a_row() {
         let text = report().doc().to_string();
-        assert!(text.contains("1 merged into origin/main"), "{text}");
-        assert!(text.contains("1 unmerged, every commit on a remote"), "{text}");
+        assert!(text.contains("branches merged into origin/main: 1"), "{text}");
+        assert!(text.contains("branches unmerged, every commit on a remote: 1"), "{text}");
         assert!(!text.contains("shipped"), "a safe branch is not a row by default: {text}");
         assert!(!text.contains("review/api"), "{text}");
     }
@@ -677,7 +687,7 @@ mod tests {
         let text = opened.doc().to_string();
         assert!(text.contains("shipped"), "{text}");
         assert!(text.contains("review/api"), "{text}");
-        assert!(text.contains("1 merged into origin/main"), "the counts stay: {text}");
+        assert!(text.contains("branches merged into origin/main: 1"), "the counts stay: {text}");
         assert!(text.contains("importer/retry"), "and so does the loud bucket: {text}");
     }
 
@@ -695,7 +705,7 @@ mod tests {
         safe.branches.rows.retain(|row| row.standing != Standing::Unpushed);
         let text = safe.doc().to_string();
         assert!(text.contains("no branch holds commits that exist on no remote"), "{text}");
-        assert!(text.contains("1 merged into origin/main"), "{text}");
+        assert!(text.contains("branches merged into origin/main: 1"), "{text}");
     }
 
     #[test]
