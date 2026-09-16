@@ -479,7 +479,12 @@ fn a_reclaimed_units_name_is_free_again_and_the_archived_row_keeps_its_own_ident
     assert!(!again.status.success());
     assert!(stderr(&again).contains("was reclaimed already"), "{}", stderr(&again));
 
-    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    // The comparison harness reads the handle back out of this document, and this is
+    // the document the suffix showed up in: a second `new --name X` after `reclaim X`
+    // answered `worker-import-2` on the branch the archived unit already held.
+    let created = json(&workspace.nodal(&["new", "--name", "worker-import", "--json"]));
+    assert_eq!(created["unit"]["slug"], "worker-import", "the create's own answer: {created}");
+    assert_eq!(created["unit"]["branch"], "nodal/worker-import", "{created}");
 
     let listed = json(&workspace.nodal(&["ls", "--json"]));
     let units = listed["units"].as_array().expect("the list has units");
