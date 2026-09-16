@@ -683,6 +683,68 @@ fn unit_detail_renders_both_ways() {
     both("unit_detail", &detail);
 }
 
+/// EV-5, met by the comparison harness: the harness asked `nodal show <unit> --json`
+/// for `.home` and `.path` and both answered null, and the home turned out to be at
+/// `.unit.environment.home`.
+///
+/// The two top-level keys are not there and never have been; `jq` answers null for a key
+/// a document does not hold, and that is what was read. The document's shape is what the
+/// reading is really about, so it is stated here rather than left to a snapshot a person
+/// can rewrite: the home has one place in this document, and a second one would be a
+/// second answer that can disagree with the first.
+#[test]
+fn the_home_has_one_place_in_the_document_show_answers_with() {
+    let detail = UnitDetail {
+        now: now(),
+        unit: units().swap_remove(0),
+        snapshots: snapshots(),
+        history: history(),
+    };
+    let document: serde_json::Value =
+        serde_json::from_str(&render(&detail, Format::Json).expect("the value encodes"))
+            .expect("the answer is one JSON document");
+
+    let object = document.as_object().expect("a document");
+    for absent in ["home", "path"] {
+        assert!(
+            !object.contains_key(absent),
+            "the document grew a top-level `{absent}`, which is a second place for the home"
+        );
+    }
+
+    let at = paths_named(&document, "home");
+    assert_eq!(at, vec![String::from(".unit.environment.home")], "one place, and this is it");
+}
+
+/// Every path in `document` whose last key is `name`, in the order they are read.
+///
+/// The whole document and not the top of it: a second place for the home anywhere under
+/// here is the thing this is looking for.
+fn paths_named(document: &serde_json::Value, name: &str) -> Vec<String> {
+    fn walk(value: &serde_json::Value, name: &str, at: &str, found: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, inner) in fields {
+                    let here = format!("{at}.{key}");
+                    if key == name {
+                        found.push(here.clone());
+                    }
+                    walk(inner, name, &here, found);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (index, inner) in items.iter().enumerate() {
+                    walk(inner, name, &format!("{at}[{index}]"), found);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    walk(document, name, "", &mut found);
+    found
+}
+
 /// The other shape of a unit: a checkout adopted where it stood, whose objective was
 /// read out of a session record rather than stated, and whose home Nodal must never
 /// move. Every one of those three facts has to be on the page.
