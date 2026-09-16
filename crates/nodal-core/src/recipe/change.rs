@@ -17,10 +17,20 @@
 //! rule every diff uses and the only one that does not report a whole file as changed
 //! when one line is inserted at the top.
 //!
-//! The table that rule is read from costs the product of the two line counts, in time
-//! and in memory. A recipe is tens of lines, so that is tens of thousands of machine
-//! words on the largest one a project writes, and the cheaper algorithms are not worth
-//! their complexity here. This is not a general diff and nothing else calls it.
+//! # Why the subsequence and not a set difference
+//!
+//! Comparing the two line lists as sets of lines gives the same answer as this does on
+//! every recipe whose lines are distinct, and it is a few lines of code. It differs
+//! where a line repeats, which a recipe does: `[commands]`, a blank line and `shared =
+//! []` all appear more than once in a file this renders. A set would report an appended
+//! second `[env]` section as no change at all, because the file already held that line,
+//! and it would report a key that only moved as untouched rather than as the removal and
+//! the addition it is.
+//!
+//! This reading is the warning a person reads before their own file is rewritten, so
+//! every line that goes and every line that arrives has to be in it, counted once each.
+//! The tests below pin both cases. The table the rule is read from costs the product of
+//! the two line counts, which is nothing on a file of tens of lines.
 
 use serde::{Deserialize, Serialize};
 
@@ -156,6 +166,38 @@ mod tests {
         let changed = lines("keep\nold\n", "keep\nnew\n");
         let marks: Vec<char> = changed.iter().map(|change| change.edit.mark()).collect();
         assert_eq!(marks, ['-', '+'], "{changed:?}");
+    }
+
+    /// The first of the two readings a set difference gets wrong. The file already
+    /// holds every line of the appended section, so a set would see no change; each of
+    /// these lines is a line that arrives, and the warning has to say so.
+    #[test]
+    fn a_section_appended_whose_lines_the_file_already_holds_is_reported_as_added() {
+        let before = "[env]\nrequired_local = []\n";
+        let after = "[env]\nrequired_local = []\n[env]\nrequired_local = []\n";
+        let changed = lines(before, after);
+
+        assert_eq!(changed.len(), 2, "both lines of the second section: {changed:?}");
+        assert!(changed.iter().all(|change| change.edit == Edit::Added), "{changed:?}");
+        assert_eq!(changed[0].text, "[env]");
+        assert_eq!(changed[1].text, "required_local = []");
+        assert_eq!((changed[0].at, changed[1].at), (3, 4), "at their place in the new file");
+    }
+
+    /// The second. The key is in both files, so a set would report nothing; it left one
+    /// line and arrived at another, and a person reading the warning has to see both
+    /// halves to know their file changed shape.
+    #[test]
+    fn a_key_that_only_moved_is_reported_as_a_removal_and_an_addition() {
+        let before = "[commands]\nbuild = \"cargo build\"\ntest = \"cargo test\"\n";
+        let after = "[commands]\ntest = \"cargo test\"\nbuild = \"cargo build\"\n";
+        let changed = lines(before, after);
+
+        assert_eq!(changed.len(), 2, "{changed:?}");
+        assert_eq!(changed[0].edit, Edit::Removed);
+        assert_eq!((changed[0].text.as_str(), changed[0].at), ("build = \"cargo build\"", 2));
+        assert_eq!(changed[1].edit, Edit::Added);
+        assert_eq!((changed[1].text.as_str(), changed[1].at), ("build = \"cargo build\"", 3));
     }
 
     #[test]
