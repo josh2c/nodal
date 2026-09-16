@@ -118,12 +118,13 @@ pub const UNIT_LABEL: &str = "nodal.unit";
 /// later, inside its own plan, where the answer decides what to signal.
 #[derive(Debug, Clone, Copy)]
 pub struct Attribution<'a> {
-    /// The unit, which is the identifier a process carries when it is certainly the
-    /// unit's.
-    pub unit: UnitId,
-    /// The process groups the registry recorded for it: a tether, or a group a recipe
-    /// hook left behind.
-    pub groups: &'a [u32],
+    /// The unit, the groups the registry recorded for it, and the wrapper each group
+    /// hangs off.
+    ///
+    /// One value rather than the unit and the groups apart, because it is one value:
+    /// [`scan`] asks it as one, and a second shape here would be a conversion that can
+    /// drop a field the reading needs ([`Own`]).
+    pub own: Own<'a>,
     /// Whether a reclaim would move this home, which is the whole of what decides
     /// whether a bystander blocks.
     ///
@@ -1127,9 +1128,8 @@ fn second_groups(
 /// What is running against this home, at attribution's two levels, with the groups the
 /// registry recorded added to it.
 fn running(asked: Attribution<'_>, home: &Path) -> Runtime {
-    let seen =
-        attributed(Own::of(asked.unit, asked.groups), std::slice::from_ref(&home.to_path_buf()));
-    Runtime { groups: asked.groups.to_vec(), ..seen }
+    let seen = attributed(asked.own, std::slice::from_ref(&home.to_path_buf()));
+    Runtime { groups: asked.own.groups.to_vec(), ..seen }
 }
 
 // ---------------------------------------------------------------------------

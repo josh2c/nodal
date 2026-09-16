@@ -281,7 +281,6 @@ fn read(
     environment: &Environment,
     own: Own<'_>,
 ) -> Result<Assessment> {
-    let groups = own.groups;
     let Some(home) = placed.path() else {
         return Ok(Assessment {
             home: environment.home.clone(),
@@ -305,7 +304,7 @@ fn read(
         dispositions: true,
         // A checkout adopted in place is unregistered and left exactly where it is, so
         // nothing is moved out from under anybody standing in it.
-        runtime: Some(assess::Attribution { unit: own.unit, groups, moves: environment.managed }),
+        runtime: Some(assess::Attribution { own, moves: environment.managed }),
     })
 }
 
