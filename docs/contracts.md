@@ -200,6 +200,12 @@ ignored. Most keys are inferred by `nodal init` from the project's own files; on
 line, and `init` writes each gap as a comment above the empty key it belongs to. Published as
 `schemas/v1/recipe.json`.
 
+`package_manager` takes `pnpm`, `yarn`, `npm`, `bun`, `cargo`, `uv`, `poetry` and `pip`. One per
+ecosystem, chosen from the committed file each manager installs from; `pip` is read from a
+`requirements.txt` and is installed with `pip install -r requirements.txt`. A repository that carries
+an ecosystem's manifest and names no manager for that ecosystem is reported not ready, with the
+manifest and the ecosystem named: nothing would install that half, so no base is warm for it.
+
 `nodal init --force` rewrites a recipe that is already there. It keeps every key the file sets and
 renders the file from the merged recipe, so it writes the template's comments over the ones a person
 wrote. It names every line it takes out and every line it puts in, with the line number of the file

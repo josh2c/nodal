@@ -9,7 +9,25 @@
 //! install writes into the Cargo home, which is outside the tree and shared by every
 //! base on the host, so no file under a Cargo base says whether its dependencies are
 //! fetched. Poetry is the same unless the project asked for the environment in the
-//! project directory. Those are [`State::Unknown`] with the reason, never a guess.
+//! project directory, and `pip` is the same unless the tree holds the environment it
+//! installed into. Those are [`State::Unknown`] with the reason, never a guess.
+//!
+//! # An ecosystem the recipe has no manager for
+//!
+//! A repository may carry a half that the recipe names no manager for: a
+//! `pyproject.toml` with no lockfile, a `package.json` with no lockfile. Nothing
+//! installs that half, so nothing in the tree will ever prove it warm, and a report that
+//! read only the managers the recipe names said nothing about it at all. The base then
+//! handed over a tree that was cold in a way no line named, and a build that needed that
+//! half failed with the tool's own error.
+//!
+//! So the manifests are read as well as the managers ([`Ecosystem::manifests`]), and an
+//! ecosystem a repository has and a recipe has no manager for is reported as what it is.
+//!
+//! The question is put only where the recipe names at least one manager. A recipe that
+//! names none already answers it, in one line about the whole project, and asking again
+//! per ecosystem would put a second line on every project that has not been set up
+//! yet.
 
 use std::path::Path;
 
@@ -35,7 +53,8 @@ pub fn of(recipe: &Recipe, tree: &Path) -> Readiness {
     Readiness { dependencies: dependencies(recipe, tree), build: build(recipe, tree) }
 }
 
-/// Whether every manager the recipe names has left its dependencies in the tree.
+/// Whether every manager the recipe names has left its dependencies in the tree, and
+/// whether the tree holds an ecosystem no manager of it covers.
 fn dependencies(recipe: &Recipe, tree: &Path) -> State {
     if recipe.package_manager.is_empty() {
         return State::Unknown { why: String::from("the project names no package manager") };
@@ -44,7 +63,40 @@ fn dependencies(recipe: &Recipe, tree: &Path) -> State {
         .package_manager
         .iter()
         .map(|manager| installed(*manager, tree))
+        .chain(unmanaged(recipe, tree).into_iter().map(no_manager))
         .fold(State::Ready, State::worse)
+}
+
+/// Every ecosystem the tree holds a manifest for that no manager of the recipe covers.
+///
+/// The manifest is read from the tree and not from the recipe, because the question is
+/// what this working copy has in it.
+fn unmanaged(recipe: &Recipe, tree: &Path) -> Vec<(Ecosystem, &'static str)> {
+    Ecosystem::ALL
+        .iter()
+        .filter(|ecosystem| {
+            !recipe.package_manager.iter().any(|manager| manager.ecosystem() == **ecosystem)
+        })
+        .filter_map(|ecosystem| {
+            let manifest = ecosystem.manifests().iter().find(|name| tree.join(name).exists())?;
+            Some((*ecosystem, *manifest))
+        })
+        .collect()
+}
+
+/// What a report says about an ecosystem nothing would install.
+///
+/// Cold and not unknown: the tree is not ready, and unlike Cargo's cache there is no
+/// reading anywhere that could say otherwise. What a person does about it is add the
+/// manager to `package_manager`, so the line names the key rather than a directory.
+fn no_manager((ecosystem, manifest): (Ecosystem, &'static str)) -> State {
+    State::Cold {
+        why: format!(
+            "{manifest} is there and no manager for this ecosystem is known; \
+             name a {} manager in package_manager",
+            ecosystem.name()
+        ),
+    }
 }
 
 /// Whether one manager has left its dependencies in the tree.
@@ -64,6 +116,18 @@ fn installed(manager: PackageManager, tree: &Path) -> State {
                 why: String::from(
                     "poetry keeps its environment outside the tree unless \
                      virtualenvs.in-project is set",
+                ),
+            }
+        }
+        // pip installs into whichever interpreter is on the path, which is the host's
+        // own unless the tree carries the environment. A tree that carries one answers;
+        // a tree that does not cannot, and saying cold would send a person to install
+        // what may already be installed.
+        Ecosystem::Python if manager == PackageManager::Pip && !tree.join(VENV).is_dir() => {
+            State::Unknown {
+                why: String::from(
+                    "pip installs into the interpreter on the path, and this tree \
+                     holds no .venv to read",
                 ),
             }
         }
@@ -230,5 +294,65 @@ mod tests {
     fn a_project_with_no_package_manager_is_not_reported_as_installed() {
         let state = of(&Recipe::default(), Path::new("/nonexistent")).dependencies;
         assert!(matches!(state, State::Unknown { .. }), "{state:?}");
+    }
+
+    /// A project that names no manager at all keeps its one line about the project, and
+    /// does not get a second one per ecosystem.
+    #[test]
+    fn a_project_that_names_no_manager_is_not_asked_about_each_ecosystem() {
+        let root = tree(&[]);
+        std::fs::write(root.path().join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
+        let state = of(&Recipe::default(), root.path()).dependencies;
+        assert_eq!(state.why(), Some("the project names no package manager"));
+    }
+
+    /// EV-4: the fixture's Python half was a `requirements.txt`, which no value of
+    /// `package_manager` named, so nothing installed it and nothing said so.
+    #[test]
+    fn pip_answers_only_where_the_tree_carries_the_environment_it_installed_into() {
+        let root = tree(&[]);
+        std::fs::write(root.path().join("requirements.txt"), "flask\n").unwrap();
+        let recipe = recipe(&[PackageManager::Pip], None);
+
+        let state = of(&recipe, root.path()).dependencies;
+        assert!(matches!(state, State::Unknown { .. }), "{state:?}");
+        assert!(state.why().unwrap().contains("interpreter on the path"), "{state:?}");
+
+        std::fs::create_dir_all(root.path().join(".venv")).unwrap();
+        assert_eq!(of(&recipe, root.path()).dependencies, State::Ready);
+    }
+
+    /// The other half of EV-4: a half of the repository that no manager covers is named,
+    /// rather than left out of the answer.
+    #[test]
+    fn an_ecosystem_with_a_manifest_and_no_manager_is_named() {
+        let root = tree(&["node_modules"]);
+        std::fs::write(root.path().join("pyproject.toml"), "[project]\nname = \"x\"\n").unwrap();
+
+        let state = of(&recipe(&[PackageManager::Pnpm], None), root.path()).dependencies;
+        assert!(matches!(state, State::Cold { .. }), "the node half is warm: {state:?}");
+        let why = state.why().unwrap();
+        assert!(why.contains("pyproject.toml"), "{why}");
+        assert!(why.contains("no manager for this ecosystem"), "{why}");
+        assert!(why.contains("python"), "{why}");
+    }
+
+    /// A manifest an ecosystem's own manager covers is not reported twice.
+    #[test]
+    fn an_ecosystem_a_manager_covers_is_read_once_and_by_that_manager() {
+        let root = tree(&[".venv"]);
+        std::fs::write(root.path().join("pyproject.toml"), "[project]\nname = \"x\"\n").unwrap();
+        assert_eq!(
+            of(&recipe(&[PackageManager::Uv], None), root.path()).dependencies,
+            State::Ready
+        );
+    }
+
+    /// A repository that names no manager and has no manifest either keeps the answer it
+    /// always had.
+    #[test]
+    fn a_tree_with_no_manifest_and_no_manager_still_says_the_project_names_none() {
+        let state = of(&Recipe::default(), tree(&[]).path()).dependencies;
+        assert_eq!(state.why(), Some("the project names no package manager"));
     }
 }

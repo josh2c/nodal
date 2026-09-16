@@ -809,6 +809,16 @@ fn remove(path: &Path) -> Result<()> {
 /// updating its dependencies must still build.
 #[must_use]
 pub fn install_argv(manager: PackageManager) -> Vec<String> {
+    // The one manager that installs from a file it has to be handed. Every other one
+    // reads its own manifest out of the directory it is started in.
+    if manager == PackageManager::Pip {
+        return vec![
+            manager.program().to_owned(),
+            String::from("install"),
+            String::from("-r"),
+            String::from(PIP_REQUIREMENTS),
+        ];
+    }
     let verb = match manager {
         PackageManager::Cargo => "fetch",
         PackageManager::Uv => "sync",
@@ -816,10 +826,16 @@ pub fn install_argv(manager: PackageManager) -> Vec<String> {
         | PackageManager::Yarn
         | PackageManager::Npm
         | PackageManager::Bun
+        | PackageManager::Pip
         | PackageManager::Poetry => "install",
     };
     vec![manager.program().to_owned(), verb.to_owned()]
 }
+
+/// The file `pip` is handed. The same name the recipe reads `pip` out of
+/// (`crate::recipe::infer::package_manager`), so the file that says the manager is
+/// there is the file it installs from.
+pub const PIP_REQUIREMENTS: &str = "requirements.txt";
 
 /// The project's build command as an argument list, when a warm build was asked for.
 #[must_use]
@@ -866,6 +882,11 @@ mod tests {
         assert_eq!(install_argv(PackageManager::Pnpm), ["pnpm", "install"]);
         assert_eq!(install_argv(PackageManager::Cargo), ["cargo", "fetch"]);
         assert_eq!(install_argv(PackageManager::Uv), ["uv", "sync"]);
+        assert_eq!(
+            install_argv(PackageManager::Pip),
+            ["pip", "install", "-r", "requirements.txt"],
+            "pip is handed the file it installs from"
+        );
     }
 
     #[test]

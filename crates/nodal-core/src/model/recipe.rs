@@ -77,6 +77,14 @@ pub enum PackageManager {
     Uv,
     /// `poetry`.
     Poetry,
+    /// `pip`, which installs from a `requirements.txt`.
+    ///
+    /// The one manager here that writes no lockfile. A repository whose Python half is a
+    /// `requirements.txt` and nothing else had no value to name, so a base could install
+    /// no part of it and a warm build that needed the interpreter failed. What `pip`
+    /// installs from is committed and is the file CI installs from, which is the
+    /// evidence every other value here is chosen on.
+    Pip,
 }
 
 /// The dependency tree a package manager writes.
@@ -95,6 +103,35 @@ pub enum Ecosystem {
     Python,
 }
 
+impl Ecosystem {
+    /// Every ecosystem, so that a reader can ask about the ones a recipe left out.
+    pub const ALL: &'static [Self] = &[Self::Node, Self::Rust, Self::Python];
+
+    /// The committed files that say a repository has this ecosystem in it.
+    ///
+    /// A manifest and not a lockfile: the question these answer is "is there a half of
+    /// this repository here", which a repository answers whether or not it pins its
+    /// dependencies. A table, because it is a list of names and nothing else.
+    #[must_use]
+    pub const fn manifests(self) -> &'static [&'static str] {
+        match self {
+            Self::Node => &["package.json"],
+            Self::Rust => &["Cargo.toml"],
+            Self::Python => &["pyproject.toml", "requirements.txt", "setup.py"],
+        }
+    }
+
+    /// What this ecosystem is called in a report.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Rust => "rust",
+            Self::Python => "python",
+        }
+    }
+}
+
 impl PackageManager {
     /// Which dependency tree this manager writes.
     #[must_use]
@@ -102,7 +139,7 @@ impl PackageManager {
         match self {
             Self::Pnpm | Self::Yarn | Self::Npm | Self::Bun => Ecosystem::Node,
             Self::Cargo => Ecosystem::Rust,
-            Self::Uv | Self::Poetry => Ecosystem::Python,
+            Self::Uv | Self::Poetry | Self::Pip => Ecosystem::Python,
         }
     }
 
@@ -127,6 +164,7 @@ impl PackageManager {
             Self::Cargo => "cargo",
             Self::Uv => "uv",
             Self::Poetry => "poetry",
+            Self::Pip => "pip",
         }
     }
 }
@@ -137,10 +175,10 @@ impl PackageManager {
 /// two spellings exist on the way in and nowhere else.
 ///
 /// **Why a visitor and not an untagged enum.** An untagged enum answers a value it
-/// cannot read with the name of its own type: `pip` in the list made `data did not
-/// match any variant of untagged enum OneOrMany`, which names neither the key, nor the
-/// word that was wrong, nor the words that are right. A person reading that has to read
-/// this program's source to fix their own file.
+/// cannot read with the name of its own type: a word this list does not hold made `data
+/// did not match any variant of untagged enum OneOrMany`, which names neither the key,
+/// nor the word that was wrong, nor the words that are right. A person reading that has
+/// to read this program's source to fix their own file.
 ///
 /// The visitor below reads the two shapes and hands each word to
 /// [`PackageManager`]'s own reader, which holds the list of managers already. So the

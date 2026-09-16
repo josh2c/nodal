@@ -1,13 +1,16 @@
 //! Which package managers the project installs with, and the version it pins.
 //!
-//! The lockfile is the evidence: it is committed, it is the file CI installs from, and
-//! it names exactly one manager. A repository of one ecosystem carries one; a repository
-//! of a Rust binary, a Node CLI and a Python tool carries three, and every one of them
-//! has to be installed or the base is warm for a third of the tree.
+//! The file a manager installs from is the evidence: it is committed, it is the file CI
+//! installs from, and it names exactly one manager. A repository of one ecosystem
+//! carries one; a repository of a Rust binary, a Node CLI and a Python tool carries
+//! three, and every one of them has to be installed or the base is warm for a third of
+//! the tree.
 //!
-//! So every lockfile present is proposed, in the order below. The order is the order of
+//! So every such file present is proposed, in the order below. The order is the order of
 //! specificity inside an ecosystem, so a repository that carries both a `pnpm-lock.yaml`
-//! and a `package-lock.json` still installs with the one its own tooling would use.
+//! and a `package-lock.json` still installs with the one its own tooling would use. A
+//! `requirements.txt` is last of the Python three, because it is the file a repository
+//! that pins nothing still has.
 //!
 //! **Which of them is the primary is a second question, and the recipe answers it.** The
 //! primary is the manager a bare script name resolves against, so it is the manager that
@@ -23,8 +26,8 @@
 use crate::model::recipe::{Ecosystem, PackageManager, Recipe, ToolVersion};
 use crate::recipe::infer::{Confidence, Project, Proposal};
 
-/// The lockfile each package manager writes, most specific first.
-const LOCKFILES: &[(&str, PackageManager)] = &[
+/// The committed file each package manager installs from, most specific first.
+const INSTALLS_FROM: &[(&str, PackageManager)] = &[
     ("pnpm-lock.yaml", PackageManager::Pnpm),
     ("yarn.lock", PackageManager::Yarn),
     ("package-lock.json", PackageManager::Npm),
@@ -32,6 +35,7 @@ const LOCKFILES: &[(&str, PackageManager)] = &[
     ("Cargo.lock", PackageManager::Cargo),
     ("uv.lock", PackageManager::Uv),
     ("poetry.lock", PackageManager::Poetry),
+    ("requirements.txt", PackageManager::Pip),
 ];
 
 /// The `package.json` field that names the manager the repository is driven by.
@@ -39,15 +43,17 @@ const PIN: &str = "packageManager";
 
 /// Propose `package_manager` and `package_manager_pin`.
 ///
-/// One manager per ecosystem. Two lockfiles of one ecosystem are a repository mid-way
+/// One manager per ecosystem. Two such files of one ecosystem are a repository mid-way
 /// through changing manager, and installing with both would write two dependency trees
-/// over each other, so the more specific one wins and the other is not proposed.
+/// over each other, so the more specific one wins and the other is not proposed. A
+/// `uv.lock` beside a `requirements.txt` is that case: uv is what the repository pins
+/// with, and the requirements file is what it exports.
 #[must_use]
 pub fn infer(project: &Project, _so_far: &Recipe) -> Proposal {
     let mut proposal = Proposal::default();
     let mut ecosystems: Vec<Ecosystem> = Vec::new();
-    for (lockfile, manager) in LOCKFILES {
-        if !project.exists(lockfile) || ecosystems.contains(&manager.ecosystem()) {
+    for (installs_from, manager) in INSTALLS_FROM {
+        if !project.exists(installs_from) || ecosystems.contains(&manager.ecosystem()) {
             continue;
         }
         ecosystems.push(manager.ecosystem());

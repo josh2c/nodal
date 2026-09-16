@@ -49,9 +49,10 @@ impl fmt::Display for Part {
 pub enum State {
     /// A file in the tree proves the part is there.
     Ready,
-    /// A file that should be there is not.
+    /// A file that should be there is not, or nothing the recipe names would put it
+    /// there.
     Cold {
-        /// What is missing, and which tool would make it.
+        /// What is missing, and which tool would make it, or that no tool would.
         why: String,
     },
     /// Nothing in the tree can answer, and nothing here will run a tool to find out.
