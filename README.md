@@ -71,10 +71,29 @@ work that exists nowhere else.
 
 ## Install
 
-Rust 1.88 or later.
+Two routes. Both give the same program. `nodal --version` prints the version you got.
+`CHANGELOG.md` says what each version does.
+
+**Download one file.** Each release attaches one file for each platform, and a `.sha256`
+file beside it. You need no clone and no Rust toolchain.
 
 ```sh
-cargo install --git https://github.com/josh2c/nodal nodal-cli
+version=0.1.0-rc.1
+target=x86_64-unknown-linux-gnu                     # or aarch64-apple-darwin
+base=https://github.com/josh2c/nodal/releases/download/v$version
+curl -LO "$base/nodal-$version-$target"
+curl -LO "$base/nodal-$version-$target.sha256"
+shasum -a 256 -c "nodal-$version-$target.sha256"
+chmod +x "nodal-$version-$target"
+mv "nodal-$version-$target" ~/.local/bin/nodal
+nodal --version
+```
+
+**Build from source.** Rust 1.88 or later. This needs no clone either.
+
+```sh
+cargo install --git https://github.com/josh2c/nodal nodal-cli                    # the current main
+cargo install --git https://github.com/josh2c/nodal --tag v0.1.0-rc.1 nodal-cli  # one named version
 ```
 
 Then, for `nodal cd` to move the shell you are in:

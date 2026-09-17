@@ -3,6 +3,8 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -50,7 +52,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: ci/commit-messages.sh ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
       - name: no commit pushed to main holds a trailer line
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref_type == 'branch'
         run: ci/commit-messages.sh --no-merges ${{ github.event.before }}..${{ github.sha }}
 
   acceptance-recipe:
@@ -346,6 +348,14 @@ jobs:
       - name: the fixture infers with zero gaps and builds inside its budget
         run: ci/acceptance-fixture.sh
 
+  acceptance-release:
+    name: acceptance (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: one version number, in every place a person reads it
+        run: ci/acceptance-release.sh
+
   measure:
     name: measure (ceilings)
     runs-on: ubuntu-latest
@@ -406,10 +416,20 @@ jobs:
         with: { targets: "${{ matrix.target }}" }
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked --target ${{ matrix.target }} -p nodal-cli
+      - name: give the file the name a person downloads, and hash it
+        id: artifact
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          name=nodal-$version-${{ matrix.target }}
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/nodal "dist/$name"
+          (cd dist && shasum -a 256 "$name" > "$name.sha256")
+          cat "dist/$name.sha256"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
-          name: nodal-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/nodal
+          name: ${{ steps.artifact.outputs.name }}
+          path: dist/
           if-no-files-found: error
 
   acceptance:
@@ -428,11 +448,62 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: nodal-${{ matrix.target }}
+          pattern: nodal-*-${{ matrix.target }}
           path: artifact
-      - run: chmod +x artifact/nodal
-      - name: nodal --version from the release artifact
-        run: ci/acceptance-version.sh artifact/nodal
+          merge-multiple: true
+      - name: the downloaded file matches its hash and reports the version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          name=nodal-$version-${{ matrix.target }}
+          (cd artifact && shasum -a 256 -c "$name.sha256")
+          chmod +x "artifact/$name"
+          ci/acceptance-version.sh "artifact/$name" "$version"
+
+  # A tag push is the only event that publishes. Every other event builds the same files
+  # and checks the same hashes, so the step below is the one part a pull request cannot
+  # exercise.
+  publish:
+    name: publish (tag)
+    needs: [acceptance]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nodal-*
+          path: dist
+          merge-multiple: true
+      - name: every file matches the hash beside it
+        run: |
+          ls -l dist
+          (cd dist && for sum in *.sha256; do shasum -a 256 -c "$sum"; done)
+      - name: create the release from the tag and attach the files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          manifest=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "$version" != "$manifest" ]; then
+            echo "publish: tag $GITHUB_REF_NAME does not match manifest version $manifest" >&2
+            exit 1
+          fi
+          awk -v want="## $version" '
+            index($0, want) == 1 { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "publish: CHANGELOG.md has no section for $version" >&2; exit 1; }
+          case "$version" in
+            *-*) prerelease=--prerelease ;;
+            *) prerelease= ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            $prerelease
 
 # Returning with the task that creates what it checks: the second half of the safety
 # suite (database and per-unit services), which needs a container daemon of its own.
