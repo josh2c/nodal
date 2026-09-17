@@ -1342,20 +1342,12 @@ mod tests {
         // And an undated reading is not evidence either.
         assert!(asked(&[Wrapper { pid, started_at: None }]), "an undated reading is not evidence");
 
-        // What the wrapper started is its own too, while the wrapper is the one read.
-        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-        let started = crate::runtime::processes::Running::new(child.id(), BTreeMap::new())
-            .in_directory(&home)
-            .running("git");
-        let carried = [Wrapper { pid, started_at: Some(started_at) }];
-        let vouched = !bystander(
-            &started,
-            Own::of(unit, &[]).and_wrappers(&carried),
-            std::slice::from_ref(&home),
-            &[],
-        );
-        let _ = child.kill();
-        let _ = child.wait();
+        // What the wrapper started is its own too, while the wrapper is the one read. The
+        // process that started this test stands in for the wrapper, and this test for the
+        // process it started.
+        let parent = crate::runtime::processes::parent_of(pid).unwrap();
+        let carried = [Wrapper { pid: parent, started_at: super::started_at(parent) }];
+        let vouched = !asked(&carried);
         assert!(vouched, "a process the wrapper started is not a stranger");
     }
 
