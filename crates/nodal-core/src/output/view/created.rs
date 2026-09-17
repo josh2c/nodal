@@ -9,6 +9,7 @@ use crate::model::{EnvName, Environment, Manifest, Missing, Origin, Timestamp, U
 use crate::output::Render;
 use crate::output::human::{Block, Doc, Field, NONE};
 use crate::output::view::unit::{self, EnvLine, UnitRow};
+use crate::substrate::tools::Pinned;
 use crate::workspace::tracked::Kept;
 
 /// How a unit came to be, which is the one thing its report cannot work out for itself.
@@ -68,6 +69,14 @@ pub struct Created {
     /// is about to work in.
     #[serde(default = "unmeasured")]
     pub readiness: Readiness,
+    /// Every tool the project pins, with what this host answered about it.
+    ///
+    /// A reading and never a refusal ([`crate::substrate::tools`]). The pin was recorded
+    /// by `nodal init` and nothing compared it to anything until this line existed, so a
+    /// person on a host two major versions away from the pin was told nothing at the one
+    /// moment they were about to start work in a new home.
+    #[serde(default)]
+    pub toolchain: Vec<Pinned>,
 }
 
 /// What a report carries when nothing measured the home: neither part answered.
@@ -117,7 +126,19 @@ impl Created {
             kept: Vec::new(),
             stand_ins: stand_ins_of(manifest),
             readiness: unmeasured(),
+            toolchain: Vec::new(),
         }
+    }
+
+    /// The same report, with this host asked about every tool the project pins.
+    ///
+    /// A builder for the reason [`Self::ready`] is one: the reading is taken by the
+    /// caller that holds the recipe, and it costs a process per pinned tool, so a caller
+    /// that has no recipe to hand takes no reading and prints no line.
+    #[must_use]
+    pub fn pinning(mut self, toolchain: Vec<Pinned>) -> Self {
+        self.toolchain = toolchain;
+        self
     }
 
     /// The same report, with the home asked what its tools left in it.
@@ -172,6 +193,11 @@ impl Render for Created {
             if let Some(why) = state.why() {
                 fields.push(Field::new("not ready", format!("{part}: {why}")));
             }
+        }
+        // One line per pinned tool. The pin was already in the recipe and the host was
+        // never asked, which is the whole of what this line changes.
+        for pinned in &self.toolchain {
+            fields.push(Field::new("toolchain", pinned.line()));
         }
         let mut doc = Doc::from_iter([Block::fields(fields)]);
         // An adoption ends with a sentence, not with a column. The field above is read

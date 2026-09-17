@@ -40,6 +40,7 @@ use nodal_core::output::{Format, Render, render, watch};
 use nodal_core::recipe::change;
 use nodal_core::recipe::gap::{Gap, GapKey};
 use nodal_core::runtime::attribute::{Attributed, Confidence, Kind, Note, Source};
+use nodal_core::substrate::tools::{Answer, Pinned};
 use nodal_core::workspace::tracked::Kept;
 
 // ---------------------------------------------------------------- fixed values
@@ -603,8 +604,60 @@ fn a_created_unit_renders_both_ways() {
                 why: String::from("a `pnpm` build names no output directory this can check"),
             },
         },
+        // The three answers a pin gets, so the snapshot holds each of them: the host
+        // answered, the program is absent, and nothing here answers for the tool.
+        toolchain: vec![
+            Pinned {
+                tool: ToolName::parse("node").expect("a tool name"),
+                pin: ToolVersion::parse("20").expect("a tool version"),
+                host: Answer::Host { version: String::from("v20.11.1") },
+            },
+            Pinned {
+                tool: ToolName::parse("cargo.rust").expect("a tool name"),
+                pin: ToolVersion::parse("1.85").expect("a tool version"),
+                host: Answer::NotChecked { why: String::from("rustc is not on the path") },
+            },
+            Pinned {
+                tool: ToolName::parse("asdf").expect("a tool name"),
+                pin: ToolVersion::parse("0.14.0").expect("a tool version"),
+                host: Answer::NotChecked { why: String::from("no program here answers for asdf") },
+            },
+        ],
     };
     both("created", &created);
+}
+
+/// The pin was in the recipe from the first day and nothing ever said what the host had.
+/// One line per pinned tool says both, and says `not checked` where no tool answers
+/// rather than guessing agreement in either direction.
+#[test]
+fn every_pinned_tool_gets_a_line_with_the_pin_and_what_the_host_answered() {
+    let pinned = vec![
+        Pinned {
+            tool: ToolName::parse("node").expect("a tool name"),
+            pin: ToolVersion::parse("20").expect("a tool version"),
+            host: Answer::Host { version: String::from("v18.19.0") },
+        },
+        Pinned {
+            tool: ToolName::parse("cargo.rust").expect("a tool name"),
+            pin: ToolVersion::parse("1.85").expect("a tool version"),
+            host: Answer::NotChecked { why: String::from("rustc is not on the path") },
+        },
+    ];
+    let created = Created {
+        now: now(),
+        arrival: Arrival::Created,
+        unit: units().swap_remove(0),
+        missing: Vec::new(),
+        kept: Vec::new(),
+        stand_ins: Vec::new(),
+        readiness: Readiness { dependencies: State::Ready, build: State::Ready },
+        toolchain: pinned,
+    };
+    let lines = render(&created, Format::Human).expect("the value renders");
+    assert!(lines.contains("node: pinned 20, host v18.19.0"), "{lines}");
+    assert!(lines.contains("cargo.rust: pinned 1.85, not checked: rustc is not on the path"));
+    assert!(!lines.contains("refuse"), "a pin reading never refuses: {lines}");
 }
 
 /// What `nodal adopt --in-place` answers with.
@@ -627,6 +680,7 @@ fn an_adopted_unit_closes_with_a_summary_of_what_happened() {
         kept: Vec::new(),
         stand_ins: Vec::new(),
         readiness: Readiness { dependencies: State::Ready, build: State::Ready },
+        toolchain: Vec::new(),
     };
     both("created_adopted", &adopted);
 }
@@ -643,6 +697,7 @@ fn an_adoption_with_nothing_missing_still_says_what_it_did() {
         kept: Vec::new(),
         stand_ins: Vec::new(),
         readiness: Readiness { dependencies: State::Ready, build: State::Ready },
+        toolchain: Vec::new(),
     };
     both("created_adopted_complete", &adopted);
 }
@@ -679,6 +734,7 @@ fn unit_detail_renders_both_ways() {
         unit: units().swap_remove(0),
         snapshots: snapshots(),
         history: history(),
+        toolchain: Vec::new(),
     };
     both("unit_detail", &detail);
 }
@@ -698,6 +754,7 @@ fn the_home_has_one_place_in_the_document_show_answers_with() {
         unit: units().swap_remove(0),
         snapshots: snapshots(),
         history: history(),
+        toolchain: Vec::new(),
     };
     let document: serde_json::Value =
         serde_json::from_str(&render(&detail, Format::Json).expect("the value encodes"))
@@ -754,7 +811,13 @@ fn the_detail_of_an_adopted_unit_says_it_is_one() {
         environment.managed = false;
         environment.home = PathBuf::from("/home/j/code/app/.claude/worktrees/payroll");
     }
-    let detail = UnitDetail { now: now(), unit, snapshots: Vec::new(), history: Vec::new() };
+    let detail = UnitDetail {
+        now: now(),
+        unit,
+        snapshots: Vec::new(),
+        history: Vec::new(),
+        toolchain: Vec::new(),
+    };
     both("unit_detail_adopted", &detail);
 }
 

@@ -502,7 +502,7 @@ fn a_list_says_why_a_home_was_not_measured_and_a_detail_measures_it() {
     assert_eq!(listed, Disk::Unmeasured { why: Unmeasured::NotAsked });
 
     let unit = units::get(fixture.store.conn(), fixture.units["ahead"].0).unwrap().unwrap();
-    let detail = show::detail(fixture.store.conn(), list, &unit).unwrap();
+    let detail = show::detail(fixture.store.conn(), list, &unit, Vec::new()).unwrap();
     let measured = detail.unit.environment.as_ref().unwrap().disk.clone();
 
     let Disk::Measured { bytes } = measured else { panic!("a detail did not measure the home") };

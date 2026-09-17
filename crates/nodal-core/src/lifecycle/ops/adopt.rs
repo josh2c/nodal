@@ -198,7 +198,12 @@ pub fn adopt(
     let created =
         Created::of(&params.unit, &new::read_back(store, environment)?, arrival, Timestamp::now())?;
     let readiness = crate::substrate::warmth::of(&params.recipe, &params.environment.home);
-    Ok(created.keeping(done.outputs.read(new::MATERIALIZE)?.unwrap_or_default()).ready(readiness))
+    let pinned =
+        crate::substrate::tools::readings(&params.recipe, &crate::substrate::build::ThisHost);
+    Ok(created
+        .keeping(done.outputs.read(new::MATERIALIZE)?.unwrap_or_default())
+        .ready(readiness)
+        .pinning(pinned))
 }
 
 /// Adopt every worktree of the project, one at a time, through the ordinary adopt path.

@@ -206,6 +206,13 @@ ecosystem, chosen from the committed file each manager installs from; `pip` is r
 ecosystem is reported not ready, with the manifest and the ecosystem named: nothing would install
 that half, so no base is warm for it.
 
+**A pin in `[toolchain]` is reported and never enforced.** `nodal new`, `nodal adopt` and
+`nodal show` print one line for each tool the recipe pins: the tool, the pin, and what
+`<program> --version` answered on this host. Where no program here answers for the tool, and
+where the program is not on the path, the line says `not checked` with the reason. No command
+refuses over a pin in this table and no command selects a version from it. The one place a pin
+is acted on is the package-manager pin, which a base build runs the install at.
+
 **A base build never installs into the host.** `uv` and Poetry make their own environment; `pip` does
 not, so a base build makes one for it. The build runs `python3 -m venv .venv` as its own step and then
 runs `.venv/bin/pip install -r requirements.txt`, and a host with neither `python3` nor `python` is

@@ -73,7 +73,8 @@ use crate::output::view::{Arrival, Created};
 use crate::paths;
 use crate::services::ports;
 use crate::store::{Store, environments, events, projects, units};
-use crate::substrate::{self, Reporter, warmth};
+use crate::substrate::build::ThisHost;
+use crate::substrate::{self, Reporter, tools, warmth};
 use crate::workspace::relocate::{CacheRelocator, InvalidateCache};
 use crate::workspace::sharing::Sharing;
 use crate::workspace::{Excludes, Materializer, home, relocate, remove, select_backend, tracked};
@@ -250,7 +251,11 @@ pub fn create(
         Timestamp::now(),
     )?;
     let readiness = warmth::of(&params.recipe, &params.environment.home);
-    Ok(created.keeping(done.outputs.read(MATERIALIZE)?.unwrap_or_default()).ready(readiness))
+    let pinned = tools::readings(&params.recipe, &ThisHost);
+    Ok(created
+        .keeping(done.outputs.read(MATERIALIZE)?.unwrap_or_default())
+        .ready(readiness)
+        .pinning(pinned))
 }
 
 /// The unit home `start` is in, and whose it is, when the registry agrees that it is
