@@ -209,14 +209,19 @@ fn commit_line(group: &CommitGroup) -> String {
             .collect::<Vec<String>>(),
         group.count,
     );
-    let means = if group.copies.survives() {
-        "removing this home does not lose it"
+    // The clause belongs to a row a reclaim would keep: it says the two ways a remote
+    // goes unproved, which is not a question a row that survives the reclaim leaves
+    // open. It is the same clause a refusal prints, from the same value, so a person who
+    // reads the preflight and then the refusal is given one account of one reading. The
+    // sentence and the clause are read off one branch, so the two cannot disagree.
+    let (means, because) = if group.copies.survives() {
+        ("removing this home does not lose it", String::new())
     } else {
-        "a reclaim keeps this home"
+        (
+            "a reclaim keeps this home",
+            group.copies.witness().map(Witness::because).unwrap_or_default(),
+        )
     };
-    // The same clause a refusal prints, from the same value, so a person who reads the
-    // preflight and then the refusal is given one account of one reading.
-    let because = group.copies.witness().map(Witness::because).unwrap_or_default();
     format!("{} ({}): {sample} — {means}{because}", group.copies.label(), group.count)
 }
 
@@ -403,6 +408,36 @@ mod tests {
         }
         assert!(lines.contains("removing this home does not lose it"), "{lines}");
         assert!(lines.contains("a reclaim keeps this home"), "{lines}");
+    }
+
+    /// The clause that names what a reading does not reach belongs to a row a reclaim
+    /// would keep. On a proved row it tells a person the remote does not have the work
+    /// the same line just said the remote has.
+    #[test]
+    fn a_row_that_survives_the_reclaim_does_not_say_the_reading_misses_it() {
+        let by = vec![PathBuf::from("/w/project")];
+        let line = |copies| {
+            let mut assessment = clear();
+            assessment.commits.push(CommitGroup {
+                copies,
+                count: 1,
+                sample: vec![crate::git::Oid::parse(&"ab".repeat(20)).unwrap()],
+            });
+            preflight(assessment).doc().lines().join("\n")
+        };
+
+        let proved = line(Copies::RemoteProved { witness: Witness::Checked { by: by.clone() } });
+        assert!(proved.contains("proved on the remote"), "{proved}");
+        assert!(!proved.contains("does not reach them"), "{proved}");
+
+        let only_here = line(Copies::OnlyHere { witness: Witness::Checked { by } });
+        assert!(only_here.contains("does not reach them"), "{only_here}");
+
+        let not_checked = line(Copies::NotChecked { witness: Witness::Unchecked });
+        assert!(
+            not_checked.contains("nothing here read the remote to check them"),
+            "{not_checked}"
+        );
     }
 
     /// The bytes are apparent and the line says so. A person clearing a disk who reads
