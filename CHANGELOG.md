@@ -3,7 +3,13 @@
 This file records what each release of Nodal lets a person do, and what it refuses.
 One line per behaviour. Versions follow [semantic versioning](https://semver.org).
 
-## Unreleased
+## 0.1.0-rc.2 — 2026-09-17
+
+### Read
+
+- macOS reads the process table, so `nodal ls`, `nodal ps` and `nodal reclaim --check`
+  name the unit a process belongs to. Where macOS refuses the variables or the directory
+  of a process, the reading gives a note with the reason.
 
 ### What refuses
 
