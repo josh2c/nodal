@@ -1246,20 +1246,25 @@ A project whose checkout sits directly in a home directory is the widest case th
 parent is then the home directory itself. Two levels is what keeps that bounded. There is no way to turn
 the walk off.
 
-A repository counts only where a ref of its own reaches the commit, proved by `git rev-list` run in
-that repository. Two readings a person might expect to count do not.
+A repository counts only where a ref of its own reaches the commit. `git rev-list` run in that
+repository proves it. Two readings a person might expect to count do not.
 
-A name never counts: a clone that was `reflog expire`d and garbage collected keeps refs over objects it
-no longer has, and a reading that believed the name would call a home safe over the only copy of its
-work.
+A name never counts. A clone that was `reflog expire`d and garbage collected keeps refs over objects it
+no longer has. A reading that believed the name would call a home safe over the only copy of its work.
 
-An object under no ref never counts either. A commit fetched by identifier, a commit a deleted branch
-left behind, and a commit `git fetch <url> HEAD` wrote are all in the object store and under no name,
-and `git gc` in that repository removes them. A reading that counted them called a home safe because a
-second copy existed, and one `git gc --prune=now` next door took the second copy away. The refs that
-count are every ref under `refs/` — branches, tags, the stash and Nodal's own `refs/nodal/*` records —
-and a detached `HEAD`. A repository's own remote-tracking refs count for this and only for this: they
-prove that the repository holds the commit, and they never prove that the remote still does.
+An object under no ref never counts either. Three shapes reach an object store without a name:
+
+- a commit fetched by identifier;
+- a commit a deleted branch left behind;
+- a commit `git fetch <url> HEAD` wrote.
+
+`git gc` in that repository removes all three. A reading that counted them called a home safe over a
+copy one ordinary command takes away.
+
+The refs that count are every ref under `refs/`. That is branches, tags, the stash and Nodal's own
+`refs/nodal/*` records. A detached `HEAD` counts too, because a checked-out commit is a real copy. A
+repository's own remote-tracking refs count for this and for nothing else. They prove that the
+repository holds the commit. They never prove that the remote still holds it.
 
 A store that cannot be opened or read proves nothing, which leaves the stricter answer standing.
 

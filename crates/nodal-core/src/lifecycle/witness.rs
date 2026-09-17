@@ -222,7 +222,7 @@ pub struct Checkout {
     evidence: Evidence,
     /// The grouping name of its `origin`, `None` when it has none to read.
     origin: Option<String>,
-    /// The commits of its own tips that its object store really holds ([`holds`]).
+    /// The commits of its own tips that its object store really holds ([`stored`]).
     ///
     /// Empty is a fact about the store and never a reading that failed: a failure is in
     /// `evidence.unreadable` instead.
@@ -251,7 +251,7 @@ impl Checkout {
         let mut held = Vec::new();
         if evidence.unreadable.is_none() && !evidence.shallow {
             origin = named(&path);
-            match holds(&path, &evidence.tips) {
+            match stored(&path, &evidence.tips) {
                 Ok(found) => held = found,
                 Err(why) => evidence.unreadable = Some(why.to_string()),
             }
@@ -400,7 +400,7 @@ fn witness(
 ///
 /// # Errors
 /// [`crate::Error::Git`] when `rev-list` failed.
-fn holds(repo: &Path, tips: &[Oid]) -> Result<Vec<Oid>> {
+fn stored(repo: &Path, tips: &[Oid]) -> Result<Vec<Oid>> {
     Git::at(repo).stores(tips)
 }
 

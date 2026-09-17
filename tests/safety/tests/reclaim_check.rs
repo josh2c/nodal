@@ -43,6 +43,7 @@
 //! | an only copy is named as one | `a_commit_nothing_else_has_is_reported_as_only_here` |
 //! | a second copy here is not a remote proof | `a_commit_on_a_sibling_branch_is_a_second_local_copy` |
 //! | an object no ref reaches is no second copy | `a_commit_a_sibling_has_under_no_ref_is_only_here` |
+//! | a ref reaches through its ancestry too | `a_sibling_branch_reaches_the_commits_behind_its_tip` |
 //! | collecting garbage moves no verdict | `garbage_collection_in_a_sibling_moves_no_verdict` |
 //! | a current reading is a remote proof | `a_commit_a_current_reading_reaches_is_proved_on_the_remote` |
 //! | an older, partial or unread witness proves nothing | `a_witness_that_cannot_answer_leaves_the_commits_not_checked` |
@@ -281,7 +282,7 @@ fn a_commit_on_a_sibling_branch_is_a_second_local_copy() {
 
 /// The commit is in a sibling's object store and no ref of that sibling reaches it.
 ///
-/// This is the reading the third proof found. `git fetch <url> HEAD` writes the objects
+/// This is the reading that made a home look safe. `git fetch <url> HEAD` writes the objects
 /// and `FETCH_HEAD`, and `FETCH_HEAD` is no ref: the commit is there and it is what the
 /// next `git gc` in that repository removes. A second copy one ordinary command takes
 /// away is no second copy, so the answer is `only_here` and the reclaim refuses.
@@ -327,6 +328,43 @@ fn garbage_collection_in_a_sibling_moves_no_verdict() {
     let after = check(&machine, SLUG);
     assert_eq!(before["commits"], after["commits"], "the collection moved the reading");
     assert_eq!(count(commits(&after, "only_here")), 1, "{after:#}");
+
+    reclaim_also_refuses(&machine, SLUG, "commits no current reading proves a remote has (1)");
+    intact(&machine, &home, &tip);
+}
+
+/// A ref reaches a commit through its ancestry, and that is a second copy as well.
+///
+/// Every other property here puts the sibling's ref on the commit the reading asks
+/// about. This one does not, so the exclusion side of the reading has to walk. The
+/// sibling names the tip alone. The two commits behind it are reached only by going back
+/// through that tip. A reading that stopped at the ref targets would call those two the
+/// only copy, and refuse over work a second repository has.
+#[test]
+fn a_sibling_branch_reaches_the_commits_behind_its_tip() {
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    let mut made = Vec::new();
+    for number in 1..=3 {
+        std::fs::write(home.join(ONLY), format!("the copy, written {number} times\n")).unwrap();
+        git(&home, &["add", "--all"]);
+        git(&home, &["commit", "--quiet", "--message", &format!("work number {number}")]);
+        made.push(git(&home, &["rev-parse", "HEAD"]));
+    }
+    let beside = sibling(&machine);
+    let tip = made[2].clone();
+    git(&beside, &["fetch", "--quiet", home.to_str().unwrap(), &format!("{tip}:refs/heads/copy")]);
+    assert_eq!(git(&beside, &["rev-parse", "refs/heads/copy"]), tip, "the ref names the tip");
+
+    let answer = check(&machine, SLUG);
+    assert_safe(&answer);
+    assert_eq!(count(commits(&answer, "second_local_copy")), 3, "{answer:#}");
+    assert_eq!(count(commits(&answer, "only_here")), 0, "{answer:#}");
+    let group = commits(&answer, "second_local_copy").unwrap();
+    assert_eq!(&group["copies"]["held_by"], &resolved(&beside));
+    let sample = group["sample"].as_array().expect("the group names what it found");
+    let listed: Vec<&str> = sample.iter().filter_map(Value::as_str).collect();
+    assert!(listed.contains(&made[0].as_str()), "the oldest commit is behind the tip: {answer:#}");
     intact(&machine, &home, &tip);
 }
 

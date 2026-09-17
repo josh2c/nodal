@@ -183,14 +183,14 @@ fn confirmed(subject: &Subject, witnesses: &[&Subject]) -> Vec<Oid> {
     for witness in witnesses {
         let git = Git::at(&witness.path);
         let theirs: Vec<Oid> = witness.evidence.remotes.iter().map(|tip| tip.oid.clone()).collect();
-        let Ok(held) = git.stores(&mine) else {
+        let Ok(stored) = git.stores(&mine) else {
             continue;
         };
-        let Ok(gone) = git.among_outside(&held, &theirs) else {
+        let Ok(gone) = git.among_outside(&stored, &theirs) else {
             continue;
         };
         let gone: BTreeSet<Oid> = gone.into_iter().collect();
-        return held.into_iter().filter(|oid| !gone.contains(oid)).collect();
+        return stored.into_iter().filter(|oid| !gone.contains(oid)).collect();
     }
     Vec::new()
 }

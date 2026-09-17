@@ -21,18 +21,18 @@
 //! repository by `git fetch <url> HEAD` all sit in the object store under no name. A
 //! reading that counted them called a unit home safe to remove because a second copy
 //! existed, and one `git gc --prune=now` in that other repository, which touches nothing
-//! else, took the second copy away. The third proof measured that: three units went from
-//! safe to refuse over a command that changed no work.
+//! else, took the second copy away. That was measured: one such collection moved three
+//! units from safe to refuse, over a command that changed no work.
 //!
 //! So `--not --all` is the exclusion, and `--all` is every ref under `refs/` plus `HEAD`.
 //! That covers branches, tags, the stash and Nodal's own `refs/nodal/*` records, and it
 //! covers a detached `HEAD`, which is a checked-out commit and a real copy.
 //!
-//! A repository's own `refs/remotes/*` is inside `--all` as well, and that is not the
-//! reading PR 63 refuses. A remote-tracking ref of a third repository may not prove that
-//! the *remote* still holds a commit. It does prove that the third repository holds the
-//! commit, because the objects behind it are in that repository's store and that store
-//! is what survives the removal.
+//! A repository's own `refs/remotes/*` is inside `--all` as well, and that is a
+//! different reading from the one this module refuses at the top. A remote-tracking ref
+//! of a third repository may not prove that the *remote* still holds a commit. It does
+//! prove that the third repository holds the commit. The objects behind it are in that
+//! repository's store, and that store is what survives the removal.
 //!
 //! Nothing here writes. `rev-list` reads objects, and the facade runs it with
 //! `GIT_OPTIONAL_LOCKS=0`.
