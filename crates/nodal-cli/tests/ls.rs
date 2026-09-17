@@ -140,16 +140,6 @@ impl Fixture {
     }
 }
 
-/// Whether this host publishes a process table, and a word about it when it does not.
-///
-/// The same seam `crates/nodal-cli/tests/ps.rs` uses. Who is attached to a unit is read
-/// from `/proc`, so on a host without one the answer is a note under the table and every
-/// session cell is empty. That is the right answer, not a failure, and the assertions
-/// about it say which host they are making a claim about.
-fn has_proc() -> bool {
-    cfg!(target_os = "linux")
-}
-
 /// Record one unit and the home it is materialised in.
 fn record(store: &Store, project: &Project, slug: &str, index: usize, home: &Path) {
     let row = rows::Row { index, slug, branch: slug, home, host: rows::host() };
@@ -172,27 +162,28 @@ fn the_list_has_one_row_per_unit_and_says_what_merging_each_would_do() {
     assert!(text.contains("MAIN"), "{text}");
 }
 
+/// What the process table withholds is said under the table, with the reason.
+///
+/// This stays a host split. A Linux scan leaves out a process this account may not read,
+/// so the list has nothing to say. macOS refuses the processes of other accounts and the
+/// variables of a restricted binary, and a runner always has both, so the list says so.
 #[test]
-fn a_host_that_cannot_read_its_process_table_says_so_under_the_table() {
+fn what_the_process_table_withholds_is_said_under_the_table() {
     let fixture = Fixture::new();
     let text = fixture.text(&["ls"]);
     let answer = fixture.answer();
     let notes: Vec<&str> =
         answer["notes"].as_array().unwrap().iter().map(|note| note.as_str().unwrap()).collect();
 
-    if has_proc() {
-        assert!(notes.is_empty(), "a host with /proc has nothing to report: {notes:?}");
+    if !cfg!(target_os = "macos") {
+        assert!(notes.is_empty(), "a Linux scan has nothing to report: {notes:?}");
         return;
     }
-    let note = notes.first().expect("a host without /proc says it could not see");
-    assert!(note.starts_with("who: "), "{note}");
-    assert!(text.contains(note), "the note is under the table:\n{text}");
-    let empty = answer["units"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|row| row["sessions"].as_array().unwrap().is_empty());
-    assert!(empty, "no session is claimed on a host that cannot see one");
+    assert!(!notes.is_empty(), "macos withholds some processes, and the list says so");
+    for note in notes {
+        assert!(note.starts_with("who: ") && note.contains("macos"), "{note}");
+        assert!(text.contains(note), "the note is under the table:\n{text}");
+    }
 }
 
 #[test]

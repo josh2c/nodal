@@ -5,11 +5,13 @@
   "notes": [
     {
       "signal": "environment",
-      "why": "a process scan reads /proc, which macos does not have"
+      "why": "a process scan reads /proc, which macos does not have",
+      "reach": "unread"
     },
     {
       "signal": "cwd",
-      "why": "a process scan reads /proc, which macos does not have"
+      "why": "a process scan reads /proc, which macos does not have",
+      "reach": "unread"
     }
   ]
 }

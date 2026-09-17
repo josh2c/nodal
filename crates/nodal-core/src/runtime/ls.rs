@@ -81,7 +81,7 @@ use crate::output::view::{
 };
 use crate::paths;
 use crate::runtime::processes::{Processes, Running};
-use crate::runtime::{sessions, stop};
+use crate::runtime::{attribute, sessions, stop};
 use crate::store::sessions as session_rows;
 
 /// Every unit of a project, with what Git and the process table say about each.
@@ -491,6 +491,10 @@ fn scan(processes: &dyn Processes, homes: &[Placed<'_>], notices: &mut Vec<Notic
             return Seen::default();
         }
     };
+    let mut whys: Vec<String> =
+        attribute::withheld(&running).into_iter().map(|note| note.why).collect();
+    whys.dedup();
+    notices.extend(whys.into_iter().map(|why| Notice::general(format!("who: {why}"))));
     let mut seen = Seen { attached: attached(&running, notices), ..Seen::default() };
     let spared = stop::spared();
     for process in &running {

@@ -521,6 +521,7 @@ fn seen(
     let mut standing = Vec::new();
     match Processes::scan(&crate::runtime::processes::Live) {
         Ok(running) => {
+            notes.extend(crate::runtime::attribute::withheld(&running));
             let spared = stop::spared();
             for process in running {
                 if names_a_gone_unit(&process, gone) {

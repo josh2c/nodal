@@ -96,8 +96,10 @@ impl Render for Preflight {
         for note in &self.assessment.notes {
             doc.push(Block::line(note.clone()));
         }
-        for note in self.assessment.runtime.iter().flat_map(|runtime| &runtime.notes) {
-            doc.push(Block::line(format!("{}: {}", note.signal.label(), note.why)));
+        if let Some(runtime) = &self.assessment.runtime {
+            for line in super::ps::note_lines(&runtime.notes) {
+                doc.push(Block::line(line));
+            }
         }
         doc.push(Block::line(String::from("this command changed nothing")));
         doc
@@ -281,7 +283,7 @@ pub(super) fn counted(
 
 /// Whether one signal went unread.
 fn unread(notes: &[Note], signal: Source) -> bool {
-    notes.iter().any(|note| note.signal == signal)
+    notes.iter().any(|note| note.unread(signal))
 }
 
 /// The first [`NAMED`] of these, and how many of `total` were not named.

@@ -14,10 +14,8 @@
 //! Both levels are real processes, started against a real unit, because the property is
 //! about what a signal reaches and a table a test wrote reaches nothing.
 //!
-//! The scan reads `/proc`, which macOS does not have, so the four tests that need it say
-//! which claim they are not making rather than passing quietly. The one that does not is
-//! the control: what it asserts is that a tether is stopped, and `kill` answers for a
-//! process on every host.
+//! Both hosts read the process table, so every test here asserts on both. The control
+//! asserts that a tether is stopped, which `kill` answers for without a scan.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
@@ -27,7 +25,7 @@ use std::process::Stdio;
 use nodal_core::model::EnvId;
 use nodal_core::store::{environments, projects, sessions, units};
 use nodal_safety::process::{alive, wait_for};
-use nodal_safety::{InState as _, Machine, answer, platform, process, stderr};
+use nodal_safety::{InState as _, Machine, answer, process, stderr};
 
 /// The unit every test here reclaims.
 const UNIT: &str = "worker-import";
@@ -86,9 +84,6 @@ fn tether(machine: &Machine, home: &Path, record: &Path) -> process::Owned {
 /// command and process, and the home stays where it is.
 #[test]
 fn a_bystander_standing_in_the_home_survives_a_reclaim_and_is_named() {
-    if !platform::reads_process_table("a reclaim reports what only stands in the home") {
-        return;
-    }
     let machine = Machine::new();
     let home = machine.unit(UNIT);
     let outside = tempfile::TempDir::new().unwrap();
@@ -117,9 +112,6 @@ fn a_bystander_standing_in_the_home_survives_a_reclaim_and_is_named() {
 /// `--force` is an ordinary reclaim of it. That is the one thing a person does next.
 #[test]
 fn a_refused_reclaim_is_recoverable_by_the_route_the_refusal_names() {
-    if !platform::reads_process_table("a refusal over a bystander is recoverable") {
-        return;
-    }
     let machine = Machine::new();
     let home = machine.unit(UNIT);
     let bystander = process::standing_in(&home);
@@ -140,9 +132,6 @@ fn a_refused_reclaim_is_recoverable_by_the_route_the_refusal_names() {
 /// gives.
 #[test]
 fn a_forced_reclaim_moves_the_home_and_still_leaves_the_bystander_running() {
-    if !platform::reads_process_table("a forced reclaim reports what it did not signal") {
-        return;
-    }
     let machine = Machine::new();
     let home = machine.unit(UNIT);
     let bystander = process::standing_in(&home);
@@ -172,7 +161,7 @@ fn a_reclaim_with_no_bystander_stops_its_tether_and_takes_the_home() {
     let outside = tempfile::TempDir::new().unwrap();
     let tethered = tether(&machine, &home, &outside.path().join("tethered"));
 
-    let reclaimed = platform::reclaim(|args| machine.nodal(args), &["reclaim", UNIT]);
+    let reclaimed = machine.nodal(&["reclaim", UNIT]);
 
     assert!(reclaimed.status.success(), "{}", stderr(&reclaimed));
     wait_for("the tether to go", || !alive(tethered.pid()));
@@ -188,9 +177,6 @@ fn a_reclaim_with_no_bystander_stops_its_tether_and_takes_the_home() {
 /// sweep watches both names a reclaimed home has.
 #[test]
 fn a_sweep_reports_a_process_standing_in_a_reclaimed_home_and_signals_nothing() {
-    if !platform::reads_process_table("a sweep reports what only stands in a reclaimed home") {
-        return;
-    }
     let machine = Machine::new();
     let home = machine.unit(UNIT);
     let bystander = process::standing_in(&home);

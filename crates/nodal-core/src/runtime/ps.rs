@@ -90,7 +90,10 @@ pub fn observe(
 /// certain answer and the probable one are missing, not that "something" is.
 fn table(processes: &dyn Processes) -> (Vec<Running>, Vec<Note>) {
     match processes.scan() {
-        Ok(running) => (running, Vec::new()),
+        Ok(running) => {
+            let notes = super::attribute::withheld(&running);
+            (running, notes)
+        }
         Err(error) => {
             let why = error.to_string();
             (

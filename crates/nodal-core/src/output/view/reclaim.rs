@@ -155,8 +155,8 @@ impl Render for Reclaimed {
             fields.push(Field::new("remove", crate::output::view::adopt::removal_command(path)));
         }
         let mut doc = Doc::from_iter([Block::fields(fields)]);
-        for note in &self.notes {
-            doc.push(Block::line(format!("{}: {}", note.signal.label(), note.why)));
+        for line in super::ps::note_lines(&self.notes) {
+            doc.push(Block::line(line));
         }
         doc
     }
@@ -382,9 +382,7 @@ impl Render for Swept {
         if !self.leftovers.is_empty() {
             blocks.push(Block::table(self.leftovers_table()));
         }
-        for note in &self.notes {
-            blocks.push(Block::line(format!("{}: {}", note.signal.label(), note.why)));
-        }
+        blocks.extend(super::ps::note_lines(&self.notes).into_iter().map(Block::line));
         Doc::from_iter(blocks)
     }
 }

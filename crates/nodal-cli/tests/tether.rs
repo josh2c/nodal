@@ -36,8 +36,7 @@ use std::process::{Command, Output, Stdio};
 
 use nodal_core::model::{EnvId, EnvState, Session, Timestamp};
 use nodal_core::store::{environments, projects, sessions, units};
-use nodal_safety::platform;
-use nodal_safety::process::{Owned, alive, wait_for};
+use nodal_safety::process::{Owned, alive, readable_sleep, wait_for};
 use nodal_safety::{InState as _, Workspace};
 
 /// Adopt each process the product started that this test is about, so that a failed
@@ -130,12 +129,9 @@ fn assert_ok(output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).unwrap()
 }
 
-/// Reclaim a unit with `--json`, the way this host allows ([`platform::reclaim`]).
-///
-/// On a host with no process table the first reclaim refuses before it stops anything,
-/// so the reclaim with `--force` is the one that stops the tether and reports it.
+/// Reclaim a unit with `--json`.
 fn reclaim(workspace: &Workspace, slug: &str) -> Output {
-    platform::reclaim(|args| workspace.nodal(args), &["reclaim", slug, "--json"])
+    workspace.nodal(&["reclaim", slug, "--json"])
 }
 
 /// Insist that the report names this group, and only it, as asked.
@@ -320,7 +316,8 @@ fn a_tether_outlives_the_nodal_run_that_started_it_and_is_still_stopped() {
 fn the_tether_wrapper_is_the_units_own_and_does_not_block_the_unit_it_tethers() {
     let workspace = workspace();
     let (home, environment) = workspace.unit_home("tethered");
-    let mut command = workspace.quiet(&["run", "--tether", "sleep", "600"], &home);
+    let sleep = readable_sleep();
+    let mut command = workspace.quiet(&["run", "--tether", sleep.to_str().unwrap(), "600"], &home);
     let mut run = Owned::spawn(&mut command);
     // The `nodal run` process itself, which is the wrapper this test is about.
     let wrapper = run.pid();
@@ -348,11 +345,7 @@ fn the_tether_wrapper_is_the_units_own_and_does_not_block_the_unit_it_tethers() 
         .collect();
     assert!(groups.contains(&u64::from(group)), "the recorded group is named: {report}");
 
-    if can_see_processes() {
-        assert_read(report_ref(&report), wrapper, commanded);
-    } else {
-        assert_unread(report_ref(&report));
-    }
+    assert_read(report_ref(&report), wrapper, commanded);
 
     // The list says the same word over the same process, because it reads the same
     // registry rows. A list that read only the process table would call the wrapper a
@@ -392,7 +385,7 @@ fn listed(runtime: &serde_json::Value, list: &str) -> Vec<u64> {
         .collect()
 }
 
-/// What a host that can read its process table says about the wrapper.
+/// What the check says about the wrapper.
 ///
 /// The wrapper is vouched for by the group it started and is signalled by nothing. A
 /// reclaim reaches the group as a group, and the wrapper ends when the group it is
@@ -417,24 +410,6 @@ fn assert_read(runtime: &serde_json::Value, wrapper: u32, commanded: u32) {
     );
 }
 
-/// What a host with no process table says: "I could not look", which is a different
-/// answer from "nothing is there". Claiming the wrapper was owned here would be a claim
-/// this host did not earn.
-fn assert_unread(runtime: &serde_json::Value) {
-    assert!(listed(runtime, "processes").is_empty(), "nothing was read: {runtime}");
-    assert!(listed(runtime, "bystanders").is_empty(), "and nothing stands: {runtime}");
-    let notes = runtime["notes"].as_array().unwrap();
-    assert!(
-        notes.iter().any(|note| note["signal"] == "environment"),
-        "the note says which signal went unread: {runtime}"
-    );
-}
-
-/// Whether this host can see the processes a unit is running.
-fn can_see_processes() -> bool {
-    cfg!(target_os = "linux")
-}
-
 // ---------------------------------------------------------------------------
 // What the tether does not touch.
 // ---------------------------------------------------------------------------
@@ -451,8 +426,12 @@ fn an_untethered_process_in_the_home_is_stopped_by_attribution_and_not_by_the_te
     let (home, environment) = workspace.unit_home("mixed");
     let plain = workspace.scratch("plain.pid");
     let script = workspace.scratch("plain.sh");
-    std::fs::write(&script, format!("sleep 600 & printf '%s\\n' \"$!\" > {}\n", plain.display()))
-        .unwrap();
+    let sleep = readable_sleep();
+    std::fs::write(
+        &script,
+        format!("'{}' 600 & printf '%s\\n' \"$!\" > {}\n", sleep.display(), plain.display()),
+    )
+    .unwrap();
 
     // Untethered: it runs in this test's own process group, and only the identifier it
     // carries says which unit it is in.
@@ -475,16 +454,11 @@ fn an_untethered_process_in_the_home_is_stopped_by_attribution_and_not_by_the_te
     let report = json(&reclaim(&workspace, "mixed"));
     wait_for("the nodal run to finish", || run.exited());
     assert_asked_group(&report, group);
-    if cfg!(target_os = "linux") {
-        assert!(
-            targets(&report, "asked", "process").contains(&u64::from(untethered[0])),
-            "attribution stopped it as one process: {report}"
-        );
-        wait_for("the untethered process to go", || !alive(untethered[0]));
-    }
-    // A host with no process table attributed nothing, so the untethered process is still
-    // running. It is not signalled here: the backstop above holds it and ends it when this
-    // test does, by a number it can still prove is the one it took.
+    assert!(
+        targets(&report, "asked", "process").contains(&u64::from(untethered[0])),
+        "attribution stopped it as one process: {report}"
+    );
+    wait_for("the untethered process to go", || !alive(untethered[0]));
     wait_for("the tether to go", || !alive(group));
 }
 

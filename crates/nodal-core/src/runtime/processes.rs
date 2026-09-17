@@ -8,20 +8,24 @@
 //! and no shell has to be wrapped.
 //!
 //! [`Processes`] is the seam, so that a test supplies a table instead of a machine.
-//! [`Live`] is the one implementation: on Linux it reads `/proc/<pid>`.
+//! [`Live`] is the one implementation: on Linux it reads `/proc/<pid>`, and on macOS it
+//! asks the kernel through `libproc` and `sysctl`.
 //!
-//! **macOS is not implemented, deliberately.** The reading there is
-//! `sysctl(KERN_PROCARGS2)`, which is not `/proc` under another name: it returns one
-//! packed buffer per process whose layout is undocumented and has changed between
-//! releases, it is refused for another user's processes, and on a hardened or
-//! System-Integrity-Protected binary it is refused for the caller's own. Nothing in that
-//! list can be established from a Linux workstation, and a process scan is what sessions
-//! and attribution are both built on: shipping a version that has never run on the
-//! hardware would put a guess under two features. So a scan on macOS returns
-//! [`Error::ProcessScanUnsupported`](crate::Error::ProcessScanUnsupported), the typed
-//! error, and `nodal ps` prints it as a note. The machine reports "I cannot see", which
-//! is a different answer from "nobody is attached", and the other signals still answer.
-//! The implementation lands with the Mac.
+//! **What macOS refuses.** Two readings are refused, and a scan says so rather than
+//! leaving the process out without a word ([`Withheld`]):
+//!
+//! - A process of another account. `proc_pidinfo` and `KERN_PROCARGS2` answer `EPERM`,
+//!   so its variables, its working directory and its command are not known. Its
+//!   identifier, its group and its session are still readable.
+//! - A process of this account that runs a restricted binary, which the kernel marks
+//!   `CS_RESTRICT`. `KERN_PROCARGS2` gives its command, and zeroes its variables. Most
+//!   programs under `/bin` and `/usr/bin` are marked, `/bin/zsh` among them, so a shell
+//!   in a home is found by its directory and never by its `NODAL_ID`.
+//!
+//! The layout of the `KERN_PROCARGS2` buffer is not documented by Apple. It is the one
+//! `ps` reads: the argument count, the program's path, padding, the arguments and the
+//! variables, each ended by a zero byte. A buffer that does not have this shape gives no
+//! command and no variables, and never a guess.
 //!
 //! A scan keeps three things about a process, and each answers one question:
 //!
@@ -32,7 +36,9 @@
 //! - a short form of its command, so a person reading `nodal ps` recognises the row.
 //!
 //! Everything else a process carries is read and dropped. A process this account cannot
-//! read contributes nothing rather than failing the scan.
+//! read contributes nothing to the three on either host. On Linux it is left out of the
+//! scan. On macOS it is kept with what was withheld, so that a reader can say how much
+//! it could not see.
 //!
 //! The command is deliberately short, and not the command line. A command line can hold
 //! a credential — `psql postgres://user:password@host/db` — and Nodal writes no secret
@@ -42,9 +48,8 @@
 //! option does not. Both parts are cut to a column's width, because a command line is
 //! written by whatever started the process and its length is not Nodal's to trust.
 //!
-//! The reading itself is in the [`linux`] module, because `/proc` is the only source
-//! there is; that module is what grows a second host, rather than this file growing a
-//! second set of conditions.
+//! The reading itself is in the `linux` and `macos` modules, one per host, over the one
+//! list of variables a scan keeps ([`kept`]).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -63,13 +68,29 @@ pub struct Running {
     pub cwd: Option<PathBuf>,
     /// A short form of its command, when the table has one.
     pub command: Option<String>,
+    /// What the host refused to show about it, `None` where nothing was refused.
+    pub withheld: Option<Withheld>,
+}
+
+/// What the host refused to show about one process, and so what a reader cannot know.
+///
+/// Only macOS sets this. A Linux scan leaves out a process whose `/proc` entry this
+/// account may not read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Withheld {
+    /// The process belongs to another account. Its variables, its working directory and
+    /// its command are refused.
+    AnotherAccount,
+    /// The process runs a restricted binary. Its working directory and its command are
+    /// shown, and its variables are not.
+    Restricted,
 }
 
 impl Running {
     /// A process known by its variables alone, which is what a test supplies.
     #[must_use]
     pub fn new(pid: u32, vars: BTreeMap<String, String>) -> Self {
-        Self { pid, vars, cwd: None, command: None }
+        Self { pid, vars, cwd: None, command: None, withheld: None }
     }
 
     /// The same process, standing in `cwd`.
@@ -83,6 +104,13 @@ impl Running {
     #[must_use]
     pub fn running(mut self, command: impl Into<String>) -> Self {
         self.command = Some(command.into());
+        self
+    }
+
+    /// The same process, with what the host refused to show about it.
+    #[must_use]
+    pub const fn withholding(mut self, withheld: Withheld) -> Self {
+        self.withheld = Some(withheld);
         self
     }
 
@@ -168,12 +196,19 @@ impl Processes for Live {
     ///
     /// Each process is dated as well as found, from the same two files, so a caller can
     /// tell a hold's own process from a later one wearing its number.
+    ///
+    /// On macOS the kernel dates a process of this account. A process of another account
+    /// is found and not dated, which [`Presence::Running`] states as `started_at: None`.
     fn presences(&self, pids: &[u32]) -> Result<BTreeMap<u32, Presence>> {
         #[cfg(target_os = "linux")]
         {
             Ok(linux::presences(pids))
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::presences(pids)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = pids;
             Err(crate::Error::ProcessScanUnsupported { host: std::env::consts::OS })
@@ -186,7 +221,12 @@ fn scan_this_host() -> Result<Vec<Running>> {
     linux::scan()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn scan_this_host() -> Result<Vec<Running>> {
+    macos::scan()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn scan_this_host() -> Result<Vec<Running>> {
     Err(crate::Error::ProcessScanUnsupported { host: std::env::consts::OS })
 }
@@ -203,7 +243,11 @@ pub fn parent_of(pid: u32) -> Option<u32> {
     {
         linux::parent_of(pid)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::parent_of(pid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = pid;
         None
@@ -246,7 +290,11 @@ pub fn session_is_live(sid: u32) -> Option<bool> {
     {
         linux::session_is_live(std::path::Path::new(linux::PROC), sid)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::session_is_live(sid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = sid;
         None
@@ -269,21 +317,13 @@ pub fn session_is_live_in(table: &std::path::Path, sid: u32) -> Option<bool> {
 }
 
 /// Reading the process table of a Linux host, which publishes it as `/proc`.
-///
-/// Everything a `/proc` scan needs is here, including which variables it keeps: a host
-/// with another source keeps the same three things, so the day macOS arrives this
-/// becomes two modules over one list rather than one module under two conditions.
 #[cfg(target_os = "linux")]
 mod linux {
     use std::collections::BTreeMap;
     use std::path::Path;
 
-    use super::{Presence, Running, Timestamp, command_of};
-    use crate::runtime::actor;
+    use super::{Presence, Running, Timestamp, command_of, kept};
     use crate::{Error, Result};
-
-    /// The prefix of every variable a home's identity is written with.
-    const PREFIX: &str = "NODAL_";
 
     /// Where the kernel publishes the process table.
     pub(super) const PROC: &str = "/proc";
@@ -329,7 +369,7 @@ mod linux {
         }
         let command =
             std::fs::read(directory.join(CMDLINE)).ok().and_then(|line| command_of(&line));
-        Some(Running { pid, vars, cwd, command })
+        Some(Running { pid, vars, cwd, command, withheld: None })
     }
 
     /// The file that holds one process's own statistics, including when it started.
@@ -477,49 +517,338 @@ mod linux {
         let answered = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
         answered.max(1)
     }
+}
 
-    /// Whether a variable is one a scan keeps.
-    fn is_kept(name: &str) -> bool {
-        name.starts_with(PREFIX) || actor::signal_names().contains(&name)
+/// Reading the process table of a macOS host, which the kernel answers per process.
+///
+/// Three calls, and each gives one of the three things a scan keeps: `proc_listallpids`
+/// lists the identifiers, `proc_pidinfo` with `PROC_PIDVNODEPATHINFO` gives the working
+/// directory, and `sysctl` with `KERN_PROCARGS2` gives the command and the variables.
+/// `csops` says whether the kernel zeroed the variables of a restricted binary, so that
+/// an empty block is not read as a process that carries nothing.
+#[cfg(target_os = "macos")]
+mod macos {
+    use std::collections::BTreeMap;
+    use std::ffi::{CStr, OsStr, c_int};
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::path::PathBuf;
+
+    use super::{Presence, Running, Timestamp, Withheld, command_of, kept};
+    use crate::{Error, Result};
+
+    unsafe extern "C" {
+        /// The code-signing status of a process, from `<sys/codesign.h>`. The `libc`
+        /// crate does not declare it.
+        fn csops(pid: libc::pid_t, ops: u32, useraddr: *mut libc::c_void, size: usize) -> c_int;
     }
 
-    /// The kept variables of one `environ` blob, which is name=value records separated
-    /// by a zero byte.
-    fn kept(environ: &[u8]) -> BTreeMap<String, String> {
-        environ
-            .split(|byte| *byte == 0)
-            .filter_map(|record| std::str::from_utf8(record).ok())
-            .filter_map(|record| record.split_once('='))
-            .filter(|(name, _)| is_kept(name))
-            .map(|(name, value)| (name.to_owned(), value.to_owned()))
-            .collect()
+    /// The `csops` operation that reads the status flags of a process.
+    const CS_OPS_STATUS: u32 = 0;
+
+    /// The status flag of a restricted binary, whose variables `KERN_PROCARGS2` zeroes.
+    const CS_RESTRICT: u32 = 0x800;
+
+    /// How many more identifiers the listing has room for than the count said. A process
+    /// that starts between the count and the listing then still fits.
+    const SLACK: usize = 64;
+
+    /// Every process this host lists, with what this account may read about it.
+    pub(super) fn scan() -> Result<Vec<Running>> {
+        let mut buffer = vec![0_u8; argument_limit()?];
+        Ok(pids()?.into_iter().filter_map(|pid| read(pid, &mut buffer)).collect())
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::kept;
-
-        #[test]
-        fn a_scan_keeps_the_nodal_set_and_drops_the_rest() {
-            let environ =
-                b"NODAL_ID=01ARZ3NDEKTSV4RRFFQ69G5FAV\0USER=josh\0AWS_SECRET_ACCESS_KEY=x\0";
-            let vars = kept(environ);
-            assert_eq!(
-                vars.get("NODAL_ID").map(String::as_str),
-                Some("01ARZ3NDEKTSV4RRFFQ69G5FAV")
-            );
-            assert_eq!(vars.get("USER").map(String::as_str), Some("josh"));
-            assert!(
-                !vars.contains_key("AWS_SECRET_ACCESS_KEY"),
-                "a scan kept a value it was not asked for"
-            );
+    /// One process, or nothing when it ended during the scan or shows nothing to read.
+    fn read(pid: libc::pid_t, buffer: &mut [u8]) -> Option<Running> {
+        let pid_number = u32::try_from(pid).ok()?;
+        let cwd = match directory(pid) {
+            Ok(cwd) => cwd,
+            Err(Unanswered::AnotherAccount) => {
+                let hidden = Running::new(pid_number, BTreeMap::new());
+                return Some(hidden.withholding(Withheld::AnotherAccount));
+            }
+            Err(Unanswered::Gone) => return None,
+        };
+        let (command, environ) = arguments(pid, buffer).unwrap_or((None, &[]));
+        let restricted = is_restricted(pid);
+        let vars = if restricted { BTreeMap::new() } else { kept(environ) };
+        if vars.is_empty() && cwd.is_none() && !restricted {
+            return None;
         }
+        Some(Running {
+            pid: pid_number,
+            vars,
+            cwd,
+            command,
+            withheld: restricted.then_some(Withheld::Restricted),
+        })
+    }
 
-        #[test]
-        fn a_record_that_is_not_text_is_skipped_rather_than_failing() {
-            assert!(kept(b"\xff\xfe=x\0").is_empty());
+    /// Why the kernel gave no working directory for a process.
+    enum Unanswered {
+        /// The process belongs to another account.
+        AnotherAccount,
+        /// The process ended, or it has no working directory to give.
+        Gone,
+    }
+
+    /// Every identifier the kernel lists, without the kernel's own zero.
+    fn pids() -> Result<Vec<libc::pid_t>> {
+        // SAFETY: a null buffer of size zero asks for the count alone, and nothing is
+        // written.
+        let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+        let count = usize::try_from(count).map_err(|_| failed("proc_listallpids"))?;
+        let mut pids: Vec<libc::pid_t> = vec![0; count + SLACK];
+        let bytes = c_int::try_from(std::mem::size_of_val(pids.as_slice()))
+            .map_err(|_| failed("proc_listallpids"))?;
+        // SAFETY: `pids` is `bytes` bytes of `pid_t`, and the kernel writes at most that
+        // many. The answer is how many identifiers it wrote.
+        let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+        let listed = usize::try_from(listed).map_err(|_| failed("proc_listallpids"))?;
+        pids.truncate(listed);
+        pids.retain(|pid| *pid > 0);
+        Ok(pids)
+    }
+
+    /// The working directory of a process, `Ok(None)` where it has none.
+    fn directory(pid: libc::pid_t) -> std::result::Result<Option<PathBuf>, Unanswered> {
+        // SAFETY: `proc_vnodepathinfo` is plain integers and byte arrays, so all zeroes is
+        // a valid value of it.
+        let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+        let size = size_of::<libc::proc_vnodepathinfo>();
+        // SAFETY: `info` is `size` bytes, and the kernel writes at most that many. The
+        // answer is the number of bytes written, or zero with `errno` set.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDVNODEPATHINFO,
+                0,
+                (&raw mut info).cast(),
+                c_int::try_from(size).unwrap_or(0),
+            )
+        };
+        if usize::try_from(written).ok() != Some(size) {
+            let refused = std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+            return Err(if refused { Unanswered::AnotherAccount } else { Unanswered::Gone });
+        }
+        // SAFETY: the path is `[[c_char; 32]; 32]`, which is 1024 bytes in one block. The
+        // kernel ends it with a zero byte, and `from_bytes_until_nul` stops at the first
+        // one or refuses a block that has none.
+        let bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(info.pvi_cdir.vip_path.as_ptr().cast(), 32 * 32) };
+        let path = CStr::from_bytes_until_nul(bytes).map(CStr::to_bytes).unwrap_or_default();
+        Ok((!path.is_empty()).then(|| PathBuf::from(OsStr::from_bytes(path))))
+    }
+
+    /// The size of the largest argument block the kernel gives, which `KERN_PROCARGS2`
+    /// needs as its buffer.
+    fn argument_limit() -> Result<usize> {
+        let mut limit: c_int = 0;
+        let mut size = size_of::<c_int>();
+        let mut name = [libc::CTL_KERN, libc::KERN_ARGMAX];
+        // SAFETY: `limit` is `size` bytes, the kernel writes one `c_int` into it, and no
+        // new value is set.
+        let answered = unsafe {
+            libc::sysctl(
+                name.as_mut_ptr(),
+                2,
+                (&raw mut limit).cast(),
+                &raw mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if answered != 0 {
+            return Err(failed("kern.argmax"));
+        }
+        usize::try_from(limit).map_err(|_| failed("kern.argmax"))
+    }
+
+    /// The short command and the variable block of a process, `None` where the kernel
+    /// refuses the reading.
+    fn arguments(pid: libc::pid_t, buffer: &mut [u8]) -> Option<(Option<String>, &[u8])> {
+        let mut size = buffer.len();
+        let mut name = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+        // SAFETY: `buffer` is `size` bytes, the kernel writes at most that many and sets
+        // `size` to the count, and no new value is set.
+        let answered = unsafe {
+            libc::sysctl(
+                name.as_mut_ptr(),
+                3,
+                buffer.as_mut_ptr().cast(),
+                &raw mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if answered != 0 {
+            return None;
+        }
+        let (argv, environ) = super::split_procargs(buffer.get(..size)?)?;
+        Some((command_of(argv), environ))
+    }
+
+    /// Whether the kernel marks this process as a restricted binary. A process whose
+    /// status cannot be read is not called restricted, and its variables are read.
+    fn is_restricted(pid: libc::pid_t) -> bool {
+        let mut flags: u32 = 0;
+        // SAFETY: `flags` is four bytes, `CS_OPS_STATUS` writes one `u32`, and the size
+        // passed is the size of `flags`.
+        let answered =
+            unsafe { csops(pid, CS_OPS_STATUS, (&raw mut flags).cast(), size_of::<u32>()) };
+        answered == 0 && flags & CS_RESTRICT != 0
+    }
+
+    /// What the kernel says about each of these identifiers, dated where it will.
+    pub(super) fn presences(pids: &[u32]) -> Result<BTreeMap<u32, Presence>> {
+        pids.iter().map(|pid| Ok((*pid, presence(*pid)?))).collect()
+    }
+
+    /// One identifier. A process of another account is found and not dated.
+    fn presence(pid: u32) -> Result<Presence> {
+        let Ok(number) = libc::pid_t::try_from(pid) else { return Ok(Presence::Gone) };
+        match bsd_info(number) {
+            Ok(info) => Ok(Presence::Running {
+                started_at: i64::try_from(info.pbi_start_tvsec)
+                    .ok()
+                    .and_then(|seconds| Timestamp::from_unix_seconds(seconds).ok()),
+            }),
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(Presence::Gone),
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => {
+                Ok(Presence::Running { started_at: None })
+            }
+            Err(source) => Err(Error::Io { path: PathBuf::from("proc_pidinfo"), source }),
         }
     }
+
+    /// The kernel's record of one process of this account.
+    fn bsd_info(pid: libc::pid_t) -> std::io::Result<libc::proc_bsdinfo> {
+        // SAFETY: `proc_bsdinfo` is plain integers and byte arrays, so all zeroes is a
+        // valid value of it.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = size_of::<libc::proc_bsdinfo>();
+        // SAFETY: `info` is `size` bytes, and the kernel writes at most that many. The
+        // answer is the number of bytes written, or zero with `errno` set.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&raw mut info).cast(),
+                c_int::try_from(size).unwrap_or(0),
+            )
+        };
+        if usize::try_from(written).ok() == Some(size) {
+            return Ok(info);
+        }
+        let error = std::io::Error::last_os_error();
+        // A short answer with no error set is a record that is not there.
+        Err(if error.raw_os_error() == Some(0) {
+            std::io::Error::from_raw_os_error(libc::ESRCH)
+        } else {
+            error
+        })
+    }
+
+    /// The process that started this one, `None` when the kernel will not say.
+    ///
+    /// The short record answers for every account, which the full record does not.
+    pub(super) fn parent_of(pid: u32) -> Option<u32> {
+        let pid = libc::pid_t::try_from(pid).ok()?;
+        // SAFETY: `proc_bsdshortinfo` is plain integers and byte arrays, so all zeroes is
+        // a valid value of it.
+        let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+        let size = size_of::<libc::proc_bsdshortinfo>();
+        // SAFETY: `info` is `size` bytes, and the kernel writes at most that many.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDT_SHORTBSDINFO,
+                0,
+                (&raw mut info).cast(),
+                c_int::try_from(size).ok()?,
+            )
+        };
+        (usize::try_from(written).ok() == Some(size)).then_some(info.pbsi_ppid)
+    }
+
+    /// Whether any process on this host is in the session `sid` names.
+    ///
+    /// `getsid` answers for every account on macOS. A process that ended after the
+    /// listing answers `ESRCH`, which says nothing about this session. Any other refusal
+    /// hides a process, and then `false` is not said, as on Linux. `None` also where the
+    /// listing itself failed.
+    pub(super) fn session_is_live(sid: u32) -> Option<bool> {
+        let sid = libc::pid_t::try_from(sid).ok()?;
+        let mut hidden = false;
+        for pid in pids().ok()? {
+            // SAFETY: `getsid` takes one integer and no pointer. A failure answers -1
+            // with `errno` set.
+            let found = unsafe { libc::getsid(pid) };
+            if found == sid {
+                return Some(true);
+            }
+            let ended = std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            hidden |= found < 0 && !ended;
+        }
+        (!hidden).then_some(false)
+    }
+
+    /// An error for a kernel call that failed, with the reason the kernel set.
+    fn failed(call: &str) -> Error {
+        Error::Io { path: PathBuf::from(call), source: std::io::Error::last_os_error() }
+    }
+}
+
+/// The prefix of every variable a home's identity is written with.
+const PREFIX: &str = "NODAL_";
+
+/// Whether a variable is one a scan keeps.
+fn is_kept(name: &str) -> bool {
+    name.starts_with(PREFIX) || crate::runtime::actor::signal_names().contains(&name)
+}
+
+/// The kept variables of an environment block, which is `name=value` records separated
+/// by a zero byte. Both hosts give the block in this shape.
+fn kept(environ: &[u8]) -> BTreeMap<String, String> {
+    environ
+        .split(|byte| *byte == 0)
+        .filter_map(|record| std::str::from_utf8(record).ok())
+        .filter_map(|record| record.split_once('='))
+        .filter(|(name, _)| is_kept(name))
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .collect()
+}
+
+/// The arguments and the variable block of one macOS `KERN_PROCARGS2` buffer, `None`
+/// where the buffer does not have that shape.
+///
+/// The buffer is the argument count as a native `i32`, the program's path, zero bytes of
+/// padding, the arguments, and the variables. Each record ends with a zero byte. The
+/// variables end at the first empty record, and what follows is the kernel's own. Kept
+/// apart from the call so that the parse is tested on every host.
+#[cfg(any(target_os = "macos", test))]
+fn split_procargs(block: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (count, rest) = block.split_first_chunk::<4>()?;
+    let count = usize::try_from(i32::from_ne_bytes(*count)).ok()?;
+    let path = rest.iter().position(|byte| *byte == 0)?;
+    let rest = rest.get(path..)?;
+    let rest = rest.get(rest.iter().position(|byte| *byte != 0)?..)?;
+    let mut arguments = 0;
+    for _ in 0..count {
+        arguments += rest.get(arguments..)?.iter().position(|byte| *byte == 0)? + 1;
+    }
+    let (argv, tail) = rest.split_at_checked(arguments)?;
+    let mut variables = 0;
+    while let Some(length) =
+        tail.get(variables..).and_then(|left| left.iter().position(|b| *b == 0))
+    {
+        if length == 0 {
+            break;
+        }
+        variables += length + 1;
+    }
+    Some((argv, tail.get(..variables)?))
 }
 
 /// The short command of one NUL-separated command line, or nothing when it holds none.
@@ -579,7 +908,67 @@ fn cut(text: &str, limit: usize) -> usize {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
-    use super::command_of;
+    use super::{command_of, kept, split_procargs};
+
+    #[test]
+    fn a_scan_keeps_the_nodal_set_and_drops_the_rest() {
+        let environ = b"NODAL_ID=01ARZ3NDEKTSV4RRFFQ69G5FAV\0USER=josh\0AWS_SECRET_ACCESS_KEY=x\0";
+        let vars = kept(environ);
+        assert_eq!(vars.get("NODAL_ID").map(String::as_str), Some("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
+        assert_eq!(vars.get("USER").map(String::as_str), Some("josh"));
+        assert!(
+            !vars.contains_key("AWS_SECRET_ACCESS_KEY"),
+            "a scan kept a value it was not asked for"
+        );
+    }
+
+    /// A `KERN_PROCARGS2` buffer as the kernel lays it out.
+    fn procargs(count: i32, path: &str, records: &[&str]) -> Vec<u8> {
+        let mut block = count.to_ne_bytes().to_vec();
+        block.extend(path.as_bytes());
+        block.extend([0, 0, 0, 0]);
+        for record in records {
+            block.extend(record.as_bytes());
+            block.push(0);
+        }
+        block
+    }
+
+    #[test]
+    fn a_procargs_buffer_splits_into_the_command_and_the_variables() {
+        let block = procargs(
+            2,
+            "/usr/local/bin/node",
+            &["node", "dev", "NODAL_ID=01ARZ3NDEKTSV4RRFFQ69G5FAV", "", "executable_path=x"],
+        );
+        let (argv, environ) = split_procargs(&block).unwrap();
+        assert_eq!(command_of(argv).as_deref(), Some("node dev"));
+        assert_eq!(environ, b"NODAL_ID=01ARZ3NDEKTSV4RRFFQ69G5FAV\0");
+        assert!(
+            !kept(environ).contains_key("executable_path"),
+            "the kernel's own strings are not variables"
+        );
+    }
+
+    #[test]
+    fn a_procargs_buffer_with_zeroed_variables_has_none() {
+        let block = procargs(1, "/bin/zsh", &["-zsh", "", ""]);
+        let (argv, environ) = split_procargs(&block).unwrap();
+        assert_eq!(command_of(argv).as_deref(), Some("-zsh"));
+        assert!(environ.is_empty());
+    }
+
+    #[test]
+    fn a_procargs_buffer_that_is_cut_short_gives_nothing() {
+        assert_eq!(split_procargs(b"\x02\0"), None);
+        assert_eq!(split_procargs(&procargs(3, "/bin/sleep", &["sleep", "1"])), None);
+        assert_eq!(split_procargs(&(-1_i32).to_ne_bytes()), None);
+    }
+
+    #[test]
+    fn a_record_that_is_not_text_is_skipped_rather_than_failing() {
+        assert!(kept(b"\xff\xfe=x\0").is_empty());
+    }
 
     #[test]
     fn a_command_is_the_program_and_its_subcommand() {

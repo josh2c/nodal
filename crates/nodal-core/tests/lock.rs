@@ -37,14 +37,6 @@ const UNIT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 /// The project it belongs to.
 const PROJECT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
 
-/// Whether this host publishes the table a lineage is read from.
-///
-/// The repository's idiom, and the reason both branches of every test are written out:
-/// a host that cannot see must not quietly pass the claim it did not check.
-fn can_see_processes() -> bool {
-    cfg!(target_os = "linux")
-}
-
 /// A registry holding one unit of one project, and the two rows an entry needs.
 fn fixture(root: &Path) -> (Store, Unit, Project) {
     let now = Timestamp::now();
@@ -260,16 +252,6 @@ fn a_second_process_of_one_actor_is_refused_while_its_lineage_is_live() {
     let now = Timestamp::now();
     lock::enter(store.conn(), &unit, &project, false, now).unwrap();
 
-    if !can_see_processes() {
-        // The reading is not available, so the rule falls back to the name alone. The
-        // claim not being made is the refusal; the claim being made is that nothing
-        // here refuses the tool its own use.
-        recorded_as(&store, unit.id, Some(4_242));
-        let entered = lock::enter(store.conn(), &unit, &project, false, now).unwrap();
-        assert_eq!(entered, Entered::Refreshed, "a host that cannot see refused somebody");
-        return;
-    }
-
     let other = Elsewhere::started();
     recorded_as(&store, unit.id, Some(other.session()));
 
@@ -294,17 +276,6 @@ fn a_recorded_lineage_that_has_gone_lets_the_hold_go() {
     let (store, unit, project) = fixture(directory.path());
     let now = Timestamp::now();
     lock::enter(store.conn(), &unit, &project, false, now).unwrap();
-
-    if !can_see_processes() {
-        // A host that publishes no process table cannot tell a lineage that has gone
-        // from one at work, so it lets nothing go and refuses nobody. The claim made
-        // here is the fallback itself: the entry passes as a refresh, and no hand-off is
-        // written for a holder this host never read.
-        recorded_as(&store, unit.id, Some(4_242));
-        let entered = lock::enter(store.conn(), &unit, &project, false, now).unwrap();
-        assert_eq!(entered, Entered::Refreshed, "a host that cannot see moved a hold");
-        return;
-    }
 
     let mut other = Elsewhere::started();
     let sid = other.session();

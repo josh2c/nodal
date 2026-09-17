@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use nodal_core::model::{
     Actor, ActorKind, ActorName, EnvId, HostName, ProjectId, Session, SessionId, Timestamp, UnitId,
 };
-use nodal_core::runtime::processes::{Processes, Running};
+use nodal_core::runtime::processes::{self, Live, Presence, Processes, Running};
 use nodal_core::runtime::sessions::{self, Attached};
 use nodal_core::store::{Store, environments, projects, sessions as session_rows, units};
 use nodal_safety::{process, rows};
@@ -141,10 +141,6 @@ fn a_session_on_another_host_is_not_this_machines_to_close() {
 
 #[test]
 fn a_process_started_with_a_homes_environment_is_seen_on_this_machine() {
-    if !cfg!(target_os = "linux") {
-        eprintln!("skipped: a process scan reads /proc, which this host does not have");
-        return;
-    }
     let directory = tempfile::tempdir().unwrap();
     let home = directory.path().join("home");
     let host = nodal_core::model::HostName::current();
@@ -185,4 +181,34 @@ fn a_process_in_a_home_the_registry_does_not_know_opens_nothing() {
 
     let change = sessions::reconcile(store.conn(), &host, &attached, Timestamp::now()).unwrap();
     assert_eq!((change.opened, change.ended), (0, 0));
+}
+
+/// This process is found and dated, and a process that has ended is gone.
+///
+/// The start instant is what lets a hold tell its own process from a later one that wears
+/// its number ([`nodal_core::runtime::lock::liveness`]).
+#[test]
+fn this_process_is_found_and_dated_and_an_ended_one_is_gone() {
+    let mut ended = std::process::Command::new("true").spawn().unwrap();
+    let ended_pid = ended.id();
+    ended.wait().unwrap();
+    let here = std::process::id();
+
+    let seen = Live.presences(&[here, ended_pid]).unwrap();
+    let Some(Presence::Running { started_at: Some(started) }) = seen.get(&here).copied() else {
+        panic!("this process was not found and dated: {seen:?}");
+    };
+    assert!(started <= Timestamp::now(), "it started before it asked: {started}");
+    assert_eq!(seen.get(&ended_pid), Some(&Presence::Gone), "{seen:?}");
+}
+
+/// The session this process is in holds a process, and a child names this process as
+/// the one that started it.
+#[test]
+fn the_session_and_the_parent_of_a_process_are_read() {
+    let session = processes::current_session().unwrap();
+    assert_eq!(processes::session_is_live(session), Some(true));
+
+    let child = process::standing_in(&std::env::temp_dir());
+    assert_eq!(processes::parent_of(child.pid()), Some(std::process::id()));
 }

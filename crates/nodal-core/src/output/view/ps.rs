@@ -35,20 +35,23 @@ impl Render for Ps {
         } else {
             doc.push(Block::table(table(&self.rows)));
         }
-        for line in notice::collapse(&notices(&self.notes), "signals") {
+        for line in note_lines(&self.notes) {
             doc.push(Block::line(line));
         }
         doc
     }
 }
 
-/// The notes as notices, so that one cause is one line however many signals it stopped.
+/// The notes as lines, so that one cause is one line however many signals it stopped.
 ///
-/// A host with no `/proc` stops both process signals for one reason, and the reason
-/// printed twice reads as two faults. Collapsed, it is one line that still names both:
-/// which signals went quiet is the fact a person needs, and a count would lose it.
-fn notices(notes: &[Note]) -> Vec<Notice> {
-    notes.iter().map(|note| Notice::about(note.signal.label(), &note.why)).collect()
+/// A process of another account hides both process signals for one reason, and the
+/// reason printed twice reads as two faults. Collapsed, it is one line that still names
+/// both: which signals went quiet is the fact a person needs, and a count would lose it.
+/// `ps`, the reclaim check, the reclaim and the sweep print their notes through this.
+pub(super) fn note_lines(notes: &[Note]) -> Vec<String> {
+    let notices: Vec<Notice> =
+        notes.iter().map(|note| Notice::about(note.signal.label(), &note.why)).collect();
+    notice::collapse(&notices, "signals")
 }
 
 /// The attribution table.

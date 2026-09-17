@@ -30,8 +30,9 @@
 //! signals one of those.
 //!
 //! A signal that cannot run returns a note instead of an error ([`Reading`]). A machine
-//! with no Docker daemon, and a macOS host whose process table Nodal cannot read yet,
-//! both still answer with everything the other signals see. `nodal ps` prints the notes
+//! with no Docker daemon, and a host whose process table Nodal cannot read, both still
+//! answer with everything the other signals see. A signal that ran over part of what it
+//! reads says which part the host refused ([`withheld`]). `nodal ps` prints the notes
 //! under the table, so an empty answer is never mistaken for a quiet machine.
 //!
 //! Every signal is pure over a [`Scope`], which is the registry's part of the answer:
@@ -67,6 +68,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{EnvId, Ports, Slug, UnitId};
 use crate::paths;
+use crate::runtime::processes::{Running, Withheld};
 
 /// One home on this host, and what the registry says belongs to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,13 +307,65 @@ pub struct Note {
     pub signal: Source,
     /// Why, as one line.
     pub why: String,
+    /// Whether the signal did not run at all, or ran over part of what it reads.
+    pub reach: Reach,
+}
+
+/// How much of a signal one note is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reach {
+    /// The signal did not run, so nothing it would have found is known.
+    Unread,
+    /// The signal ran, and the host refused to show part of what it reads. What it found
+    /// is known. What the host refused is not.
+    Part,
 }
 
 impl Note {
-    /// A note from one signal.
+    /// A note from one signal that did not run.
     pub fn new(signal: Source, why: impl Into<String>) -> Self {
-        Self { signal, why: why.into() }
+        Self { signal, why: why.into(), reach: Reach::Unread }
     }
+
+    /// A note from one signal that ran, over part of what it reads.
+    pub fn part(signal: Source, why: impl Into<String>) -> Self {
+        Self { signal, why: why.into(), reach: Reach::Part }
+    }
+
+    /// Whether this note says that `signal` did not run.
+    #[must_use]
+    pub fn unread(&self, signal: Source) -> bool {
+        self.signal == signal && self.reach == Reach::Unread
+    }
+}
+
+/// What macOS refuses to show about a process of another account.
+pub const ANOTHER_ACCOUNT: &str =
+    "macos does not show the variables or the directory of a process of another account";
+
+/// What macOS refuses to show about a process that runs a restricted binary.
+pub const RESTRICTED: &str =
+    "macos does not show the variables of a process that runs a restricted binary";
+
+/// The notes a process scan gives for what the host refused to show: one note for each
+/// signal a cause stopped, and none where nothing was refused.
+///
+/// A process of another account hides both its variables and its directory. A restricted
+/// binary hides its variables only, and is still found by its directory. The notes carry
+/// no count: the count changes from one reading to the next, and the cause does not.
+#[must_use]
+pub fn withheld(running: &[Running]) -> Vec<Note> {
+    let any = |kind| running.iter().any(|process| process.withheld == Some(kind));
+    let mut notes = Vec::new();
+    if any(Withheld::AnotherAccount) {
+        notes.push(Note::part(Source::Environment, ANOTHER_ACCOUNT));
+        notes.push(Note::part(Source::Cwd, ANOTHER_ACCOUNT));
+    }
+    if any(Withheld::Restricted) {
+        notes.push(Note::part(Source::Environment, RESTRICTED));
+    }
+    notes
 }
 
 /// What one signal saw, and what it could not.
