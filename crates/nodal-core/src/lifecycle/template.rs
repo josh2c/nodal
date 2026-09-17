@@ -30,9 +30,12 @@
 //! Substitution happens after the approval check, and the approval digest is over the
 //! declared text. A hook is therefore approved once, not once per unit.
 
+use std::path::Path;
+
 use crate::Result;
 use crate::error::Error;
 use crate::lifecycle::hooks::{Context, Phase};
+use crate::model::BranchName;
 use crate::services::ports;
 
 /// The characters a value may not hold, because `sh` would read them as syntax rather
@@ -64,12 +67,28 @@ impl Variables {
     /// # Errors
     /// [`Error::InvalidValue`] when the branch could not be hashed to a port.
     pub fn of(context: &Context) -> Result<Self> {
-        let branch = context.branch.to_string();
+        Self::about(&context.branch, &context.source, &context.root)
+    }
+
+    /// The same values, from the three facts they are made of.
+    ///
+    /// An operation refuses a hook it could not run before it writes anything, and at
+    /// that moment it has no [`Context`]: a context names rows the operation has not
+    /// made yet ([`crate::lifecycle::hooks::Runner::refuse_unrunnable`]). The branch and
+    /// the two directories are known earlier, and they are all these five values need.
+    ///
+    /// Both directories arrive resolved. [`crate::lifecycle::hooks`] resolves every form
+    /// of a hook's directories on the way in, and these are two of the six.
+    ///
+    /// # Errors
+    /// [`Error::InvalidValue`] when the branch could not be hashed to a port.
+    pub fn about(branch: &BranchName, source: &Path, root: &Path) -> Result<Self> {
+        let branch = branch.to_string();
         Ok(Self {
             hash_port: ports::hashed(&branch)?.to_string(),
             sanitize: sanitize(&branch),
-            repo_root: context.source.to_string_lossy().into_owned(),
-            unit_path: context.root.to_string_lossy().into_owned(),
+            repo_root: source.to_string_lossy().into_owned(),
+            unit_path: root.to_string_lossy().into_owned(),
             branch,
         })
     }

@@ -66,7 +66,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::env::files;
 use crate::git::Git;
-use crate::lifecycle::hooks::{self, Approvals, Context, Phase, Registered, Runner};
+use crate::lifecycle::hooks::{Context, Phase, Registered, Runner};
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::ops::new;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
@@ -187,10 +187,10 @@ pub fn adopt(
     request: &Request,
     progress: &Arc<dyn Reporter>,
 ) -> Result<Created> {
-    let params = prepare(store, request, progress)?;
+    let Prepared { params, runner } = prepare(store, request, progress)?;
     let environment = params.environment.id;
     let done = run(store, &plan(&params)?)?;
-    post_new(store, &params, request.hooks)?;
+    post_new(store, &params, &runner)?;
     let arrival = match params.source {
         Source::InPlace => Arrival::AdoptedInPlace,
         Source::Materialized { .. } => Arrival::Adopted,
@@ -280,16 +280,10 @@ fn same_tree(left: &Path, right: &Path) -> bool {
 /// by the time either form of adoption can be refused or not, the thing it would run
 /// ahead of has either already been there for weeks or is a clone with no decision left
 /// in it.
-fn post_new(store: &Store, params: &Params, enabled: bool) -> Result<()> {
+fn post_new(store: &Store, params: &Params, runner: &Runner) -> Result<()> {
     if params.source == Source::InPlace {
         return Ok(());
     }
-    let runner = Runner {
-        project: params.project.root.clone(),
-        hooks: params.recipe.hooks.clone(),
-        approvals: Approvals::open(hooks::path_in(&params.state_dir))?,
-        enabled,
-    };
     let owner = Registered { conn: store.conn() };
     runner.run(Phase::PostNew, &params.environment.home, &context_of(params), &owner)?;
     Ok(())
@@ -311,11 +305,24 @@ fn context_of(params: &Params) -> Context {
     }
 }
 
+/// The phase a materialised adoption runs. An adoption in place runs none, and is
+/// refused by none.
+const RUNS: &[Phase] = &[Phase::PostNew];
+
+/// What [`prepare`] settled: the plan's parameters, and the hook the adoption may run.
+struct Prepared {
+    /// What the plan is built from.
+    params: Params,
+    /// The hooks of the project, already refused if the one this form runs could not run.
+    runner: Runner,
+}
+
 /// Work out what the operation will do, and refuse everything that cannot be done.
 ///
 /// Every refusal is made before the base is asked for, for the reason a create gives:
-/// asking for a base may build one, and a build is minutes.
-fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -> Result<Params> {
+/// asking for a base may build one, and a build is minutes. A hook this machine has not
+/// approved is one of them, so a refused adoption leaves no unit behind.
+fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -> Result<Prepared> {
     let (target, root) = resolve(request)?;
     let effective = crate::recipe::load(&root)?;
     let project = new::ensure_project(store, &root, &effective.recipe)?;
@@ -349,9 +356,11 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
         }
     };
 
+    let runner = new::hooks_of(&project, &effective.recipe, &state_dir, request.hooks)?;
     let source = match &target {
         Target::Standing { .. } => Source::InPlace,
         Target::Branch { .. } => {
+            runner.refuse_unrunnable(RUNS, &branch, &project.root, &environment.home)?;
             let wanted = substrate::Request {
                 project: project.clone(),
                 source: root.clone(),
@@ -366,16 +375,19 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
         }
     };
 
-    Ok(Params {
-        ports: new::port_names(&effective.recipe),
-        recipe: effective.recipe,
-        project,
-        state_dir,
-        unit,
-        environment,
-        block,
-        source,
-        recovered: objective.is_some_and(|(_, epistemic)| epistemic == Epistemic::Observed),
+    Ok(Prepared {
+        params: Params {
+            ports: new::port_names(&effective.recipe),
+            recipe: effective.recipe,
+            project,
+            state_dir,
+            unit,
+            environment,
+            block,
+            source,
+            recovered: objective.is_some_and(|(_, epistemic)| epistemic == Epistemic::Observed),
+        },
+        runner,
     })
 }
 
