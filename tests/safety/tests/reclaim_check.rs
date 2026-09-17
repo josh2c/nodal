@@ -64,7 +64,7 @@ use std::path::{Path, PathBuf};
 use nodal_core::lifecycle::journal;
 use nodal_core::store::{environments, projects, units};
 use nodal_safety::git::untouched;
-use nodal_safety::{InState as _, Machine, Snapshot, answer, git, stderr};
+use nodal_safety::{InState as _, Machine, Snapshot, answer, git, platform, stderr};
 use serde_json::Value;
 
 /// The unit every property here asks about. One of the fixture's own handles.
@@ -112,6 +112,23 @@ fn check(machine: &Machine, slug: &str) -> Value {
         "the exit code and the verdict disagree: {printed}"
     );
     read
+}
+
+/// Insist that the preflight calls this home safe, where this host can.
+///
+/// A host with no process table cannot say that nothing stands in a home that would
+/// move, so there the verdict is refuse and the one reason is that unread table.
+fn assert_safe_on_this_host(answer: &Value) {
+    if platform::moves_a_home_unforced() {
+        assert_eq!(answer["safe_to_reclaim"], Value::Bool(true), "{answer:#}");
+        return;
+    }
+    assert_eq!(answer["safe_to_reclaim"], Value::Bool(false), "{answer:#}");
+    let reasons = answer["reasons"].as_array().expect("the answer carries its reasons");
+    assert_eq!(reasons.len(), 1, "the unread table is the only reason: {answer:#}");
+    assert_eq!(reasons[0]["needs"], Value::from("unknown_evidence"), "{answer:#}");
+    let detail = reasons[0]["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("process table could not be read"), "{answer:#}");
 }
 
 /// The commit group of one disposition, or nothing when the reading found none.
@@ -248,7 +265,7 @@ fn a_commit_this_disk_holds_twice_is_a_second_local_copy() {
     git(&machine.source, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD"]);
 
     let answer = check(&machine, SLUG);
-    assert_eq!(answer["safe_to_reclaim"], Value::Bool(true), "{answer:#}");
+    assert_safe_on_this_host(&answer);
     assert_eq!(count(commits(&answer, "second_local_copy")), 1, "{answer:#}");
     assert_eq!(count(commits(&answer, "remote_proved")), 0, "the remote proved nothing here");
     let held_by = &commits(&answer, "second_local_copy").unwrap()["copies"]["held_by"];
@@ -265,7 +282,7 @@ fn a_commit_a_current_reading_reaches_is_proved_on_the_remote() {
     git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
 
     let answer = check(&machine, SLUG);
-    assert_eq!(answer["safe_to_reclaim"], Value::Bool(true), "{answer:#}");
+    assert_safe_on_this_host(&answer);
     assert_eq!(count(commits(&answer, "remote_proved")), 1, "{answer:#}");
     let witness = &commits(&answer, "remote_proved").unwrap()["copies"]["witness"];
     assert_eq!(witness["kind"], Value::from("checked"));
@@ -495,7 +512,7 @@ fn heavy_ignored_state_is_reconstructable_and_priced_as_apparent() {
     assert_eq!(local["sample"][0], Value::from(".env.local"));
 
     // Neither is a reason to refuse: the trash keeps the one and no tool needs the other.
-    assert_eq!(answer["safe_to_reclaim"], Value::Bool(true), "{answer:#}");
+    assert_safe_on_this_host(&answer);
     assert!(home.join("target/debug/app").exists(), "the check removed the build output");
     assert!(home.join(".env.local").exists(), "the check removed local state");
 }

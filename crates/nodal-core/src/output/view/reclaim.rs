@@ -21,7 +21,7 @@ use crate::lifecycle::uniqueness::Finding;
 use crate::model::{Slug, Timestamp, Trashed};
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, JOIN, NONE, Table};
-use crate::runtime::attribute::Note;
+use crate::runtime::attribute::{Note, Source};
 use crate::runtime::stop::Stopped;
 use crate::services::ports::Released;
 use crate::workspace::prune;
@@ -186,7 +186,13 @@ impl Reclaimed {
     fn stop_cell(&self) -> String {
         let parts = [
             plural(self.stopped.groups(), "tether", "tethers"),
-            plural(self.stopped.processes(), "process", "processes"),
+            super::check::counted(
+                &self.notes,
+                Source::Environment,
+                self.stopped.processes(),
+                "process",
+                "processes",
+            ),
             plural(self.containers.len(), "container removed", "containers removed"),
             plural(self.released.allocated.len() + self.released.fixed.len(), "port", "ports"),
         ];

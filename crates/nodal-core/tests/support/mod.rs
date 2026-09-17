@@ -40,6 +40,7 @@ use nodal_core::runtime::stop::{Stopped, Target};
 use nodal_core::store::{Store, bases, environments, events, projects, sessions, trash, units};
 use nodal_core::{Error, lifecycle::ops};
 use nodal_safety::git::{git, git_ok};
+use nodal_safety::platform;
 use tempfile::TempDir;
 
 /// The instant every fixture row is stamped with.
@@ -736,15 +737,32 @@ impl World {
     /// survived one is the whole condition under test. Stating it in the journal is
     /// stating it in the one place the run that finishes this one can read it, which is
     /// what the step-output column is.
+    ///
+    /// A host with no process table refuses the move on a resumed run too. There the
+    /// refusal is asserted in a world of its own, and this world resumes a forced reclaim,
+    /// which goes ahead as it does on the command line.
     pub fn resume_reclaim_with(&self, teardown: reclaim::Teardown) -> Snapshot {
+        let force = !platform::moves_a_home_unforced();
+        if force {
+            let refused = Self::new();
+            refused.journal_reclaim(teardown.clone(), false);
+            let error = lifecycle::resolve(&mut refused.store(), &ops::rebuilders()).unwrap_err();
+            assert!(error.to_string().contains(platform::UNREAD_TABLE), "{error}");
+            assert!(refused.home().is_dir(), "the refused run left the home where it was");
+        }
+        self.journal_reclaim(teardown, force);
+        self.resolved()
+    }
+
+    /// A reclaim journalled as killed after its teardown reported `teardown`.
+    fn journal_reclaim(&self, teardown: reclaim::Teardown, force: bool) {
         self.prepare_reclaim();
-        let mut plan = reclaim::plan(&self.reclaim_params()).unwrap();
+        let mut plan = reclaim::plan(&reclaim::Params { force, ..self.reclaim_params() }).unwrap();
         plan.recovery = Recovery::Resume;
         let record = journal_of(self, &plan);
         let key = plan.steps[0].key();
         let output = serde_json::to_value(teardown).unwrap();
         mark_applied(self, record.id, (0, &key), output);
-        self.resolved()
     }
 
     /// The unit, its home on disk, and the open session row of the tethered group.

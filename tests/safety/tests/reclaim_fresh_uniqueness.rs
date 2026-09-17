@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use nodal_core::model::{Timestamp, UnitStatus};
 use nodal_core::store::units;
 use nodal_safety::InState as _;
-use nodal_safety::{Machine, git, stderr, stdout};
+use nodal_safety::{Machine, git, platform, stderr, stdout};
 
 /// The unit every property here reclaims. It is one of the fixture's own handles.
 const SLUG: &str = "worker-import";
@@ -150,7 +150,7 @@ fn a_checkout_that_read_the_remote_proves_the_commit_is_reconstructable() {
     let (home, _) = pushed(&machine, SLUG);
     git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
 
-    let allowed = machine.nodal(&["reclaim", SLUG]);
+    let allowed = platform::reclaim(|args| machine.nodal(args), &["reclaim", SLUG]);
     assert!(allowed.status.success(), "{}", stderr(&allowed));
     assert!(stdout(&allowed).contains("nothing that is only here"), "{}", stdout(&allowed));
     assert!(!home.exists(), "the home is not where it was");
@@ -167,7 +167,7 @@ fn a_second_copy_on_this_machine_settles_it_without_the_remote() {
     git(&machine.source, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD"]);
     assert_eq!(git(&machine.source, &["cat-file", "-t", &tip]), "commit");
 
-    let allowed = machine.nodal(&["reclaim", SLUG]);
+    let allowed = platform::reclaim(|args| machine.nodal(args), &["reclaim", SLUG]);
     assert!(allowed.status.success(), "{}", stderr(&allowed));
     assert_eq!(machine.trashed().len(), 1, "the trash holds it");
 }

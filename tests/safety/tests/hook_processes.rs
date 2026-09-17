@@ -38,7 +38,7 @@ use nodal_core::model::{EnvId, Session};
 use nodal_core::store::{environments, projects, sessions, units};
 use nodal_safety::process::Owned;
 use nodal_safety::process::{alive, in_a_group_of_its_own, wait_for};
-use nodal_safety::{InState as _, Machine, answer, git, stderr};
+use nodal_safety::{InState as _, Machine, answer, git, platform, stderr};
 
 /// The unit every test here makes.
 const UNIT: &str = "worker-import";
@@ -153,7 +153,7 @@ fn a_process_a_hook_hid_from_every_other_signal_is_stopped_by_the_reclaim() {
     assert!(alive(hidden), "the hook backgrounded nothing, so there is nothing to assert about");
     let _held = Owned::adopt(hidden);
 
-    let reclaimed = machine.nodal(&["reclaim", UNIT]);
+    let reclaimed = platform::reclaim(|args| machine.nodal(args), &["reclaim", UNIT]);
 
     assert!(reclaimed.status.success(), "{}", stderr(&reclaimed));
     assert!(!home.exists(), "the reclaim left the home where it was");
@@ -266,7 +266,7 @@ fn a_group_left_by_pre_reclaim_is_stopped_by_the_same_reclaim() {
     let machine = machine_declaring(&phase("pre_reclaim", &backgrounds(&record)));
     let home = machine.unit(UNIT);
 
-    let reclaimed = machine.nodal(&["reclaim", UNIT]);
+    let reclaimed = platform::reclaim(|args| machine.nodal(args), &["reclaim", UNIT]);
 
     assert!(reclaimed.status.success(), "{}", stderr(&reclaimed));
     assert!(!home.exists(), "the reclaim left the home where it was");
@@ -288,7 +288,7 @@ fn a_group_left_by_post_reclaim_is_reported_and_then_stopped_by_the_sweep() {
     let machine = machine_declaring(&phase("post_reclaim", &backgrounds(&record)));
     drop(machine.unit(UNIT));
 
-    let reclaimed = machine.nodal(&["reclaim", UNIT]);
+    let reclaimed = platform::reclaim(|args| machine.nodal(args), &["reclaim", UNIT]);
 
     let told = answer(&reclaimed);
     assert!(!reclaimed.status.success(), "a reclaim that left a process running claimed clean");

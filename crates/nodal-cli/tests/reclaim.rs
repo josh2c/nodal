@@ -35,6 +35,7 @@ use nodal_core::lifecycle::journal;
 use nodal_core::model::{EnvState, UnitStatus};
 use nodal_core::store::{environments, projects, trash, units};
 use nodal_safety::git::git_text as git;
+use nodal_safety::platform;
 use nodal_safety::process::{self, Owned, alive, wait_for};
 use nodal_safety::project::Layout;
 use nodal_safety::project::resolved;
@@ -163,6 +164,26 @@ fn assert_process_signal(report: &serde_json::Value) {
     }
 }
 
+/// The arguments that reclaim `worker-import` on this host.
+///
+/// A host with no process table refuses the move first, names why, and moves nothing.
+/// This asserts that refusal, and the same reclaim with `--force` then goes ahead.
+fn clean_reclaim(workspace: &Workspace, home: &Path) -> Vec<&'static str> {
+    let mut asked = vec!["reclaim", "worker-import"];
+    if !platform::moves_a_home_unforced() {
+        platform::assert_unread_refusal(&workspace.nodal(&asked));
+        assert!(home.is_dir(), "the refused reclaim left the home where it was");
+        assert!(workspace.trashed().is_empty(), "and moved nothing to the trash");
+        asked.push("--force");
+    }
+    asked
+}
+
+/// Reclaim a clean unit by name, the way this host allows ([`platform::reclaim`]).
+fn reclaim(workspace: &Workspace, slug: &str) -> Output {
+    platform::reclaim(|args| workspace.nodal(args), &["reclaim", slug])
+}
+
 /// Whether this host can see the processes a unit is running.
 fn can_see_processes() -> bool {
     cfg!(target_os = "linux")
@@ -178,7 +199,7 @@ fn a_clean_unit_is_reclaimed_and_nothing_of_it_is_left_but_the_trash_entry() {
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (_, home) = workspace.one_unit_and_home();
 
-    let report = stdout(&workspace.nodal(&["reclaim", "worker-import"]));
+    let report = stdout(&workspace.nodal(&clean_reclaim(&workspace, &home)));
     assert!(report.contains("nothing that is only here"), "{report}");
     assert_nothing_left(&report);
 
@@ -244,7 +265,7 @@ fn a_commit_no_other_tree_has_refuses_a_reclaim_and_a_shared_one_does_not() {
     // work that is only here. Without that, a project with no remote could never have a
     // unit reclaimed at all.
     drop(git(&workspace.source, &["fetch", "-q", home.to_str().unwrap(), "HEAD"]));
-    let accepted = workspace.nodal(&["reclaim", "worker-import"]);
+    let accepted = platform::reclaim(|args| workspace.nodal(args), &["reclaim", "worker-import"]);
     assert!(accepted.status.success(), "{}", stderr(&accepted));
 }
 
@@ -293,12 +314,25 @@ fn a_commit_a_sibling_clone_on_this_machine_holds_is_not_only_here() {
 
     let answered = workspace.nodal(&["reclaim", "worker-import", "--check"]);
     let after = answer(&answered);
-    assert!(answered.status.success(), "the verdict is the exit code: {after}");
+    assert_eq!(
+        answered.status.success(),
+        platform::moves_a_home_unforced(),
+        "the verdict is the exit code, and an unread process table is not safe: {after}"
+    );
+    if !platform::moves_a_home_unforced() {
+        assert!(after.contains("the process table could not be read"), "{after}");
+    }
     assert!(after.contains("second local copy"), "the commit has a second copy: {after}");
 
     // The report names the repository that holds it, so a person can go and look, and no
     // group calls the commit the only copy any more.
-    let report = json(&workspace.nodal(&["reclaim", "worker-import", "--check", "--json"]));
+    let report: serde_json::Value = serde_json::from_str(&answer(&workspace.nodal(&[
+        "reclaim",
+        "worker-import",
+        "--check",
+        "--json",
+    ])))
+    .unwrap();
     let groups = report["commits"].as_array().expect("the report carries commit groups");
     assert!(
         !groups.iter().any(|group| group["copies"]["kind"] == "only_here"),
@@ -397,9 +431,11 @@ fn reclaiming_from_inside_the_home_does_not_stop_the_shell_that_asked() {
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (_, home) = workspace.one_unit_and_home();
 
-    let mut command = workspace.command(&["reclaim", "worker-import", "--json"]);
-    let report: serde_json::Value =
-        serde_json::from_str(&stdout(&command.current_dir(&home).output().unwrap())).unwrap();
+    let reclaimed = platform::reclaim(
+        |args| workspace.command(args).current_dir(&home).output().unwrap(),
+        &["reclaim", "worker-import", "--json"],
+    );
+    let report: serde_json::Value = serde_json::from_str(&stdout(&reclaimed)).unwrap();
 
     assert_process_signal(&report);
     assert!(report["leftovers"].as_array().unwrap().is_empty(), "{report}");
@@ -424,10 +460,11 @@ fn a_caller_carrying_the_units_identifier_is_a_target_and_is_spared() {
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (id, home) = workspace.one_unit_and_home();
 
-    let mut command = workspace.command(&["reclaim", "worker-import", "--json"]);
-    command.current_dir(&home).env("NODAL_ID", &id);
-    let report: serde_json::Value =
-        serde_json::from_str(&stdout(&command.output().unwrap())).unwrap();
+    let reclaimed = platform::reclaim(
+        |args| workspace.command(args).current_dir(&home).env("NODAL_ID", &id).output().unwrap(),
+        &["reclaim", "worker-import", "--json"],
+    );
+    let report: serde_json::Value = serde_json::from_str(&stdout(&reclaimed)).unwrap();
 
     let spared = report["stopped"]["spared"].as_array().unwrap().len();
     if can_see_processes() {
@@ -447,7 +484,7 @@ fn a_caller_carrying_the_units_identifier_is_a_target_and_is_spared() {
 fn a_reclaimed_unit_is_listed_as_archived_with_no_home_and_no_complaint() {
     let workspace = workspace();
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
-    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+    drop(stdout(&reclaim(&workspace, "worker-import")));
 
     // The unit stays on the list, because the list is the ledger. What must not stay is
     // its home: asking Git about a directory a reclaim moved away on purpose would put
@@ -471,7 +508,7 @@ fn a_reclaimed_units_name_is_free_again_and_the_archived_row_keeps_its_own_ident
     let workspace = workspace();
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let archived = slug_id(&workspace, "worker-import");
-    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+    drop(stdout(&reclaim(&workspace, "worker-import")));
 
     // Until somebody takes the name, it still reaches the unit that had it, so a person
     // who reclaims twice is told what happened rather than that there is no such unit.
@@ -517,11 +554,11 @@ fn a_name_reclaimed_twice_reaches_the_unit_that_held_it_last() {
     let workspace = workspace();
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let first = slug_id(&workspace, "worker-import");
-    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+    drop(stdout(&reclaim(&workspace, "worker-import")));
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let second = slug_id(&workspace, "worker-import");
     assert_ne!(first, second, "the second unit is a new one");
-    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+    drop(stdout(&reclaim(&workspace, "worker-import")));
 
     // Two archived units carry the name and the branch, and neither is wrong.
     let listed = json(&workspace.nodal(&["ls", "--json"]));
@@ -565,7 +602,7 @@ fn slug_id(workspace: &Workspace, slug: &str) -> String {
 fn a_unit_that_has_been_reclaimed_is_not_reclaimed_again() {
     let workspace = workspace();
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
-    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+    drop(stdout(&reclaim(&workspace, "worker-import")));
 
     let refused = workspace.nodal(&["reclaim", "worker-import"]);
     assert!(!refused.status.success());
@@ -593,7 +630,10 @@ fn a_process_planted_in_a_unit_is_stopped_where_nodal_can_see_it() {
     let port = created["unit"]["environment"]["ports"]["app"].as_u64().expect("a port was granted");
     let mut planted = plant(&home, &id, "sleep 300");
 
-    let report = json(&workspace.nodal(&["reclaim", "worker-import", "--json"]));
+    let report = json(&platform::reclaim(
+        |args| workspace.nodal(args),
+        &["reclaim", "worker-import", "--json"],
+    ));
     assert_process_signal(&report);
     // The port is given back in the transaction that records the reclaim, so it comes
     // back on every host whether or not anything could be stopped.
@@ -664,11 +704,18 @@ fn the_four_hooks_run_in_order_and_are_told_which_unit_they_are_about() {
     // cannot be resolved, and asking afterwards would quietly answer with the
     // unresolved name and compare it against the resolved one the shell reported.
     let stood_in = resolved(&home);
-    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+    drop(stdout(&reclaim(&workspace, "worker-import")));
 
     let log = std::fs::read_to_string(workspace.source.join("hooks.log")).unwrap();
     let phases: Vec<&str> = log.lines().map(|line| line.split(' ').next().unwrap()).collect();
-    assert_eq!(phases, ["pre_new", "post_new", "pre_reclaim", "post_reclaim"], "{log}");
+    // A host with no process table refuses the first reclaim after its `pre_reclaim`, and
+    // the forced one runs the hook again.
+    let expected: &[&str] = if platform::moves_a_home_unforced() {
+        &["pre_new", "post_new", "pre_reclaim", "post_reclaim"]
+    } else {
+        &["pre_new", "post_new", "pre_reclaim", "pre_reclaim", "post_reclaim"]
+    };
+    assert_eq!(phases, expected, "{log}");
     assert!(log.contains("pre_new worker-import"), "{log}");
     // Every path a hook is told about is resolved, whether it arrives as a variable or
     // as the directory the hook is started in. `$PWD` is what the shell got from the
@@ -711,7 +758,7 @@ fn a_hook_command_nobody_approved_refuses_to_run() {
 
     // Approving is what `nodal init` does, and the same reclaim then works.
     drop(stdout(&workspace.nodal(&["init", "--force"])));
-    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+    drop(stdout(&reclaim(&workspace, "worker-import")));
     let log = std::fs::read_to_string(workspace.source.join("hooks.log")).unwrap();
     assert!(log.contains("SOMETHING ELSE"), "{log}");
 }
@@ -736,7 +783,10 @@ fn no_hooks_runs_none_of_them_without_needing_an_approval() {
     let workspace = workspace();
     workspace.write_recipe(HOOKS);
     drop(stdout(&workspace.nodal(&["--no-hooks", "new", "--name", "worker-import"])));
-    drop(stdout(&workspace.nodal(&["--no-hooks", "reclaim", "worker-import"])));
+    drop(stdout(&platform::reclaim(
+        |args| workspace.nodal(args),
+        &["--no-hooks", "reclaim", "worker-import"],
+    )));
     assert!(!workspace.source.join("hooks.log").exists(), "no hook ran");
     assert_eq!(workspace.trashed().len(), 1, "and the unit was still reclaimed");
 }
@@ -749,7 +799,7 @@ fn no_hooks_runs_none_of_them_without_needing_an_approval() {
 fn gc_removes_a_trashed_home_once_its_retention_has_run_out_and_not_before() {
     let workspace = workspace_with_recipe("[reclaim]\ntrash_retention = 14\n");
     drop(stdout(&workspace.nodal(&["new", "--name", "kept"])));
-    drop(stdout(&workspace.nodal(&["reclaim", "kept"])));
+    drop(stdout(&reclaim(&workspace, "kept")));
     let kept = workspace.trashed().pop().expect("the home is in the trash");
 
     let held = stdout(&workspace.nodal(&["gc"]));
@@ -760,7 +810,7 @@ fn gc_removes_a_trashed_home_once_its_retention_has_run_out_and_not_before() {
     workspace.write_recipe("[reclaim]\ntrash_retention = 0\n");
     drop(stdout(&workspace.nodal(&["init", "--force"])));
     drop(stdout(&workspace.nodal(&["new", "--name", "swept"])));
-    drop(stdout(&workspace.nodal(&["reclaim", "swept"])));
+    drop(stdout(&reclaim(&workspace, "swept")));
     assert_eq!(workspace.trashed().len(), 2, "two homes in the trash");
 
     let swept = stdout(&workspace.nodal(&["gc"]));
@@ -795,7 +845,10 @@ fn a_reclaim_killed_between_two_steps_is_rolled_back_by_the_next_invocation() {
     let mut planted = plant(&home, &id, "trap '' TERM; sleep 300");
 
     if !can_see_processes() {
-        let report = json(&workspace.nodal(&["reclaim", "worker-import", "--json"]));
+        let report = json(&platform::reclaim(
+            |args| workspace.nodal(args),
+            &["reclaim", "worker-import", "--json"],
+        ));
         assert_process_signal(&report);
         assert!(report["stopped"]["asked"].as_array().unwrap().is_empty(), "{report}");
         assert!(alive(planted.pid()), "nothing this host cannot see was signalled");
@@ -951,22 +1004,25 @@ fn an_ordinary_reclaim_records_the_home_before_it_moves_it() {
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (id, _) = workspace.one_unit_and_home();
 
-    drop(stdout(&workspace.nodal(&["reclaim", "worker-import"])));
+    drop(stdout(&reclaim(&workspace, "worker-import")));
 
     let trashed = workspace.trashed().pop().expect("the home is in the trash");
     let refs =
         git(&trashed, &["for-each-ref", "--format=%(refname)", &format!("refs/nodal/{id}/")]);
     let recorded: Vec<&str> =
         refs.lines().filter(|name| name.contains(&format!("/{id}/pre/"))).collect();
-    assert_eq!(recorded.len(), 1, "one record per run: {refs}");
+    // A host with no process table ran two reclaims: the refused one and the forced one.
+    let runs = if platform::moves_a_home_unforced() { 1 } else { 2 };
+    assert_eq!(recorded.len(), runs, "one record per run: {refs}");
 
-    let listed = git(&trashed, &["ls-tree", "-r", "--name-only", recorded[0]]);
-    assert!(listed.contains("app/main.txt"), "the record holds the home: {listed}");
-
-    let operation = recorded[0].rsplit('/').next().unwrap();
     let store = workspace.store();
-    let run = journal::get(store.conn(), operation.parse().unwrap()).unwrap().unwrap();
-    assert_eq!(run.kind, "reclaim", "the ref is named by the run that took it");
+    for record in recorded {
+        let listed = git(&trashed, &["ls-tree", "-r", "--name-only", record]);
+        assert!(listed.contains("app/main.txt"), "the record holds the home: {listed}");
+        let operation = record.rsplit('/').next().unwrap();
+        let run = journal::get(store.conn(), operation.parse().unwrap()).unwrap().unwrap();
+        assert_eq!(run.kind, "reclaim", "the ref is named by the run that took it");
+    }
 }
 
 /// Nothing about the record reaches the working tree or the index. The commit is built

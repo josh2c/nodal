@@ -37,6 +37,7 @@ use std::path::{Path, PathBuf};
 use nodal_core::model::UnitStatus;
 use nodal_core::store::{projects, units};
 use nodal_safety::git::{git, git_ok, identity};
+use nodal_safety::platform;
 use nodal_safety::text::stdout;
 use nodal_safety::{InState as _, Workspace};
 
@@ -497,9 +498,18 @@ fn gc_reclaims_a_merged_unit_once_its_retention_has_run_out_and_not_before() {
     workspace.write_recipe("[reclaim]\ntrash_retention = 0\n");
     drop(stdout(&workspace.nodal(&["init", "--force"])));
     let swept = stdout(&workspace.nodal(&["gc"]));
-
-    assert!(swept.contains("1 unit reclaimed"), "{swept}");
     assert!(swept.contains("worker-import"), "the sweep names it: {swept}");
+
+    // A host with no process table refuses the move, and the sweep reports the refusal
+    // as a line. A reclaim with `--force` then takes the home.
+    if platform::moves_a_home_unforced() {
+        assert!(swept.contains("1 unit reclaimed"), "{swept}");
+    } else {
+        assert!(swept.contains("0 units reclaimed"), "{swept}");
+        assert!(swept.contains(platform::UNREAD_TABLE), "the sweep says why: {swept}");
+        assert!(home.is_dir(), "and the home is where it was");
+        drop(stdout(&workspace.nodal(&["reclaim", "worker-import", "--force"])));
+    }
     assert!(!home.exists(), "and the home has gone from where it was");
 }
 
@@ -590,7 +600,10 @@ fn a_unit_with_no_commits_is_safe_to_reclaim_and_one_with_new_files_is_still_ref
     assert!(dirty.is_dir(), "and the home is where it was");
 
     let empty = workspace.unit_home("nothing-in-it");
-    let report = stdout(&workspace.nodal(&["reclaim", "nothing-in-it", "--json"]));
+    let report = stdout(&platform::reclaim(
+        |args| workspace.nodal(args),
+        &["reclaim", "nothing-in-it", "--json"],
+    ));
     assert!(report.contains("\"findings\": []"), "nothing is only here: {report}");
     assert!(!empty.exists(), "so the home goes, without a refusal");
 }

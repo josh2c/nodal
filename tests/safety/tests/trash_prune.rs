@@ -22,7 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use nodal_core::store::trash;
-use nodal_safety::{InState as _, Machine, git, stderr, stdout};
+use nodal_safety::{InState as _, Machine, git, platform, stderr, stdout};
 
 /// The unit every test here reclaims.
 const UNIT: &str = "worker-import";
@@ -67,7 +67,7 @@ fn loaded(machine: &Machine) -> PathBuf {
 
 /// Reclaim the unit, insisting that it went through, and answer with what it printed.
 fn reclaimed(machine: &Machine) -> String {
-    let output = machine.nodal(&["reclaim", UNIT]);
+    let output = platform::reclaim(|args| machine.nodal(args), &["reclaim", UNIT]);
     assert!(output.status.success(), "the reclaim failed: {}", stderr(&output));
     stdout(&output)
 }

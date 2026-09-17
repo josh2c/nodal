@@ -75,6 +75,11 @@
 //! reading that cannot be made is reported as a [`Note`] and the reclaim carries on,
 //! which is the same contract every attribution signal already has.
 //!
+//! The move of the home is the one exception. Before the move, the process table is
+//! read to find what stands in the home, and a table that could not be read refuses the
+//! move ([`Error::ProcessTableUnread`]) as a bystander does. Nothing found is not
+//! nothing there. `--force` moves the home anyway. Every other reading stays a note.
+//!
 //! The verification is where that matters. "Nothing left by id" and "I could not look"
 //! are different answers, and a verification that printed the first when it meant the
 //! second would be the one lie this operation must not tell. So a note suppresses that
@@ -115,7 +120,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::survey::Bases;
 use crate::git::{Git, refs};
-use crate::lifecycle::assess::{self, Assessment, Own, Runtime, attributed, scan};
+use crate::lifecycle::assess::{self, Assessment, Own, Runtime, Unmovable, attributed};
 use crate::lifecycle::hooks::{
     self, Approvals, Context, Ownership, Phase, Ran, Registered, Runner,
 };
@@ -129,7 +134,7 @@ use crate::model::{
     UnitStatus, expiry,
 };
 use crate::output::view::{Leftover, Preflight, Pruned, Reclaimed};
-use crate::runtime::attribute::{Note, Source, Standing};
+use crate::runtime::attribute::{Note, Source};
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
 use crate::services::docker;
 use crate::services::ports::{self, Released};
@@ -658,13 +663,15 @@ impl Step for TrashHome {
     /// editor server over SSH, a teammate's shell. Moving the directory out from under
     /// one of those is the surprise this refusal exists to prevent.
     ///
-    /// A host whose process table cannot be read moves the home. The reading is a note
-    /// in the report, as every unread signal is, and refusing every reclaim on a
-    /// machine Nodal cannot look at would be a worse answer than the note.
+    /// A host whose process table cannot be read does not move the home. This step is
+    /// the one place an unread signal refuses rather than becoming a note: nothing found
+    /// standing in the home is not the same as nothing standing in it, and the move is
+    /// what a person cannot take back from inside the home. The rule is
+    /// [`assess::unmovable`], which is the rule `nodal reclaim --check` reports. `--force`
+    /// moves the home over both refusals.
     fn apply(&self) -> Result<Output> {
-        let standing = self.bystanders();
-        if !standing.is_empty() && !self.force {
-            return Err(Error::HomeInUse { slug: self.slug.clone(), standing });
+        if !self.force {
+            self.refuse_over_the_table()?;
         }
         move_tree(&self.home, &self.path)?;
         Ok(nothing())
@@ -678,15 +685,25 @@ impl Step for TrashHome {
 }
 
 impl TrashHome {
-    /// What is standing in the home at the probable level, and nothing when the process
-    /// table could not be read.
-    fn bystanders(&self) -> Vec<Standing> {
-        scan(
+    /// Refuse the move when something stands in the home or the table could not be read.
+    ///
+    /// # Errors
+    /// [`Error::HomeInUse`] naming what stands in the home, and
+    /// [`Error::ProcessTableUnread`] with the reason the scan gave.
+    fn refuse_over_the_table(&self) -> Result<()> {
+        let seen = assess::processes_of(
             Own::of(self.unit, &self.groups).and_wrappers(&self.wrappers),
             std::slice::from_ref(&self.home),
-        )
-        .map(|(_, standing)| standing)
-        .unwrap_or_default()
+        );
+        match assess::unmovable(&seen) {
+            None => Ok(()),
+            Some(Unmovable::Standing(standing)) => {
+                Err(Error::HomeInUse { slug: self.slug.clone(), standing: standing.to_vec() })
+            }
+            Some(Unmovable::Unread(note)) => {
+                Err(Error::ProcessTableUnread { slug: self.slug.clone(), why: note.why.clone() })
+            }
+        }
     }
 }
 

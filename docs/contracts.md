@@ -1290,6 +1290,11 @@ way to ask is to signal it. A signal that could not be read is a note and never 
 blocks only a home that would move: a checkout adopted in place is left where it is, so nothing is
 moved out from under anybody.
 
+A process table that could not be read is not safe, the same rule as `not_checked`: for a home that
+would move, `--check` answers refuse with the reason `unknown`, and a reclaim stops the recorded groups
+and then refuses to move the home. `--force` moves the home to the trash after a snapshot of any work
+it holds.
+
 A reclaim stops what the unit runs. It sends three signals in order, with a grace period between
 each pair: `SIGINT`, then `SIGTERM`, then `SIGKILL`. A process that stops on one signal never gets
 the next. It never signals its own process, the process that started it, or the process group

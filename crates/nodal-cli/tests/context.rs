@@ -37,7 +37,7 @@ use nodal_core::model::{
 use nodal_core::store::{Store, events, projects, units};
 use nodal_fixture::shapes;
 use nodal_safety::git::{git as git_output, git_ok as git};
-use nodal_safety::rows;
+use nodal_safety::{platform, rows};
 
 /// How many units the size budget is proved at. A dozen is more than a person keeps
 /// open and is the number the file has to stay readable at.
@@ -363,14 +363,22 @@ fn every_command_that_touches_a_unit_writes_the_memory_again() {
     }
 
     // A merge removes one unit; the survivor's ledger is written again without it.
-    workspace.ok(&["merge", "payroll-export", "--yes"], &second);
+    drop(platform::merge(
+        |args| workspace.nodal(args, &second),
+        &["merge", "payroll-export", "--yes"],
+        "payroll-export",
+    ));
     let after = read(&memory);
     assert!(!after.contains("payroll-export · "), "a merged unit leaves the ledger:\n{after}");
 
     // And a reclaim does the same.
     workspace.create("second-look", "a second look");
     assert!(read(&memory).contains("second-look · "), "the new unit is in the ledger");
-    workspace.ok(&["reclaim", "second-look"], &workspace.source);
+    let reclaimed = platform::reclaim(
+        |args| workspace.nodal(args, &workspace.source),
+        &["reclaim", "second-look"],
+    );
+    assert!(reclaimed.status.success(), "{}", text(&reclaimed.stderr));
     let after = read(&memory);
     assert!(!after.contains("second-look · "), "a reclaimed unit leaves the ledger:\n{after}");
 }
