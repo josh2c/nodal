@@ -320,6 +320,117 @@ fn a_commit_a_sibling_clone_on_this_machine_holds_is_not_only_here() {
     );
 }
 
+/// A clone of the project on a branch of its own, adopted in place.
+///
+/// A branch each, because an open unit holds its branch and a second unit on `main` is
+/// refused. A clone and not a linked worktree, because the point of the test is two
+/// object stores that hold each other's only copy.
+fn adopt_on_its_own_branch(workspace: &Workspace, slug: &str) -> PathBuf {
+    let root = workspace.state.parent().expect("the state directory has a parent").join(slug);
+    drop(git(&workspace.source, &["clone", "-q", "--", ".", root.to_str().expect("a path")]));
+    drop(git(&root, &["switch", "-q", "-c", &format!("work/{slug}")]));
+    drop(stdout(&workspace.nodal(&[
+        "adopt",
+        root.to_str().expect("a path"),
+        "--in-place",
+        "--name",
+        slug,
+    ])));
+    resolved(&root)
+}
+
+/// One commit in a home, made by that home and nowhere else yet.
+fn commit_only_here(home: &Path, text: &str) -> String {
+    std::fs::write(home.join("app").join("main.txt"), text).unwrap();
+    drop(git(home, &["config", "user.email", "unit@example.invalid"]));
+    drop(git(home, &["config", "user.name", "Test"]));
+    drop(git(home, &["add", "-A"]));
+    drop(git(home, &["commit", "-qm", "work only this home has"]));
+    git(home, &["rev-parse", "HEAD"]).trim().to_owned()
+}
+
+/// Put a second copy of `commit` in `holder`, under a ref of its own, so that its own
+/// object store really reaches it.
+fn fetch_into(holder: &Path, source: &Path, commit: &str) {
+    drop(git(
+        holder,
+        &["fetch", "-q", source.to_str().unwrap(), &format!("{commit}:refs/heads/copy-of")],
+    ));
+}
+
+/// Per-unit safety is not joint safety.
+///
+/// Two units each hold the only second copy of the other's work. Each is safe on its own,
+/// truthfully, and reclaiming both loses both. No surface in the third proof's release
+/// answered that question; `--check` over more than one unit is what answers it now.
+///
+/// The per-unit verdict stays exactly what it was, because it is still true: a person
+/// reclaiming one of them is not about to lose anything.
+#[test]
+fn two_units_that_hold_each_others_only_copy_are_refused_together_and_allowed_apart() {
+    let workspace = workspace();
+    let alpha = adopt_on_its_own_branch(&workspace, "alpha");
+    let beta = adopt_on_its_own_branch(&workspace, "beta");
+
+    // One commit in each home, and each fetched into the other, so the only second copy
+    // of either is inside the other unit.
+    let mine = commit_only_here(&alpha, "alpha's morning\n");
+    let theirs = commit_only_here(&beta, "beta's morning\n");
+    fetch_into(&beta, &alpha, &mine);
+    fetch_into(&alpha, &beta, &theirs);
+
+    // Each on its own: safe, and the report names the other home as the store that holds
+    // the copy.
+    assert_safe_alone(&workspace, "alpha");
+    assert_safe_alone(&workspace, "beta");
+
+    // Both together: refused, and the reason names the home that goes with them.
+    let both = workspace.nodal(&["reclaim", "alpha", "beta", "--check"]);
+    let report = answer(&both);
+    assert!(!both.status.success(), "the pair is not safe: {report}");
+    assert!(report.contains("refuse — a reclaim of all 2 would stop"), "{report}");
+    assert!(report.contains("which this reclaim removes too"), "{report}");
+    assert!(
+        report.contains("safe — a reclaim would go ahead"),
+        "the per-unit verdict stays: {report}"
+    );
+
+    let document: serde_json::Value = serde_json::from_str(&answer(
+        &workspace.nodal(&["reclaim", "alpha", "beta", "--check", "--json"]),
+    ))
+    .unwrap();
+    assert_eq!(document["safe_together"], serde_json::json!(false), "{document}");
+    let units = document["units"].as_array().expect("one entry per unit");
+    assert_eq!(units.len(), 2, "{document}");
+    for unit in units {
+        assert_eq!(unit["safe_to_reclaim"], serde_json::json!(true), "{document}");
+        assert_eq!(unit["together"]["safe"], serde_json::json!(false), "{document}");
+    }
+}
+
+/// One unit, read on its own, is safe over a copy another home holds.
+fn assert_safe_alone(workspace: &Workspace, slug: &str) {
+    let checked = workspace.nodal(&["reclaim", slug, "--check"]);
+    let report = answer(&checked);
+    assert!(checked.status.success(), "{slug} is safe on its own: {report}");
+    assert!(report.contains("second local copy"), "{slug}: {report}");
+}
+
+/// A reclaim that is not a check does one unit at a time, and says so rather than
+/// guessing which of a list was meant.
+#[test]
+fn a_reclaim_of_more_than_one_unit_is_refused_and_names_the_check_that_reads_them() {
+    let workspace = workspace();
+    drop(adopt_on_its_own_branch(&workspace, "alpha"));
+    drop(adopt_on_its_own_branch(&workspace, "beta"));
+
+    let refused = workspace.nodal(&["reclaim", "alpha", "beta"]);
+    assert!(!refused.status.success());
+    let told = stderr(&refused);
+    assert!(told.contains("one unit at a time"), "{told}");
+    assert!(told.contains("--check"), "{told}");
+}
+
 /// A force-push that rewrote history with a byte-identical tree.
 ///
 /// This is Day 3 of the third proof. The remote's new tip and the home's commit are two

@@ -531,7 +531,12 @@ sections: this project, and a separate section for another project's leftovers t
 only.
 
 A unit home is read the way a reclaim reads it (`reclaim --check`, one evaluator), and the row says how
-many of its commits are only here and how many nothing has checked. The row carries the unit's
+many of its commits are only here and how many nothing has checked. The question is asked of the
+project's open homes as a **set**: a home of one of them is not believed as a second object store, so a
+commit that lives only inside two of this project's open homes is reported. Per-unit safety is not joint
+safety, and the person reading this section is about to clear a machine. The checkout, and the clones
+beside it that are nobody's unit home, are believed exactly as they were: they are not going anywhere
+when the units do. The row carries the unit's
 objective as its intent. A home that could not be read is a row too. So the closing sentence of the
 first section — nothing of this project is left behind — is printed only where every home of the
 project read clean, and it is never the answer for a machine holding the only copy of a morning. A worktree another tool holds a lock on is reported as locked and read no further. Removal of
@@ -1245,6 +1250,16 @@ history is on the remote, and reporting all of it would bury the few that are no
 | `second_local_copy` | a ref of this checkout, or of a clone beside it, reaches it | no, and no server is involved |
 | `not_checked` | nothing here read the remote, and nothing here holds it | unknown, so it is kept |
 | `only_here` | the reading was taken and it is still nowhere else | yes |
+
+**More than one unit may be named, and only to `--check`.** `nodal reclaim --check <unit> <unit> ...`
+reads each unit exactly as it reads one — the per-unit verdict in the report is the verdict that unit
+would get alone — and adds the joint one. A copy that lives only in another home named on the same
+command line does not count, because the same reclaim removes it; each such group becomes one more
+reason on that unit, naming the home and the number of commits. The report closes with the joint
+verdict and the exit code carries it: a person who named three units is asking what happens if all
+three go. Both answers are printed, because both are true. A `nodal reclaim` that is not a check takes
+one unit at a time and refuses a list, so a failure halfway through is never a question about which of
+them happened.
 
 **A commit whose tree a remote tip already holds is named, and it is not a copy.** A force-push
 that rewrites history leaves the remote's new tip and the home's commit as two identifiers over one

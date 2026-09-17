@@ -34,6 +34,16 @@
 //! verdict: doctor's closing line for the section says nothing was left behind, and a
 //! home nobody could read is not evidence for that sentence.
 //!
+//! **The question is asked of the project's open homes as a set.** Two units can each be
+//! safe because the other holds the copy: the reading of one names the other's home as a
+//! second object store, and the reading of the other names the first. Each answer is true
+//! and the pair is not, and a person clearing a machine removes both. So a home of this
+//! project's own open units is not believed as a second store ([`assess::counts`]), and a
+//! commit that lives only in one of them is reported here.
+//!
+//! The project's checkout, and the clones beside it that are nobody's unit home, are
+//! believed exactly as they were. They are not going anywhere when the units do.
+//!
 //! Only this project's section carries these rows. Another project's unique work is that
 //! project's to look at, and a person cleaning up one project must not be led into it.
 
@@ -63,20 +73,39 @@ pub fn find(conn: &Connection, scope: &Scope) -> crate::Result<Vec<(Section, Fin
         // reason: which other repositories stand beside this checkout is a fact about
         // the project, not about any home read against them.
         let mut siblings = None;
-        for unit in open_units(conn, known)? {
+        let open = open_units(conn, known)?;
+        let homes = homes_of(conn, &open)?;
+        for unit in &open {
             for environment in environments::list_for_unit(conn, unit.id)? {
                 if !environment.home.is_dir() {
                     continue;
                 }
                 let read_once = checkout.get_or_insert_with(|| Checkout::read(&known.root));
                 let beside = siblings.get_or_insert_with(|| scan::siblings(&known.root));
-                if let Some(finding) = read(&environment.home, read_once, beside, &unit) {
+                if let Some(finding) = read(&environment.home, read_once, beside, &homes, unit) {
                     rows.push((Section::Here, finding));
                 }
             }
         }
     }
     Ok(rows)
+}
+
+/// Every home of these units that is on the disk, which is the set the question is asked
+/// of.
+///
+/// Read once for the project. A home that is not there holds nothing and is left out, so
+/// a unit whose home was already removed never discounts a copy that is really there.
+fn homes_of(conn: &Connection, open: &[Unit]) -> crate::Result<Vec<PathBuf>> {
+    let mut homes = Vec::new();
+    for unit in open {
+        for environment in environments::list_for_unit(conn, unit.id)? {
+            if environment.home.is_dir() {
+                homes.push(environment.home);
+            }
+        }
+    }
+    Ok(homes)
 }
 
 /// The units of a project that still have a home to read: everything but the archived.
@@ -88,10 +117,21 @@ fn open_units(conn: &Connection, known: &Known) -> crate::Result<Vec<Unit>> {
 
 /// One home, read as a reclaim reads it, and the row it earns.
 ///
+/// `homes` is every open home of this project, this one included. A copy that lives only
+/// in one of them is not a copy a person clearing the machine keeps, so it is not counted
+/// ([`assess::Input::kin`]).
+///
 /// `None` for a home whose every commit lives somewhere else, which is the home the
 /// closing line is about.
-fn read(home: &Path, checkout: &Checkout, siblings: &[PathBuf], unit: &Unit) -> Option<Finding> {
-    let assessed = match assess::assess(&assess::Input::refusal(home, Some(checkout), siblings)) {
+fn read(
+    home: &Path,
+    checkout: &Checkout,
+    siblings: &[PathBuf],
+    homes: &[PathBuf],
+    unit: &Unit,
+) -> Option<Finding> {
+    let input = assess::Input::refusal(home, Some(checkout), siblings).with_kin(homes);
+    let assessed = match assess::assess(&input) {
         Ok(assessed) => assessed,
         Err(why) => return Some(unreadable(unit, home, &why.to_string())),
     };

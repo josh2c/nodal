@@ -105,7 +105,7 @@ fn reading() -> Vec<Tool> {
             },
             call: |cli, arguments| {
                 let command = Reclaim {
-                    unit: text(arguments, "unit"),
+                    units: text(arguments, "unit").into_iter().collect(),
                     check: true,
                     force: false,
                     json: true,

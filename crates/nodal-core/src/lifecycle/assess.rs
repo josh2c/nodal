@@ -176,6 +176,15 @@ pub struct Input<'a> {
     /// A store is only ever believed when it holds the object, proved by `git rev-list`
     /// in that repository ([`local_copies`]). A name never counts.
     pub siblings: &'a [PathBuf],
+    /// The other homes that go wherever this one goes.
+    ///
+    /// Per-unit safety is not joint safety. Two homes can each be safe because the other
+    /// holds the copy, and an operation that removes both takes the copy away with them.
+    /// A store named here is therefore not believed ([`counts`]), whatever it holds.
+    ///
+    /// Empty is the per-unit question, which is what a reclaim of one unit asks and what
+    /// every caller asked before this field existed.
+    pub kin: &'a [PathBuf],
     /// Whether to classify the ignored state the home holds.
     pub state: bool,
     /// Whether to say where else each commit lives, rather than only which commits
@@ -208,7 +217,22 @@ impl<'a> Input<'a> {
         checkout: Option<&'a Checkout>,
         siblings: &'a [PathBuf],
     ) -> Self {
-        Self { home, checkout, siblings, state: false, dispositions: false, runtime: None }
+        Self {
+            home,
+            checkout,
+            siblings,
+            kin: &[],
+            state: false,
+            dispositions: false,
+            runtime: None,
+        }
+    }
+
+    /// The same question, asked about a home that goes with these others.
+    #[must_use]
+    pub const fn with_kin(mut self, kin: &'a [PathBuf]) -> Self {
+        self.kin = kin;
+        self
     }
 }
 
@@ -1110,7 +1134,7 @@ fn history(
     let found = witness::elsewhere(input.home, input.checkout);
     let checkout = input.checkout.map(Checkout::path);
     if !input.dispositions {
-        let refused = refusing(git, checkout, input.siblings, &found, &remotes)?;
+        let refused = refusing(git, checkout, (input.siblings, input.kin), &found, &remotes)?;
         return Ok((refused, remotes, Vec::new()));
     }
     let ours = git.commits_outside("HEAD", &found.own)?;
@@ -1122,7 +1146,7 @@ fn history(
     let unproved = git.commits_outside("HEAD", &found.tips())?;
     let proved = difference(&ours, &off_remote);
     let second = difference(&off_remote, &unproved);
-    let (held, only) = local_copies(checkout, input.siblings, unproved);
+    let (held, only) = local_copies(checkout, input.siblings, input.kin, unproved);
     let content = same_content(git, &only, notes);
     let mut groups = Vec::new();
     groups.extend(commit_group(Copies::RemoteProved { witness: witness.clone() }, proved));
@@ -1207,15 +1231,16 @@ fn rewritten(git: &Git, kept: &[Oid]) -> Result<Vec<SameContent>> {
 fn refusing(
     git: &Git,
     checkout: Option<&Path>,
-    siblings: &[PathBuf],
+    stores: (&[PathBuf], &[PathBuf]),
     found: &witness::Elsewhere,
     remotes: &[String],
 ) -> Result<Vec<CommitGroup>> {
+    let (siblings, kin) = stores;
     let unproved = git.commits_outside("HEAD", &found.tips())?;
     if unproved.is_empty() {
         return Ok(Vec::new());
     }
-    let (_, only) = local_copies(checkout, siblings, unproved);
+    let (_, only) = local_copies(checkout, siblings, kin, unproved);
     let witness = Witness::of(remotes, found);
     Ok(commit_group(unreached(&witness), only).into_iter().collect())
 }
@@ -1234,14 +1259,16 @@ fn unreached(witness: &Witness) -> Copies {
     }
 }
 
-/// Split the commits no remote reading proved into the ones the checkout's object store
-/// holds anyway and the ones it does not.
+/// Split the commits no remote reading proved into the ones another object store holds
+/// anyway and the ones nothing does.
 ///
 /// A checkout that cannot be read, or that will not answer, holds nothing as far as this
-/// is concerned, which is the strict direction.
+/// is concerned, which is the strict direction. So does a store that goes wherever this
+/// home goes ([`counts`]).
 fn local_copies(
     checkout: Option<&Path>,
     siblings: &[PathBuf],
+    kin: &[PathBuf],
     unproved: Vec<Oid>,
 ) -> (Vec<(PathBuf, Vec<Oid>)>, Vec<Oid>) {
     let mut left = unproved;
@@ -1249,6 +1276,9 @@ fn local_copies(
     for store in checkout.into_iter().chain(siblings.iter().map(PathBuf::as_path)) {
         if left.is_empty() {
             break;
+        }
+        if !counts(store, kin) {
+            continue;
         }
         let holds = holds_of(store, &left);
         if holds.is_empty() {
@@ -1259,6 +1289,22 @@ fn local_copies(
         left = rest;
     }
     (found, left)
+}
+
+/// Whether a copy this store holds survives a removal that takes `kin` as well.
+///
+/// The one rule behind both joint readings: `nodal doctor`'s only-here section asks it of
+/// the project's other open homes, and `nodal reclaim --check` over several units asks it
+/// of the units named on the command line ([`together`]). A copy inside something the
+/// same operation removes is not a copy of anything afterwards.
+///
+/// Paths are resolved on both sides, because a home reached through a symbolic link and
+/// the same home reached directly are one directory with two names, and a comparison of
+/// the spellings would count it as a second store.
+#[must_use]
+pub fn counts(store: &Path, kin: &[PathBuf]) -> bool {
+    let store = paths::resolve(store);
+    !kin.iter().any(|home| paths::resolve(home) == store)
 }
 
 /// Which of these commits one repository really holds.
@@ -1352,6 +1398,43 @@ pub fn reasons(assessment: &Assessment) -> Vec<Reason> {
         ))
     }));
     reasons.extend(blocked(assessment));
+    reasons.sort_by_key(|reason| reason.needs);
+    reasons
+}
+
+/// What one reading gains when every home in `set` goes with it.
+///
+/// Per-unit safety is not joint safety. Two units can each be safe because the other holds
+/// the copy, and no per-unit reading can see that: each one is true, and the pair is not.
+/// The oracle of the third proof found this on Day 3 — the second copy of one unit's work
+/// lived in another unit's home — and no surface in that release answered the joint
+/// question.
+///
+/// Every reason the unit had on its own is kept and is first. What is added is one reason
+/// for each second copy that lives only inside the set, naming the home that holds it and
+/// how many commits go with it.
+///
+/// It is derived from the reading and takes no second one. A `second_local_copy` group
+/// already names the store that holds the commits, which is the whole of what this needs
+/// ([`counts`]). A caller with no dispositions in its reading has no such group and asks
+/// the question the other way, through [`Input::kin`].
+#[must_use]
+pub fn together(assessment: &Assessment, set: &[PathBuf]) -> Vec<Reason> {
+    let mut reasons = assessment.reasons.clone();
+    reasons.extend(assessment.commits.iter().filter_map(|group| {
+        let Copies::SecondLocalCopy { held_by } = &group.copies else { return None };
+        if counts(held_by, set) {
+            return None;
+        }
+        Some(Reason::new(
+            Needs::UniqueLoss,
+            format!(
+                "{} commits whose only other copy is in {}, which this reclaim removes too",
+                group.count,
+                held_by.display()
+            ),
+        ))
+    }));
     reasons.sort_by_key(|reason| reason.needs);
     reasons
 }

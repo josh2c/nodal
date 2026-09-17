@@ -134,7 +134,7 @@ use crate::model::{
     EnvId, EnvState, Environment, EventKind, Project, Recipe, Timestamp, Trashed, Unit, UnitId,
     UnitStatus, expiry,
 };
-use crate::output::view::{Leftover, Preflight, Pruned, Reclaimed};
+use crate::output::view::{Leftover, Preflight, Preflights, Pruned, Reclaimed};
 use crate::runtime::attribute::{Note, Source};
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
 use crate::services::docker;
@@ -280,6 +280,33 @@ pub fn check(store: &Store, request: &Request) -> Result<Preflight> {
     Ok(Preflight::new(Timestamp::now(), unit.slug.to_string(), trash, assessment))
 }
 
+/// What a reclaim of every one of these units would do, and the joint verdict over them.
+///
+/// Each unit is read exactly as [`check`] reads it alone, so the per-unit answer in the
+/// report is the answer that unit would have got on its own. The joint verdict is derived
+/// from those readings ([`assess::together`]) and takes no second reading of anything: a
+/// `second_local_copy` group already names the store that holds the commits, and what the
+/// joint question asks is whether that store is one this operation removes too.
+///
+/// Per-unit safety is not joint safety. Two units can each be safe because the other holds
+/// the copy, and reclaiming both takes it away. Both answers are printed, because both are
+/// true and a person needs the one that matches what they are about to do.
+///
+/// # Errors
+/// As [`check`], for each unit in turn.
+pub fn check_all(store: &Store, request: &Request, targets: &[String]) -> Result<Preflights> {
+    let mut units = Vec::new();
+    for target in targets {
+        let one = Request { target: Some(target.clone()), ..request.clone() };
+        units.push(check(store, &one)?);
+    }
+    let homes: Vec<PathBuf> = units.iter().map(|one| one.assessment.home.clone()).collect();
+    for one in &mut units {
+        one.together(assess::together(&one.assessment, &homes));
+    }
+    Ok(Preflights::new(Timestamp::now(), units))
+}
+
 /// The one reading, for a home that is there, and an empty one for a home that is not.
 fn read(
     placed: &Placement,
@@ -304,6 +331,9 @@ fn read(
         // repositories beside the project's checkout, proved by their own object stores
         // and never by a name.
         siblings: &crate::doctor::scan::siblings(&project.root),
+        // The per-unit question. A check over several units asks the joint one of these
+        // answers afterwards ([`assess::together`]), so that a person reads both.
+        kin: &[],
         state: true,
         // The preflight is what a person reads, so it pays for the two readings that say
         // where else each commit lives. The reclaim itself acts on the refusal alone.
