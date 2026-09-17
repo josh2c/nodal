@@ -825,6 +825,22 @@ pub enum Error {
         standing: Vec<Standing>,
     },
 
+    /// A home was to be moved while the process table could not be read.
+    ///
+    /// The reclaim asks this before its hook and its teardown, so a refused reclaim has
+    /// stopped nothing. A table that could not be read is not evidence that nothing Nodal
+    /// did not start stands in the home.
+    #[error(
+        "{slug} was not moved: the process table could not be read: {why}; \
+         --force moves the home to the trash anyway, after a snapshot of any work it holds"
+    )]
+    ProcessTableUnread {
+        /// The unit whose home was not moved.
+        slug: Slug,
+        /// Why the scan could not be made, as the scan said it.
+        why: String,
+    },
+
     /// A unit was asked for that has already been reclaimed.
     #[error("{slug} was reclaimed already")]
     AlreadyReclaimed {

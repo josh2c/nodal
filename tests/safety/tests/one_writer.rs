@@ -35,7 +35,7 @@ use nodal_core::store::locks;
 use nodal_safety::machine::binary;
 use nodal_safety::project::Workspace;
 use nodal_safety::state::InState;
-use nodal_safety::{git_ok, stderr, stdout};
+use nodal_safety::{git_ok, platform, stderr, stdout};
 
 /// The claim this suite does not make, because making it needs privileges CI has not
 /// got: that two Linux accounts are two actors to the kernel. What is asserted instead
@@ -225,7 +225,10 @@ fn a_reclaim_releases_the_hold_it_held() {
     let unit = workspace.one_unit().id;
     assert!(locks::get(workspace.store().conn(), unit).unwrap().is_some());
 
-    let gone = workspace.nodal_in(&home, &["reclaim", "worker-import", "--yes"]);
+    let gone = platform::reclaim(
+        |args| workspace.nodal_in(&home, args),
+        &["reclaim", "worker-import", "--yes"],
+    );
     assert!(gone.status.success(), "the reclaim failed: {}", stderr(&gone));
     assert_eq!(
         locks::get(workspace.store().conn(), unit).unwrap(),

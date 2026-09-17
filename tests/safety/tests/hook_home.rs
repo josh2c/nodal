@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use nodal_safety::InState as _;
-use nodal_safety::{Machine, git, stderr, stdout, tree};
+use nodal_safety::{Machine, answer, git, platform, stderr, stdout, tree};
 
 /// The only rule the project under test has. It covers what the stub package manager
 /// writes and nothing else, so a file Nodal leaves anywhere is a file `git status`
@@ -92,7 +92,7 @@ fn a_home_a_session_was_given_can_be_reclaimed() {
     let machine = machine();
     let home = session_home(&machine);
 
-    let reclaimed = machine.nodal(&["reclaim", "worker-import"]);
+    let reclaimed = platform::reclaim(|args| machine.nodal(args), &["reclaim", "worker-import"]);
     assert!(
         reclaimed.status.success(),
         "a home holding nothing but nodal's own file was refused: {}",
@@ -107,12 +107,18 @@ fn a_merge_of_a_unit_that_did_no_work_commits_nothing() {
     let home = session_home(&machine);
     let before = git(&home, &["rev-parse", "HEAD"]);
 
-    let merged = machine.nodal(&["merge", "--yes", "worker-import"]);
-    assert!(merged.status.success(), "{}", stderr(&merged));
+    let merged = platform::merge(
+        |args| machine.nodal(args),
+        &["merge", "--yes", "worker-import"],
+        "worker-import",
+    );
+    // A host with no process table lands the merge and refuses its remove, and the exit
+    // code says so.
+    assert_eq!(merged.status.success(), platform::moves_a_home_unforced(), "{}", stderr(&merged));
 
     let after = git(&machine.source, &["rev-parse", "HEAD"]);
     assert_eq!(after, before, "a unit that did no work moved the branch everybody merges into");
-    let told = format!("{}{}", stdout(&merged), stderr(&merged));
+    let told = format!("{}{}", answer(&merged), stderr(&merged));
     assert!(!told.contains(SETTINGS), "nodal's own file was named in what the merge did: {told}");
 }
 
@@ -190,7 +196,7 @@ fn a_project_that_commits_its_envrc_gets_a_clean_home() {
         "the values went with the file that was left alone"
     );
 
-    let reclaimed = machine.nodal(&["reclaim", "worker-import"]);
+    let reclaimed = platform::reclaim(|args| machine.nodal(args), &["reclaim", "worker-import"]);
     assert!(reclaimed.status.success(), "the home could not be let go of: {}", stderr(&reclaimed));
 }
 

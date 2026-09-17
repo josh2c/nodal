@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use nodal_core::lifecycle::journal;
 use nodal_safety::git::{commit, git_text as git};
+use nodal_safety::platform;
 use nodal_safety::process::Owned;
 use nodal_safety::text::{answer, stderr, stdout};
 use nodal_safety::{InState as _, Workspace};
@@ -52,6 +53,24 @@ impl Merging for Workspace {
     }
 }
 
+/// Merge `worker-import` with these arguments, the way this host allows
+/// ([`platform::merge`]).
+fn merge(workspace: &Workspace, args: &[&str]) -> std::process::Output {
+    platform::merge(|args| workspace.nodal(args), args, "worker-import")
+}
+
+/// Insist that the merge removed the home itself, where this host can.
+///
+/// A host with no process table lands the merge and refuses the remove, and the exit
+/// code says so. [`platform::merge`] has asserted the reason and taken the home.
+fn assert_removed_on_this_host(merged: &std::process::Output) {
+    assert_eq!(merged.status.success(), platform::moves_a_home_unforced(), "{}", stderr(merged));
+    if platform::moves_a_home_unforced() {
+        let report = answer(merged);
+        assert!(report.contains("the home is in the trash"), "{report}");
+    }
+}
+
 /// Whether a repository is in the middle of a rebase.
 fn rebasing(repo: &Path) -> bool {
     Path::new(git(repo, &["rev-parse", "--absolute-git-dir"]).trim()).join("rebase-merge").exists()
@@ -68,11 +87,10 @@ fn a_dirty_unit_reaches_the_target_in_one_command_and_the_home_is_in_the_trash()
     std::fs::write(home.join("app").join("main.txt"), "edited by the unit\n").unwrap();
     std::fs::write(home.join("app").join("new.txt"), "made here\n").unwrap();
 
-    let merged = workspace.nodal(&["merge", "worker-import", "--yes"]);
-    let report = stdout(&merged);
-    assert!(merged.status.success(), "{}", stderr(&merged));
+    let merged = merge(&workspace, &["merge", "worker-import", "--yes"]);
+    let report = answer(&merged);
     assert!(report.contains("nodal/worker-import into main"), "{report}");
-    assert!(report.contains("the home is in the trash"), "{report}");
+    assert_removed_on_this_host(&merged);
 
     // The plan is shown first, and on standard error, so the answer stays one document.
     let plan = stderr(&merged);
@@ -102,13 +120,7 @@ fn the_commits_a_squash_folded_stay_on_the_premerge_ref() {
     let id = workspace.one_unit().id.to_string();
     let before = git(&home, &["rev-parse", "HEAD"]).trim().to_owned();
 
-    drop(stdout(&workspace.nodal(&[
-        "merge",
-        "worker-import",
-        "--yes",
-        "-m",
-        "one squashed commit",
-    ])));
+    drop(merge(&workspace, &["merge", "worker-import", "--yes", "-m", "one squashed commit"]));
 
     assert_eq!(workspace.main_log().first().map(String::as_str), Some("one squashed commit"));
     assert_eq!(workspace.main_log().len(), 2, "two commits became one: {:?}", workspace.main_log());
@@ -161,7 +173,7 @@ fn no_squash_puts_every_commit_of_the_branch_on_the_target() {
         commit(&home, &format!("work {step}"));
     }
 
-    drop(stdout(&workspace.nodal(&["merge", "worker-import", "--yes", "--no-squash"])));
+    drop(merge(&workspace, &["merge", "worker-import", "--yes", "--no-squash"]));
 
     let log = workspace.main_log();
     assert_eq!(log, ["work two", "work one", "first"], "both commits are on main: {log:?}");
@@ -189,7 +201,7 @@ fn no_rebase_refuses_a_target_that_has_moved_and_a_rebase_takes_it() {
     );
 
     // The same merge, allowed to rebase, takes the target as it is now.
-    drop(stdout(&workspace.nodal(&["merge", "worker-import", "--yes"])));
+    drop(merge(&workspace, &["merge", "worker-import", "--yes"]));
     let log = workspace.main_log();
     assert_eq!(log.len(), 3, "{log:?}");
     assert_eq!(git(&workspace.source, &["show", "main:app/other.txt"]), "theirs\n");
@@ -250,8 +262,13 @@ fn a_conflict_stops_the_merge_and_a_second_merge_resumes_it() {
 fn resume(workspace: &Workspace, home: &Path) {
     std::fs::write(home.join("app").join("main.txt"), "both lines\n").unwrap();
     drop(git(home, &["add", "app/main.txt"]));
-    let finished = workspace.nodal(&["merge", "worker-import", "--yes"]);
-    assert!(finished.status.success(), "{}", stderr(&finished));
+    let finished = merge(workspace, &["merge", "worker-import", "--yes"]);
+    assert_eq!(
+        finished.status.success(),
+        platform::moves_a_home_unforced(),
+        "{}",
+        stderr(&finished)
+    );
     assert!(!home.exists(), "the home went to the trash");
     assert_eq!(git(&workspace.source, &["show", "main:app/main.txt"]), "both lines\n");
     assert_eq!(workspace.main_log().len(), 3, "{:?}", workspace.main_log());
@@ -312,10 +329,11 @@ fn the_six_hooks_run_in_order_and_the_merge_hooks_are_told_which_branch() {
     std::fs::write(home.join("app").join("new.txt"), "made here\n").unwrap();
     let stood_in = std::fs::canonicalize(&home).unwrap();
 
-    drop(stdout(&workspace.nodal(&["merge", "worker-import", "--yes"])));
+    drop(merge(&workspace, &["merge", "worker-import", "--yes"]));
 
     let log = std::fs::read_to_string(workspace.source.join("hooks.log")).unwrap();
     let phases: Vec<&str> = log.lines().map(|line| line.split(' ').next().unwrap()).collect();
+    // A remove refused over an unread process table runs no reclaim hook.
     assert_eq!(
         phases,
         ["pre_new", "post_new", "pre_merge", "post_merge", "pre_reclaim", "post_reclaim"],
@@ -416,11 +434,15 @@ fn a_merge_killed_between_two_steps_is_rolled_back_by_the_next_invocation() {
     assert!(home.is_dir(), "and the home is where it was");
 
     // What a person does next. The run is rolled back and the work is back in the tree.
-    let next = workspace.nodal(&["merge", "worker-import", "--yes"]);
+    let next = merge(&workspace, &["merge", "worker-import", "--yes"]);
     let told = stderr(&next);
     assert!(told.contains("merge (worker-import) was interrupted"), "{told}");
     assert!(told.contains("rolled back"), "{told}");
-    assert!(next.status.success(), "and the second merge finishes: {told}");
+    assert_eq!(
+        next.status.success(),
+        platform::moves_a_home_unforced(),
+        "and the second merge finishes: {told}"
+    );
     assert_eq!(workspace.main_log().len(), 2);
     assert_eq!(git(&workspace.source, &["show", "main:app/new.txt"]), "made here\n");
     assert!(!home.exists());

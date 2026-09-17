@@ -172,7 +172,7 @@ fn a_reclaim_with_no_bystander_stops_its_tether_and_takes_the_home() {
     let outside = tempfile::TempDir::new().unwrap();
     let tethered = tether(&machine, &home, &outside.path().join("tethered"));
 
-    let reclaimed = machine.nodal(&["reclaim", UNIT]);
+    let reclaimed = platform::reclaim(|args| machine.nodal(args), &["reclaim", UNIT]);
 
     assert!(reclaimed.status.success(), "{}", stderr(&reclaimed));
     wait_for("the tether to go", || !alive(tethered.pid()));

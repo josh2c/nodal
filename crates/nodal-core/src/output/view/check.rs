@@ -35,7 +35,7 @@ use crate::lifecycle::uniqueness::Witness;
 use crate::model::Timestamp;
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, JOIN, NONE};
-use crate::runtime::attribute::{Source, Standing};
+use crate::runtime::attribute::{Note, Source, Standing};
 
 /// How many names a line prints before it says how many more there are.
 const NAMED: usize = 6;
@@ -117,7 +117,14 @@ impl Preflight {
     /// Every reason, ranked, most actionable first.
     fn because_cell(&self) -> String {
         if self.assessment.reasons.is_empty() {
-            return String::from("nothing that is only here, and nothing standing in the home");
+            // A home that moves has no reason only when the table was read and nothing
+            // stands in it. A home that does not move says that instead, because its table
+            // may not have been read at all.
+            return String::from(if self.assessment.moves {
+                "nothing that is only here, and nothing standing in the home"
+            } else {
+                "nothing that is only here, and the home is not moved"
+            });
         }
         self.assessment
             .reasons
@@ -157,7 +164,7 @@ impl Preflight {
         };
         let mut lines = vec![owned_line(runtime)];
         if runtime.bystanders.is_empty() {
-            lines.push(String::from(if unread(runtime, Source::Environment) {
+            lines.push(String::from(if unread(&runtime.notes, Source::Environment) {
                 "nothing was found standing in the home, and the process table could not be read"
             } else {
                 "nothing else is standing in the home"
@@ -239,28 +246,42 @@ fn owned_line(runtime: &Runtime) -> String {
     let parts = [
         plural(runtime.groups.len(), "recorded group", "recorded groups"),
         counted(
-            runtime,
+            &runtime.notes,
             Source::Environment,
             runtime.processes.len(),
             "process by id",
             "processes by id",
         ),
-        counted(runtime, Source::Docker, runtime.containers.len(), "container", "containers"),
+        counted(
+            &runtime.notes,
+            Source::Docker,
+            runtime.containers.len(),
+            "container",
+            "containers",
+        ),
     ];
     format!("would stop: {}", parts.join(JOIN))
 }
 
 /// The count a signal produced, or the fact that the signal could not be read.
-fn counted(runtime: &Runtime, signal: Source, count: usize, one: &str, many: &str) -> String {
-    if unread(runtime, signal) {
-        return format!("{} could not be read", signal.label());
+///
+/// Shared with the reclaim report, which counts what it stopped from the same notes.
+pub(super) fn counted(
+    notes: &[Note],
+    signal: Source,
+    count: usize,
+    one: &str,
+    many: &str,
+) -> String {
+    if unread(notes, signal) {
+        return format!("{many} could not be read");
     }
     plural(count, one, many)
 }
 
-/// Whether one signal went unread for this unit.
-fn unread(runtime: &Runtime, signal: Source) -> bool {
-    runtime.notes.iter().any(|note| note.signal == signal)
+/// Whether one signal went unread.
+fn unread(notes: &[Note], signal: Source) -> bool {
+    notes.iter().any(|note| note.signal == signal)
 }
 
 /// The first [`NAMED`] of these, and how many of `total` were not named.
@@ -416,9 +437,33 @@ mod tests {
             ..Runtime::default()
         });
         let lines = preflight(assessment).doc().lines().join("\n");
-        assert!(lines.contains("env could not be read"), "{lines}");
+        assert!(lines.contains("processes by id could not be read"), "{lines}");
         assert!(!lines.contains("0 processes by id"), "{lines}");
         assert!(lines.contains("the process table could not be read"), "{lines}");
+    }
+
+    /// "Nothing standing in the home" is said only where the table was read. A home that
+    /// moves over an unread table has a reason instead, and a home that does not move
+    /// says that it does not.
+    #[test]
+    fn nothing_standing_in_the_home_is_said_only_where_the_table_was_read() {
+        let unread = Runtime {
+            notes: vec![Note::new(
+                Source::Environment,
+                "a process scan reads /proc, which macos does not have",
+            )],
+            ..Runtime::default()
+        };
+        for moves in [true, false] {
+            let mut assessment = clear();
+            assessment.moves = moves;
+            assessment.runtime = Some(unread.clone());
+            assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+            let report = preflight(assessment);
+            let lines = report.doc().lines().join("\n");
+            assert!(!lines.contains("nothing standing in the home"), "{lines}");
+            assert_eq!(report.safe_to_reclaim, !moves, "{lines}");
+        }
     }
 
     /// A bystander is named, and the line says what a reclaim would do about it.

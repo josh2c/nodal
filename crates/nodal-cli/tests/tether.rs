@@ -36,6 +36,7 @@ use std::process::{Command, Output, Stdio};
 
 use nodal_core::model::{EnvId, EnvState, Session, Timestamp};
 use nodal_core::store::{environments, projects, sessions, units};
+use nodal_safety::platform;
 use nodal_safety::process::{Owned, alive, wait_for};
 use nodal_safety::{InState as _, Workspace};
 
@@ -129,6 +130,19 @@ fn assert_ok(output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).unwrap()
 }
 
+/// Reclaim a unit with `--json`, the way this host allows ([`platform::reclaim`]).
+///
+/// On a host with no process table the first reclaim refuses before it stops anything,
+/// so the reclaim with `--force` is the one that stops the tether and reports it.
+fn reclaim(workspace: &Workspace, slug: &str) -> Output {
+    platform::reclaim(|args| workspace.nodal(args), &["reclaim", slug, "--json"])
+}
+
+/// Insist that the report names this group, and only it, as asked.
+fn assert_asked_group(report: &serde_json::Value, group: u32) {
+    assert_eq!(targets(report, "asked", "group"), vec![u64::from(group)], "{report}");
+}
+
 /// The JSON a `--json` command answered with.
 fn json(output: &Output) -> serde_json::Value {
     serde_json::from_str(&assert_ok(output)).unwrap()
@@ -196,8 +210,8 @@ fn a_tethered_group_is_dead_whole_after_the_unit_is_reclaimed() {
     assert_eq!(open.len(), 1, "the unit holds one tether");
     let group = open[0].pgid.expect("the row records a process group");
 
-    let report = json(&workspace.nodal(&["reclaim", "dev-server", "--json"]));
-    assert_eq!(targets(&report, "asked", "group"), vec![u64::from(group)], "{report}");
+    let report = json(&reclaim(&workspace, "dev-server"));
+    assert_asked_group(&report, group);
     assert!(report["leftovers"].as_array().unwrap().is_empty(), "{report}");
     for pid in planted {
         wait_for("the whole group to go", || !alive(pid));
@@ -237,10 +251,11 @@ fn a_tether_that_stops_on_the_interrupt_is_never_sent_the_next_signal() {
     let run = Owned::spawn(&mut command);
     wait_for("the tethered command to start", || ready.exists());
     wait_for("the tether to be recorded", || !workspace.tethers(environment).is_empty());
-    let _held = backstop(&[workspace.tethers(environment)[0].pgid.expect("a group")]);
+    let group = workspace.tethers(environment)[0].pgid.expect("a group");
+    let _held = backstop(&[group]);
 
-    let report = json(&workspace.nodal(&["reclaim", "polite-server", "--json"]));
-    assert_eq!(targets(&report, "asked", "group").len(), 1, "{report}");
+    let report = json(&reclaim(&workspace, "polite-server"));
+    assert_asked_group(&report, group);
     assert!(targets(&report, "killed", "group").is_empty(), "it was never killed: {report}");
     wait_for("the nodal run to finish", || run.exited());
 
@@ -272,8 +287,8 @@ fn a_tether_outlives_the_nodal_run_that_started_it_and_is_still_stopped() {
     run.reclaim();
     assert!(alive(group), "the tethered command outlived its parent");
 
-    let report = json(&workspace.nodal(&["reclaim", "orphan-server", "--json"]));
-    assert_eq!(targets(&report, "asked", "group"), vec![u64::from(group)], "{report}");
+    let report = json(&reclaim(&workspace, "orphan-server"));
+    assert_asked_group(&report, group);
     assert!(report["leftovers"].as_array().unwrap().is_empty(), "{report}");
     wait_for("the orphaned tether to go", || !alive(group));
 }
@@ -457,9 +472,9 @@ fn an_untethered_process_in_the_home_is_stopped_by_attribution_and_not_by_the_te
     let _held = backstop(&[group]);
     assert_ne!(group, untethered[0], "the untethered process is in nobody's tether");
 
-    let report = json(&workspace.nodal(&["reclaim", "mixed", "--json"]));
+    let report = json(&reclaim(&workspace, "mixed"));
     wait_for("the nodal run to finish", || run.exited());
-    assert_eq!(targets(&report, "asked", "group"), vec![u64::from(group)], "{report}");
+    assert_asked_group(&report, group);
     if cfg!(target_os = "linux") {
         assert!(
             targets(&report, "asked", "process").contains(&u64::from(untethered[0])),

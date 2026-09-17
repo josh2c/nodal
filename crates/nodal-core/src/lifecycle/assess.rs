@@ -59,6 +59,12 @@
 //! refuses. That is a conservative keep and it is deliberate: `--force` is how a person
 //! says they have looked.
 //!
+//! The process table follows the same rule. A home that would move is not safe while the
+//! table is unread, because what could not be read is not evidence that nothing stands
+//! in the home. [`unmovable`] states this once: the preflight reports it as
+//! [`Needs::UnknownEvidence`], and the reclaim refuses the move over it unless `--force`
+//! is given.
+//!
 //! # What must survive, what a tool writes again, and what nobody can price
 //!
 //! [`Held`] is the same split the trash prune makes, read without removing anything
@@ -81,7 +87,8 @@
 //! server over SSH and a teammate's shell all match — and it is the one that turns a
 //! reclaim into a refusal.
 //!
-//! It blocks only where there is a move to block. A checkout adopted in place is
+//! An unread table blocks the same move ([`unmovable`]). It blocks only where there is a
+//! move to block. A checkout adopted in place is
 //! unregistered and left exactly where it is, so nothing is moved out from under
 //! anybody, and a bystander there is reported and is not a reason.
 
@@ -479,14 +486,7 @@ pub struct Runtime {
 /// to the unit whether or not anything was still running.
 #[must_use]
 pub fn attributed(own: Own<'_>, homes: &[PathBuf]) -> Runtime {
-    let mut seen = Runtime::default();
-    match scan(own, homes) {
-        Ok((processes, bystanders)) => {
-            seen.processes = processes;
-            seen.bystanders = bystanders;
-        }
-        Err(error) => seen.notes.push(Note::new(Source::Environment, error.to_string())),
-    }
+    let mut seen = processes_of(own, homes);
     match docker::survey(&docker::Cli) {
         Ok(docker::Survey::Ran(containers)) => seen.containers = labelled(containers, own.unit),
         Ok(docker::Survey::Unavailable { why }) => {
@@ -495,6 +495,47 @@ pub fn attributed(own: Own<'_>, homes: &[PathBuf]) -> Runtime {
         Err(error) => seen.notes.push(Note::new(Source::Docker, error.to_string())),
     }
     seen
+}
+
+/// Read the process table alone for one unit: the half of [`attributed`] a move asks.
+///
+/// A scan that failed is a [`Source::Environment`] note, and that note is what
+/// [`unmovable`] reads. The move step and the preflight both get their answer here, so
+/// they cannot read an unread table two ways.
+#[must_use]
+pub fn processes_of(own: Own<'_>, homes: &[PathBuf]) -> Runtime {
+    let mut seen = Runtime::default();
+    match scan(own, homes) {
+        Ok((processes, bystanders)) => {
+            seen.processes = processes;
+            seen.bystanders = bystanders;
+        }
+        Err(error) => seen.notes.push(Note::new(Source::Environment, error.to_string())),
+    }
+    seen
+}
+
+/// Why a home cannot be moved over what the process table said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unmovable<'a> {
+    /// Processes Nodal did not start stand in the home.
+    Standing(&'a [Standing]),
+    /// The process table could not be read. What could not be read is not evidence that
+    /// nothing stands in the home.
+    Unread(&'a Note),
+}
+
+/// Why a move of the home would refuse over this reading, or nothing when it would not.
+///
+/// The one rule for both callers. [`reasons`] asks it of the runtime a preflight read,
+/// and the reclaim's move step asks it of the scan it makes just before the move. A
+/// second copy of the rule would let the preflight say safe where the move refuses.
+#[must_use]
+pub fn unmovable(runtime: &Runtime) -> Option<Unmovable<'_>> {
+    if let Some(note) = runtime.notes.iter().find(|note| note.signal == Source::Environment) {
+        return Some(Unmovable::Unread(note));
+    }
+    (!runtime.bystanders.is_empty()).then_some(Unmovable::Standing(&runtime.bystanders))
 }
 
 /// The containers among these that carry this unit's label.
@@ -1150,15 +1191,27 @@ pub fn reasons(assessment: &Assessment) -> Vec<Reason> {
     reasons
 }
 
-/// The reason a bystander gives, when there is a move for it to block.
+/// The reason the process table gives, when there is a move for it to block.
+///
+/// A bystander blocks the move. A table that could not be read blocks it too, as
+/// unknown evidence, because nothing standing in the home was not read, it was not
+/// proved.
 ///
 /// A checkout adopted in place is unregistered and left exactly where it is, so nothing
 /// is moved out from under anybody and a process standing in it stops nothing. Reporting
 /// it as blocking would refuse a reclaim the operation itself would not refuse.
 fn blocked(assessment: &Assessment) -> Option<Reason> {
     let runtime = assessment.runtime.as_ref().filter(|_| assessment.moves)?;
-    let named: Vec<String> = runtime.bystanders.iter().take(SAMPLE).map(Standing::label).collect();
-    (!named.is_empty()).then(|| Reason::new(Needs::BlockingRuntime, named.join(", ")))
+    Some(match unmovable(runtime)? {
+        Unmovable::Standing(standing) => {
+            let named: Vec<String> = standing.iter().take(SAMPLE).map(Standing::label).collect();
+            Reason::new(Needs::BlockingRuntime, named.join(", "))
+        }
+        Unmovable::Unread(note) => Reason::new(
+            Needs::UnknownEvidence,
+            format!("the process table could not be read: {}", note.why),
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -1377,6 +1430,71 @@ mod tests {
             assert!(!kept.survives(), "{kept:?}");
             assert!(!assessed(vec![commits(kept)], Vec::new()).safe_to_reclaim());
         }
+    }
+
+    /// The process table follows the commit rule: a home that would move is not safe
+    /// while the table is unread. A checkout left in place is not moved, so the same
+    /// reading keeps nothing there.
+    ///
+    /// The assessment is built here and the host is not read, so both runners assert the
+    /// same thing.
+    #[test]
+    fn an_unread_process_table_keeps_a_home_that_moves_and_not_one_left_in_place() {
+        let mut moving = assessed(Vec::new(), Vec::new());
+        moving.runtime =
+            Some(super::Runtime { notes: vec![unread_table()], ..super::Runtime::default() });
+        moving.reasons = reasons(&moving);
+        assert!(!moving.safe_to_reclaim());
+        assert_eq!(moving.top(), Needs::UnknownEvidence);
+        assert_eq!(
+            moving.reasons[0].detail,
+            "the process table could not be read: a process scan reads /proc, which macos \
+             does not have"
+        );
+
+        let mut in_place = moving.clone();
+        in_place.moves = false;
+        in_place.reasons = reasons(&in_place);
+        assert!(in_place.safe_to_reclaim(), "{:?}", in_place.reasons);
+    }
+
+    /// The preflight and the move step refuse on one rule. The step refuses where
+    /// [`super::unmovable`] answers; the preflight's verdict for a home that moves is
+    /// read off the same answer, for every shape of runtime reading.
+    #[test]
+    fn the_check_refuses_the_move_exactly_where_the_move_step_does() {
+        use crate::runtime::attribute::{Note, Source, Standing};
+
+        let readings = [
+            super::Runtime::default(),
+            super::Runtime { notes: vec![unread_table()], ..super::Runtime::default() },
+            super::Runtime {
+                bystanders: vec![Standing::new(7, Some(String::from("tmux")))],
+                ..super::Runtime::default()
+            },
+            super::Runtime {
+                notes: vec![Note::new(Source::Docker, "the daemon is not running")],
+                ..super::Runtime::default()
+            },
+        ];
+        for runtime in readings {
+            let mut moving = assessed(Vec::new(), Vec::new());
+            moving.runtime = Some(runtime.clone());
+            moving.reasons = reasons(&moving);
+            assert_eq!(
+                moving.safe_to_reclaim(),
+                super::unmovable(&runtime).is_none(),
+                "{runtime:?}"
+            );
+        }
+    }
+
+    /// The note a host with no process table leaves, in the words the scan gives.
+    fn unread_table() -> crate::runtime::attribute::Note {
+        crate::runtime::attribute::Note::new(
+            crate::runtime::attribute::Source::Environment,
+            "a process scan reads /proc, which macos does not have",
+        )
     }
 
     /// "Only here" is a claim about a remote and a run has to have earned it. Where

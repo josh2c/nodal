@@ -21,6 +21,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 use nodal_safety::Workspace;
+use nodal_safety::platform;
 use nodal_safety::text::stdout;
 use serde_json::{Value, json};
 
@@ -137,7 +138,12 @@ fn every_reading_tool_answers_with_the_command_lines_own_json() {
         vec!["reclaim", "worker-import", "--check", "--json"],
     ]) {
         let told = text(answer);
-        let printed = stdout(&workspace.nodal(&args));
+        // `--check` carries its verdict in the exit code, and a host with no process
+        // table answers refuse, so the document is read whatever the code is.
+        let output = workspace.nodal(&args);
+        let refuses = args.contains(&"--check") && !platform::moves_a_home_unforced();
+        assert_eq!(output.status.success(), !refuses, "nodal {}", args.join(" "));
+        let printed = nodal_safety::text::answer(&output);
         assert_eq!(
             volatile(&told),
             volatile(&printed),
