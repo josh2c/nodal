@@ -74,7 +74,8 @@ use crate::paths;
 use crate::services::ports;
 use crate::store::{Store, environments, events, projects, units};
 use crate::substrate::build::ThisHost;
-use crate::substrate::{self, Reporter, tools, warmth};
+use crate::substrate::pin::{self, Install};
+use crate::substrate::{self, Reporter, build, tools, warmth};
 use crate::workspace::relocate::{CacheRelocator, InvalidateCache};
 use crate::workspace::sharing::Sharing;
 use crate::workspace::{Excludes, Materializer, home, relocate, remove, select_backend, tracked};
@@ -216,6 +217,14 @@ pub struct Params {
     pub block: PortBlock,
     /// The names ports are granted under.
     pub ports: Vec<PortName>,
+    /// Every install the base did not run, because no home receives what it writes
+    /// ([`crate::substrate::pin::Site`]).
+    ///
+    /// Empty for every project that excludes no install output, which is nearly all of
+    /// them. Read once, here, so a plan rebuilt from the journal runs exactly the
+    /// installs the first attempt did.
+    #[serde(default)]
+    pub installs: Vec<Install>,
 }
 
 /// Create a unit: choose its name, place its home, run the plan, and report the result.
@@ -250,7 +259,7 @@ pub fn create(
         Arrival::Created,
         Timestamp::now(),
     )?;
-    let readiness = warmth::of(&params.recipe, &params.environment.home);
+    let readiness = warmth::of(&params.recipe, &params.environment.home, warmth::Tree::Home);
     let pinned = tools::readings(&params.recipe, &ThisHost);
     Ok(created
         .keeping(done.outputs.read(MATERIALIZE)?.unwrap_or_default())
@@ -379,6 +388,15 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
     environment.base_id = Some(base.base.id);
     environment.ws_fp_materialized = Some(base.fingerprint);
 
+    let installs = pin::in_the_home(&effective.recipe, &ThisHost)?;
+    for install in &installs {
+        progress.line(&format!(
+            "{} is excluded from every home, so `{}` installs here rather than in the base",
+            install.at.excluded().map(|path| path.display().to_string()).unwrap_or_default(),
+            install.manager.program()
+        ));
+    }
+
     Ok(Params {
         ports: port_names(&effective.recipe),
         recipe: effective.recipe,
@@ -390,6 +408,7 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
         unit,
         environment,
         block,
+        installs,
     })
 }
 
@@ -490,6 +509,7 @@ pub fn plan(params: &Params) -> Result<Plan> {
             branch: params.unit.branch.clone(),
             start: params.unit.base_commit.clone(),
         })
+        .then(InstallDependencies { home: home.clone(), installs: params.installs.clone() })
         .then(files::Hide { home: home.clone() })
         .then(marker::WriteMarker { home, unit: params.unit.id })
         .then(Activate {
@@ -789,6 +809,51 @@ impl Step for RefreshRefs {
 
     /// Nothing, for the reason [`Scrub::undo`] gives: the refs are inside a repository
     /// the first step's undo removes.
+    fn undo(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Run, in the home, every install the base did not run.
+///
+/// A base installs once and hands the tree to every home, which is what makes a home
+/// cheap. That trade is off for an install the project excluded the output of: no home
+/// receives what the base wrote, so the base's minutes bought nothing and every home was
+/// created cold. The install moves here instead ([`crate::substrate::pin::Site`]).
+///
+/// Idempotent, because a package manager's install is: a second run over an installed
+/// tree writes nothing and exits zero, which is what a resumed create needs.
+///
+/// A failure stops the create and the steps before it are undone, so a home whose
+/// dependencies did not install is not left for somebody to find. The tool's own two
+/// streams are in the error ([`build::run`]).
+pub(super) struct InstallDependencies {
+    /// The home the install runs in.
+    pub(super) home: PathBuf,
+    /// The installs, in the recipe's order. Empty for nearly every project.
+    pub(super) installs: Vec<Install>,
+}
+
+impl Step for InstallDependencies {
+    fn key(&self) -> String {
+        String::from("home.install")
+    }
+
+    /// Each install, in order, with its environment made first where it needs one.
+    fn apply(&self) -> Result<Output> {
+        for install in &self.installs {
+            if !install.prepare.is_empty() {
+                let prepare = build::runnable(&install.prepare, &self.home);
+                build::run(&self.home, &prepare, &install.env)?;
+            }
+            let argv = build::runnable(&install.argv, &self.home);
+            build::run(&self.home, &argv, &install.env)?;
+        }
+        Ok(nothing())
+    }
+
+    /// Nothing, for the reason [`Scrub::undo`] gives: what an install wrote is inside a
+    /// home the first step's undo removes whole.
     fn undo(&self) -> Result<()> {
         Ok(())
     }
@@ -1278,8 +1343,69 @@ pub(super) fn read_back(store: &Store, id: EnvId) -> Result<Environment> {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
-    use super::{DEFAULT_SLUG, branch_of, derive_slug, port_names, suffixed};
+    use std::path::PathBuf;
+
+    use super::{
+        DEFAULT_SLUG, Install, InstallDependencies, Step, branch_of, derive_slug, port_names,
+        suffixed,
+    };
+    use crate::model::recipe::PackageManager;
     use crate::model::{Objective, Recipe, ServiceName, Slug};
+    use crate::substrate::pin::Site;
+
+    /// An install of `argv`, sited in the home, with `prepare` run before it.
+    fn moved(prepare: &[&str], argv: &[&str]) -> Install {
+        Install {
+            manager: PackageManager::Pnpm,
+            prepare: prepare.iter().map(|word| (*word).to_owned()).collect(),
+            argv: argv.iter().map(|word| (*word).to_owned()).collect(),
+            env: Vec::new(),
+            at: Site::Home { output: PathBuf::from("node_modules") },
+        }
+    }
+
+    /// The base did not run this install, so the create does, in the home, environment
+    /// first. A second apply is a resumed create and must be allowed.
+    #[test]
+    fn the_install_a_base_skipped_runs_in_the_home() {
+        let home = tempfile::tempdir().unwrap();
+        let step = InstallDependencies {
+            home: home.path().to_path_buf(),
+            installs: vec![moved(
+                &["/bin/sh", "-c", "mkdir -p .made-first"],
+                &["/bin/sh", "-c", "mkdir -p node_modules"],
+            )],
+        };
+
+        step.apply().unwrap();
+        assert!(home.path().join(".made-first").is_dir(), "the environment is made first");
+        assert!(home.path().join("node_modules").is_dir());
+        step.apply().unwrap();
+    }
+
+    /// A failed install stops the create, so nobody is handed a home whose dependencies
+    /// are not there. What the tool wrote is in the error.
+    #[test]
+    fn a_failed_install_in_the_home_stops_the_create() {
+        let home = tempfile::tempdir().unwrap();
+        let step = InstallDependencies {
+            home: home.path().to_path_buf(),
+            installs: vec![moved(&[], &["/bin/sh", "-c", "echo no lockfile >&2; exit 1"])],
+        };
+        let failed = step.apply().unwrap_err();
+        let told = failed.to_string();
+        assert!(matches!(failed, crate::Error::Tool { .. }), "the wrong error: {told}");
+        assert!(told.contains("no lockfile"), "{told}");
+    }
+
+    /// The ordinary project moves no install, and the step does nothing at all.
+    #[test]
+    fn a_project_that_excludes_no_install_output_runs_nothing_in_the_home() {
+        let home = tempfile::tempdir().unwrap();
+        let step = InstallDependencies { home: home.path().to_path_buf(), installs: Vec::new() };
+        step.apply().unwrap();
+        assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
+    }
 
     fn objective(text: &str) -> Objective {
         Objective::parse(text).unwrap()

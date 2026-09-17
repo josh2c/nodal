@@ -206,6 +206,18 @@ ecosystem, chosen from the committed file each manager installs from; `pip` is r
 ecosystem is reported not ready, with the manifest and the ecosystem named: nothing would install
 that half, so no base is warm for it.
 
+**An excluded install output means the install runs in the home, not the base.** A base
+installs once and hands the tree to every home, which is what makes a home cheap. That trade
+is off where `base.exclude` names the directory a manager installs into — `node_modules` for
+a Node manager, `.venv` for `uv`, `pip` and an in-project Poetry: no home receives what the
+base wrote there. The base then runs no install for that manager and its readiness line says
+which directory and which manager, rather than reporting a path missing that it was never
+going to write. `nodal new` runs that install in the home, after the branch is taken and
+before the home is activated, at the version the package-manager pin names. A failure stops
+the create and the steps before it are undone, with both of the tool's streams in the error;
+the home's own readiness line then answers out of its own tree, as every home's does. Cargo
+is never moved: its download cache is outside the tree and no exclusion list reaches it.
+
 **A pin in `[toolchain]` is reported and never enforced.** `nodal new`, `nodal adopt` and
 `nodal show` print one line for each tool the recipe pins: the tool, the pin, and what
 `<program> --version` answered on this host. Where no program here answers for the tool, and

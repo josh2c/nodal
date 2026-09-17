@@ -310,7 +310,7 @@ fn warm(
 /// account of it: a cold part is information a person acts on, and a create that
 /// refused here would be a refusal nothing asked for.
 fn report(base: &Base, recipe: &Recipe, progress: &Arc<dyn Reporter>) {
-    let readiness = warmth::of(recipe, &base.path);
+    let readiness = warmth::of(recipe, &base.path, warmth::Tree::Base);
     let cold = readiness.cold();
     // The headline is the worst of the two parts. A part nothing can answer does not
     // make a base cold — a Cargo base with every crate fetched holds no file that says
@@ -426,7 +426,7 @@ pub fn list(store: &Store, project: ProjectId, recipe: &Recipe) -> Result<Vec<Ba
     let mut rows = Vec::new();
     for base in bases::list_for_project(store.conn(), project)? {
         let pins = environments::count_for_base(store.conn(), base.id)?;
-        let readiness = warmth::of(recipe, &base.path);
+        let readiness = warmth::of(recipe, &base.path, warmth::Tree::Base);
         rows.push(BaseRow { base, pins, disk_bytes: None, readiness });
     }
     rows.reverse();

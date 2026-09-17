@@ -96,7 +96,7 @@ use support::{World, journal_of};
 // ---------------------------------------------------------------------------
 
 #[test]
-fn plan_new_has_eight_steps_and_rolls_back_and_a_ninth_when_it_carries() {
+fn plan_new_has_nine_steps_and_rolls_back_and_a_tenth_when_it_carries() {
     let world = World::new();
     let params = world.create_params();
     let plan = new::plan(&params).unwrap();
@@ -108,6 +108,10 @@ fn plan_new_has_eight_steps_and_rolls_back_and_a_ninth_when_it_carries() {
         "git.scrub",
         "git.refresh",
         "git.branch",
+        // Empty for nearly every project. It is a step of every create so that a project
+        // which excludes an install output has the install journalled and resumable like
+        // every other part of a create.
+        "home.install",
         "git.hide",
         "home.marker",
         "env.activate",

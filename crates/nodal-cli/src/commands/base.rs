@@ -139,7 +139,8 @@ fn build_one(args: &Build, store: &mut Store) -> Result<ExitCode> {
     };
     let outcome = substrate::ensure(store, &request, &common.progress())?;
     let pins = substrate::pins(store, outcome.base.id)?;
-    let readiness = substrate::warmth::of(&request.recipe, &outcome.base.path);
+    let readiness =
+        substrate::warmth::of(&request.recipe, &outcome.base.path, substrate::warmth::Tree::Base);
     let answer = BaseBuild {
         now: Timestamp::now(),
         built: outcome.built(),

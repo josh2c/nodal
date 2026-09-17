@@ -25,6 +25,17 @@
 //! after a base has been cloned and half-installed has cost the person minutes and left
 //! them a directory to think about.
 //!
+//! # An install whose output no home receives runs in the home
+//!
+//! `base.exclude` names paths a clone leaves out. A project that names an install output
+//! there — `node_modules` is the one that was measured — used to get a base that ran the
+//! install and a home that never received it: minutes of work, thrown away once per
+//! project, and every home then reported `not ready: dependencies` truthfully.
+//!
+//! So the exclusion decides where the install runs ([`Site`]). The base skips it, because
+//! nothing would ever read what it wrote; the home runs it, because the home is the tree
+//! that needs it. Same install, same pin, same argument list — one directory later.
+//!
 //! # Which manager a pin belongs to
 //!
 //! A pin belongs to the manager whose manifest carries it. The `packageManager` field
@@ -33,11 +44,12 @@
 //! the manager it names. A field that names a version and no program still belongs to
 //! the Node manager.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::model::recipe::{PackageManager, Recipe, VENV};
+use crate::workspace::Excludes;
 use crate::{Error, Result};
 
 /// The variable that stops Corepack asking a person to confirm a download.
@@ -61,6 +73,37 @@ pub trait Host {
     fn version(&self, program: &str) -> Option<String>;
 }
 
+/// Where one install has to run for its output to be read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "site")]
+pub enum Site {
+    /// In the base, which every home receives a copy-on-write copy of.
+    Base,
+    /// In each home, because no home receives the base's copy of what this install
+    /// writes.
+    Home {
+        /// The excluded path the install writes, which is why it moved.
+        output: PathBuf,
+    },
+}
+
+impl Site {
+    /// Whether a base build runs this install.
+    #[must_use]
+    pub const fn in_base(&self) -> bool {
+        matches!(self, Self::Base)
+    }
+
+    /// The excluded output that moved the install, when one did.
+    #[must_use]
+    pub const fn excluded(&self) -> Option<&PathBuf> {
+        match self {
+            Self::Base => None,
+            Self::Home { output } => Some(output),
+        }
+    }
+}
+
 /// How a base build runs one package manager's install.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Install {
@@ -79,6 +122,32 @@ pub struct Install {
     pub argv: Vec<String>,
     /// Variables the install needs, on top of the ones it inherits.
     pub env: Vec<(String, String)>,
+    /// Where it runs. An install the base would write and no home would receive runs in
+    /// the home instead ([`Site`]).
+    ///
+    /// Defaulted when absent, so a plan rebuilt from a journal an earlier release wrote
+    /// still rebuilds: that release ran every install in the base.
+    #[serde(default = "in_the_base")]
+    pub at: Site,
+}
+
+/// Where an install recorded before [`Site`] existed ran.
+fn in_the_base() -> Site {
+    Site::Base
+}
+
+impl Install {
+    /// The same install, sited.
+    ///
+    /// A builder rather than a field on every construction, because where an install runs
+    /// is a fact about the project's exclusions and every other field is a fact about the
+    /// manager and the host. One place decides it ([`site`]), so a route through Corepack
+    /// and a route through the bare host cannot be sited differently.
+    #[must_use]
+    fn at(mut self, site: Site) -> Self {
+        self.at = site;
+        self
+    }
 }
 
 /// The interpreters a virtual environment is made with, in the order they are tried.
@@ -99,15 +168,60 @@ const INTERPRETERS: [&str; 2] = ["python3", "python"];
 /// on the path can fetch it. The caller has not made a directory yet, which is why this
 /// is called where it is.
 pub fn installs(recipe: &Recipe, host: &dyn Host) -> Result<Vec<Install>> {
-    recipe.package_manager.iter().map(|manager| install(recipe, *manager, host)).collect()
+    let excludes = Excludes::with_recipe(&recipe.base.exclude);
+    recipe
+        .package_manager
+        .iter()
+        .map(|manager| Ok(install(recipe, *manager, host)?.at(where_it_runs(*manager, &excludes))))
+        .collect()
+}
+
+/// Where one manager's install has to run for a home to read what it wrote.
+///
+/// Public because [`super::warmth`] says the same thing about the same manager: one rule,
+/// so a base that skipped an install and a line that explains the skip cannot disagree.
+///
+/// The exclusion list is the same one a create builds ([`Excludes::with_recipe`]), so the
+/// base and the home cannot disagree about which paths a clone leaves out. A manager that
+/// writes outside the tree is never moved: nothing a clone does reaches the Cargo home.
+#[must_use]
+pub fn where_it_runs(manager: PackageManager, excludes: &Excludes) -> Site {
+    let Some(output) = manager.install_output() else { return Site::Base };
+    let output = Path::new(output);
+    if excludes.excludes(output) { Site::Home { output: output.to_path_buf() } } else { Site::Base }
+}
+
+/// Every install the base does not run, because no home receives what it writes.
+///
+/// Empty for every project that excludes no install output, and it costs one reading of
+/// the exclusion list to say so: the host is asked about a tool only where there is an
+/// install to move.
+///
+/// # Errors
+/// As [`installs`].
+pub fn in_the_home(recipe: &Recipe, host: &dyn Host) -> Result<Vec<Install>> {
+    let excludes = Excludes::with_recipe(&recipe.base.exclude);
+    let moved = recipe
+        .package_manager
+        .iter()
+        .any(|manager| where_it_runs(*manager, &excludes).excluded().is_some());
+    if !moved {
+        return Ok(Vec::new());
+    }
+    Ok(installs(recipe, host)?.into_iter().filter(|install| !install.at.in_base()).collect())
 }
 
 /// The install one manager runs, with its own pin acted on.
 fn install(recipe: &Recipe, manager: PackageManager, host: &dyn Host) -> Result<Install> {
     let argv = super::build::install_argv(manager);
     let prepare = environment_for(manager, host)?;
-    let plain =
-        |argv: Vec<String>| Install { manager, prepare: prepare.clone(), argv, env: Vec::new() };
+    let plain = |argv: Vec<String>| Install {
+        manager,
+        prepare: prepare.clone(),
+        argv,
+        env: Vec::new(),
+        at: Site::Base,
+    };
     let (Some(pin), Some((program, rest))) = (pinned(recipe, manager), argv.split_first()) else {
         return Ok(plain(argv));
     };
@@ -118,7 +232,7 @@ fn install(recipe: &Recipe, manager: PackageManager, host: &dyn Host) -> Result<
         through.extend_from_slice(rest);
         let (name, value) = NO_DOWNLOAD_PROMPT;
         let env = vec![(name.to_owned(), value.to_owned())];
-        return Ok(Install { manager, prepare, argv: through, env });
+        return Ok(Install { manager, prepare, argv: through, env, at: Site::Base });
     }
 
     if host.on_path("mise") {
@@ -288,7 +402,9 @@ fn runnable(path: &Path) -> bool {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 mod tests {
-    use super::{Host, Install, installs};
+    use std::path::PathBuf;
+
+    use super::{Host, Install, Site, in_the_home, installs};
     use crate::model::recipe::{PackageManager, Recipe, ToolName, ToolVersion};
     use crate::{Error, Result};
 
@@ -373,6 +489,81 @@ mod tests {
         assert!(matches!(refused, Error::NoInterpreter { .. }), "the wrong error: {told}");
         assert!(told.contains("python3 or python"), "{told}");
         assert!(told.contains("virtual environment"), "{told}");
+    }
+
+    /// A recipe of one manager, with the project excluding these paths from every home.
+    fn excluding(manager: PackageManager, paths: &[&str]) -> Recipe {
+        let mut recipe = Recipe { package_manager: vec![manager], ..Recipe::default() };
+        recipe.base.exclude = paths.iter().map(PathBuf::from).collect();
+        recipe
+    }
+
+    /// The measured case. The base installed `node_modules`, every home was cloned
+    /// without it, and the minutes bought nothing.
+    #[test]
+    fn an_install_whose_output_no_home_receives_runs_in_the_home() {
+        let recipe = excluding(PackageManager::Pnpm, &["node_modules"]);
+        let host = Fake { tools: Vec::new(), version: None };
+
+        let resolved = only(&recipe, &host).unwrap();
+        assert_eq!(resolved.at, Site::Home { output: PathBuf::from("node_modules") });
+        assert!(!resolved.at.in_base(), "the base would write what no home reads");
+
+        let moved = in_the_home(&recipe, &host).unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].argv, resolved.argv, "the same install, one directory later");
+    }
+
+    /// The ordinary project. Nothing moves, and the create asks the host about nothing.
+    #[test]
+    fn an_install_the_homes_receive_stays_in_the_base() {
+        let recipe = Recipe { package_manager: vec![PackageManager::Pnpm], ..Recipe::default() };
+        let host = Fake { tools: Vec::new(), version: None };
+        assert_eq!(only(&recipe, &host).unwrap().at, Site::Base);
+        assert!(in_the_home(&recipe, &host).unwrap().is_empty());
+    }
+
+    /// Cargo writes into the Cargo home, which no exclusion list reaches, so an
+    /// exclusion of `target` moves nothing.
+    #[test]
+    fn a_manager_that_installs_outside_the_tree_is_never_moved() {
+        let recipe = excluding(PackageManager::Cargo, &["target", "node_modules"]);
+        let host = Fake { tools: Vec::new(), version: None };
+        assert_eq!(only(&recipe, &host).unwrap().at, Site::Base);
+        assert!(in_the_home(&recipe, &host).unwrap().is_empty());
+    }
+
+    /// One half of a repository moves and the other does not. A base of three ecosystems
+    /// that excluded one of them still installs the other two.
+    #[test]
+    fn only_the_excluded_half_of_a_repository_moves() {
+        let mut recipe = excluding(PackageManager::Pnpm, &[".venv"]);
+        recipe.package_manager.push(PackageManager::Uv);
+        let host = Fake { tools: Vec::new(), version: None };
+
+        let resolved = installs(&recipe, &host).unwrap();
+        let node = resolved.iter().find(|one| one.manager == PackageManager::Pnpm).unwrap();
+        let python = resolved.iter().find(|one| one.manager == PackageManager::Uv).unwrap();
+        assert_eq!(node.at, Site::Base);
+        assert_eq!(python.at, Site::Home { output: PathBuf::from(".venv") });
+
+        let moved = in_the_home(&recipe, &host).unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].manager, PackageManager::Uv);
+    }
+
+    /// A moved install keeps the pin it was resolved with. The route through Corepack is
+    /// the one a second siting rule would have got wrong.
+    #[test]
+    fn a_moved_install_still_runs_at_the_version_the_project_pinned() {
+        let mut recipe = excluding(PackageManager::Pnpm, &["node_modules"]);
+        recipe.package_manager_pin = Some(ToolVersion::parse("pnpm@9.1.0").unwrap());
+        let host = Fake { tools: vec!["corepack"], version: None };
+
+        let moved = in_the_home(&recipe, &host).unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].at, Site::Home { output: PathBuf::from("node_modules") });
+        assert_eq!(moved[0].argv[..2], [String::from("corepack"), String::from("pnpm@9.1.0")]);
     }
 
     /// Every manager that makes its own environment, or needs none, is unchanged.

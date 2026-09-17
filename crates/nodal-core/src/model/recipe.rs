@@ -110,6 +110,9 @@ pub enum Ecosystem {
 /// Poetry is asked whether it was told to use it.
 pub const VENV: &str = ".venv";
 
+/// Where a Node install puts what it installed.
+pub const NODE_MODULES: &str = "node_modules";
+
 impl Ecosystem {
     /// Every ecosystem, so that a reader can ask about the ones a recipe left out.
     pub const ALL: &'static [Self] = &[Self::Node, Self::Rust, Self::Python];
@@ -158,6 +161,26 @@ impl PackageManager {
     #[must_use]
     pub const fn runs_package_json_scripts(self) -> bool {
         matches!(self.ecosystem(), Ecosystem::Node)
+    }
+
+    /// Where this manager writes what it installs, inside the tree.
+    ///
+    /// `None` for a manager that writes outside it: Cargo's download cache is in the
+    /// Cargo home, shared by every base on the host, and no copy of the tree carries it.
+    ///
+    /// One table, read by three questions that must not answer differently: whether a
+    /// copy is warm ([`crate::substrate::warmth`]), whether a home will ever receive
+    /// what the base installed ([`crate::substrate::pin`]), and which path a report
+    /// names when it says an install is missing. Poetry writes here only when the
+    /// project asked it to, which is a reading of `poetry.toml` and not a fact about the
+    /// manager, so the gate for that stays where the reading is.
+    #[must_use]
+    pub const fn install_output(self) -> Option<&'static str> {
+        match self.ecosystem() {
+            Ecosystem::Node => Some(NODE_MODULES),
+            Ecosystem::Rust => None,
+            Ecosystem::Python => Some(VENV),
+        }
     }
 
     /// The binary this package manager is invoked as.

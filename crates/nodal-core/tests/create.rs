@@ -48,6 +48,7 @@ fn the_plan_is_the_same_plan_however_it_is_built() {
             "git.scrub",
             "git.refresh",
             "git.branch",
+            "home.install",
             "git.hide",
             "home.marker",
             "env.activate",
