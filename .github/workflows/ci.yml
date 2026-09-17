@@ -464,7 +464,21 @@ jobs:
   # exercise.
   publish:
     name: publish (tag)
-    needs: [acceptance]
+    # The whole workflow runs on the tag. These are the jobs that read the thing being
+    # published or the text that goes with it: the two hosts, the artifact and its hash,
+    # the version in every place a person reads it, the ceilings, the licences, the cold
+    # start and the schemas. The verb acceptance jobs run beside them and gate the merge
+    # this tag points at.
+    needs:
+      [
+        acceptance,
+        acceptance-release,
+        check,
+        deny,
+        measure,
+        schemas,
+        startup,
+      ]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
