@@ -48,7 +48,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::recipe::{PackageManager, Recipe, VENV};
+use crate::model::recipe::{PackageManager, Recipe, VENV, Venv};
 use crate::workspace::Excludes;
 use crate::{Error, Result};
 
@@ -58,6 +58,10 @@ use crate::{Error, Result};
 /// base build` and under the resolver that finishes an interrupted one. Corepack
 /// waiting for an answer nobody can give would hang the build rather than fail it.
 const NO_DOWNLOAD_PROMPT: (&str, &str) = ("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0");
+
+/// Poetry's own configuration file, and the table that moves its environment into the
+/// project directory.
+const POETRY_CONFIG: &str = "poetry.toml";
 
 /// What a host can be asked about a tool.
 ///
@@ -167,13 +171,39 @@ const INTERPRETERS: [&str; 2] = ["python3", "python"];
 /// [`Error::ToolPin`] when the project pins a version this host cannot run and nothing
 /// on the path can fetch it. The caller has not made a directory yet, which is why this
 /// is called where it is.
-pub fn installs(recipe: &Recipe, host: &dyn Host) -> Result<Vec<Install>> {
+pub fn installs(recipe: &Recipe, host: &dyn Host, tree: &Path) -> Result<Vec<Install>> {
+    let sites = sites(recipe, tree);
+    sites.into_iter().map(|(manager, site)| Ok(install(recipe, manager, host)?.at(site))).collect()
+}
+
+/// Where each of the recipe's managers has to install, in the recipe's order.
+///
+/// One walk of the managers and one reading of `tree`, which is what both callers need:
+/// the whole list for a base build, and the moved part of it for a create.
+fn sites(recipe: &Recipe, tree: &Path) -> Vec<(PackageManager, Site)> {
     let excludes = Excludes::with_recipe(&recipe.base.exclude);
+    let venv = venv_of(tree);
     recipe
         .package_manager
         .iter()
-        .map(|manager| Ok(install(recipe, *manager, host)?.at(where_it_runs(*manager, &excludes))))
+        .map(|manager| (*manager, where_it_runs(*manager, &excludes, venv)))
         .collect()
+}
+
+/// Whether the project told Poetry to keep its environment beside the code.
+///
+/// The one reading of `poetry.toml`, here because this module owns the siting rule and
+/// [`super::warmth`] already asks this module where an install runs. A file that is not
+/// there, that will not parse, or that says nothing about the key answers
+/// [`Venv::Outside`], which is Poetry's own default.
+#[must_use]
+pub fn venv_of(tree: &Path) -> Venv {
+    let Ok(text) = std::fs::read_to_string(tree.join(POETRY_CONFIG)) else { return Venv::Outside };
+    let asked = toml::from_str::<toml::Value>(&text)
+        .ok()
+        .and_then(|config| config.get("virtualenvs")?.get("in-project")?.as_bool())
+        .unwrap_or(false);
+    if asked { Venv::InProject } else { Venv::Outside }
 }
 
 /// Where one manager's install has to run for a home to read what it wrote.
@@ -183,32 +213,31 @@ pub fn installs(recipe: &Recipe, host: &dyn Host) -> Result<Vec<Install>> {
 ///
 /// The exclusion list is the same one a create builds ([`Excludes::with_recipe`]), so the
 /// base and the home cannot disagree about which paths a clone leaves out. A manager that
-/// writes outside the tree is never moved: nothing a clone does reaches the Cargo home.
+/// writes nothing into the tree is never moved: nothing a clone does reaches the Cargo
+/// home, and nothing reaches the environment Poetry keeps outside the project
+/// ([`Venv`]).
 #[must_use]
-pub fn where_it_runs(manager: PackageManager, excludes: &Excludes) -> Site {
-    let Some(output) = manager.install_output() else { return Site::Base };
+pub fn where_it_runs(manager: PackageManager, excludes: &Excludes, venv: Venv) -> Site {
+    let Some(output) = manager.install_output(venv) else { return Site::Base };
     let output = Path::new(output);
     if excludes.excludes(output) { Site::Home { output: output.to_path_buf() } } else { Site::Base }
 }
 
 /// Every install the base does not run, because no home receives what it writes.
 ///
-/// Empty for every project that excludes no install output, and it costs one reading of
-/// the exclusion list to say so: the host is asked about a tool only where there is an
-/// install to move.
+/// Empty for every project that excludes no install output. One walk of the managers,
+/// and the host is asked about a tool only where there is an install to move: a manager
+/// that installs in the base is not resolved here at all, so a pin it could not satisfy
+/// is raised by the base build rather than by this call.
 ///
 /// # Errors
 /// As [`installs`].
-pub fn in_the_home(recipe: &Recipe, host: &dyn Host) -> Result<Vec<Install>> {
-    let excludes = Excludes::with_recipe(&recipe.base.exclude);
-    let moved = recipe
-        .package_manager
-        .iter()
-        .any(|manager| where_it_runs(*manager, &excludes).excluded().is_some());
-    if !moved {
-        return Ok(Vec::new());
-    }
-    Ok(installs(recipe, host)?.into_iter().filter(|install| !install.at.in_base()).collect())
+pub fn in_the_home(recipe: &Recipe, host: &dyn Host, tree: &Path) -> Result<Vec<Install>> {
+    sites(recipe, tree)
+        .into_iter()
+        .filter(|(_, site)| !site.in_base())
+        .map(|(manager, site)| Ok(install(recipe, manager, host)?.at(site)))
+        .collect()
 }
 
 /// The install one manager runs, with its own pin acted on.
@@ -402,9 +431,10 @@ fn runnable(path: &Path) -> bool {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    use super::{Host, Install, Site, in_the_home, installs};
+    use super::{Host, Install, Site, in_the_home, installs, venv_of};
+    use crate::model::recipe::Venv;
     use crate::model::recipe::{PackageManager, Recipe, ToolName, ToolVersion};
     use crate::{Error, Result};
 
@@ -430,9 +460,16 @@ mod tests {
         Fake { tools: Vec::new(), version: Some("10.4.1") }
     }
 
+    /// A tree that holds no `poetry.toml`, which is every project here but the Poetry
+    /// one. Reading a path that is not there answers Poetry's own default,
+    /// [`Venv::Outside`], which is what a project that never configured it has.
+    fn bare_tree() -> &'static Path {
+        Path::new("/nodal-tests/no-such-tree")
+    }
+
     /// The one install a recipe of a single manager produces.
     fn only(recipe: &Recipe, host: &dyn Host) -> Result<Install> {
-        let mut resolved = installs(recipe, host)?;
+        let mut resolved = installs(recipe, host, bare_tree())?;
         assert_eq!(resolved.len(), 1, "this helper is for a recipe of one manager");
         Ok(resolved.remove(0))
     }
@@ -509,9 +546,50 @@ mod tests {
         assert_eq!(resolved.at, Site::Home { output: PathBuf::from("node_modules") });
         assert!(!resolved.at.in_base(), "the base would write what no home reads");
 
-        let moved = in_the_home(&recipe, &host).unwrap();
+        let moved = in_the_home(&recipe, &host, bare_tree()).unwrap();
         assert_eq!(moved.len(), 1);
         assert_eq!(moved[0].argv, resolved.argv, "the same install, one directory later");
+    }
+
+    /// Poetry keeps its environment outside the tree unless the project moved it, so an
+    /// exclusion of `.venv` names a directory Poetry was never going to write.
+    ///
+    /// The siting rule read the same table the warmth reading did, and that table
+    /// answered `.venv` for every Python manager. The warmth reading gated Poetry a
+    /// second time on `poetry.toml`; the siting rule had no such gate, so it moved
+    /// Poetry's install into every home over a path nothing would ever put there. The
+    /// fact is now in the table, so one answer serves both.
+    #[test]
+    fn poetry_that_keeps_its_environment_outside_the_tree_is_never_moved() {
+        let recipe = excluding(PackageManager::Poetry, &[".venv"]);
+        let host = Fake { tools: Vec::new(), version: None };
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::write(tree.path().join("poetry.toml"), "[virtualenvs]\nin-project = false\n")
+            .unwrap();
+
+        assert_eq!(venv_of(tree.path()), Venv::Outside, "the project said false");
+        let mut resolved = installs(&recipe, &host, tree.path()).unwrap();
+        assert_eq!(resolved.remove(0).at, Site::Base, "nothing would read a .venv in a home");
+        assert!(
+            in_the_home(&recipe, &host, tree.path()).unwrap().is_empty(),
+            "a create must not run an install for a directory poetry does not write"
+        );
+    }
+
+    /// The same project, having asked Poetry for the environment beside the code. Now the
+    /// exclusion names a directory Poetry really writes, so the install moves.
+    #[test]
+    fn poetry_that_keeps_its_environment_in_the_project_moves_like_any_other() {
+        let recipe = excluding(PackageManager::Poetry, &[".venv"]);
+        let host = Fake { tools: Vec::new(), version: None };
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::write(tree.path().join("poetry.toml"), "[virtualenvs]\nin-project = true\n")
+            .unwrap();
+
+        assert_eq!(venv_of(tree.path()), Venv::InProject);
+        let moved = in_the_home(&recipe, &host, tree.path()).unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].at, Site::Home { output: PathBuf::from(".venv") });
     }
 
     /// The ordinary project. Nothing moves, and the create asks the host about nothing.
@@ -520,7 +598,7 @@ mod tests {
         let recipe = Recipe { package_manager: vec![PackageManager::Pnpm], ..Recipe::default() };
         let host = Fake { tools: Vec::new(), version: None };
         assert_eq!(only(&recipe, &host).unwrap().at, Site::Base);
-        assert!(in_the_home(&recipe, &host).unwrap().is_empty());
+        assert!(in_the_home(&recipe, &host, bare_tree()).unwrap().is_empty());
     }
 
     /// Cargo writes into the Cargo home, which no exclusion list reaches, so an
@@ -530,7 +608,7 @@ mod tests {
         let recipe = excluding(PackageManager::Cargo, &["target", "node_modules"]);
         let host = Fake { tools: Vec::new(), version: None };
         assert_eq!(only(&recipe, &host).unwrap().at, Site::Base);
-        assert!(in_the_home(&recipe, &host).unwrap().is_empty());
+        assert!(in_the_home(&recipe, &host, bare_tree()).unwrap().is_empty());
     }
 
     /// One half of a repository moves and the other does not. A base of three ecosystems
@@ -541,13 +619,13 @@ mod tests {
         recipe.package_manager.push(PackageManager::Uv);
         let host = Fake { tools: Vec::new(), version: None };
 
-        let resolved = installs(&recipe, &host).unwrap();
+        let resolved = installs(&recipe, &host, bare_tree()).unwrap();
         let node = resolved.iter().find(|one| one.manager == PackageManager::Pnpm).unwrap();
         let python = resolved.iter().find(|one| one.manager == PackageManager::Uv).unwrap();
         assert_eq!(node.at, Site::Base);
         assert_eq!(python.at, Site::Home { output: PathBuf::from(".venv") });
 
-        let moved = in_the_home(&recipe, &host).unwrap();
+        let moved = in_the_home(&recipe, &host, bare_tree()).unwrap();
         assert_eq!(moved.len(), 1);
         assert_eq!(moved[0].manager, PackageManager::Uv);
     }
@@ -560,7 +638,7 @@ mod tests {
         recipe.package_manager_pin = Some(ToolVersion::parse("pnpm@9.1.0").unwrap());
         let host = Fake { tools: vec!["corepack"], version: None };
 
-        let moved = in_the_home(&recipe, &host).unwrap();
+        let moved = in_the_home(&recipe, &host, bare_tree()).unwrap();
         assert_eq!(moved.len(), 1);
         assert_eq!(moved[0].at, Site::Home { output: PathBuf::from("node_modules") });
         assert_eq!(moved[0].argv[..2], [String::from("corepack"), String::from("pnpm@9.1.0")]);
@@ -661,7 +739,7 @@ mod tests {
             package_manager: vec![PackageManager::Cargo, PackageManager::Pnpm, PackageManager::Uv],
             ..Recipe::default()
         };
-        let resolved = installs(&recipe, &bare_host()).unwrap();
+        let resolved = installs(&recipe, &bare_host(), bare_tree()).unwrap();
         let argvs: Vec<Vec<String>> = resolved.iter().map(|one| one.argv.clone()).collect();
         assert_eq!(argvs, [["cargo", "fetch"], ["pnpm", "install"], ["uv", "sync"]]);
         assert_eq!(resolved[1].manager, PackageManager::Pnpm);
@@ -676,11 +754,11 @@ mod tests {
             package_manager_pin: Some(ToolVersion::parse(String::from("pnpm@11.7.0")).unwrap()),
             ..Recipe::default()
         };
-        let refused = installs(&recipe, &bare_host()).unwrap_err();
+        let refused = installs(&recipe, &bare_host(), bare_tree()).unwrap_err();
         assert!(refused.to_string().contains("needs pnpm 11.7.0"), "{refused}");
 
         let cargo_only = Recipe { package_manager: vec![PackageManager::Cargo], ..recipe.clone() };
-        let resolved = installs(&cargo_only, &bare_host()).unwrap();
+        let resolved = installs(&cargo_only, &bare_host(), bare_tree()).unwrap();
         assert_eq!(resolved[0].argv, ["cargo", "fetch"], "pnpm's pin was read as cargo's");
     }
 
@@ -712,8 +790,11 @@ mod tests {
             package_manager_pin: pin.clone(),
             ..Recipe::default()
         };
-        let rust_argvs: Vec<Vec<String>> =
-            installs(&rust_led, &host).unwrap().into_iter().map(|one| one.argv).collect();
+        let rust_argvs: Vec<Vec<String>> = installs(&rust_led, &host, bare_tree())
+            .unwrap()
+            .into_iter()
+            .map(|one| one.argv)
+            .collect();
         assert_eq!(rust_argvs, [cargo.clone(), pnpm.clone()]);
 
         let node_led = Recipe {
@@ -721,8 +802,11 @@ mod tests {
             package_manager_pin: pin,
             ..Recipe::default()
         };
-        let node_argvs: Vec<Vec<String>> =
-            installs(&node_led, &host).unwrap().into_iter().map(|one| one.argv).collect();
+        let node_argvs: Vec<Vec<String>> = installs(&node_led, &host, bare_tree())
+            .unwrap()
+            .into_iter()
+            .map(|one| one.argv)
+            .collect();
         assert_eq!(node_argvs, [pnpm, cargo]);
     }
 
@@ -735,7 +819,7 @@ mod tests {
             package_manager_pin: Some(ToolVersion::parse(String::from("10.4.1")).unwrap()),
             ..Recipe::default()
         };
-        let resolved = installs(&recipe, &bare_host()).unwrap();
+        let resolved = installs(&recipe, &bare_host(), bare_tree()).unwrap();
         let argvs: Vec<Vec<String>> = resolved.iter().map(|one| one.argv.clone()).collect();
         assert_eq!(argvs, [["pnpm", "install"], ["cargo", "fetch"]]);
     }

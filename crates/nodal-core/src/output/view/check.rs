@@ -28,10 +28,12 @@
 
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::doctor::size::Bytes;
-use crate::lifecycle::assess::{Assessment, CommitGroup, PathGroup, Reason, Runtime, SameContent};
+use crate::lifecycle::assess::{
+    Assessment, CommitGroup, Copies, PathGroup, Reason, Runtime, SameContent,
+};
 use crate::lifecycle::uniqueness::Witness;
 use crate::model::Timestamp;
 use crate::output::Render;
@@ -75,12 +77,38 @@ pub struct Preflight {
 /// Beside the per-unit answer and never instead of it. Each unit's own verdict is what a
 /// reclaim of that unit alone would do, and it stays exactly what it was; this is what the
 /// same reading says when every home in the set goes at once.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// The verdict is read off the reasons rather than stored beside them, for the reason
+/// [`SameContent`] reads its disposition off its own type: a stored verdict is one that
+/// can drift from what it is a verdict of. [`Serialize`] writes it out, so a script
+/// gates on `safe` without re-deriving it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Together {
-    /// Whether a reclaim of the whole set would go ahead over this unit.
-    pub safe: bool,
     /// Every reason, ranked, with the per-unit ones first and the joint ones added.
     pub reasons: Vec<Reason>,
+}
+
+impl Together {
+    /// Whether a reclaim of the whole set would go ahead over this unit.
+    ///
+    /// The same predicate [`Assessment::safe_to_reclaim`] reads off the per-unit reasons,
+    /// over the joint ones, so the two verdicts differ only where the reasons do.
+    #[must_use]
+    pub fn safe(&self) -> bool {
+        !self.reasons.iter().any(|reason| reason.needs.refuses())
+    }
+}
+
+impl Serialize for Together {
+    /// The reasons, with the verdict written out from [`Together::safe`].
+    fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+
+        let mut joint = out.serialize_struct("Together", 2)?;
+        joint.serialize_field("safe", &self.safe())?;
+        joint.serialize_field("reasons", &self.reasons)?;
+        joint.end()
+    }
 }
 
 /// What a reclaim of several units would do, without doing any of it.
@@ -102,7 +130,7 @@ impl Preflights {
     #[must_use]
     pub fn new(now: Timestamp, units: Vec<Preflight>) -> Self {
         let safe_together = units.iter().all(|unit| match &unit.together {
-            Some(together) => together.safe,
+            Some(together) => together.safe(),
             None => unit.safe_to_reclaim,
         });
         Self { now, units, safe_together }
@@ -166,8 +194,7 @@ impl Preflight {
     /// The per-unit verdict above is untouched, for the reason [`Together`] exists: both
     /// answers are true and a person needs the one that matches what they are about to do.
     pub fn together(&mut self, reasons: Vec<Reason>) {
-        let safe = !reasons.iter().any(|reason| reason.needs.refuses());
-        self.together = Some(Together { safe, reasons });
+        self.together = Some(Together { reasons });
     }
 }
 
@@ -303,7 +330,7 @@ impl Preflight {
     /// one where they do not.
     fn together_cell(&self) -> String {
         let Some(together) = &self.together else { return String::new() };
-        if together.safe {
+        if together.safe() {
             return String::from("safe with the other units named here too");
         }
         let joined: Vec<String> = together
@@ -346,7 +373,25 @@ fn commit_line(group: &CommitGroup) -> String {
             group.copies.witness().map(Witness::because).unwrap_or_default(),
         )
     };
-    format!("{} ({}): {sample} — {means}{because}", group.copies.label(), group.count)
+    format!(
+        "{} ({}): {sample} — {means}{because}{}",
+        group.copies.label(),
+        group.count,
+        holder(&group.copies)
+    )
+}
+
+/// Which repository holds the second copy, for the one disposition that rests on one.
+///
+/// The store was always in the reading and only `--json` printed it. It is the whole of
+/// what "removing this home does not lose it" rests on, and it is what a joint reading
+/// then discounts when that repository goes too, so a person reading the line has to be
+/// able to see which directory is being relied on.
+fn holder(copies: &Copies) -> String {
+    match copies {
+        Copies::SecondLocalCopy { held_by } => format!(", held by {}", held_by.display()),
+        _ => String::new(),
+    }
 }
 
 /// One path disposition as a line: how many, which, what it holds, and why.
@@ -566,7 +611,8 @@ mod tests {
         );
     }
 
-    /// The case the third proof found and no surface answered. Two units each hold the
+    /// The case a reading of five unit homes found and nothing answered. Two units each
+    /// hold the
     /// other's only second copy: each is safe alone, and a reclaim of both loses the work.
     /// Both answers are printed, because both are true.
     #[test]
@@ -596,7 +642,7 @@ mod tests {
             "the per-unit one stays: {lines}"
         );
         assert!(lines.contains("refuse with the other units named here"), "{lines}");
-        assert!(lines.contains("which this reclaim removes too"), "{lines}");
+        assert!(lines.contains("which the same removal takes"), "{lines}");
         assert!(
             lines.contains("refuse — a reclaim of all 2 would stop"),
             "the joint verdict is printed: {lines}"

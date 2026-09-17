@@ -110,6 +110,25 @@ pub enum Ecosystem {
 /// Poetry is asked whether it was told to use it.
 pub const VENV: &str = ".venv";
 
+/// Whether Poetry keeps the environment it installs inside the project directory.
+///
+/// A fact about one project and not about the manager, which is why it is carried rather
+/// than assumed ([`PackageManager::install_output`]). `poetry.toml` decides it, and the
+/// reading lives with the other readings of a working copy
+/// ([`crate::substrate::pin::venv_of`]).
+///
+/// A named pair rather than a `bool`, so that a caller cannot hand the table the wrong
+/// one of two booleans and so that Poetry's own default has a name in the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Venv {
+    /// `poetry.toml` sets `virtualenvs.in-project`, so the environment is in the tree
+    /// and a clone carries it.
+    InProject,
+    /// It does not, which is Poetry's default: the environment is outside the tree, so
+    /// no copy of the tree holds it and no exclusion list reaches it.
+    Outside,
+}
+
 /// Where a Node install puts what it installed.
 pub const NODE_MODULES: &str = "node_modules";
 
@@ -165,21 +184,36 @@ impl PackageManager {
 
     /// Where this manager writes what it installs, inside the tree.
     ///
-    /// `None` for a manager that writes outside it: Cargo's download cache is in the
-    /// Cargo home, shared by every base on the host, and no copy of the tree carries it.
+    /// `None` for a manager that writes nothing there: Cargo's download cache is in the
+    /// Cargo home, shared by every base on the host, and no copy of the tree carries it;
+    /// Poetry's environment is outside the tree unless the project moved it.
     ///
     /// One table, read by three questions that must not answer differently: whether a
     /// copy is warm ([`crate::substrate::warmth`]), whether a home will ever receive
     /// what the base installed ([`crate::substrate::pin`]), and which path a report
-    /// names when it says an install is missing. Poetry writes here only when the
-    /// project asked it to, which is a reading of `poetry.toml` and not a fact about the
-    /// manager, so the gate for that stays where the reading is.
+    /// names when it says an install is missing.
+    ///
+    /// Poetry is why this takes an argument. Where it writes is a reading of the
+    /// project's `poetry.toml` and not a fact about the manager, and a table that
+    /// answered `.venv` for it regardless was true for the warmth question only because
+    /// that question gated Poetry a second time on its own. The siting question had no
+    /// such gate, so it moved Poetry's install into every home on the strength of a
+    /// directory Poetry was never going to write. The fact is carried in instead, so one
+    /// table answers both and neither caller needs a rule of its own.
     #[must_use]
-    pub const fn install_output(self) -> Option<&'static str> {
-        match self.ecosystem() {
-            Ecosystem::Node => Some(NODE_MODULES),
-            Ecosystem::Rust => None,
-            Ecosystem::Python => Some(VENV),
+    pub const fn install_output(self, venv: Venv) -> Option<&'static str> {
+        match self {
+            // Poetry first: it is the one manager of its ecosystem whose answer is the
+            // project's to give, and the ecosystem arm below would answer for it.
+            Self::Poetry => match venv {
+                Venv::InProject => Some(VENV),
+                Venv::Outside => None,
+            },
+            _ => match self.ecosystem() {
+                Ecosystem::Node => Some(NODE_MODULES),
+                Ecosystem::Rust => None,
+                Ecosystem::Python => Some(VENV),
+            },
         }
     }
 

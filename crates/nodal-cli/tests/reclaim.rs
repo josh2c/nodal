@@ -361,8 +361,9 @@ fn fetch_into(holder: &Path, source: &Path, commit: &str) {
 /// Per-unit safety is not joint safety.
 ///
 /// Two units each hold the only second copy of the other's work. Each is safe on its own,
-/// truthfully, and reclaiming both loses both. No surface in the third proof's release
-/// answered that question; `--check` over more than one unit is what answers it now.
+/// truthfully, and reclaiming both loses both. A reading of five unit homes on one
+/// machine found exactly that, and nothing answered the question; `--check` over more
+/// than one unit is what answers it now.
 ///
 /// The per-unit verdict stays exactly what it was, because it is still true: a person
 /// reclaiming one of them is not about to lose anything.
@@ -380,16 +381,17 @@ fn two_units_that_hold_each_others_only_copy_are_refused_together_and_allowed_ap
     fetch_into(&alpha, &beta, &theirs);
 
     // Each on its own: safe, and the report names the other home as the store that holds
-    // the copy.
-    assert_safe_alone(&workspace, "alpha");
-    assert_safe_alone(&workspace, "beta");
+    // the copy. Naming the store is the whole of what the joint rule then discounts, so
+    // a reading that named this home instead would refuse nothing and discount nothing.
+    assert_safe_alone(&workspace, "alpha", &beta);
+    assert_safe_alone(&workspace, "beta", &alpha);
 
     // Both together: refused, and the reason names the home that goes with them.
     let both = workspace.nodal(&["reclaim", "alpha", "beta", "--check"]);
     let report = answer(&both);
     assert!(!both.status.success(), "the pair is not safe: {report}");
     assert!(report.contains("refuse — a reclaim of all 2 would stop"), "{report}");
-    assert!(report.contains("which this reclaim removes too"), "{report}");
+    assert!(report.contains("which the same removal takes"), "{report}");
     assert!(
         report.contains("safe — a reclaim would go ahead"),
         "the per-unit verdict stays: {report}"
@@ -408,12 +410,24 @@ fn two_units_that_hold_each_others_only_copy_are_refused_together_and_allowed_ap
     }
 }
 
-/// One unit, read on its own, is safe over a copy another home holds.
-fn assert_safe_alone(workspace: &Workspace, slug: &str) {
+/// One unit, read on its own, is safe over a copy `holder` holds.
+///
+/// `holder` is asserted and not ignored. A home adopted in place sits beside the
+/// project's checkout, which is exactly where the reading looks for other repositories,
+/// so the home is offered its own path as a store that holds a second copy — and it does
+/// hold every one of those commits, because they are its own. A reading that believed it
+/// would print "the second copy is in this very directory" and the joint rule would then
+/// have nothing to discount.
+fn assert_safe_alone(workspace: &Workspace, slug: &str, holder: &Path) {
     let checked = workspace.nodal(&["reclaim", slug, "--check"]);
     let report = answer(&checked);
     assert!(checked.status.success(), "{slug} is safe on its own: {report}");
     assert!(report.contains("second local copy"), "{slug}: {report}");
+    assert!(
+        report.contains(holder.to_str().expect("a path")),
+        "{slug}: the copy is held by {}, not by the home being read: {report}",
+        holder.display()
+    );
 }
 
 /// A reclaim that is not a check does one unit at a time, and says so rather than
@@ -433,7 +447,7 @@ fn a_reclaim_of_more_than_one_unit_is_refused_and_names_the_check_that_reads_the
 
 /// A force-push that rewrote history with a byte-identical tree.
 ///
-/// This is Day 3 of the third proof. The remote's new tip and the home's commit are two
+/// The remote's new tip and the home's commit are two
 /// identifiers over one tree object, so not one byte of the work is at risk; Nodal
 /// compares commit identity, so it read the commit as only here and refused, and nothing
 /// said the refusal was about a name rather than about the content.

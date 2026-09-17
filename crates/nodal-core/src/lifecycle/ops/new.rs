@@ -388,7 +388,7 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
     environment.base_id = Some(base.base.id);
     environment.ws_fp_materialized = Some(base.fingerprint);
 
-    let installs = pin::in_the_home(&effective.recipe, &ThisHost)?;
+    let installs = pin::in_the_home(&effective.recipe, &ThisHost, &source)?;
     for install in &installs {
         progress.line(&format!(
             "{} is excluded from every home, so `{}` installs here rather than in the base",

@@ -331,9 +331,6 @@ fn read(
         // repositories beside the project's checkout, proved by their own object stores
         // and never by a name.
         siblings: &crate::doctor::scan::siblings(&project.root),
-        // The per-unit question. A check over several units asks the joint one of these
-        // answers afterwards ([`assess::together`]), so that a person reads both.
-        kin: &[],
         state: true,
         // The preflight is what a person reads, so it pays for the two readings that say
         // where else each commit lives. The reclaim itself acts on the refusal alone.

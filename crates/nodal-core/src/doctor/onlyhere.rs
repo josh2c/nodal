@@ -118,8 +118,15 @@ fn open_units(conn: &Connection, known: &Known) -> crate::Result<Vec<Unit>> {
 /// One home, read as a reclaim reads it, and the row it earns.
 ///
 /// `homes` is every open home of this project, this one included. A copy that lives only
-/// in one of them is not a copy a person clearing the machine keeps, so it is not counted
-/// ([`assess::Input::kin`]).
+/// in one of them is not a copy a person clearing the machine keeps, so the joint rule
+/// discounts it ([`assess::joined`]).
+///
+/// That rule is asked of the reading rather than built into it. The reading is exactly
+/// [`assess::Input::refusal`], the same one a refusing `nodal reclaim` makes, and the
+/// set is applied to the [`Copies::SecondLocalCopy`] groups it comes back with — which
+/// is the same route `nodal reclaim --check` takes over a set of units. So the two joint
+/// answers cannot name different holders, because there is one rule and one place it is
+/// asked.
 ///
 /// `None` for a home whose every commit lives somewhere else, which is the home the
 /// closing line is about.
@@ -130,8 +137,7 @@ fn read(
     homes: &[PathBuf],
     unit: &Unit,
 ) -> Option<Finding> {
-    let input = assess::Input::refusal(home, Some(checkout), siblings).with_kin(homes);
-    let assessed = match assess::assess(&input) {
+    let assessed = match assess::assess(&assess::Input::refusal(home, Some(checkout), siblings)) {
         Ok(assessed) => assessed,
         Err(why) => return Some(unreadable(unit, home, &why.to_string())),
     };
@@ -140,7 +146,8 @@ fn read(
     };
     let only_here = counted(|copies| matches!(copies, Copies::OnlyHere { .. }));
     let unchecked = counted(|copies| matches!(copies, Copies::NotChecked { .. }));
-    if only_here == 0 && unchecked == 0 && assessed.notes.is_empty() {
+    let shared = assess::joined(&assessed, homes);
+    if only_here == 0 && unchecked == 0 && shared.is_empty() && assessed.notes.is_empty() {
         return None;
     }
     let measured = size::measure(home);
@@ -151,6 +158,9 @@ fn read(
     }
     if unchecked > 0 {
         finding = finding.says(commits(unchecked, "nothing here has checked"));
+    }
+    for reason in &shared {
+        finding = finding.says(reason.detail.clone());
     }
     for note in &assessed.notes {
         finding = finding.says(note.clone());

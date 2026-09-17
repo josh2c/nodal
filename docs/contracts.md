@@ -1290,6 +1290,17 @@ A project whose checkout sits directly in a home directory is the widest case th
 parent is then the home directory itself. Two levels is what keeps that bounded. There is no way to turn
 the walk off.
 
+**The home being read is never its own second copy.** A checkout adopted in place sits beside the
+project's checkout, which is exactly where the walk looks, so the walk hands the home its own path
+back as a repository that may hold a copy — and it holds every one of them, because they are its own
+commits. The home is therefore taken out of the set, by resolved path, so that one directory reached
+through a symbolic link and reached directly is one directory. Without that, `--check` would answer
+"the second copy is in this very directory" about the directory a reclaim removes.
+
+**A second copy names the repository that holds it.** The `commits` line says `held by <path>` for
+that disposition, because the path is the whole of what "removing this home does not lose it" rests
+on, and it is what the joint reading below discounts when that repository goes too.
+
 A repository counts only where a ref of its own reaches the commit. `git rev-list` run in that
 repository proves it. Two readings a person might expect to count do not.
 

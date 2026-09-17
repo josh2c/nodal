@@ -97,7 +97,7 @@ pub fn ensure(
         report(&base, &request.recipe, progress);
         return Ok(Outcome { base, fingerprint, origin: None });
     }
-    let installs = pin::installs(&request.recipe, &ThisHost)?;
+    let installs = pin::installs(&request.recipe, &ThisHost, &request.source)?;
     let key = Key { fingerprint, platform, commit };
     if let Some(outcome) = carried_on(store, &key, progress)? {
         return Ok(outcome);

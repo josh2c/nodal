@@ -45,12 +45,9 @@
 use std::path::Path;
 
 use crate::model::readiness::{Readiness, State};
-use crate::model::recipe::{Ecosystem, NODE_MODULES, PackageManager, Recipe, VENV};
+use crate::model::recipe::{Ecosystem, PackageManager, Recipe, Venv};
+use crate::substrate::pin;
 use crate::workspace::Excludes;
-
-/// Poetry's own configuration file, and the key that moves its environment into the
-/// project directory.
-const POETRY_CONFIG: &str = "poetry.toml";
 
 /// Cargo's build output directory, which every profile writes a subdirectory of.
 const TARGET: &str = "target";
@@ -81,12 +78,13 @@ fn dependencies(recipe: &Recipe, tree: &Path, kind: Tree) -> State {
         return State::Unknown { why: String::from("the project names no package manager") };
     }
     let excludes = Excludes::with_recipe(&recipe.base.exclude);
+    let venv = pin::venv_of(tree);
     recipe
         .package_manager
         .iter()
-        .map(|manager| match sited(*manager, &excludes, kind) {
+        .map(|manager| match sited(*manager, &excludes, venv, kind) {
             Some(elsewhere) => elsewhere,
-            None => installed(*manager, tree),
+            None => installed(*manager, tree, venv),
         })
         .chain(unmanaged(recipe, tree).into_iter().map(no_manager))
         .fold(State::Ready, State::worse)
@@ -98,11 +96,11 @@ fn dependencies(recipe: &Recipe, tree: &Path, kind: Tree) -> State {
 /// evidence and [`installed`] is what reads it. The state is unknown rather than cold
 /// because the base is not missing anything: a person sent to rebuild it would wait for
 /// an install and get the same tree back.
-fn sited(manager: PackageManager, excludes: &Excludes, kind: Tree) -> Option<State> {
+fn sited(manager: PackageManager, excludes: &Excludes, venv: Venv, kind: Tree) -> Option<State> {
     if kind != Tree::Base {
         return None;
     }
-    let output = crate::substrate::pin::where_it_runs(manager, excludes).excluded()?.clone();
+    let output = pin::where_it_runs(manager, excludes, venv).excluded()?.clone();
     Some(State::Unknown {
         why: format!(
             "{} is in base.exclude, so no home receives it; `{}` installs in each home \
@@ -147,35 +145,32 @@ fn no_manager((ecosystem, manifest): (Ecosystem, &'static str)) -> State {
 
 /// Whether one manager has left its dependencies in the tree.
 ///
-/// The ecosystem answers for the directory, and the manager answers where two managers
-/// of one ecosystem differ: Poetry puts its environment outside the tree unless the
-/// project asked otherwise, and Cargo always does.
-fn installed(manager: PackageManager, tree: &Path) -> State {
-    let program = manager.program();
-    match manager.ecosystem() {
-        Ecosystem::Node => present(tree, NODE_MODULES, program),
-        Ecosystem::Rust => {
-            State::Unknown { why: String::from("cargo keeps its download cache outside the tree") }
-        }
-        Ecosystem::Python if manager == PackageManager::Poetry && !in_project(tree) => {
-            State::Unknown {
-                why: String::from(
-                    "poetry keeps its environment outside the tree unless \
-                     virtualenvs.in-project is set",
-                ),
-            }
-        }
-        Ecosystem::Python => present(tree, VENV, program),
+/// The directory comes from the one table ([`PackageManager::install_output`]) rather
+/// than from a second list of names here, and `venv` is the project's answer about
+/// Poetry that the table needs. A manager the table gives no directory for writes
+/// nothing a tree can be asked about, and [`outside`] says which one it is.
+fn installed(manager: PackageManager, tree: &Path, venv: Venv) -> State {
+    match manager.install_output(venv) {
+        Some(output) => present(tree, output, manager.program()),
+        None => outside(manager),
     }
 }
 
-/// Whether the project asked Poetry to keep its environment beside the code.
-fn in_project(tree: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(tree.join(POETRY_CONFIG)) else { return false };
-    toml::from_str::<toml::Value>(&text)
-        .ok()
-        .and_then(|config| config.get("virtualenvs")?.get("in-project")?.as_bool())
-        .unwrap_or(false)
+/// Why a manager's install leaves nothing in this tree to read.
+///
+/// Both are [`State::Unknown`] and not cold: the tree is missing nothing, because
+/// nothing was ever going to put a directory there. Reporting cold would send a person
+/// to rebuild something that is already where its tool keeps it.
+fn outside(manager: PackageManager) -> State {
+    State::Unknown {
+        why: String::from(match manager {
+            PackageManager::Poetry => {
+                "poetry keeps its environment outside the tree unless \
+                 virtualenvs.in-project is set"
+            }
+            _ => "cargo keeps its download cache outside the tree",
+        }),
+    }
 }
 
 /// Whether the build command's own output directory is in the tree.
