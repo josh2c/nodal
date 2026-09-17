@@ -6,6 +6,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# Every job reads. The one job that writes says so for itself.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -355,6 +359,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: one version number, in every place a person reads it
         run: ci/acceptance-release.sh
+      - name: and the check itself fails when a version disagrees
+        run: ci/acceptance-release.sh --self-test
 
   measure:
     name: measure (ceilings)
@@ -459,9 +465,10 @@ jobs:
           chmod +x "artifact/$name"
           ci/acceptance-version.sh "artifact/$name" "$version"
 
-  # A tag push is the only event that publishes. Every other event builds the same files
-  # and checks the same hashes, so the step below is the one part a pull request cannot
-  # exercise.
+  # The condition is the ref, not the event, so a tag push publishes and a manual run
+  # against a tag ref publishes as well. That is the re-run route when a publish fails
+  # half way. Every other event builds the same files and checks the same hashes, so
+  # `gh release create` is the one part a pull request cannot exercise.
   publish:
     name: publish (tag)
     # The whole workflow runs on the tag. These are the jobs that read the thing being
@@ -505,7 +512,10 @@ jobs:
             exit 1
           fi
           awk -v want="## $version" '
-            index($0, want) == 1 { on = 1; next }
+            index($0, want) == 1 && substr($0, length(want) + 1, 1) ~ /^( |)$/ {
+              on = 1
+              next
+            }
             on && /^## / { exit }
             on { print }
           ' CHANGELOG.md > notes.md
