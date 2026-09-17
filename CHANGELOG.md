@@ -20,6 +20,8 @@ catalogue `v1`.
 - `nodal ps` names the unit that a running process or a bound port belongs to.
 - `nodal env` reports the variables a home carries.
 - `nodal base` lists the warm bases that unit homes are cloned from.
+- On a host with no process table, `nodal ls`, `nodal ps` and `nodal reclaim --check`
+  name the signal they could not read. They do not print a zero.
 
 ### Make
 
@@ -41,9 +43,13 @@ catalogue `v1`.
 
 ### Integrate
 
-- `nodal done` pushes a unit's work and prints where to open the change.
+- `nodal done` pushes a unit's work and prints where to open the change. It does not
+  open a pull request, and it makes no call to a host API.
 - `nodal merge` commits, squashes, rebases, fast-forwards the target, and removes the
   unit.
+- A rebase that stops for a conflict leaves the home in the middle of the rebase. A
+  second `nodal merge` continues it. `nodal merge --abort` puts the branch back where
+  the merge found it.
 
 ### Reclaim
 
@@ -64,16 +70,23 @@ catalogue `v1`.
 
 ### What refuses
 
-- `nodal reclaim` refuses a home that holds work which exists nowhere else.
-- `nodal reclaim` refuses a home with uncommitted changes.
-- `nodal uninstall --state` refuses while one home holds work that exists nowhere else.
-- `nodal merge` stops in both directions when the merge conflicts, and leaves the two
-  branches as they were.
-- `nodal done` refuses to open a pull request. It prints the compare link instead.
-- `nodal base build` refuses a base that another unit pinned.
+- `nodal reclaim` refuses a home that holds work which exists nowhere else, and names
+  what it found: uncommitted changes, untracked files, or commits no remote has.
+- `nodal reclaim` refuses to move a home while something that carries no unit identifier
+  stands in it. The teardown stops what carries the identifier and leaves the rest.
+- `nodal reclaim` refuses to move a home while the process table could not be read.
+  Nothing found is not nothing there. On a host with no process table, `--force` moves
+  the home after a snapshot of the work it holds.
+- `nodal uninstall --state` refuses while a home holds work that exists nowhere else.
+- `nodal merge` refuses to fast-forward a target branch that moved under the rebase. No
+  flag overrides this. The person runs the merge again.
+- `nodal new` refuses a branch that an open unit holds, and names the holder.
+- `nodal base gc <base>` refuses to remove a base that units still hold, and says how
+  many hold it. A sweep with no base named steps over it instead.
+- A hook runs only where a person approved its exact command line. Nodal refuses any
+  other command line and names the project to run `nodal approve` in.
 - Nodal refuses a registry that a later version wrote. The message names the schema
   version in the file and the schema version this build understands.
-- A unit cannot read or write another unit of the same project.
 
 ### Records
 
@@ -82,3 +95,4 @@ catalogue `v1`.
 - Nodal writes its own files only where Git does not track them, and hides each one in
   the home's `info/exclude`.
 - Nodal makes no network call of its own. It runs no update check and sends no telemetry.
+- Two units of one project cannot read or write each other's home.
