@@ -40,6 +40,27 @@ author, and the author field says so. Do not add trailer lines: no `Co-Authored-
 and a push to `main`, whose commits hold one. Its header comment states the exact rule,
 including what git itself counts as a trailer.
 
+## Releases
+
+A change that a person can see adds one line to `CHANGELOG.md`, under the section for the
+version that is being prepared. Write the line in the same form as the lines beside it:
+one behaviour, one sentence.
+
+To make a release:
+
+1. Set the version in `Cargo.toml` under `[workspace.package]`, and in the `nodal-core`
+   requirement below it. Run `cargo check --workspace` to move `Cargo.lock`, and
+   `ci/schema-diff.sh` to move `schemas/v1/index.json`.
+2. Give `CHANGELOG.md` a section with that version, and update the version the README
+   install commands name. `ci/acceptance-release.sh` checks that these agree.
+3. Merge the pull request.
+4. Tag the merge commit `v<version>` and push the tag.
+
+The tag runs the workflow. The `release` job builds `nodal-<version>-<target>` for each
+platform and writes the sha256 beside it. The `publish` job creates the GitHub release
+from the tag, attaches both files for each platform, and takes the release notes from the
+section in `CHANGELOG.md`. It fails when the tag and the manifest name different versions.
+
 ## What belongs in the repository
 
 Commit only what the project needs to build, test, and document itself. Do not commit:
