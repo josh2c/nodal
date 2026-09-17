@@ -168,9 +168,16 @@ fn a_restricted_binary_is_found_by_its_directory_and_its_variables_are_not_guess
     let child = process::Owned::spawn(&mut command);
     let pid = child.pid();
 
+    // The reading this host gives once the child has become `sleep`. A Linux scan reads the
+    // variables before the command, so one read can take the variables from before the
+    // exec and the command from after it, and then the row is probable for an instant.
+    let settled = |row: &Attributed| {
+        row.what == "sleep 30"
+            && (cfg!(target_os = "macos") || row.confidence == Confidence::Certain)
+    };
     let answer = process::until("a row for the sleep the test started", || {
         let answer = observe(&store);
-        about(&answer, pid).is_some_and(|row| row.what == "sleep 30").then_some(answer)
+        about(&answer, pid).is_some_and(settled).then_some(answer)
     });
     let row = about(&answer, pid).unwrap();
     assert_eq!(row.slug.as_str(), "worker-import");
