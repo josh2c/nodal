@@ -620,17 +620,58 @@ fn group_of_its_own(_command: &mut Command) {}
 // The shapes a test starts a process in.
 // ---------------------------------------------------------------------------
 
+/// A `sleep` whose variables this host shows to the account that started it.
+///
+/// On Linux that is `sleep` itself. On macOS `/bin/sleep` is a restricted binary, and the
+/// kernel zeroes the variables of one (`nodal_core::runtime::processes`). A copy that
+/// `codesign` signs again is an ordinary program, as a tool a person installed is. The
+/// copy is made once, beside the test binaries. Each maker signs a draft of its own and
+/// renames it into place, so that two tests that make it at once both get a whole file.
+///
+/// # Panics
+///
+/// If the copy cannot be made or signed.
+#[must_use]
+pub fn readable_sleep() -> std::path::PathBuf {
+    if !cfg!(target_os = "macos") {
+        return std::path::PathBuf::from("sleep");
+    }
+    let exe = std::env::current_exe().expect("a test binary knows its own path");
+    let directory = exe.parent().expect("a test binary is in a directory").join("readable");
+    let program = directory.join("sleep");
+    if program.is_file() {
+        return program;
+    }
+    std::fs::create_dir_all(&directory).expect("the directory for the copy is made");
+    let draft = tempfile::Builder::new()
+        .prefix("sleep.")
+        .tempfile_in(&directory)
+        .expect("a draft of the copy is made");
+    std::fs::copy("/bin/sleep", draft.path()).expect("/bin/sleep is copied");
+    let signed = Command::new("codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(draft.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("codesign runs");
+    assert!(signed.success(), "codesign signed the copy of /bin/sleep");
+    draft.persist(&program).expect("the signed copy is put in place");
+    program
+}
+
 /// A sleeping process carrying a unit's environment, as an activated shell gives it.
 ///
 /// This is the signal attribution calls certain: the process says which unit it is in, in
-/// the two variables `nodal shell`, the prompt hook and direnv all set.
+/// the two variables `nodal shell`, the prompt hook and direnv all set. The program is
+/// [`readable_sleep`], so that both hosts show the variables.
 ///
 /// # Panics
 ///
 /// As [`Owned::spawn`].
 #[must_use]
 pub fn carrying(unit: &str, home: &Path) -> Owned {
-    let mut command = Command::new("sleep");
+    let mut command = Command::new(readable_sleep());
     command.arg("30").env("NODAL_ID", unit).env("NODAL_ROOT", home);
     Owned::spawn(&mut command)
 }
@@ -648,7 +689,7 @@ pub fn carrying(unit: &str, home: &Path) -> Owned {
 /// As [`Owned::spawn`].
 #[must_use]
 pub fn of_another_unit(unit: &str, its_home: &Path, standing_in: &Path) -> Owned {
-    let mut command = Command::new("sleep");
+    let mut command = Command::new(readable_sleep());
     command.arg("30").current_dir(standing_in).env("NODAL_ID", unit).env("NODAL_ROOT", its_home);
     Owned::spawn(&mut command)
 }

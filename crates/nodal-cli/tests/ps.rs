@@ -8,8 +8,8 @@
 //! 3. `--json` is the same answer: the same row, with the confidence as a field a tool
 //!    reads rather than a word a person reads.
 //!
-//! The rows are read from `/proc`, so on a host without one each check reports itself as
-//! skipped. `crates/nodal-core/tests/attribution.rs` is what covers that host.
+//! The rows are read from the process table on both hosts. The process carrying the
+//! environment is a `sleep` whose variables both hosts show ([`process::readable_sleep`]).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
@@ -17,7 +17,7 @@ mod home;
 mod state;
 
 use home::{Fixture, SLUG};
-use nodal_safety::{platform, process};
+use nodal_safety::process;
 
 /// The line of `nodal ps` output about one process, when there is one.
 fn line(text: &str, pid: u32) -> Option<String> {
@@ -57,9 +57,6 @@ fn json_row_for(fixture: &Fixture, pid: u32) -> serde_json::Value {
 
 #[test]
 fn a_process_started_with_the_homes_environment_is_certain() {
-    if !platform::reads_process_table("certain by environment") {
-        return;
-    }
     let fixture = Fixture::new();
     let child = process::carrying(Fixture::unit_id(), &fixture.home);
 
@@ -73,9 +70,6 @@ fn a_process_started_with_the_homes_environment_is_certain() {
 
 #[test]
 fn a_process_that_only_stands_in_the_home_is_probable() {
-    if !platform::reads_process_table("probable by directory") {
-        return;
-    }
     let fixture = Fixture::new();
     let child = process::standing_in(&fixture.home);
 
@@ -87,9 +81,6 @@ fn a_process_that_only_stands_in_the_home_is_probable() {
 
 #[test]
 fn the_json_answer_carries_the_same_row_with_its_confidence() {
-    if !platform::reads_process_table("json") {
-        return;
-    }
     let fixture = Fixture::new();
     let child = process::carrying(Fixture::unit_id(), &fixture.home);
 

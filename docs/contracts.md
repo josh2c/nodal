@@ -843,7 +843,7 @@ is gone", and three things say it: a host that publishes no process table, a tab
 list, and a table holding a record this account may not read. The last is the shared host the lock
 exists for — `hidepid`, or another account's process — where reading a live session as gone would hand
 away a hold nobody let go of. In every one of them a same-actor re-entry falls back to the rule that
-came before, the name alone, and passes. macOS, which publishes no `/proc`, is the first of the three.
+came before, the name alone, and passes.
 A row that records no session, written before locks carried a lineage, is read the same way, and the
 next entry rewrites it.
 
@@ -873,9 +873,8 @@ facts: the hold is nobody's to refresh, and something of that actor is still wri
 
 `gone` is printed where a reading contradicts the row, and nowhere else. A hold this host could not
 read a process for is printed the way the row states it, because a reading nobody could take is not
-evidence against the row: on a host with no readable process table — macOS today, where the process
-scan is not implemented — every hold reads `holds`, as it always did, and `--json` carries `unknown`
-with the reason. `nodal show` states the process and the reason under the WHO line.
+evidence against the row: on a host with no readable process table every hold reads `holds`, as it
+always did, and `--json` carries `unknown` with the reason. `nodal show` states the process and the reason under the WHO line.
 
 The state changes no refusal. This is the reading of the recorded **process**, and it stays a word in
 the report: a process identifier is reused, and a hold that let go on a reading of one would be a hold
@@ -913,7 +912,15 @@ contract above.
 
 A signal that cannot run gives a note under the table. It is never a failure. A host with no Docker
 daemon still answers, and so does a host whose process table Nodal cannot read. An empty answer means
-nothing runs. A note means Nodal could not read that signal.
+nothing runs. A note means Nodal could not read that signal. Its `reach` is `unread` when the signal
+did not run, and `part` when the signal ran and the host refused part of what it reads.
+
+macOS reads the process table and refuses two things. It does not show the variables or the
+directory of a process of another account. It does not show the variables of a process that runs a
+restricted binary, which most programs under `/bin` and `/usr/bin` are. Each refusal is a `part` note
+with that reason. A restricted binary that stands in a home is found by its directory, so it is
+`probable` and never signalled, even when it carries the unit's `NODAL_ID`. A Linux scan leaves out a
+process this account cannot read, and gives no note.
 
 ## Tether
 `nodal run --tether <command>` starts the command in a process group of its own and records that
@@ -1309,8 +1316,12 @@ command and process, with the sentence `standing in the home; not signalled`.
 
 A reclaim refuses to move the home while such a process stands in it. The refusal names the command
 and the process. `--force` moves the home anyway. The teardown has already run at that point, so a
-refused reclaim leaves the unit live with its runtime stopped. A host whose process table Nodal
-cannot read moves the home and reports the unread signal as a note.
+refused reclaim leaves the unit live with its runtime stopped. A `part` note does not refuse the move:
+the table was read, and a process this account cannot read is not reported on Linux either.
+
+The move step reads the table again just before the move. Two processes do not refuse it there. A
+process that the `nodal run` of a recorded tether started is the wrapper's own, such as the `git` that
+records the run. A process that ended between the reading and the check is no longer in the home.
 
 `nodal gc` makes the same split. It signals a recorded tether of a reclaimed materialisation, and a
 process carrying the `NODAL_ID` of a unit whose materialisations have all been reclaimed. It reports
@@ -1360,9 +1371,9 @@ appears for a home Nodal made. Those go to trash as today. Nodal never removes a
 make unless the person confirmed.
 
 A reclaim reads the two signals `nodal ps` reads: the process table and the container daemon. A
-signal Nodal cannot read becomes a note, never silence. A host with no readable process table
-still reclaims the home and still gives back the ports. The verification there says that it found
-nothing, not that nothing is left, and the note says which signal went unread.
+signal Nodal cannot read becomes a note, never silence. A host with no readable process table refuses
+the reclaim without `--force`, as the check does. A forced reclaim there says that it found nothing,
+not that nothing is left, and the note says which signal went unread.
 
 `nodal gc` removes a trashed home when `reclaim.trash_retention` days have passed. Nodal stamps
 that window on the row when it moves the home. A recipe edited later cannot shorten a retention

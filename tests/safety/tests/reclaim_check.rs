@@ -64,7 +64,7 @@ use std::path::{Path, PathBuf};
 use nodal_core::lifecycle::journal;
 use nodal_core::store::{environments, projects, units};
 use nodal_safety::git::untouched;
-use nodal_safety::{InState as _, Machine, Snapshot, answer, git, platform, stderr};
+use nodal_safety::{InState as _, Machine, Snapshot, answer, git, stderr};
 use serde_json::Value;
 
 /// The unit every property here asks about. One of the fixture's own handles.
@@ -114,21 +114,9 @@ fn check(machine: &Machine, slug: &str) -> Value {
     read
 }
 
-/// Insist that the preflight calls this home safe, where this host can.
-///
-/// A host with no process table cannot say that nothing stands in a home that would
-/// move, so there the verdict is refuse and the one reason is that unread table.
-fn assert_safe_on_this_host(answer: &Value) {
-    if platform::moves_a_home_unforced() {
-        assert_eq!(answer["safe_to_reclaim"], Value::Bool(true), "{answer:#}");
-        return;
-    }
-    assert_eq!(answer["safe_to_reclaim"], Value::Bool(false), "{answer:#}");
-    let reasons = answer["reasons"].as_array().expect("the answer carries its reasons");
-    assert_eq!(reasons.len(), 1, "the unread table is the only reason: {answer:#}");
-    assert_eq!(reasons[0]["needs"], Value::from("unknown_evidence"), "{answer:#}");
-    let detail = reasons[0]["detail"].as_str().unwrap_or_default();
-    assert!(detail.contains("process table could not be read"), "{answer:#}");
+/// Insist that the preflight calls this home safe.
+fn assert_safe(answer: &Value) {
+    assert_eq!(answer["safe_to_reclaim"], Value::Bool(true), "{answer:#}");
 }
 
 /// The commit group of one disposition, or nothing when the reading found none.
@@ -265,7 +253,7 @@ fn a_commit_this_disk_holds_twice_is_a_second_local_copy() {
     git(&machine.source, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD"]);
 
     let answer = check(&machine, SLUG);
-    assert_safe_on_this_host(&answer);
+    assert_safe(&answer);
     assert_eq!(count(commits(&answer, "second_local_copy")), 1, "{answer:#}");
     assert_eq!(count(commits(&answer, "remote_proved")), 0, "the remote proved nothing here");
     let held_by = &commits(&answer, "second_local_copy").unwrap()["copies"]["held_by"];
@@ -282,7 +270,7 @@ fn a_commit_a_current_reading_reaches_is_proved_on_the_remote() {
     git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
 
     let answer = check(&machine, SLUG);
-    assert_safe_on_this_host(&answer);
+    assert_safe(&answer);
     assert_eq!(count(commits(&answer, "remote_proved")), 1, "{answer:#}");
     let witness = &commits(&answer, "remote_proved").unwrap()["copies"]["witness"];
     assert_eq!(witness["kind"], Value::from("checked"));
@@ -512,7 +500,7 @@ fn heavy_ignored_state_is_reconstructable_and_priced_as_apparent() {
     assert_eq!(local["sample"][0], Value::from(".env.local"));
 
     // Neither is a reason to refuse: the trash keeps the one and no tool needs the other.
-    assert_safe_on_this_host(&answer);
+    assert_safe(&answer);
     assert!(home.join("target/debug/app").exists(), "the check removed the build output");
     assert!(home.join(".env.local").exists(), "the check removed local state");
 }
@@ -522,9 +510,7 @@ fn heavy_ignored_state_is_reconstructable_and_priced_as_apparent() {
 /// signalling it.
 #[test]
 fn owned_runtime_is_named_and_is_not_a_reason_to_refuse() {
-    let Some((machine, home, owned)) = attributed_unit("owned runtime is named") else {
-        return;
-    };
+    let (machine, home, owned) = attributed_unit();
 
     let answer = check(&machine, SLUG);
     let processes = answer["runtime"]["processes"].as_array().unwrap();
@@ -548,10 +534,7 @@ fn owned_runtime_is_named_and_is_not_a_reason_to_refuse() {
 /// Every reading it could disturb is taken before it.
 #[test]
 fn a_bystander_blocks_the_move_and_the_reclaim_refuses_the_same_way() {
-    let Some((machine, home, _owned)) = attributed_unit("the bystander half of the preflight")
-    else {
-        return;
-    };
+    let (machine, home, _owned) = attributed_unit();
     let bystander = nodal_safety::process::standing_in(&home);
 
     let answer = check(&machine, SLUG);
@@ -587,9 +570,6 @@ fn a_bystander_blocks_the_move_and_the_reclaim_refuses_the_same_way() {
 /// about two readings of one machine and a table a test wrote is only one of them.
 #[test]
 fn another_units_process_in_this_home_blocks_the_list_and_the_check_alike() {
-    if !nodal_safety::platform::reads_process_table("one bystander rule for two readings") {
-        return;
-    }
     let machine = machine();
     let home = machine.unit(SLUG);
     let other = machine.unit(NEIGHBOUR);
@@ -630,20 +610,13 @@ fn needs(machine: &Machine, slug: &str) -> String {
         .to_owned()
 }
 
-/// A unit with one process carrying its identifier, or nothing on a host with no process
-/// table to read.
-///
-/// A host that cannot make the reading says which claim it is not making rather than
-/// passing quietly ([`nodal_safety::platform`]).
-fn attributed_unit(claim: &str) -> Option<(Machine, PathBuf, nodal_safety::process::Owned)> {
-    if !nodal_safety::platform::reads_process_table(claim) {
-        return None;
-    }
+/// A unit with one process carrying its identifier.
+fn attributed_unit() -> (Machine, PathBuf, nodal_safety::process::Owned) {
     let machine = machine();
     let home = machine.unit(SLUG);
     let id = std::fs::read_to_string(home.join(".nodal/id")).unwrap();
     let owned = nodal_safety::process::carrying(id.trim(), &home);
-    Some((machine, home, owned))
+    (machine, home, owned)
 }
 
 /// The whole of the read-only promise, asserted on a machine that has something to lose.

@@ -473,10 +473,9 @@ fn a_reading_that_cannot_be_taken_is_unknown_and_never_gone() {
 
     assert_eq!(state("ahead").state, HolderState::Unknown { why: Unknowable::AnotherHost });
     assert_eq!(state("behind").state, HolderState::Unknown { why: Unknowable::NoProcessTable });
-    // And it reads the way the lock row states it. This is the rendering a host with no
-    // readable process table gets for every hold it has — macOS today — and it is
-    // asserted here rather than only there, because a suite that runs on one host must
-    // still hold the other host's words.
+    // And it reads the way the lock row states it. This is the rendering a hold gets when
+    // no reading contradicts the row, and a stated table is the one way to reach it on a
+    // host that reads its own.
     for slug in ["ahead", "behind"] {
         let cell = who(&list, slug);
         assert!(cell.contains("claude-code holds"), "{cell}");

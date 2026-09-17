@@ -506,9 +506,10 @@ pub fn attributed(own: Own<'_>, homes: &[PathBuf]) -> Runtime {
 pub fn processes_of(own: Own<'_>, homes: &[PathBuf]) -> Runtime {
     let mut seen = Runtime::default();
     match scan(own, homes) {
-        Ok((processes, bystanders)) => {
+        Ok((processes, bystanders, withheld)) => {
             seen.processes = processes;
             seen.bystanders = bystanders;
+            seen.notes = withheld;
         }
         Err(error) => seen.notes.push(Note::new(Source::Environment, error.to_string())),
     }
@@ -532,7 +533,7 @@ pub enum Unmovable<'a> {
 /// second copy of the rule would let the preflight say safe where the move refuses.
 #[must_use]
 pub fn unmovable(runtime: &Runtime) -> Option<Unmovable<'_>> {
-    if let Some(note) = runtime.notes.iter().find(|note| note.signal == Source::Environment) {
+    if let Some(note) = runtime.notes.iter().find(|note| note.unread(Source::Environment)) {
         return Some(Unmovable::Unread(note));
     }
     (!runtime.bystanders.is_empty()).then_some(Unmovable::Standing(&runtime.bystanders))
@@ -561,19 +562,20 @@ fn labelled(containers: Vec<docker::Container>, unit: UnitId) -> Vec<String> {
 /// # Errors
 /// Whatever the process table reported, which on a host that has none is
 /// [`Error::ProcessScanUnsupported`].
-pub fn scan(own: Own<'_>, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)> {
+pub fn scan(own: Own<'_>, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>, Vec<Note>)> {
     let placed: Vec<PathBuf> = homes.iter().map(|home| paths::resolve(home)).collect();
     let spared = stop::spared();
     let mut certain = Vec::new();
     let mut standing = Vec::new();
-    for process in processes::Processes::scan(&processes::Live)? {
-        if owns(&process, own) {
+    let running = processes::Processes::scan(&processes::Live)?;
+    for process in &running {
+        if owns(process, own) {
             certain.push(process.pid);
-        } else if bystander(&process, own, &placed, &spared) {
+        } else if bystander(process, own, &placed, &spared) && !has_ended(process.pid) {
             standing.push(Standing::new(process.pid, process.command.clone()));
         }
     }
-    Ok((certain, standing))
+    Ok((certain, standing, crate::runtime::attribute::withheld(&running)))
 }
 
 /// Whether this process is something standing in one of `unit`'s homes that a reclaim of
@@ -608,6 +610,18 @@ pub fn bystander(
         && !spared.contains(&process.pid)
         && in_one_of(process, placed)
         && !vouched_for_by_a_group(process, own)
+}
+
+/// Whether a process the scan read has ended since.
+///
+/// A scan reads the whole table before any process in it is judged, and a short command
+/// can end in between. Its group and its parent are then unreadable, so nothing can vouch
+/// for it, and a refusal would name a process that is no longer in the home. Only an
+/// answer of gone counts. A reading that fails leaves the process standing.
+fn has_ended(pid: u32) -> bool {
+    processes::Live
+        .presences(&[pid])
+        .is_ok_and(|seen| seen.get(&pid) == Some(&processes::Presence::Gone))
 }
 
 /// A unit, and the process groups the registry recorded for it.
@@ -701,6 +715,10 @@ pub fn owns(process: &processes::Running, own: Own<'_>) -> bool {
 /// of the group's leader ([`processes::parent_of`]), which is what `nodal run --tether`
 /// is — the wrapper that started the group and stands in the home while it runs.
 ///
+/// A process that the wrapper started is vouched for too. When the group ends, the wrapper
+/// records the run, and the `git` it starts for that stands in the home while the reclaim
+/// that stopped the group reads the table before its move.
+///
 /// A recorded number is never read as a name. A process identifier is reused and a group
 /// leader is replaced while its group lives, so the number alone proves nothing; what
 /// proves something is the relation the machine reports between a process now and that
@@ -718,7 +736,10 @@ fn vouched_for_by_a_group(process: &processes::Running, own: Own<'_>) -> bool {
     if own.groups.iter().any(|leader| processes::parent_of(*leader) == Some(process.pid)) {
         return true;
     }
-    own.wrappers.iter().any(|wrapper| is_still(process.pid, *wrapper))
+    let parent = processes::parent_of(process.pid);
+    own.wrappers.iter().any(|wrapper| {
+        is_still(process.pid, *wrapper) || parent.is_some_and(|parent| is_still(parent, *wrapper))
+    })
 }
 
 /// Whether the process wearing this identifier now is the one the reading was taken of.
@@ -1281,10 +1302,8 @@ mod tests {
     /// This test is the mechanism rather than the timing: the group's leader does not
     /// exist here at all, which is exactly the state the move sees.
     ///
-    /// **Both hosts are asserted.** A host that publishes no process table dates no
-    /// process, so a carried reading proves nothing there and the stricter answer stands.
-    /// That is the same rule as everywhere else here: what could not be read is not
-    /// evidence.
+    /// A process that a live wrapper started is vouched for by the same carried reading:
+    /// it is the `git` a wrapper runs to record its run after the group ends.
     #[test]
     fn a_wrapper_resolved_before_its_group_was_stopped_is_still_not_a_stranger() {
         let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
@@ -1304,15 +1323,7 @@ mod tests {
             )
         };
 
-        let started_at = super::started_at(pid);
-        let Some(started_at) = started_at else {
-            // No process table, so nothing is dated and nothing can be vouched for.
-            assert!(
-                asked(&[Wrapper { pid, started_at: None }]),
-                "a host that dates no process vouches for none"
-            );
-            return;
-        };
+        let started_at = super::started_at(pid).unwrap();
 
         // No group to read: the reclaim stopped it. The carried answer is what is left.
         assert!(
@@ -1330,6 +1341,14 @@ mod tests {
 
         // And an undated reading is not evidence either.
         assert!(asked(&[Wrapper { pid, started_at: None }]), "an undated reading is not evidence");
+
+        // What the wrapper started is its own too, while the wrapper is the one read. The
+        // process that started this test stands in for the wrapper, and this test for the
+        // process it started.
+        let parent = crate::runtime::processes::parent_of(pid).unwrap();
+        let carried = [Wrapper { pid: parent, started_at: super::started_at(parent) }];
+        let vouched = !asked(&carried);
+        assert!(vouched, "a process the wrapper started is not a stranger");
     }
 
     /// A stranger in the home still blocks a move, whatever the registry recorded.
@@ -1476,6 +1495,10 @@ mod tests {
                 notes: vec![Note::new(Source::Docker, "the daemon is not running")],
                 ..super::Runtime::default()
             },
+            super::Runtime {
+                notes: vec![Note::part(Source::Environment, crate::runtime::attribute::RESTRICTED)],
+                ..super::Runtime::default()
+            },
         ];
         for runtime in readings {
             let mut moving = assessed(Vec::new(), Vec::new());
@@ -1487,6 +1510,22 @@ mod tests {
                 "{runtime:?}"
             );
         }
+    }
+
+    /// A scan that ran over part of the table is a reading. What the host refused to show
+    /// is a note, and it is not the unread table: a home still moves over it.
+    #[test]
+    fn a_table_read_in_part_is_not_an_unread_table() {
+        use crate::runtime::attribute::{ANOTHER_ACCOUNT, Note, Source};
+
+        let runtime = super::Runtime {
+            notes: vec![
+                Note::part(Source::Environment, ANOTHER_ACCOUNT),
+                Note::part(Source::Cwd, ANOTHER_ACCOUNT),
+            ],
+            ..super::Runtime::default()
+        };
+        assert_eq!(super::unmovable(&runtime), None);
     }
 
     /// The note a host with no process table leaves, in the words the scan gives.

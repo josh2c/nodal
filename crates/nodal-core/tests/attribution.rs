@@ -26,8 +26,8 @@ use std::process::Command;
 
 use nodal_core::model::{EnvId, HostName, PortName, Ports, ProjectId, Timestamp, UnitId};
 use nodal_core::output::view::Ps;
-use nodal_core::runtime::attribute::{Attributed, Confidence, Kind, Source};
-use nodal_core::runtime::processes::{Live, Processes, Running};
+use nodal_core::runtime::attribute::{self, Attributed, Confidence, Kind, Reach, Source};
+use nodal_core::runtime::processes::{Live, Processes, Running, Withheld};
 use nodal_core::runtime::ps;
 use nodal_core::services::docker::{self, Docker, Output, UNIT_LABEL};
 use nodal_core::store::{Store, environments, projects, units};
@@ -84,7 +84,7 @@ impl Docker for NoDocker {
     }
 }
 
-/// A host whose process table Nodal cannot read, which is macOS until `sysctl` arrives.
+/// A host whose process table Nodal cannot read.
 struct NoTable;
 
 impl Processes for NoTable {
@@ -119,9 +119,6 @@ fn observed(store: &Store, pid: u32) -> Ps {
 
 #[test]
 fn a_process_started_inside_the_homes_environment_is_certain() {
-    if !platform::reads_process_table("certain by environment") {
-        return;
-    }
     let directory = tempfile::tempdir().unwrap();
     let home = make_home(directory.path());
     let store = registry(directory.path(), &home, Ports::default());
@@ -140,9 +137,6 @@ fn a_process_started_inside_the_homes_environment_is_certain() {
 
 #[test]
 fn a_process_started_in_a_plain_terminal_in_the_home_is_probable_by_its_directory() {
-    if !platform::reads_process_table("probable by directory") {
-        return;
-    }
     let directory = tempfile::tempdir().unwrap();
     let home = make_home(directory.path());
     let store = registry(directory.path(), &home, Ports::default());
@@ -155,6 +149,83 @@ fn a_process_started_in_a_plain_terminal_in_the_home_is_probable_by_its_director
     assert_eq!(row.slug.as_str(), "worker-import");
     assert_eq!(row.confidence, Confidence::Probable);
     assert_eq!(row.signal, Source::Cwd);
+}
+
+/// A restricted binary carrying a unit's identifier, standing in the home.
+///
+/// This stays a host split, because the refusal is the kernel's. On Linux the variables
+/// are read, so the row is certain. macOS zeroes the variables of `/bin/sleep`, so the row
+/// is probable by its directory, and a note says why the variables were not read. It is
+/// never certain on a guess, so a teardown never signals it.
+#[test]
+fn a_restricted_binary_is_found_by_its_directory_and_its_variables_are_not_guessed() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = make_home(directory.path());
+    let store = registry(directory.path(), &home, Ports::default());
+
+    let mut command = Command::new("/bin/sleep");
+    command.arg("30").current_dir(&home).env("NODAL_ID", UNIT).env("NODAL_ROOT", &home);
+    let child = process::Owned::spawn(&mut command);
+    let pid = child.pid();
+
+    // The reading this host gives once the child has become `sleep`. A Linux scan reads the
+    // variables before the command, so one read can take the variables from before the
+    // exec and the command from after it, and then the row is probable for an instant.
+    let settled = |row: &Attributed| {
+        row.what == "sleep 30"
+            && (cfg!(target_os = "macos") || row.confidence == Confidence::Certain)
+    };
+    let answer = process::until("a row for the sleep the test started", || {
+        let answer = observe(&store);
+        about(&answer, pid).is_some_and(settled).then_some(answer)
+    });
+    let row = about(&answer, pid).unwrap();
+    assert_eq!(row.slug.as_str(), "worker-import");
+    if cfg!(target_os = "macos") {
+        assert_eq!(row.confidence, Confidence::Probable, "{row:?}");
+        assert_eq!(row.signal, Source::Cwd);
+        let note = answer
+            .notes
+            .iter()
+            .find(|note| note.signal == Source::Environment && note.why == attribute::RESTRICTED)
+            .unwrap_or_else(|| panic!("no note says the variables were withheld: {answer:?}"));
+        assert_eq!(note.reach, Reach::Part, "the table was read: {note:?}");
+    } else {
+        assert_eq!(row.confidence, Confidence::Certain, "{row:?}");
+        assert_eq!(row.signal, Source::Environment);
+    }
+}
+
+/// A process of another account is counted and never read.
+///
+/// This stays a host split. A Linux scan leaves out a process this account may not read.
+/// macOS lists it with what was withheld, and a note gives the count and the reason. The
+/// process that started the machine is another account's unless the test runs as root.
+#[test]
+fn a_process_of_another_account_is_withheld_and_never_read() {
+    // SAFETY: `geteuid` takes no argument and cannot fail.
+    if unsafe { libc::geteuid() } == 0
+        && platform::skipped("another account's process is withheld", "the test runs as root")
+    {
+        return;
+    }
+    let running = Live.scan().unwrap();
+    let first = running.iter().find(|process| process.pid == 1);
+    if !cfg!(target_os = "macos") {
+        assert!(first.is_none(), "a Linux scan left out what it could not read: {first:?}");
+        return;
+    }
+    let first = first.unwrap_or_else(|| panic!("macos lists the first process"));
+    assert_eq!(first.withheld, Some(Withheld::AnotherAccount), "{first:?}");
+    assert!(first.vars.is_empty() && first.cwd.is_none() && first.command.is_none(), "{first:?}");
+    let notes = attribute::withheld(&running);
+    let signals: Vec<Source> = notes
+        .iter()
+        .filter(|note| note.why == attribute::ANOTHER_ACCOUNT)
+        .map(|note| note.signal)
+        .collect();
+    assert_eq!(signals, [Source::Environment, Source::Cwd], "{notes:?}");
+    assert!(notes.iter().all(|note| note.reach == Reach::Part), "{notes:?}");
 }
 
 #[test]

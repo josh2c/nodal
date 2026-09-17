@@ -35,8 +35,7 @@ use nodal_core::lifecycle::journal;
 use nodal_core::model::{EnvState, UnitStatus};
 use nodal_core::store::{environments, projects, sessions, trash, units};
 use nodal_safety::git::git_text as git;
-use nodal_safety::platform;
-use nodal_safety::process::{self, Owned, alive, wait_for};
+use nodal_safety::process::{self, Owned, alive, until, wait_for};
 use nodal_safety::project::Layout;
 use nodal_safety::project::resolved;
 use nodal_safety::text::{answer, stderr, stdout};
@@ -143,50 +142,24 @@ fn assert_nothing_left(report: &str) {
     assert!(!(claimed && hedged), "{report}");
 }
 
-/// Insist that the process signal behaved the way this host can behave.
-///
-/// On Linux Nodal reads `/proc`, so a reclaim must carry no note about the process
-/// table. Everywhere else the scan is not implemented, and the reclaim must say so
-/// rather than report an empty table as an empty machine
-/// (`nodal_core::runtime::processes`). This is asserted rather than skipped, because
-/// "the host degrades to a note" is the behaviour, not the absence of behaviour.
+/// Insist that the reclaim read the process table: a note about the process signal may
+/// say what the host refused to show, and never that the table went unread.
 fn assert_process_signal(report: &serde_json::Value) {
     let notes = report["notes"].as_array().expect("a report carries its notes");
-    let scan = notes.iter().find(|note| note["signal"] == "environment");
-    if cfg!(target_os = "linux") {
-        assert!(scan.is_none(), "linux reads the process table: {report}");
-    } else {
-        let note = scan.unwrap_or_else(|| panic!("no note about the process table: {report}"));
-        assert!(
-            note["why"].as_str().unwrap_or_default().contains("process scan"),
-            "the note says which signal went unread: {report}"
-        );
-    }
+    assert!(
+        !notes.iter().any(|note| note["signal"] == "environment" && note["reach"] == "unread"),
+        "the process table was read: {report}"
+    );
 }
 
-/// The arguments that reclaim `worker-import` on this host.
-///
-/// A host with no process table refuses the move first, names why, and moves nothing.
-/// This asserts that refusal, and the same reclaim with `--force` then goes ahead.
-fn clean_reclaim(workspace: &Workspace, home: &Path) -> Vec<&'static str> {
-    let mut asked = vec!["reclaim", "worker-import"];
-    if !platform::moves_a_home_unforced() {
-        platform::assert_unread_refusal(&workspace.nodal(&asked));
-        assert!(home.is_dir(), "the refused reclaim left the home where it was");
-        assert!(workspace.trashed().is_empty(), "and moved nothing to the trash");
-        asked.push("--force");
-    }
-    asked
-}
-
-/// Reclaim a clean unit by name, the way this host allows ([`platform::reclaim`]).
+/// Reclaim a clean unit by name.
 fn reclaim(workspace: &Workspace, slug: &str) -> Output {
-    platform::reclaim(|args| workspace.nodal(args), &["reclaim", slug])
+    workspace.nodal(&["reclaim", slug])
 }
 
-/// Whether this host can see the processes a unit is running.
-fn can_see_processes() -> bool {
-    cfg!(target_os = "linux")
+/// A `sleep` of `seconds` whose variables the process table shows, as a shell line.
+fn readable_sleep(seconds: u32) -> String {
+    format!("'{}' {seconds}", process::readable_sleep().display())
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +172,7 @@ fn a_clean_unit_is_reclaimed_and_nothing_of_it_is_left_but_the_trash_entry() {
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (_, home) = workspace.one_unit_and_home();
 
-    let report = stdout(&workspace.nodal(&clean_reclaim(&workspace, &home)));
+    let report = stdout(&reclaim(&workspace, "worker-import"));
     assert!(report.contains("nothing that is only here"), "{report}");
     assert_nothing_left(&report);
 
@@ -265,7 +238,7 @@ fn a_commit_no_other_tree_has_refuses_a_reclaim_and_a_shared_one_does_not() {
     // work that is only here. Without that, a project with no remote could never have a
     // unit reclaimed at all.
     drop(git(&workspace.source, &["fetch", "-q", home.to_str().unwrap(), "HEAD"]));
-    let accepted = platform::reclaim(|args| workspace.nodal(args), &["reclaim", "worker-import"]);
+    let accepted = workspace.nodal(&["reclaim", "worker-import"]);
     assert!(accepted.status.success(), "{}", stderr(&accepted));
 }
 
@@ -314,14 +287,7 @@ fn a_commit_a_sibling_clone_on_this_machine_holds_is_not_only_here() {
 
     let answered = workspace.nodal(&["reclaim", "worker-import", "--check"]);
     let after = answer(&answered);
-    assert_eq!(
-        answered.status.success(),
-        platform::moves_a_home_unforced(),
-        "the verdict is the exit code, and an unread process table is not safe: {after}"
-    );
-    if !platform::moves_a_home_unforced() {
-        assert!(after.contains("the process table could not be read"), "{after}");
-    }
+    assert!(answered.status.success(), "the verdict is the exit code: {after}");
     assert!(after.contains("second local copy"), "the commit has a second copy: {after}");
 
     // The report names the repository that holds it, so a person can go and look, and no
@@ -431,10 +397,11 @@ fn reclaiming_from_inside_the_home_does_not_stop_the_shell_that_asked() {
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (_, home) = workspace.one_unit_and_home();
 
-    let reclaimed = platform::reclaim(
-        |args| workspace.command(args).current_dir(&home).output().unwrap(),
-        &["reclaim", "worker-import", "--json"],
-    );
+    let reclaimed = workspace
+        .command(&["reclaim", "worker-import", "--json"])
+        .current_dir(&home)
+        .output()
+        .unwrap();
     let report: serde_json::Value = serde_json::from_str(&stdout(&reclaimed)).unwrap();
 
     assert_process_signal(&report);
@@ -460,21 +427,16 @@ fn a_caller_carrying_the_units_identifier_is_a_target_and_is_spared() {
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (id, home) = workspace.one_unit_and_home();
 
-    let reclaimed = platform::reclaim(
-        |args| workspace.command(args).current_dir(&home).env("NODAL_ID", &id).output().unwrap(),
-        &["reclaim", "worker-import", "--json"],
-    );
+    let reclaimed = workspace
+        .command(&["reclaim", "worker-import", "--json"])
+        .current_dir(&home)
+        .env("NODAL_ID", &id)
+        .output()
+        .unwrap();
     let report: serde_json::Value = serde_json::from_str(&stdout(&reclaimed)).unwrap();
 
     let spared = report["stopped"]["spared"].as_array().unwrap().len();
-    if can_see_processes() {
-        assert_eq!(spared, 1, "the command's own process was left alone: {report}");
-    } else {
-        // A host that cannot read the table cannot find the caller either, so there is
-        // nothing to spare. The property it does have is the one that matters: the
-        // command that asked is still running when the reclaim answers.
-        assert_eq!(spared, 0, "{report}");
-    }
+    assert_eq!(spared, 1, "the command's own process was left alone: {report}");
     assert!(report["stopped"]["killed"].as_array().unwrap().is_empty(), "{report}");
     assert!(report["leftovers"].as_array().unwrap().is_empty(), "{report}");
     assert!(!home.exists(), "and the home still went");
@@ -614,29 +576,18 @@ fn a_unit_that_has_been_reclaimed_is_not_reclaimed_again() {
 // The runtime.
 // ---------------------------------------------------------------------------
 
-/// A planted process is stopped where Nodal can read a process table, and reported as
-/// unread where it cannot.
-///
-/// Both halves are asserted. The Linux half is the acceptance criterion: the process
-/// goes and its port comes back. The other half is the behaviour a host without `/proc`
-/// has to have — the reclaim finishes, the port still comes back, the plant is still
-/// running, and the report says the process table went unread instead of implying the
-/// machine was empty.
+/// A planted process is stopped, and its port comes back.
 #[test]
-fn a_process_planted_in_a_unit_is_stopped_where_nodal_can_see_it() {
+fn a_process_planted_in_a_unit_is_stopped_and_its_port_comes_back() {
     let workspace = workspace();
     let created = json(&workspace.nodal(&["new", "--name", "worker-import", "--json"]));
     let (id, home) = workspace.one_unit_and_home();
     let port = created["unit"]["environment"]["ports"]["app"].as_u64().expect("a port was granted");
-    let mut planted = plant(&home, &id, "sleep 300");
+    let planted = plant(&home, &id, &readable_sleep(300));
 
-    let report = json(&platform::reclaim(
-        |args| workspace.nodal(args),
-        &["reclaim", "worker-import", "--json"],
-    ));
+    let report = json(&workspace.nodal(&["reclaim", "worker-import", "--json"]));
     assert_process_signal(&report);
-    // The port is given back in the transaction that records the reclaim, so it comes
-    // back on every host whether or not anything could be stopped.
+    // The port is given back in the transaction that records the reclaim.
     assert_eq!(report["released"]["allocated"], serde_json::json!([port]));
     let store = workspace.store();
     assert!(
@@ -647,29 +598,18 @@ fn a_process_planted_in_a_unit_is_stopped_where_nodal_can_see_it() {
     );
     drop(store);
 
-    if can_see_processes() {
-        assert_eq!(report["stopped"]["asked"].as_array().unwrap().len(), 1, "{report}");
-        assert!(report["leftovers"].as_array().unwrap().is_empty(), "{report}");
-        wait_for("the planted process to be stopped", || !alive(planted.pid()));
-    } else {
-        assert!(report["stopped"]["asked"].as_array().unwrap().is_empty(), "{report}");
-        assert!(alive(planted.pid()), "a host that cannot see a process cannot stop one");
-        assert!(report["leftovers"].as_array().unwrap().is_empty(), "an unread signal is a note");
-        planted.reclaim();
-    }
-    assert_eq!(workspace.trashed().len(), 1, "the home went either way");
+    assert_eq!(report["stopped"]["asked"].as_array().unwrap().len(), 1, "{report}");
+    assert!(report["leftovers"].as_array().unwrap().is_empty(), "{report}");
+    wait_for("the planted process to be stopped", || !alive(planted.pid()));
+    assert_eq!(workspace.trashed().len(), 1, "the home went");
 }
 
-/// A reclaim refused over an unread process table stops nothing.
+/// A reclaim stops a tether, and its report names the group.
 ///
-/// `nodal reclaim --check` says a refused reclaim would stop and change nothing, and this
-/// holds the reclaim to that. A tether is the one runtime every host can stop, so it is
-/// what a refusal after the teardown would have taken. On a host with no process table
-/// the plain reclaim refuses and the tether is still running; the reclaim with `--force`
-/// stops it and the report names its group. On Linux the table is read, so the plain
-/// reclaim goes ahead and its report names the group.
+/// A tether is a group the registry recorded, so a reclaim reaches it by record and not
+/// by a reading of the process table.
 #[test]
-fn a_reclaim_refused_over_an_unread_process_table_stops_nothing() {
+fn a_reclaim_stops_a_tether_and_names_its_group() {
     let workspace = workspace();
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (_, home) = workspace.one_unit_and_home();
@@ -679,14 +619,7 @@ fn a_reclaim_refused_over_an_unread_process_table_stops_nothing() {
     let group = tether_of(&workspace);
     let _held = Owned::adopt(group);
 
-    let mut asked = vec!["reclaim", "worker-import", "--json"];
-    if !platform::moves_a_home_unforced() {
-        platform::assert_unread_refusal(&workspace.nodal(&asked));
-        assert!(alive(group), "the refused reclaim stopped the tether");
-        assert!(home.is_dir(), "and moved the home");
-        asked.push("--force");
-    }
-    let report = json(&workspace.nodal(&asked));
+    let report = json(&workspace.nodal(&["reclaim", "worker-import", "--json"]));
     let groups: Vec<u64> = report["stopped"]["asked"]
         .as_array()
         .unwrap()
@@ -701,18 +634,12 @@ fn a_reclaim_refused_over_an_unread_process_table_stops_nothing() {
 /// The process group of the one tether this project's one unit holds, once it is recorded.
 fn tether_of(workspace: &Workspace) -> u32 {
     let unit = workspace.one_unit().id;
-    let deadline = Instant::now() + REACH_TIMEOUT;
-    while Instant::now() < deadline {
+    until("a tether to be recorded", || {
         let store = workspace.store();
         let environment = environments::latest_for_unit(store.conn(), unit).unwrap().unwrap();
         let open = sessions::list_open_tethers(store.conn(), environment.id).unwrap();
-        if let Some(group) = open.first().and_then(|session| session.pgid) {
-            return group;
-        }
-        drop(store);
-        std::thread::sleep(POLL);
-    }
-    panic!("no tether was recorded within {REACH_TIMEOUT:?}");
+        open.first().and_then(|session| session.pgid)
+    })
 }
 
 /// Start a detached process inside a home, carrying that unit's identifier, and answer
@@ -763,7 +690,6 @@ fn the_four_hooks_run_in_order_and_are_told_which_unit_they_are_about() {
 
     let log = std::fs::read_to_string(workspace.source.join("hooks.log")).unwrap();
     let phases: Vec<&str> = log.lines().map(|line| line.split(' ').next().unwrap()).collect();
-    // A reclaim refused over an unread process table runs no hook.
     assert_eq!(phases, ["pre_new", "post_new", "pre_reclaim", "post_reclaim"], "{log}");
     assert!(log.contains("pre_new worker-import"), "{log}");
     // Every path a hook is told about is resolved, whether it arrives as a variable or
@@ -794,8 +720,6 @@ fn a_hook_command_nobody_approved_refuses_to_run() {
     // The recipe changes after it was approved, which is what arrives with a pull.
     workspace.write_recipe(&HOOKS.replace("pre_reclaim %s", "SOMETHING ELSE %s"));
 
-    // A host with no process table refuses first over the table, before any hook, and the
-    // forced reclaim then reaches the hook.
     let refused = reclaim(&workspace, "worker-import");
     assert!(!refused.status.success(), "an unapproved command does not run");
     let told = stderr(&refused);
@@ -834,10 +758,7 @@ fn no_hooks_runs_none_of_them_without_needing_an_approval() {
     let workspace = workspace();
     workspace.write_recipe(HOOKS);
     drop(stdout(&workspace.nodal(&["--no-hooks", "new", "--name", "worker-import"])));
-    drop(stdout(&platform::reclaim(
-        |args| workspace.nodal(args),
-        &["--no-hooks", "reclaim", "worker-import"],
-    )));
+    drop(stdout(&workspace.nodal(&["--no-hooks", "reclaim", "worker-import"])));
     assert!(!workspace.source.join("hooks.log").exists(), "no hook ran");
     assert_eq!(workspace.trashed().len(), 1, "and the unit was still reclaimed");
 }
@@ -884,29 +805,13 @@ fn gc_removes_a_trashed_home_once_its_retention_has_run_out_and_not_before() {
 ///
 /// What holds the run open long enough to be killed is a process that ignores being
 /// asked to stop: the step waits out its grace period, and the kill lands inside that
-/// window. Only a host that can read a process table can find that plant, so only there
-/// is the kill part of this test. Elsewhere the same fixture asserts what that host does
-/// instead — it cannot see the plant, so it stops nothing, says so in a note, and
-/// reclaims the home anyway.
+/// window.
 #[test]
 fn a_reclaim_killed_between_two_steps_is_rolled_back_by_the_next_invocation() {
     let workspace = workspace();
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (id, home) = workspace.one_unit_and_home();
-    let mut planted = plant(&home, &id, "trap '' TERM; sleep 300");
-
-    if !can_see_processes() {
-        let report = json(&platform::reclaim(
-            |args| workspace.nodal(args),
-            &["reclaim", "worker-import", "--json"],
-        ));
-        assert_process_signal(&report);
-        assert!(report["stopped"]["asked"].as_array().unwrap().is_empty(), "{report}");
-        assert!(alive(planted.pid()), "nothing this host cannot see was signalled");
-        assert!(!home.exists(), "and the home was still reclaimed");
-        planted.reclaim();
-        return;
-    }
+    let planted = plant(&home, &id, &format!("trap '' TERM; {}", readable_sleep(300)));
 
     let mut command = workspace.command(&["reclaim", "worker-import"]);
     command.stdout(Stdio::null()).stderr(Stdio::null());
@@ -1062,7 +967,6 @@ fn an_ordinary_reclaim_records_the_home_before_it_moves_it() {
         git(&trashed, &["for-each-ref", "--format=%(refname)", &format!("refs/nodal/{id}/")]);
     let recorded: Vec<&str> =
         refs.lines().filter(|name| name.contains(&format!("/{id}/pre/"))).collect();
-    // A reclaim refused over an unread process table runs no step, so it records nothing.
     assert_eq!(recorded.len(), 1, "one record per run: {refs}");
 
     let store = workspace.store();

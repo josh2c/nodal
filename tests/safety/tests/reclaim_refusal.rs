@@ -15,7 +15,7 @@
 use std::path::Path;
 
 use nodal_safety::InState as _;
-use nodal_safety::{Machine, answer, git, platform, stderr, stdout};
+use nodal_safety::{Machine, answer, git, stderr, stdout};
 
 /// A tracked file of the fixture, changed to make uncommitted work.
 const TRACKED: &str = "apps/web/app/page.tsx";
@@ -77,7 +77,7 @@ fn a_reclaim_is_refused_when_the_home_holds_commits_no_other_tree_has() {
     // The commits a home inherited are in the person's own checkout, so they are not
     // work that is only here: once the commit is somewhere else, the reclaim goes ahead.
     git(&machine.source, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD"]);
-    let allowed = platform::reclaim(|args| machine.nodal(args), &["reclaim", "worker-import"]);
+    let allowed = machine.nodal(&["reclaim", "worker-import"]);
     assert!(allowed.status.success(), "{}", stderr(&allowed));
     assert!(stdout(&allowed).contains("nothing that is only here"));
     assert_eq!(machine.trashed().len(), 1, "the home the reclaim took is in the trash");
@@ -87,7 +87,7 @@ fn a_reclaim_is_refused_when_the_home_holds_commits_no_other_tree_has() {
 fn a_clean_unit_is_reclaimed_so_the_refusals_are_about_the_work_and_not_the_command() {
     let machine = Machine::new();
     let home = machine.unit("worker-import");
-    let reclaimed = platform::reclaim(|args| machine.nodal(args), &["reclaim", "worker-import"]);
+    let reclaimed = machine.nodal(&["reclaim", "worker-import"]);
 
     assert!(reclaimed.status.success(), "{}", stderr(&reclaimed));
     assert!(!home.exists(), "the home is not where it was");

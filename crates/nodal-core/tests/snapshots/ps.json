@@ -50,7 +50,8 @@
   "notes": [
     {
       "signal": "docker",
-      "why": "docker is not installed"
+      "why": "docker is not installed",
+      "reach": "unread"
     }
   ]
 }
