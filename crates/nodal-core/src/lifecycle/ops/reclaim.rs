@@ -75,10 +75,11 @@
 //! reading that cannot be made is reported as a [`Note`] and the reclaim carries on,
 //! which is the same contract every attribution signal already has.
 //!
-//! The move of the home is the one exception. Before the move, the process table is
-//! read to find what stands in the home, and a table that could not be read refuses the
-//! move ([`Error::ProcessTableUnread`]) as a bystander does. Nothing found is not
-//! nothing there. `--force` moves the home anyway. Every other reading stays a note.
+//! The move of the home is the one exception. A table that could not be read refuses the
+//! move ([`Error::ProcessTableUnread`]), because nothing found is not nothing there. The
+//! refusal is asked before the hook and the teardown, so a refused reclaim stops
+//! nothing, and asked again at the move. `--force` moves the home anyway. Every other
+//! reading stays a note.
 //!
 //! The verification is where that matters. "Nothing left by id" and "I could not look"
 //! are different answers, and a verification that printed the first when it meant the
@@ -663,12 +664,12 @@ impl Step for TrashHome {
     /// editor server over SSH, a teammate's shell. Moving the directory out from under
     /// one of those is the surprise this refusal exists to prevent.
     ///
-    /// A host whose process table cannot be read does not move the home. This step is
-    /// the one place an unread signal refuses rather than becoming a note: nothing found
-    /// standing in the home is not the same as nothing standing in it, and the move is
-    /// what a person cannot take back from inside the home. The rule is
-    /// [`assess::unmovable`], which is the rule `nodal reclaim --check` reports. `--force`
-    /// moves the home over both refusals.
+    /// A host whose process table cannot be read does not move the home: nothing found
+    /// standing in the home is not the same as nothing standing in it. The preparation
+    /// already refused over a table it could not read, before the teardown
+    /// ([`refuse_unread`]), so here that arm answers only for a table that became
+    /// unreadable since. The rule is [`assess::unmovable`], which is the rule
+    /// `nodal reclaim --check` reports. `--force` moves the home over both refusals.
     fn apply(&self) -> Result<Output> {
         if !self.force {
             self.refuse_over_the_table()?;
@@ -865,6 +866,9 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
     let placed = placement(&environment)?;
     let recipe = recipe_of(&project.root);
     let findings = examine(&placed, &project.root, &unit, request.force)?;
+    if !request.force {
+        refuse_unread(&placed, &unit)?;
+    }
     let snapshot = snapshot(&placed, &unit, &findings)?;
     let state_dir = home::directory()?;
     let entry = trashed((&project, &unit, &environment), &placed, &recipe, snapshot)?;
@@ -958,6 +962,28 @@ fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Resul
         return Ok(found.findings);
     }
     Err(Error::NotUnique { slug: unit.slug.clone(), findings: found.findings })
+}
+
+/// Refuse before anything runs when the home would move and the process table cannot
+/// be read.
+///
+/// The condition does not depend on the teardown, so it is asked before the hook, the
+/// teardown and the move. A refused reclaim then stops nothing and changes nothing,
+/// which is what `nodal reclaim --check` says it would do. A bystander is not asked
+/// here: the unit's own processes are still running, and that refusal belongs after the
+/// teardown ([`TrashHome`]). Both ask [`assess::unmovable`].
+///
+/// # Errors
+/// [`Error::ProcessTableUnread`] with the reason the scan gave.
+fn refuse_unread(placed: &Placement, unit: &Unit) -> Result<()> {
+    let Placement::Managed(home) = placed else { return Ok(()) };
+    let seen = assess::processes_of(Own::of(unit.id, &[]), std::slice::from_ref(home));
+    match assess::unmovable(&seen) {
+        Some(Unmovable::Unread(note)) => {
+            Err(Error::ProcessTableUnread { slug: unit.slug.clone(), why: note.why.clone() })
+        }
+        Some(Unmovable::Standing(_)) | None => Ok(()),
+    }
 }
 
 /// The work-in-progress snapshot a forced reclaim takes before anything is removed.

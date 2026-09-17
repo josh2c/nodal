@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use nodal_core::lifecycle::journal;
 use nodal_core::model::{EnvState, UnitStatus};
-use nodal_core::store::{environments, projects, trash, units};
+use nodal_core::store::{environments, projects, sessions, trash, units};
 use nodal_safety::git::git_text as git;
 use nodal_safety::platform;
 use nodal_safety::process::{self, Owned, alive, wait_for};
@@ -660,6 +660,61 @@ fn a_process_planted_in_a_unit_is_stopped_where_nodal_can_see_it() {
     assert_eq!(workspace.trashed().len(), 1, "the home went either way");
 }
 
+/// A reclaim refused over an unread process table stops nothing.
+///
+/// `nodal reclaim --check` says a refused reclaim would stop and change nothing, and this
+/// holds the reclaim to that. A tether is the one runtime every host can stop, so it is
+/// what a refusal after the teardown would have taken. On a host with no process table
+/// the plain reclaim refuses and the tether is still running; the reclaim with `--force`
+/// stops it and the report names its group. On Linux the table is read, so the plain
+/// reclaim goes ahead and its report names the group.
+#[test]
+fn a_reclaim_refused_over_an_unread_process_table_stops_nothing() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (_, home) = workspace.one_unit_and_home();
+    let mut command = workspace.command_in(&home, &["run", "--tether", "sleep", "600"]);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let _run = Owned::spawn(&mut command);
+    let group = tether_of(&workspace);
+    let _held = Owned::adopt(group);
+
+    let mut asked = vec!["reclaim", "worker-import", "--json"];
+    if !platform::moves_a_home_unforced() {
+        platform::assert_unread_refusal(&workspace.nodal(&asked));
+        assert!(alive(group), "the refused reclaim stopped the tether");
+        assert!(home.is_dir(), "and moved the home");
+        asked.push("--force");
+    }
+    let report = json(&workspace.nodal(&asked));
+    let groups: Vec<u64> = report["stopped"]["asked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|target| target.get("group").and_then(serde_json::Value::as_u64))
+        .collect();
+    assert_eq!(groups, vec![u64::from(group)], "the report names the tether: {report}");
+    wait_for("the tether to be stopped", || !alive(group));
+    assert!(!home.exists(), "and the home went");
+}
+
+/// The process group of the one tether this project's one unit holds, once it is recorded.
+fn tether_of(workspace: &Workspace) -> u32 {
+    let unit = workspace.one_unit().id;
+    let deadline = Instant::now() + REACH_TIMEOUT;
+    while Instant::now() < deadline {
+        let store = workspace.store();
+        let environment = environments::latest_for_unit(store.conn(), unit).unwrap().unwrap();
+        let open = sessions::list_open_tethers(store.conn(), environment.id).unwrap();
+        if let Some(group) = open.first().and_then(|session| session.pgid) {
+            return group;
+        }
+        drop(store);
+        std::thread::sleep(POLL);
+    }
+    panic!("no tether was recorded within {REACH_TIMEOUT:?}");
+}
+
 /// Start a detached process inside a home, carrying that unit's identifier, and answer
 /// with its process id.
 ///
@@ -708,14 +763,8 @@ fn the_four_hooks_run_in_order_and_are_told_which_unit_they_are_about() {
 
     let log = std::fs::read_to_string(workspace.source.join("hooks.log")).unwrap();
     let phases: Vec<&str> = log.lines().map(|line| line.split(' ').next().unwrap()).collect();
-    // A host with no process table refuses the first reclaim after its `pre_reclaim`, and
-    // the forced one runs the hook again.
-    let expected: &[&str] = if platform::moves_a_home_unforced() {
-        &["pre_new", "post_new", "pre_reclaim", "post_reclaim"]
-    } else {
-        &["pre_new", "post_new", "pre_reclaim", "pre_reclaim", "post_reclaim"]
-    };
-    assert_eq!(phases, expected, "{log}");
+    // A reclaim refused over an unread process table runs no hook.
+    assert_eq!(phases, ["pre_new", "post_new", "pre_reclaim", "post_reclaim"], "{log}");
     assert!(log.contains("pre_new worker-import"), "{log}");
     // Every path a hook is told about is resolved, whether it arrives as a variable or
     // as the directory the hook is started in. `$PWD` is what the shell got from the
@@ -745,7 +794,9 @@ fn a_hook_command_nobody_approved_refuses_to_run() {
     // The recipe changes after it was approved, which is what arrives with a pull.
     workspace.write_recipe(&HOOKS.replace("pre_reclaim %s", "SOMETHING ELSE %s"));
 
-    let refused = workspace.nodal(&["reclaim", "worker-import"]);
+    // A host with no process table refuses first over the table, before any hook, and the
+    // forced reclaim then reaches the hook.
+    let refused = reclaim(&workspace, "worker-import");
     assert!(!refused.status.success(), "an unapproved command does not run");
     let told = stderr(&refused);
     assert!(told.contains("pre_reclaim hook"), "{told}");
@@ -769,7 +820,7 @@ fn a_hook_that_fails_stops_the_reclaim_before_anything_moves() {
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (_, home) = workspace.one_unit_and_home();
 
-    let refused = workspace.nodal(&["reclaim", "worker-import"]);
+    let refused = reclaim(&workspace, "worker-import");
     assert!(!refused.status.success(), "a hook that fails is a reclaim that does not happen");
     let told = stderr(&refused);
     assert!(told.contains("pre_reclaim hook failed"), "{told}");
@@ -1011,9 +1062,8 @@ fn an_ordinary_reclaim_records_the_home_before_it_moves_it() {
         git(&trashed, &["for-each-ref", "--format=%(refname)", &format!("refs/nodal/{id}/")]);
     let recorded: Vec<&str> =
         refs.lines().filter(|name| name.contains(&format!("/{id}/pre/"))).collect();
-    // A host with no process table ran two reclaims: the refused one and the forced one.
-    let runs = if platform::moves_a_home_unforced() { 1 } else { 2 };
-    assert_eq!(recorded.len(), runs, "one record per run: {refs}");
+    // A reclaim refused over an unread process table runs no step, so it records nothing.
+    assert_eq!(recorded.len(), 1, "one record per run: {refs}");
 
     let store = workspace.store();
     for record in recorded {

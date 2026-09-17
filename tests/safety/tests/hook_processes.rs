@@ -358,7 +358,7 @@ fn a_group_no_row_holds_is_never_signalled() {
 
     drop(machine.unit(UNIT));
     let _held = backstop(&record);
-    drop(machine.nodal(&["reclaim", UNIT]));
+    drop(platform::reclaim(|args| machine.nodal(args), &["reclaim", UNIT]));
     drop(machine.nodal(&["gc"]));
 
     assert!(alive(bystander.pid()), "a group no row holds was signalled");

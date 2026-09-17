@@ -827,9 +827,9 @@ pub enum Error {
 
     /// A home was to be moved while the process table could not be read.
     ///
-    /// The teardown ran. What it could not do is say whether something Nodal did not
-    /// start stands in the home, and a table that could not be read is not evidence that
-    /// nothing does.
+    /// The reclaim asks this before its hook and its teardown, so a refused reclaim has
+    /// stopped nothing. A table that could not be read is not evidence that nothing Nodal
+    /// did not start stands in the home.
     #[error(
         "{slug} was not moved: the process table could not be read: {why}; \
          --force moves the home to the trash anyway, after a snapshot of any work it holds"

@@ -333,22 +333,12 @@ fn the_six_hooks_run_in_order_and_the_merge_hooks_are_told_which_branch() {
 
     let log = std::fs::read_to_string(workspace.source.join("hooks.log")).unwrap();
     let phases: Vec<&str> = log.lines().map(|line| line.split(' ').next().unwrap()).collect();
-    // A host with no process table runs `pre_reclaim` for the refused remove, and again
-    // for the forced reclaim that takes the home.
-    let expected: &[&str] = if platform::moves_a_home_unforced() {
-        &["pre_new", "post_new", "pre_merge", "post_merge", "pre_reclaim", "post_reclaim"]
-    } else {
-        &[
-            "pre_new",
-            "post_new",
-            "pre_merge",
-            "post_merge",
-            "pre_reclaim",
-            "pre_reclaim",
-            "post_reclaim",
-        ]
-    };
-    assert_eq!(phases, expected, "{log}");
+    // A remove refused over an unread process table runs no reclaim hook.
+    assert_eq!(
+        phases,
+        ["pre_new", "post_new", "pre_merge", "post_merge", "pre_reclaim", "post_reclaim"],
+        "{log}"
+    );
     let merge_line = log.lines().find(|line| line.starts_with("pre_merge ")).unwrap();
     let filled: Vec<&str> = merge_line.split(' ').collect();
     assert_eq!(filled[1], "nodal/worker-import", "{{branch}}: {merge_line}");

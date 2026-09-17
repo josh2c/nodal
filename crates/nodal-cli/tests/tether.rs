@@ -132,19 +132,15 @@ fn assert_ok(output: &Output) -> String {
 
 /// Reclaim a unit with `--json`, the way this host allows ([`platform::reclaim`]).
 ///
-/// On a host with no process table the first reclaim refuses the move, and its teardown
-/// has already stopped the tether: the teardown comes before the move on every host. A
-/// refused run writes no report, so the report returned is the forced run's, and it
-/// names no group. The stop is then asserted on the machine, not on the report.
+/// On a host with no process table the first reclaim refuses before it stops anything,
+/// so the reclaim with `--force` is the one that stops the tether and reports it.
 fn reclaim(workspace: &Workspace, slug: &str) -> Output {
     platform::reclaim(|args| workspace.nodal(args), &["reclaim", slug, "--json"])
 }
 
-/// Insist that the report names this group as asked, where a report of the stop exists.
+/// Insist that the report names this group, and only it, as asked.
 fn assert_asked_group(report: &serde_json::Value, group: u32) {
-    if platform::moves_a_home_unforced() {
-        assert_eq!(targets(report, "asked", "group"), vec![u64::from(group)], "{report}");
-    }
+    assert_eq!(targets(report, "asked", "group"), vec![u64::from(group)], "{report}");
 }
 
 /// The JSON a `--json` command answered with.
