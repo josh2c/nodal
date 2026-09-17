@@ -446,12 +446,29 @@ impl Git {
         outside::commits(&self.root, rev, held)
     }
 
-    /// Which of `wanted` this repository has, at no traversal cost.
+    /// Which of `wanted` a ref of this repository reaches.
+    ///
+    /// This is what "another copy of the work is here" means, and the object being in
+    /// the store is not it: an object no ref reaches is what `git gc` removes. Ask this
+    /// wherever a second copy weakens a refusal. See [`outside`].
     ///
     /// # Errors
     /// [`Error::Git`] when `rev-list` failed.
     pub fn held(&self, wanted: &[Oid]) -> Result<Vec<Oid>> {
         outside::held(&self.root, wanted)
+    }
+
+    /// Which of `wanted` this repository's object store has, at no traversal cost.
+    ///
+    /// One process, and a weaker fact than [`Git::held`]. Ask this only where the caller
+    /// already knows what reaches the object — because it read the identifiers out of
+    /// this repository's own refs, or because its next question is a reachability
+    /// question that narrows the answer further.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `rev-list` failed.
+    pub fn stores(&self, wanted: &[Oid]) -> Result<Vec<Oid>> {
+        outside::stores(&self.root, wanted)
     }
 
     /// Which of `revs` none of `held` reaches. One process for all of them.

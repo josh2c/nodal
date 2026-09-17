@@ -237,7 +237,11 @@ fn a_commit_no_other_tree_has_refuses_a_reclaim_and_a_shared_one_does_not() {
     // The commits the home inherited are in the person's own checkout, so they are not
     // work that is only here. Without that, a project with no remote could never have a
     // unit reclaimed at all.
-    drop(git(&workspace.source, &["fetch", "-q", home.to_str().unwrap(), "HEAD"]));
+    //
+    // The fetch names a branch. A commit under no ref of the checkout is an object the
+    // next `git gc` there removes, and the reading counts a second copy and never a
+    // second object (`nodal_core::git::outside`).
+    drop(git(&workspace.source, &["fetch", "-q", home.to_str().unwrap(), "HEAD:refs/heads/kept"]));
     let accepted = workspace.nodal(&["reclaim", "worker-import"]);
     assert!(accepted.status.success(), "{}", stderr(&accepted));
 }

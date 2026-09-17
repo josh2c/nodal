@@ -1223,7 +1223,7 @@ history is on the remote, and reporting all of it would bury the few that are no
 | disposition | what it means | does removing the home lose it |
 |---|---|---|
 | `remote_proved` | a witnessed reading of the remote reaches it | no, while the remote keeps the branch |
-| `second_local_copy` | another object store in this checkout or the clones beside it holds it | no, and no server is involved |
+| `second_local_copy` | a ref of this checkout, or of a clone beside it, reaches it | no, and no server is involved |
 | `not_checked` | nothing here read the remote, and nothing here holds it | unknown, so it is kept |
 | `only_here` | the reading was taken and it is still nowhere else | yes |
 
@@ -1246,11 +1246,27 @@ A project whose checkout sits directly in a home directory is the widest case th
 parent is then the home directory itself. Two levels is what keeps that bounded. There is no way to turn
 the walk off.
 
-A store counts only where its own object store holds the commit, proved by `git rev-list` run in that
-repository. A name never counts: a clone that was `reflog expire`d and garbage collected keeps refs over
-objects it no longer has, and a reading that believed the name would call a home safe over the only copy
-of its work. A store that cannot be opened or read proves nothing, which leaves the stricter answer
-standing.
+A repository counts only where a ref of its own reaches the commit. `git rev-list` run in that
+repository proves it. Two readings a person might expect to count do not.
+
+A name never counts. A clone that was `reflog expire`d and garbage collected keeps refs over objects it
+no longer has. A reading that believed the name would call a home safe over the only copy of its work.
+
+An object under no ref never counts either. Three shapes reach an object store without a name:
+
+- a commit fetched by identifier;
+- a commit a deleted branch left behind;
+- a commit `git fetch <url> HEAD` wrote.
+
+`git gc` in that repository removes all three. A reading that counted them called a home safe over a
+copy one ordinary command takes away.
+
+The refs that count are every ref under `refs/`. That is branches, tags, the stash and Nodal's own
+`refs/nodal/*` records. A detached `HEAD` counts too, because a checked-out commit is a real copy. A
+repository's own remote-tracking refs count for this and for nothing else. They prove that the
+repository holds the commit. They never prove that the remote still holds it.
+
+A store that cannot be opened or read proves nothing, which leaves the stricter answer standing.
 
 `not_checked` is not zero and it is not safe. A home's own `refs/remotes/origin/*` is the record of a
 push it made, so the remote is proved only where a witness confirms it, and a ref name with no object

@@ -552,6 +552,11 @@ for a whole survey is the saving that is left, and it is a change to the evaluat
 shares. The tree walk is not in that number and is not paid for by every home: a home is walked only
 where it has earned a row.
 
+The second-copy reading costs one more git process for each repository that has the commits. It reads
+the object store first, and it asks which refs reach what the store has only where the store has
+something. A repository beside the checkout that holds none of a home's commits still costs one
+process, which is what the numbers above measure.
+
 ## Method
 
 Everything ran on this machine: Linux 7.1.9, 28 cores, btrfs on `/home` with

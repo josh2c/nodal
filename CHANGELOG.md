@@ -3,6 +3,13 @@
 This file records what each release of Nodal lets a person do, and what it refuses.
 One line per behaviour. Versions follow [semantic versioning](https://semver.org).
 
+## Unreleased
+
+### What refuses
+
+- A second copy of a commit counts only where a ref of that repository reaches it. An
+  object under no ref is one `git gc` removes, so `nodal reclaim` refuses over it.
+
 ## 0.1.0-rc.1 — 2026-09-16
 
 The first candidate release. It reads registry schema 14 and publishes JSON schema
