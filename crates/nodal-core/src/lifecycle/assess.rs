@@ -1122,7 +1122,12 @@ fn local_copies(
     (found, left)
 }
 
-/// Which of these commits one repository's object store really holds.
+/// Which of these commits one repository really holds.
+///
+/// Holds means a ref of that repository reaches the commit, and not that the object is
+/// in its store ([`crate::git::Git::held`]). An object under no ref is what `git gc`
+/// removes, so counting it would call this home safe over a copy one ordinary command
+/// takes away.
 ///
 /// A repository that will not open, and a `rev-list` that would not run, both answer
 /// with nothing. That is the stricter reading and it is the safe direction: a store

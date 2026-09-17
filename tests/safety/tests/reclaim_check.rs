@@ -41,7 +41,9 @@
 //! |---|---|
 //! | work in the tree refuses, and so does the reclaim | `work_in_the_tree_refuses_and_the_reclaim_refuses_the_same_way` |
 //! | an only copy is named as one | `a_commit_nothing_else_has_is_reported_as_only_here` |
-//! | a second copy here is not a remote proof | `a_commit_this_disk_holds_twice_is_a_second_local_copy` |
+//! | a second copy here is not a remote proof | `a_commit_on_a_sibling_branch_is_a_second_local_copy` |
+//! | an object no ref reaches is no second copy | `a_commit_a_sibling_has_under_no_ref_is_only_here` |
+//! | collecting garbage moves no verdict | `garbage_collection_in_a_sibling_moves_no_verdict` |
 //! | a current reading is a remote proof | `a_commit_a_current_reading_reaches_is_proved_on_the_remote` |
 //! | an older, partial or unread witness proves nothing | `a_witness_that_cannot_answer_leaves_the_commits_not_checked` |
 //! | a name is not an object store | `a_ref_with_no_object_behind_it_proves_nothing` |
@@ -170,6 +172,21 @@ fn checkout(machine: &Machine) -> Value {
     Value::from(resolved.to_str().unwrap())
 }
 
+/// A second repository beside the checkout, which the sibling walk finds.
+///
+/// The walk starts at the checkout's parent, so a repository there is one of the other
+/// copies a uniqueness reading asks about (`nodal_core::doctor::scan::siblings`).
+fn sibling(machine: &Machine) -> PathBuf {
+    let parent = machine.source.parent().unwrap().to_path_buf();
+    git(&parent, &["init", "--quiet", "--initial-branch", "main", "sibling"]);
+    parent.join("sibling")
+}
+
+/// A path as the registry and every report name it.
+fn resolved(path: &Path) -> Value {
+    Value::from(std::fs::canonicalize(path).unwrap().to_str().unwrap())
+}
+
 /// Insist that the home is where it was and plain Git still reaches the commit.
 fn intact(machine: &Machine, home: &Path, tip: &str) {
     assert!(home.is_dir(), "the check moved the home");
@@ -243,21 +260,93 @@ fn a_commit_nothing_else_has_is_reported_as_only_here() {
     intact(&machine, &home, &tip);
 }
 
-/// A second object store on this disk holds the commit. That survives the removal of
-/// this home whatever any remote has, and it is a different answer from a remote proof:
-/// one depends on a server keeping a branch and the other does not.
+/// A second repository on this disk has the commit on a branch. That survives the
+/// removal of this home whatever any remote has, and it is a different answer from a
+/// remote proof: one depends on a server keeping a branch and the other does not.
 #[test]
-fn a_commit_this_disk_holds_twice_is_a_second_local_copy() {
+fn a_commit_on_a_sibling_branch_is_a_second_local_copy() {
     let machine = machine();
     let (home, tip) = stranded(&machine, SLUG);
-    git(&machine.source, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD"]);
+    let beside = sibling(&machine);
+    git(&beside, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD:refs/heads/copy"]);
 
     let answer = check(&machine, SLUG);
     assert_safe(&answer);
     assert_eq!(count(commits(&answer, "second_local_copy")), 1, "{answer:#}");
     assert_eq!(count(commits(&answer, "remote_proved")), 0, "the remote proved nothing here");
     let held_by = &commits(&answer, "second_local_copy").unwrap()["copies"]["held_by"];
-    assert_eq!(held_by, &checkout(&machine));
+    assert_eq!(held_by, &resolved(&beside));
+    intact(&machine, &home, &tip);
+}
+
+/// The commit is in a sibling's object store and no ref of that sibling reaches it.
+///
+/// This is the reading the third proof found. `git fetch <url> HEAD` writes the objects
+/// and `FETCH_HEAD`, and `FETCH_HEAD` is no ref: the commit is there and it is what the
+/// next `git gc` in that repository removes. A second copy one ordinary command takes
+/// away is no second copy, so the answer is `only_here` and the reclaim refuses.
+#[test]
+fn a_commit_a_sibling_has_under_no_ref_is_only_here() {
+    let machine = machine();
+    let (home, tip) = stranded(&machine, SLUG);
+    let beside = sibling(&machine);
+    git(&beside, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD"]);
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+    assert_eq!(git(&beside, &["cat-file", "-t", &tip]), "commit", "the sibling has the object");
+
+    let answer = check(&machine, SLUG);
+    assert_eq!(answer["safe_to_reclaim"], Value::Bool(false), "{answer:#}");
+    assert_eq!(count(commits(&answer, "second_local_copy")), 0, "an object is not a copy");
+    assert_eq!(count(commits(&answer, "only_here")), 1, "{answer:#}");
+    assert_eq!(commits(&answer, "only_here").unwrap()["sample"][0], Value::from(tip.as_str()));
+
+    reclaim_also_refuses(&machine, SLUG, "commits no current reading proves a remote has (1)");
+    intact(&machine, &home, &tip);
+}
+
+/// `git gc --prune=now` in another repository moves no verdict, in either direction.
+///
+/// The commit under no ref reads `only_here` before the collection and `only_here`
+/// after it, because the object the collection removes was never counted. The commit a
+/// current reading of the remote proves reads `remote_proved` both times, because that
+/// proof is about a server and not about a second object store on this disk.
+#[test]
+fn garbage_collection_in_a_sibling_moves_no_verdict() {
+    let machine = machine();
+    let (home, tip) = stranded(&machine, SLUG);
+    let beside = sibling(&machine);
+    git(&beside, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD"]);
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+
+    let before = check(&machine, SLUG);
+    git(&beside, &["gc", "--quiet", "--prune=now"]);
+    assert!(
+        !nodal_safety::try_git(&beside, &["cat-file", "-e", &tip]).status.success(),
+        "the collection kept the object, so this proves nothing"
+    );
+    let after = check(&machine, SLUG);
+    assert_eq!(before["commits"], after["commits"], "the collection moved the reading");
+    assert_eq!(count(commits(&after, "only_here")), 1, "{after:#}");
+    intact(&machine, &home, &tip);
+}
+
+/// The same collection, on a unit whose work a current reading of the remote proves.
+///
+/// The remote proof rests on a witness the checkout read, so nothing another repository
+/// on this disk drops may touch it.
+#[test]
+fn garbage_collection_in_a_sibling_leaves_a_remote_proof_standing() {
+    let machine = machine();
+    let (home, tip) = pushed(&machine, SLUG);
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+    let beside = sibling(&machine);
+    git(&beside, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD"]);
+    git(&beside, &["gc", "--quiet", "--prune=now"]);
+
+    let answer = check(&machine, SLUG);
+    assert_safe(&answer);
+    assert_eq!(count(commits(&answer, "remote_proved")), 1, "{answer:#}");
+    assert_eq!(count(commits(&answer, "only_here")), 0, "{answer:#}");
     intact(&machine, &home, &tip);
 }
 

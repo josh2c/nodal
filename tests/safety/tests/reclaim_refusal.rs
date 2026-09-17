@@ -75,8 +75,11 @@ fn a_reclaim_is_refused_when_the_home_holds_commits_no_other_tree_has() {
     refused(&machine, &home, "worker-import", "commits on no remote (1)");
 
     // The commits a home inherited are in the person's own checkout, so they are not
-    // work that is only here: once the commit is somewhere else, the reclaim goes ahead.
-    git(&machine.source, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD"]);
+    // work that is only here: once the commit is on a branch somewhere else, the reclaim
+    // goes ahead. The branch is the copy; an object under no ref is one the next `git gc`
+    // in that repository removes (`nodal_core::git::outside`).
+    let spec = "HEAD:refs/heads/worker-import-copy";
+    git(&machine.source, &["fetch", "--quiet", home.to_str().unwrap(), spec]);
     let allowed = machine.nodal(&["reclaim", "worker-import"]);
     assert!(allowed.status.success(), "{}", stderr(&allowed));
     assert!(stdout(&allowed).contains("nothing that is only here"));

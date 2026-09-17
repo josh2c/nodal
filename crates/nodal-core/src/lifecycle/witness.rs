@@ -337,7 +337,7 @@ fn holdings<'a>(checkout: &'a Checkout, trusted: &[Oid]) -> Result<Cow<'a, [Oid]
     if extra.is_empty() {
         return Ok(Cow::Borrowed(&checkout.held));
     }
-    Ok(Cow::Owned(union(&checkout.held, &holds(&checkout.path, &extra)?)))
+    Ok(Cow::Owned(union(&checkout.held, &vouched_for(&checkout.path, &extra)?)))
 }
 
 /// What a witness will vouch for, and nothing at all when there is no witness.
@@ -372,6 +372,12 @@ fn witness(
 
 /// The commits of `tips` that the repository they were read out of actually holds.
 ///
+/// `tips` are that repository's own refs, and this is the one place where having the
+/// object is the whole question: a ref names each of these commits, so the object being
+/// there is the same fact as a ref reaching it. The reading costs one process for that
+/// reason ([`crate::git::Git::stores`]), and [`vouched_for`] asks the dearer question
+/// where the identifiers come from somewhere else.
+///
 /// A ref is a name and an object store is a fact, and this is where the one is turned
 /// into the other. Every tip in this proof arrives as a name: `git for-each-ref` prints
 /// the object a ref points at whether or not the object is there, and [`believed`]
@@ -395,7 +401,20 @@ fn witness(
 /// # Errors
 /// [`crate::Error::Git`] when `rev-list` failed.
 fn holds(repo: &Path, tips: &[Oid]) -> Result<Vec<Oid>> {
-    Git::at(repo).held(tips)
+    Git::at(repo).stores(tips)
+}
+
+/// The commits of `wanted` this repository holds, where `wanted` is somebody else's list.
+///
+/// A witness vouches for a commit this repository never named, so no ref of this one is
+/// known to reach it and the object being there proves nothing on its own: `git gc`
+/// removes an object under no ref. This is the reachability question
+/// ([`crate::git::Git::held`]).
+///
+/// # Errors
+/// [`crate::Error::Git`] when `rev-list` failed.
+fn vouched_for(repo: &Path, wanted: &[Oid]) -> Result<Vec<Oid>> {
+    Git::at(repo).held(wanted)
 }
 
 /// Whether the checkout read `origin` after the home last wrote its own reading of it.

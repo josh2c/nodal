@@ -168,6 +168,11 @@ pub fn prove(subjects: &[Subject]) -> Vec<Proof> {
 /// cannot vouch for. The second asks which of those its current remote refs no longer
 /// reach. What is left is on the remote.
 ///
+/// The first reading asks for the object and not for a ref that reaches it
+/// ([`crate::git::Git::stores`]), and the second is why that is enough: what it keeps is
+/// what a current remote ref of the witness reaches, which is a stricter answer than any
+/// ref of the witness reaching it.
+///
 /// A witness that cannot answer vouches for nothing, which leaves the clone reported as
 /// holding more than it may. That is the direction this survey errs in.
 fn confirmed(subject: &Subject, witnesses: &[&Subject]) -> Vec<Oid> {
@@ -178,7 +183,7 @@ fn confirmed(subject: &Subject, witnesses: &[&Subject]) -> Vec<Oid> {
     for witness in witnesses {
         let git = Git::at(&witness.path);
         let theirs: Vec<Oid> = witness.evidence.remotes.iter().map(|tip| tip.oid.clone()).collect();
-        let Ok(held) = git.held(&mine) else {
+        let Ok(held) = git.stores(&mine) else {
             continue;
         };
         let Ok(gone) = git.among_outside(&held, &theirs) else {

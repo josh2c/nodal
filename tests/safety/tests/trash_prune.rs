@@ -169,9 +169,11 @@ fn a_directory_the_project_tracks_is_kept_whatever_its_name_is() {
     std::fs::write(home.join("dist/report.html"), "a baseline somebody committed\n").unwrap();
     git(&home, &["add", "--force", "--", "dist/report.html"]);
     git(&home, &["commit", "--quiet", "--message", "commit the baseline report"]);
-    // The commit has to exist somewhere else, or the uniqueness check refuses the
-    // reclaim and this test is about the prune rather than about that refusal.
-    git(&machine.source, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD"]);
+    // The commit has to exist somewhere else on a branch, or the uniqueness check
+    // refuses the reclaim and this test is about the prune rather than about that
+    // refusal. A branch is what makes the copy a copy (`nodal_core::git::outside`).
+    let spec = "HEAD:refs/heads/kept";
+    git(&machine.source, &["fetch", "--quiet", home.to_str().unwrap(), spec]);
 
     reclaimed(&machine);
     let trash = trashed(&machine);

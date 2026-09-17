@@ -157,14 +157,19 @@ fn a_checkout_that_read_the_remote_proves_the_commit_is_reconstructable() {
     assert_eq!(machine.trashed().len(), 1, "the trash holds it");
 }
 
-/// The second control: the question that needs no ref at all. Another tree on this
-/// machine holds every commit, so removing this one loses nothing whatever the remote
-/// has, and the remote is never asked.
+/// The second control: the question no remote is asked. Another tree on this machine
+/// holds every commit on a branch of its own, so removing this one loses nothing
+/// whatever the remote has.
+///
+/// The fetch names a branch, and that is the whole of the second copy. An object the
+/// checkout has under no ref is one the next `git gc` there removes
+/// (`nodal_core::git::outside`).
 #[test]
 fn a_second_copy_on_this_machine_settles_it_without_the_remote() {
     let machine = machine();
     let (home, tip) = stranded(&machine, SLUG);
-    git(&machine.source, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD"]);
+    let spec = format!("HEAD:refs/heads/{SLUG}-copy");
+    git(&machine.source, &["fetch", "--quiet", home.to_str().unwrap(), &spec]);
     assert_eq!(git(&machine.source, &["cat-file", "-t", &tip]), "commit");
 
     let allowed = machine.nodal(&["reclaim", SLUG]);
