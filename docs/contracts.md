@@ -1312,6 +1312,10 @@ and the process. `--force` moves the home anyway. The teardown has already run a
 refused reclaim leaves the unit live with its runtime stopped. A host whose process table Nodal
 cannot read moves the home and reports the unread signal as a note.
 
+The move step reads the table again just before the move. Two processes do not refuse it there. A
+process that the `nodal run` of a recorded tether started is the wrapper's own, such as the `git` that
+records the run. A process that ended between the reading and the check is no longer in the home.
+
 `nodal gc` makes the same split. It signals a recorded tether of a reclaimed materialisation, and a
 process carrying the `NODAL_ID` of a unit whose materialisations have all been reclaimed. It reports
 a process standing in a reclaimed home, under both the name the home had and the trash path it is

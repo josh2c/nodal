@@ -569,7 +569,7 @@ pub fn scan(own: Own<'_>, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>)
     for process in processes::Processes::scan(&processes::Live)? {
         if owns(&process, own) {
             certain.push(process.pid);
-        } else if bystander(&process, own, &placed, &spared) {
+        } else if bystander(&process, own, &placed, &spared) && !has_ended(process.pid) {
             standing.push(Standing::new(process.pid, process.command.clone()));
         }
     }
@@ -693,6 +693,18 @@ pub fn owns(process: &processes::Running, own: Own<'_>) -> bool {
     process.var(crate::env::vars::ID).is_some_and(|carried| carried == own.unit.to_string())
 }
 
+/// Whether a process the scan read has ended since.
+///
+/// A scan reads the whole table before any process in it is judged, and a short command
+/// can end in between. Its group and its parent are then unreadable, so nothing can vouch
+/// for it, and a refusal would name a process that is no longer in the home. Only an
+/// answer of gone counts. A reading that fails leaves the process standing.
+fn has_ended(pid: u32) -> bool {
+    processes::Live
+        .presences(&[pid])
+        .is_ok_and(|seen| seen.get(&pid) == Some(&processes::Presence::Gone))
+}
+
 /// Whether a group the registry recorded vouches for this process.
 ///
 /// Two ways, and both are readings of this machine taken now. The process is **in** the
@@ -700,6 +712,10 @@ pub fn owns(process: &processes::Running, own: Own<'_>) -> bool {
 /// answer is one Nodal recorded. Or the process **leads to** the group: it is the parent
 /// of the group's leader ([`processes::parent_of`]), which is what `nodal run --tether`
 /// is — the wrapper that started the group and stands in the home while it runs.
+///
+/// A process that the wrapper started is vouched for too. When the group ends, the wrapper
+/// records the run, and the `git` it starts for that stands in the home while the reclaim
+/// that stopped the group reads the table before its move.
 ///
 /// A recorded number is never read as a name. A process identifier is reused and a group
 /// leader is replaced while its group lives, so the number alone proves nothing; what
@@ -718,7 +734,10 @@ fn vouched_for_by_a_group(process: &processes::Running, own: Own<'_>) -> bool {
     if own.groups.iter().any(|leader| processes::parent_of(*leader) == Some(process.pid)) {
         return true;
     }
-    own.wrappers.iter().any(|wrapper| is_still(process.pid, *wrapper))
+    let parent = processes::parent_of(process.pid);
+    own.wrappers.iter().any(|wrapper| {
+        is_still(process.pid, *wrapper) || parent.is_some_and(|parent| is_still(parent, *wrapper))
+    })
 }
 
 /// Whether the process wearing this identifier now is the one the reading was taken of.
@@ -1330,6 +1349,22 @@ mod tests {
 
         // And an undated reading is not evidence either.
         assert!(asked(&[Wrapper { pid, started_at: None }]), "an undated reading is not evidence");
+
+        // What the wrapper started is its own too, while the wrapper is the one read.
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let started = crate::runtime::processes::Running::new(child.id(), BTreeMap::new())
+            .in_directory(&home)
+            .running("git");
+        let carried = [Wrapper { pid, started_at: Some(started_at) }];
+        let vouched = !bystander(
+            &started,
+            Own::of(unit, &[]).and_wrappers(&carried),
+            std::slice::from_ref(&home),
+            &[],
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(vouched, "a process the wrapper started is not a stranger");
     }
 
     /// A stranger in the home still blocks a move, whatever the registry recorded.
