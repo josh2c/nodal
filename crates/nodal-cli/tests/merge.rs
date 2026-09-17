@@ -64,11 +64,18 @@ fn merge(workspace: &Workspace, args: &[&str]) -> std::process::Output {
 /// A host with no process table lands the merge and refuses the remove, and the exit
 /// code says so. [`platform::merge`] has asserted the reason and taken the home.
 fn assert_removed_on_this_host(merged: &std::process::Output) {
-    assert_eq!(merged.status.success(), platform::moves_a_home_unforced(), "{}", stderr(merged));
+    assert_exit_on_this_host(merged);
     if platform::moves_a_home_unforced() {
         let report = answer(merged);
         assert!(report.contains("the home is in the trash"), "{report}");
     }
+}
+
+/// Insist that a merge's exit code says whether it removed the home on this host.
+///
+/// A host with no process table lands the merge, refuses the remove and exits non-zero.
+fn assert_exit_on_this_host(merged: &std::process::Output) {
+    assert_eq!(merged.status.success(), platform::moves_a_home_unforced(), "{}", stderr(merged));
 }
 
 /// Whether a repository is in the middle of a rebase.
@@ -263,12 +270,7 @@ fn resume(workspace: &Workspace, home: &Path) {
     std::fs::write(home.join("app").join("main.txt"), "both lines\n").unwrap();
     drop(git(home, &["add", "app/main.txt"]));
     let finished = merge(workspace, &["merge", "worker-import", "--yes"]);
-    assert_eq!(
-        finished.status.success(),
-        platform::moves_a_home_unforced(),
-        "{}",
-        stderr(&finished)
-    );
+    assert_exit_on_this_host(&finished);
     assert!(!home.exists(), "the home went to the trash");
     assert_eq!(git(&workspace.source, &["show", "main:app/main.txt"]), "both lines\n");
     assert_eq!(workspace.main_log().len(), 3, "{:?}", workspace.main_log());
@@ -438,11 +440,7 @@ fn a_merge_killed_between_two_steps_is_rolled_back_by_the_next_invocation() {
     let told = stderr(&next);
     assert!(told.contains("merge (worker-import) was interrupted"), "{told}");
     assert!(told.contains("rolled back"), "{told}");
-    assert_eq!(
-        next.status.success(),
-        platform::moves_a_home_unforced(),
-        "and the second merge finishes: {told}"
-    );
+    assert_exit_on_this_host(&next);
     assert_eq!(workspace.main_log().len(), 2);
     assert_eq!(git(&workspace.source, &["show", "main:app/new.txt"]), "made here\n");
     assert!(!home.exists());

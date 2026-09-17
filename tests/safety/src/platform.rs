@@ -65,10 +65,28 @@ pub const UNREAD_TABLE: &str = "was not moved: the process table could not be re
 ///
 /// If the host did not do what it should.
 pub fn reclaim(run: impl Fn(&[&str]) -> Output, args: &[&str]) -> Output {
+    reclaim_checking(run, args, || {})
+}
+
+/// [`reclaim`], with a check of the machine between the refusal and the forced run.
+///
+/// `refused` runs only on a host where the plain reclaim refused, and it runs before
+/// `--force` changes anything. A test uses it to insist that the refusal left the home,
+/// the trash and the runtime as they were.
+///
+/// # Panics
+///
+/// If the host did not do what it should, or `refused` panics.
+pub fn reclaim_checking(
+    run: impl Fn(&[&str]) -> Output,
+    args: &[&str],
+    refused: impl FnOnce(),
+) -> Output {
     if moves_a_home_unforced() {
         return run(args);
     }
     assert_unread_refusal(&run(args));
+    refused();
     let forced: Vec<&str> = args.iter().copied().chain(["--force"]).collect();
     run(&forced)
 }

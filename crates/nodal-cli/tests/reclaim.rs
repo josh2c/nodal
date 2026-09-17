@@ -36,7 +36,7 @@ use nodal_core::model::{EnvState, UnitStatus};
 use nodal_core::store::{environments, projects, sessions, trash, units};
 use nodal_safety::git::git_text as git;
 use nodal_safety::platform;
-use nodal_safety::process::{self, Owned, alive, wait_for};
+use nodal_safety::process::{self, Owned, alive, until, wait_for};
 use nodal_safety::project::Layout;
 use nodal_safety::project::resolved;
 use nodal_safety::text::{answer, stderr, stdout};
@@ -164,19 +164,19 @@ fn assert_process_signal(report: &serde_json::Value) {
     }
 }
 
-/// The arguments that reclaim `worker-import` on this host.
+/// Reclaim `worker-import` on this host, the way this host allows.
 ///
 /// A host with no process table refuses the move first, names why, and moves nothing.
 /// This asserts that refusal, and the same reclaim with `--force` then goes ahead.
-fn clean_reclaim(workspace: &Workspace, home: &Path) -> Vec<&'static str> {
-    let mut asked = vec!["reclaim", "worker-import"];
-    if !platform::moves_a_home_unforced() {
-        platform::assert_unread_refusal(&workspace.nodal(&asked));
-        assert!(home.is_dir(), "the refused reclaim left the home where it was");
-        assert!(workspace.trashed().is_empty(), "and moved nothing to the trash");
-        asked.push("--force");
-    }
-    asked
+fn clean_reclaim(workspace: &Workspace, home: &Path) -> Output {
+    platform::reclaim_checking(
+        |args| workspace.nodal(args),
+        &["reclaim", "worker-import"],
+        || {
+            assert!(home.is_dir(), "the refused reclaim left the home where it was");
+            assert!(workspace.trashed().is_empty(), "and moved nothing to the trash");
+        },
+    )
 }
 
 /// Reclaim a clean unit by name, the way this host allows ([`platform::reclaim`]).
@@ -199,7 +199,7 @@ fn a_clean_unit_is_reclaimed_and_nothing_of_it_is_left_but_the_trash_entry() {
     drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
     let (_, home) = workspace.one_unit_and_home();
 
-    let report = stdout(&workspace.nodal(&clean_reclaim(&workspace, &home)));
+    let report = stdout(&clean_reclaim(&workspace, &home));
     assert!(report.contains("nothing that is only here"), "{report}");
     assert_nothing_left(&report);
 
@@ -679,14 +679,15 @@ fn a_reclaim_refused_over_an_unread_process_table_stops_nothing() {
     let group = tether_of(&workspace);
     let _held = Owned::adopt(group);
 
-    let mut asked = vec!["reclaim", "worker-import", "--json"];
-    if !platform::moves_a_home_unforced() {
-        platform::assert_unread_refusal(&workspace.nodal(&asked));
-        assert!(alive(group), "the refused reclaim stopped the tether");
-        assert!(home.is_dir(), "and moved the home");
-        asked.push("--force");
-    }
-    let report = json(&workspace.nodal(&asked));
+    let asked = ["reclaim", "worker-import", "--json"];
+    let report = json(&platform::reclaim_checking(
+        |args| workspace.nodal(args),
+        &asked,
+        || {
+            assert!(alive(group), "the refused reclaim stopped the tether");
+            assert!(home.is_dir(), "and moved the home");
+        },
+    ));
     let groups: Vec<u64> = report["stopped"]["asked"]
         .as_array()
         .unwrap()
@@ -701,18 +702,12 @@ fn a_reclaim_refused_over_an_unread_process_table_stops_nothing() {
 /// The process group of the one tether this project's one unit holds, once it is recorded.
 fn tether_of(workspace: &Workspace) -> u32 {
     let unit = workspace.one_unit().id;
-    let deadline = Instant::now() + REACH_TIMEOUT;
-    while Instant::now() < deadline {
+    until("a tether to be recorded", || {
         let store = workspace.store();
         let environment = environments::latest_for_unit(store.conn(), unit).unwrap().unwrap();
         let open = sessions::list_open_tethers(store.conn(), environment.id).unwrap();
-        if let Some(group) = open.first().and_then(|session| session.pgid) {
-            return group;
-        }
-        drop(store);
-        std::thread::sleep(POLL);
-    }
-    panic!("no tether was recorded within {REACH_TIMEOUT:?}");
+        open.first().and_then(|session| session.pgid)
+    })
 }
 
 /// Start a detached process inside a home, carrying that unit's identifier, and answer
