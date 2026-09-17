@@ -40,6 +40,36 @@ author, and the author field says so. Do not add trailer lines: no `Co-Authored-
 and a push to `main`, whose commits hold one. Its header comment states the exact rule,
 including what git itself counts as a trailer.
 
+## Releases
+
+A change that a person can see adds one line to `CHANGELOG.md`, under the section for the
+version that is being prepared. Write the line in the same form as the lines beside it:
+one behaviour, one sentence.
+
+To make a release:
+
+1. Set the version in `Cargo.toml` under `[workspace.package]`, and in the `nodal-core`
+   requirement below it. Run `cargo check --workspace` to move `Cargo.lock`, and
+   `ci/schema-diff.sh` to move `schemas/v1/index.json`.
+2. Give `CHANGELOG.md` a section with that version. Update the version named by the
+   README install commands, by `docs/contracts.md` and by `schemas/README.md`.
+   `ci/acceptance-release.sh` checks that all of these agree, and that the registry
+   schema those documents state is the one the code carries.
+3. Merge the pull request.
+4. Tag the merge commit `v<version>` and push the tag.
+
+The tag runs the workflow. The `release` job builds `nodal-<version>-<target>` for each
+platform and writes the sha256 beside it. The `publish` job creates the GitHub release
+from the tag, attaches both files for each platform, and takes the release notes from the
+section in `CHANGELOG.md`. It fails when the tag and the manifest name different versions.
+
+A publish that fails after it made the release leaves a release with some files on it.
+Delete that release by hand, then run the workflow again against the tag ref. The job
+does not add to a release it finds; it makes one.
+
+Every refusal `CHANGELOG.md` states must be a refusal some code prints. Name the file
+and the test in the commit message that adds the line.
+
 ## What belongs in the repository
 
 Commit only what the project needs to build, test, and document itself. Do not commit:

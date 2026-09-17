@@ -1389,6 +1389,32 @@ development server left running for a fortnight is somebody's work, and a comman
 timer without being asked is the hazard `doctor` was ruled out of for the same reason. A unit somebody
 is still attached to is never reported, whatever the clock says.
 
+## Registry schema and upgrades
+
+The registry is one SQLite file, `registry.db`, in Nodal's state directory. SQLite's own
+`PRAGMA user_version` records how far the file has come. **Version 0.1.0-rc.1 reads
+registry schema 14.**
+
+This number is not the version of the JSON schema catalogue in `schemas/`. The catalogue
+is `v1` and is versioned by directory (`schemas/README.md`). The two numbers move
+independently.
+
+**An upgrade goes forward only.** A newer binary opens an older registry, applies each
+numbered migration in order inside one transaction, and stamps the new version. The
+person runs no upgrade command. A registry that is already current takes no write lock.
+
+**An older binary refuses a newer registry.** It stops before it reads a row, and the
+message names both numbers:
+
+```
+/home/you/.nodal/registry.db is at schema version 15, and this build understands 14
+```
+
+**There is no down-migration.** A registry that a newer binary migrated cannot be brought
+back to an older schema. To go back to an older binary, keep a copy of `registry.db` from
+before the upgrade, or reclaim the units and start a new state directory. Nodal does not
+copy the file for you.
+
 ## Event schema
 `id, unit, environment, ts, actor {kind, name}, kind, epistemic {observed, stated}, body, refs, raw_ref`.
 Kinds: `attached, detached, command, commit, test_result, failure, file_touched, finding, decision,
