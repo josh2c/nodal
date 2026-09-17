@@ -9,14 +9,14 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-rc.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/josh2c/nodal"
 
 [workspace.dependencies]
-nodal-core = { path = "crates/nodal-core", version = "0.1.0" }
+nodal-core = { path = "crates/nodal-core", version = "0.1.0-rc.1" }
 # Test-only: the project CI runs Nodal against, so CI never needs a real one.
 nodal-fixture = { path = "tests/fixture" }
 # Test-only: the test kit every suite runs on, and the safety suite built on it. The
