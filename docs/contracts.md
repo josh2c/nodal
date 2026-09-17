@@ -1246,6 +1246,16 @@ history is on the remote, and reporting all of it would bury the few that are no
 | `not_checked` | nothing here read the remote, and nothing here holds it | unknown, so it is kept |
 | `only_here` | the reading was taken and it is still nowhere else | yes |
 
+**A commit whose tree a remote tip already holds is named, and it is not a copy.** A force-push
+that rewrites history leaves the remote's new tip and the home's commit as two identifiers over one
+tree object. The commit is still only here, so the refusal stands, and the check says why it is
+about a name: one `content` row per such commit, naming the ref, its tip, the tree, and the
+disposition `reconstructable`. The trees compared are the home's refused commits against the tips
+under `refs/nodal/origin/` and `refs/remotes/` in the home. A row never enters the verdict and never
+weakens a refusal: taking the tree from that ref rebuilds the content, and it does not rebuild the
+commit, its message, its author or its parents. `--force` is how a person says the content is
+enough. A reading that fails is a note, not a row, and leaves the refusal exactly as it was.
+
 **Which object stores "this checkout and the clones beside it" means.** Two: the project's checkout,
 and the other repositories beside it. The second set is found by walking the checkout's parent
 directory, two levels down, which reaches a clone put next to the checkout (`<parent>/mirror`) and one

@@ -320,6 +320,69 @@ fn a_commit_a_sibling_clone_on_this_machine_holds_is_not_only_here() {
     );
 }
 
+/// A force-push that rewrote history with a byte-identical tree.
+///
+/// This is Day 3 of the third proof. The remote's new tip and the home's commit are two
+/// identifiers over one tree object, so not one byte of the work is at risk; Nodal
+/// compares commit identity, so it read the commit as only here and refused, and nothing
+/// said the refusal was about a name rather than about the content.
+///
+/// Both halves are asserted. The report names the ref and calls the row reconstructable,
+/// and the verdict does not move: taking the tree from that ref rebuilds the content and
+/// not the commit, its message, its author or its parents.
+#[test]
+fn a_commit_a_remote_tip_holds_the_tree_of_is_named_and_still_refused() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (_, home) = workspace.one_unit_and_home();
+    std::fs::write(home.join("app").join("main.txt"), "work a force-push rewrote\n").unwrap();
+    drop(git(&home, &["config", "user.email", "unit@example.invalid"]));
+    drop(git(&home, &["config", "user.name", "Test"]));
+    drop(git(&home, &["add", "-A"]));
+    drop(git(&home, &["commit", "-qm", "the work, under the id this home wrote"]));
+    let commit = git(&home, &["rev-parse", "HEAD"]).trim().to_owned();
+    let tree = git(&home, &["rev-parse", "HEAD^{tree}"]).trim().to_owned();
+
+    // The same tree under another identifier, which is what a rewrite leaves behind, and
+    // the home's own record of what the remote now holds.
+    let rewritten =
+        git(&home, &["commit-tree", &tree, "-m", "the same work, rewritten"]).trim().to_owned();
+    let reference = "refs/nodal/origin/nodal/worker-import";
+    drop(git(&home, &["update-ref", reference, &rewritten]));
+
+    let checked = workspace.nodal(&["reclaim", "worker-import", "--check"]);
+    let report = answer(&checked);
+    assert!(!checked.status.success(), "the content is not the commit: {report}");
+    assert!(report.contains("same content as"), "{report}");
+    assert!(report.contains(reference), "the ref is named: {report}");
+    assert!(report.contains(&rewritten[..8]), "the tip is named: {report}");
+    assert!(report.contains("a reclaim keeps this home"), "the refusal stands: {report}");
+
+    let document: serde_json::Value = serde_json::from_str(&answer(&workspace.nodal(&[
+        "reclaim",
+        "worker-import",
+        "--check",
+        "--json",
+    ])))
+    .unwrap();
+    assert_eq!(document["safe_to_reclaim"], serde_json::json!(false), "{document}");
+    let rows = document["content"].as_array().expect("the report carries the content rows");
+    let row = rows.iter().find(|row| row["commit"] == serde_json::json!(commit)).expect("the row");
+    assert_eq!(row["reference"], serde_json::json!(reference), "{document}");
+    assert_eq!(row["tip"], serde_json::json!(rewritten), "{document}");
+    assert_eq!(row["tree"], serde_json::json!(tree), "{document}");
+    assert_eq!(row["disposition"], serde_json::json!("reconstructable"), "{document}");
+
+    // It is never read as a second copy: the commit is still in the group a reclaim
+    // refuses over, and the refusal names it.
+    let groups = document["commits"].as_array().expect("the report carries commit groups");
+    assert!(
+        groups.iter().any(|group| group["copies"]["kind"] == "only_here"
+            || group["copies"]["kind"] == "not_checked"),
+        "the commit is still refused over: {document}"
+    );
+}
+
 /// A sibling that names a commit without holding it proves nothing.
 ///
 /// This is the invariant the reading rests on: a refusal is weakened by an object in a

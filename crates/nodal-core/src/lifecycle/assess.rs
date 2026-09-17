@@ -92,7 +92,7 @@
 //! unregistered and left exactly where it is, so nothing is moved out from under
 //! anybody, and a bystander there is reported and is not a reason.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -307,6 +307,70 @@ impl Copies {
             Self::SecondLocalCopy { .. } | Self::RemoteProved { .. } => None,
         }
     }
+}
+
+/// A commit of this home whose tree a remote tip already holds, under another id.
+///
+/// A force-push that rewrites history leaves exactly this: the remote's new tip and the
+/// home's commit are two identifiers over one tree object, so not one byte of the work is
+/// at risk and the commit is still nowhere else. Nodal compares commit identity, so it
+/// reported the commit as only here and refused, and nothing said why the refusal was
+/// about a name rather than about the content. This is what says it.
+///
+/// It is [`Survival::Reconstructable`] and never evidence of a second copy. Taking the
+/// tree from the ref rebuilds the content; it does not rebuild the commit, its message,
+/// its author or its parents. So this never reaches [`reasons`] and never moves a verdict
+/// ([`Assessment::safe_to_reclaim`]); `--force` is how a person says the content is
+/// enough.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SameContent {
+    /// The commit of this home.
+    pub commit: Oid,
+    /// The ref whose tip holds the same tree, by its full name.
+    pub reference: String,
+    /// That ref's tip.
+    pub tip: Oid,
+    /// The tree object both of them name.
+    pub tree: Oid,
+}
+
+impl Serialize for SameContent {
+    /// The row, with the disposition written out.
+    ///
+    /// Read off [`Survival`] here rather than kept in the struct, for the reason
+    /// [`PathGroup`] does the same: a stored disposition is one that can drift from what
+    /// it is a disposition of.
+    fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+
+        let mut row = out.serialize_struct("SameContent", 5)?;
+        row.serialize_field("commit", &self.commit)?;
+        row.serialize_field("reference", &self.reference)?;
+        row.serialize_field("tip", &self.tip)?;
+        row.serialize_field("tree", &self.tree)?;
+        row.serialize_field("disposition", &Survival::Reconstructable)?;
+        row.end()
+    }
+}
+
+impl SameContent {
+    /// The one line a report prints for this row.
+    #[must_use]
+    pub fn line(&self) -> String {
+        format!(
+            "{}: same content as {} ({}) under a different id — the tree is one object, \
+             so nothing of the work is at risk; the commit is still only here, and a \
+             reclaim keeps this home",
+            short(&self.commit),
+            self.reference,
+            short(&self.tip)
+        )
+    }
+}
+
+/// The first eight characters of an identifier, which is how a report names one.
+fn short(oid: &Oid) -> String {
+    oid.as_str().chars().take(8).collect()
 }
 
 /// The home's commits under one disposition.
@@ -804,6 +868,13 @@ pub struct Assessment {
     /// The home's own commits, grouped by where else they live. Empty means the home
     /// has no commit the project's checkout does not already reach.
     pub commits: Vec<CommitGroup>,
+    /// Every commit nothing proved a copy of whose tree a remote tip already holds, under
+    /// another identifier ([`SameContent`]).
+    ///
+    /// Read only where [`Input::dispositions`] asked for it, and never a reason: it says
+    /// what a refusal is about, and it does not answer it.
+    #[serde(default)]
+    pub content: Vec<SameContent>,
     /// What the home holds, grouped by what a reclaim would do to it.
     pub paths: Vec<PathGroup>,
     /// What is running against it, when that was asked for. `None` is "not read", which
@@ -905,12 +976,13 @@ pub fn assess(input: &Input<'_>) -> Result<Assessment> {
     if input.state {
         paths.extend(ignored(input.home, &mut notes));
     }
-    let (commits, remotes) = history(&git, input)?;
+    let (commits, remotes, content) = history(&git, input, &mut notes)?;
     let mut assessment = Assessment {
         home: input.home.to_path_buf(),
         moves: input.runtime.is_some_and(|asked| asked.moves),
         remotes,
         commits,
+        content,
         paths,
         runtime: input.runtime.map(|asked| running(asked, input.home)),
         reasons: Vec::new(),
@@ -1007,7 +1079,8 @@ fn measured(held: Held, candidates: Vec<prune::Candidate>) -> Option<PathGroup> 
 // The commits.
 // ---------------------------------------------------------------------------
 
-/// The home's own commits, grouped by where else they live, and the remotes it names.
+/// The home's own commits, grouped by where else they live, the remotes it names, and
+/// every refused commit whose content a remote tip already holds.
 ///
 /// Three `rev-list` runs at worst, and each answers for the whole history at once. One
 /// of the three is the refusal and the other two are the dispositions, so a caller that
@@ -1028,17 +1101,21 @@ fn measured(held: Held, candidates: Vec<prune::Candidate>) -> Option<PathGroup> 
 ///
 /// What survives all three is a commit this machine cannot find a second copy of, and how
 /// it is reported turns on whether the remote question was ever asked ([`unreached`]).
-fn history(git: &Git, input: &Input<'_>) -> Result<(Vec<CommitGroup>, Vec<String>)> {
+fn history(
+    git: &Git,
+    input: &Input<'_>,
+    notes: &mut Vec<String>,
+) -> Result<(Vec<CommitGroup>, Vec<String>, Vec<SameContent>)> {
     let remotes = git.remotes()?;
     let found = witness::elsewhere(input.home, input.checkout);
     let checkout = input.checkout.map(Checkout::path);
     if !input.dispositions {
         let refused = refusing(git, checkout, input.siblings, &found, &remotes)?;
-        return Ok((refused, remotes));
+        return Ok((refused, remotes, Vec::new()));
     }
     let ours = git.commits_outside("HEAD", &found.own)?;
     if ours.is_empty() {
-        return Ok((Vec::new(), remotes));
+        return Ok((Vec::new(), remotes, Vec::new()));
     }
     let witness = Witness::of(&remotes, &found);
     let off_remote = git.commits_outside("HEAD", &union(&found.own, &found.remote))?;
@@ -1046,11 +1123,73 @@ fn history(git: &Git, input: &Input<'_>) -> Result<(Vec<CommitGroup>, Vec<String
     let proved = difference(&ours, &off_remote);
     let second = difference(&off_remote, &unproved);
     let (held, only) = local_copies(checkout, input.siblings, unproved);
+    let content = same_content(git, &only, notes);
     let mut groups = Vec::new();
     groups.extend(commit_group(Copies::RemoteProved { witness: witness.clone() }, proved));
     groups.extend(second_groups(checkout, second, held));
     groups.extend(commit_group(unreached(&witness), only));
-    Ok((groups, remotes))
+    Ok((groups, remotes, content))
+}
+
+/// The namespaces a remote tip is read out of, inside the home.
+///
+/// `refs/nodal/origin/` is the mirror a create writes into every home, and
+/// `refs/remotes/` is whatever the home itself fetched. Both are readings of a remote and
+/// neither is proof about one, which is the whole reason this row proves nothing on its
+/// own: what it says is that the tree is already written down under a name out here, not
+/// that any server still holds it.
+const REMOTE_NAMESPACES: [&str; 2] = [crate::git::refs::ORIGIN, "refs/remotes/"];
+
+/// Every commit of `kept` whose tree a remote tip already holds.
+///
+/// `kept` is the whole refused set and not its sample, because a home of fifty only-here
+/// commits has fifty commits a rewritten history could have rewritten.
+///
+/// Two `rev-parse` runs, whatever the size of either list: one for the tips, one for the
+/// commits. A home with nothing refused reads neither.
+///
+/// A reading that fails is a note and never a row. This says what a refusal is about and
+/// it does not answer one, so a reading nobody could take leaves the refusal exactly as
+/// it was.
+fn same_content(git: &Git, kept: &[Oid], notes: &mut Vec<String>) -> Vec<SameContent> {
+    if kept.is_empty() {
+        return Vec::new();
+    }
+    match rewritten(git, kept) {
+        Ok(rows) => rows,
+        Err(why) => {
+            notes.push(format!("the trees of this home's commits could not be read: {why}"));
+            Vec::new()
+        }
+    }
+}
+
+/// The rows themselves, for a caller that has the commits and wants the failure.
+fn rewritten(git: &Git, kept: &[Oid]) -> Result<Vec<SameContent>> {
+    let mut tips: Vec<crate::git::refs::Ref> = Vec::new();
+    for namespace in REMOTE_NAMESPACES {
+        tips.extend(git.list_refs(namespace)?);
+    }
+    if tips.is_empty() {
+        return Ok(Vec::new());
+    }
+    let tip_oids: Vec<Oid> = tips.iter().map(|one| one.oid.clone()).collect();
+    let by_tree: BTreeMap<Oid, &crate::git::refs::Ref> =
+        git.trees_of(&tip_oids)?.into_iter().zip(tips.iter()).collect();
+    Ok(git
+        .trees_of(kept)?
+        .into_iter()
+        .zip(kept.iter())
+        .filter_map(|(tree, commit)| {
+            let held = by_tree.get(&tree)?;
+            Some(SameContent {
+                commit: commit.clone(),
+                reference: held.name.clone(),
+                tip: held.oid.clone(),
+                tree,
+            })
+        })
+        .collect())
 }
 
 /// The one group a destructive path acts on: the commits nothing here proved survive.

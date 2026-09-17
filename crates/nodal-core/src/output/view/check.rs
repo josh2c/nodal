@@ -16,6 +16,7 @@
 //! | line | the question it answers |
 //! |---|---|
 //! | `commits` | what is only here, what this disk has twice, what a reading proves the remote has, and what nothing checked |
+//! | `content` | which of the refused commits a remote tip already holds the tree of, under another identifier |
 //! | `files` | what a person wrote that no commit holds |
 //! | `state` | what a tool writes again, and what it does not |
 //! | `runtime` | what the reclaim would stop, and what would make it refuse |
@@ -30,7 +31,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::doctor::size::Bytes;
-use crate::lifecycle::assess::{Assessment, CommitGroup, PathGroup, Runtime};
+use crate::lifecycle::assess::{Assessment, CommitGroup, PathGroup, Runtime, SameContent};
 use crate::lifecycle::uniqueness::Witness;
 use crate::model::Timestamp;
 use crate::output::Render;
@@ -86,6 +87,7 @@ impl Render for Preflight {
             Field::new("verdict", self.verdict_cell()),
             Field::new("because", self.because_cell()),
             Field::new("commits", self.commits_cell()),
+            Field::new("content", self.content_cell()),
             Field::new("files", self.paths_cell(false)),
             Field::new("state", self.paths_cell(true)),
             Field::new("runtime", self.runtime_cell()),
@@ -142,6 +144,15 @@ impl Preflight {
             return String::from("none this checkout does not already hold");
         }
         self.assessment.commits.iter().map(commit_line).collect::<Vec<String>>().join("\n")
+    }
+
+    /// One line per refused commit whose tree a remote tip already holds.
+    ///
+    /// Empty for every home this is not true of, and the field is then dropped. It never
+    /// says safe: the tree is one object and the commit is still only here, which is
+    /// what the line states and what the verdict above it goes on saying.
+    fn content_cell(&self) -> String {
+        self.assessment.content.iter().map(SameContent::line).collect::<Vec<String>>().join("\n")
     }
 
     /// The working tree, or the ignored state, whichever was asked for.
@@ -322,7 +333,9 @@ mod tests {
 
     use super::Preflight;
     use crate::doctor::size::Bytes;
-    use crate::lifecycle::assess::{Assessment, CommitGroup, Copies, Held, PathGroup, Runtime};
+    use crate::lifecycle::assess::{
+        Assessment, CommitGroup, Copies, Held, PathGroup, Runtime, SameContent,
+    };
     use crate::lifecycle::uniqueness::Witness;
     use crate::model::Timestamp;
     use crate::output::Render;
@@ -438,6 +451,39 @@ mod tests {
             not_checked.contains("nothing here read the remote to check them"),
             "{not_checked}"
         );
+    }
+
+    /// A row that says the content is elsewhere never says the commit is. The verdict
+    /// above it is the verdict it would have been with no row at all.
+    #[test]
+    fn same_content_under_another_id_is_named_and_moves_no_verdict() {
+        let mut assessment = clear();
+        assessment.commits.push(CommitGroup {
+            copies: Copies::OnlyHere { witness: Witness::NoRemote },
+            count: 1,
+            sample: vec![crate::git::Oid::parse(&"ab".repeat(20)).unwrap()],
+        });
+        assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+        let without = preflight(assessment.clone());
+
+        assessment.content.push(SameContent {
+            commit: crate::git::Oid::parse(&"ab".repeat(20)).unwrap(),
+            reference: String::from("refs/nodal/origin/nodal/payroll"),
+            tip: crate::git::Oid::parse(&"cd".repeat(20)).unwrap(),
+            tree: crate::git::Oid::parse(&"ef".repeat(20)).unwrap(),
+        });
+        assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+        let with = preflight(assessment);
+
+        assert_eq!(with.safe_to_reclaim, without.safe_to_reclaim, "the row is not evidence");
+        assert!(!with.safe_to_reclaim);
+        let lines = with.doc().lines().join("\n");
+        assert!(lines.contains("same content as refs/nodal/origin/nodal/payroll"), "{lines}");
+        assert!(lines.contains("under a different id"), "{lines}");
+        assert!(lines.contains("a reclaim keeps this home"), "{lines}");
+
+        let written = serde_json::to_string(&with).unwrap();
+        assert!(written.contains("\"disposition\":\"reconstructable\""), "{written}");
     }
 
     /// The bytes are apparent and the line says so. A person clearing a disk who reads

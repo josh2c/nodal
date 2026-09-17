@@ -1,9 +1,47 @@
-//! `git ls-tree` records: the one view of a commit's tree the rest of Nodal reads.
+//! `git ls-tree` records: the one view of a commit's tree the rest of Nodal reads, and
+//! the tree object each of a list of commits names.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use super::oid::Oid;
+use super::{cmd, oid::Oid};
 use crate::error::{Error, Result};
+
+/// The tree object each of `commits` names, in the order they were given.
+///
+/// One process for the whole list. `git rev-parse` prints one line per revision it was
+/// given, in order, so a caller comparing many commits against many tips pays twice
+/// rather than once per commit. `--verify` is not given, because it accepts one revision
+/// and this asks about a list; what it would have guarded is guarded instead by comparing
+/// the number of answers to the number of questions.
+///
+/// `--end-of-options` is not given either: a plain `rev-parse` echoes an argument it does
+/// not recognise rather than refusing it, and that separator came back as a line of the
+/// answer. Nothing here needs it. Every argument is `<40 hex characters>^{tree}`, built
+/// from an [`Oid`] this repository printed, which no option parser can read as a flag.
+///
+/// Every commit must be one this repository has. The caller read them out of this
+/// repository, and a revision Git cannot resolve fails the whole reading rather than
+/// shifting the answers under the ones after it.
+///
+/// # Errors
+/// [`Error::Git`] when a revision could not be resolved, [`Error::GitOid`] on unreadable
+/// output, and [`Error::GitParse`] when the answer has a different number of lines from
+/// the question.
+pub(super) fn of(repo: &Path, commits: &[Oid]) -> Result<Vec<Oid>> {
+    if commits.is_empty() {
+        return Ok(Vec::new());
+    }
+    let asked: Vec<String> =
+        commits.iter().map(|oid| format!("{}^{{tree}}", oid.as_str())).collect();
+    let mut args = vec!["rev-parse"];
+    args.extend(asked.iter().map(String::as_str));
+    let output = cmd::run_ok(repo, &args)?;
+    let lines = output.lines()?;
+    if lines.len() != commits.len() {
+        return Err(Error::GitParse { args: output.args.clone(), record: lines.join(" ") });
+    }
+    lines.iter().map(|line| Oid::parse(line)).collect()
+}
 
 /// What a tree entry points at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

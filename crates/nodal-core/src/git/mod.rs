@@ -157,6 +157,19 @@ impl Git {
         Ok(Some(Oid::parse(output.text()?)?))
     }
 
+    /// The tree object each of these commits names, in the order they were given.
+    ///
+    /// One process for the whole list ([`tree::of`]). Two commits with one tree are the
+    /// same content under two identifiers, which is what a rewritten history leaves and
+    /// what [`crate::lifecycle::assess`] reports.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when a commit could not be resolved, [`Error::GitOid`] on
+    /// unreadable output.
+    pub fn trees_of(&self, commits: &[Oid]) -> Result<Vec<Oid>> {
+        tree::of(&self.root, commits)
+    }
+
     /// List the tree at a revision. `recursive` walks subtrees; `paths` limits the walk.
     ///
     /// One call of this is what a workspace fingerprint is built from
