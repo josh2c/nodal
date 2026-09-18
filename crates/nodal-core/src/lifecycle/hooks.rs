@@ -376,6 +376,57 @@ impl Runner {
         }
         let Some(command) = phase.command(&self.hooks) else { return Ok(None) };
         let command = command.as_str();
+        let context = context.resolved();
+        let directory = paths::resolve(directory);
+        let filled = self.runnable(phase, command, &Variables::of(&context)?)?;
+        execute(phase, &filled, &directory, &context, owner)?;
+        Ok(Some(Ran { phase, command: command.to_owned(), ran: filled, directory }))
+    }
+
+    /// Refuse now every hook of `phases` this invocation would not be allowed to run.
+    ///
+    /// An operation calls this before its first step, and that is the whole purpose of
+    /// it. Both refusals a hook can make are decided by text alone — the approval is a
+    /// digest of the declared command, and a value that would become shell syntax is a
+    /// character in the branch or in a directory name — so both are answerable before
+    /// the operation writes anything. Asking them at the phase instead refused a create
+    /// that had already made the home, the branch, the ports and the rows, and a person
+    /// who read that refusal believed no unit was made (`nodal new` under an unapproved
+    /// `post_new`, 0.1.0-rc.2).
+    ///
+    /// `phases` is what the operation will actually run, so a form that runs no hook
+    /// refuses nothing: an adoption in place never runs `post_new` and is never stopped
+    /// by one it would not have run.
+    ///
+    /// The caller gives the branch and the two directories rather than the values they
+    /// make, because both directories are resolved here as they are for a run.
+    ///
+    /// # Errors
+    /// [`Error::HookNotApproved`] and [`Error::HookVariable`], as [`Self::run`] raises
+    /// them.
+    pub fn refuse_unrunnable(
+        &self,
+        phases: &[Phase],
+        branch: &BranchName,
+        source: &Path,
+        root: &Path,
+    ) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let values = Variables::about(branch, &paths::resolve(source), &paths::resolve(root))?;
+        for phase in phases {
+            let Some(command) = phase.command(&self.hooks) else { continue };
+            self.runnable(*phase, command.as_str(), &values)?;
+        }
+        Ok(())
+    }
+
+    /// The command as the shell would get it, or the refusal that stops it running.
+    ///
+    /// One implementation for both callers, so that what is refused before a run and what
+    /// is refused at the phase cannot come apart.
+    fn runnable(&self, phase: Phase, command: &str, values: &Variables) -> Result<String> {
         if !self.approvals.allows(&self.project, phase, command)? {
             return Err(Error::HookNotApproved {
                 phase,
@@ -383,11 +434,7 @@ impl Runner {
                 command: command.to_owned(),
             });
         }
-        let context = context.resolved();
-        let directory = paths::resolve(directory);
-        let filled = Variables::of(&context)?.expand(phase, command)?;
-        execute(phase, &filled, &directory, &context, owner)?;
-        Ok(Some(Ran { phase, command: command.to_owned(), ran: filled, directory }))
+        values.expand(phase, command)
     }
 }
 

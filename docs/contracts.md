@@ -1066,6 +1066,12 @@ root a group owns. A command that has changed refuses to run, and the message
 shows the command, and names `nodal approve`. A command nobody approved refuses in the same way.
 `--no-hooks` runs no hook and needs no approval.
 
+An operation asks both questions — is the command approved, and does a value hold shell syntax —
+before its first step writes. A `nodal new` or a `nodal adopt` that a hook refuses leaves no unit
+row, no branch, no port lease and no home. In a project Nodal has not seen before, the refused
+command leaves the project row and the block its ports come from. Neither is a unit, and the next
+create in that project uses both.
+
 ## Claude Code
 Claude Code fires named events at commands declared in a `.claude/settings.json`. There are two such
 files. The person's own, `~/.claude/settings.json`, applies in every project on the machine;

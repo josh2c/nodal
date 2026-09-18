@@ -328,6 +328,30 @@ impl Machine {
         Self::built(&Setup { forced, exclude, ..Setup::default() })
     }
 
+    /// The fixture project with `hooks` declared in its recipe, committed and approved
+    /// by nobody.
+    ///
+    /// Committed, because the recipe is a tracked file of the project and a home cloned
+    /// from a dirty tree is a home the uniqueness check has something to say about. A
+    /// person reaches this state with a `git pull`: the project now declares a command,
+    /// and this machine has never seen it. A suite about a hook that runs approves them
+    /// afterwards; a suite about a refusal does not.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`], and if the recipe could not be read or written.
+    #[must_use]
+    pub fn declaring(hooks: &str) -> Self {
+        let machine = Self::new();
+        let path = machine.source.join(nodal_fixture::RECIPE);
+        let recipe = std::fs::read_to_string(&path).expect("the fixture has a recipe");
+        std::fs::write(&path, format!("{recipe}\n[hooks]\n{hooks}\n"))
+            .expect("the recipe is written");
+        git(&machine.source, &["add", "--", nodal_fixture::RECIPE]);
+        git(&machine.source, &["commit", "--quiet", "--message", "declare the project's hooks"]);
+        machine
+    }
+
     /// A machine whose checkout has a bare `origin` beside it, with `main` pushed to it.
     ///
     /// Every base of this project is a clone of that bare repository, so every home

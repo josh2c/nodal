@@ -245,9 +245,8 @@ pub fn create(
     if let Some((home, unit)) = containing_home(store.conn(), &request.source)? {
         return Err(Error::InsideHome { home, unit });
     }
-    let params = prepare(store, request, progress)?;
+    let Prepared { params, runner } = prepare(store, request, progress)?;
     let environment = params.environment.id;
-    let runner = hooks_of(&params, request.hooks)?;
     let context = context_of(&params);
     runner.run(Phase::PreNew, &params.project.root, &context, &hooks::before_the_rows())?;
     let done = run(store, &plan(&params)?)?;
@@ -326,14 +325,23 @@ fn home_of(conn: &Connection, unit: UnitId, directory: &Path) -> Result<Option<P
 /// The project's hooks and this machine's approvals for them.
 ///
 /// A hook is not a step and cannot be one ([`crate::lifecycle::hooks`]), so `pre_new`
-/// runs after every refusal has been made and before the first step, and `post_new`
-/// after the registry write. `pre_new` runs in the project root, because the home it
-/// is about does not exist yet; `NODAL_ROOT` names the home it is going to be.
-fn hooks_of(params: &Params, enabled: bool) -> Result<Runner> {
+/// runs before the first step and `post_new` after the registry write. `pre_new` runs in
+/// the project root, because the home it is about does not exist yet; `NODAL_ROOT` names
+/// the home it is going to be.
+///
+/// *Whether* either of them may run is settled earlier than either of them runs, in
+/// [`prepare`] ([`Runner::refuse_unrunnable`]). An adoption asks the same question of the
+/// same value, which is why this is one function and not two.
+pub(super) fn hooks_of(
+    project: &Project,
+    recipe: &Recipe,
+    state_dir: &Path,
+    enabled: bool,
+) -> Result<Runner> {
     Ok(Runner {
-        project: params.project.root.clone(),
-        hooks: params.recipe.hooks.clone(),
-        approvals: Approvals::open(hooks::path_in(&params.state_dir))?,
+        project: project.root.clone(),
+        hooks: recipe.hooks.clone(),
+        approvals: Approvals::open(hooks::path_in(state_dir))?,
         enabled,
     })
 }
@@ -351,13 +359,28 @@ fn context_of(params: &Params) -> Context {
     }
 }
 
+/// The phases a create runs, in the order it runs them. Both are refused up front.
+const RUNS: &[Phase] = &[Phase::PreNew, Phase::PostNew];
+
+/// What [`prepare`] settled: the plan's parameters, and the hooks the create may run.
+///
+/// The runner comes back with the parameters because it is made before the base is asked
+/// for, and making it twice would read the approvals file twice for one create.
+struct Prepared {
+    /// What the plan is built from.
+    params: Params,
+    /// The hooks of the project, already refused if either of them could not run.
+    runner: Runner,
+}
+
 /// Work out what the operation will do, and get the base it will clone.
 ///
 /// Order matters here in one way that is not obvious from reading it. Every refusal —
-/// a held branch, a home that would overlap a tree Nodal knows — is made before the
-/// base is asked for, because asking for a base may build one, and a build is minutes.
-/// Nothing that can refuse the create runs after that call.
-fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -> Result<Params> {
+/// a held branch, a home that would overlap a tree Nodal knows, a hook this machine has
+/// not approved — is made before the base is asked for, because asking for a base may
+/// build one, and a build is minutes. Nothing that can refuse the create runs after that
+/// call, and nothing that can refuse it runs after the plan's first step.
+fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -> Result<Prepared> {
     let git = Git::open(&request.source)?;
     git.ensure_no_operation_in_progress()?;
     let source = git.top_level()?;
@@ -376,6 +399,9 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
     let unit = new_unit(project.id, &name.slug, &branch, request, forked_at);
     let mut environment = new_environment(unit.id, &project.name, &state_dir, unit.created_at);
     guard::placement(store.conn(), &environment.home, &source)?;
+
+    let runner = hooks_of(&project, &effective.recipe, &state_dir, request.hooks)?;
+    runner.refuse_unrunnable(RUNS, &branch, &project.root, &environment.home)?;
 
     let wanted = substrate::Request {
         project: project.clone(),
@@ -397,18 +423,21 @@ fn prepare(store: &mut Store, request: &Request, progress: &Arc<dyn Reporter>) -
         ));
     }
 
-    Ok(Params {
-        ports: port_names(&effective.recipe),
-        recipe: effective.recipe,
-        project,
-        base_path: base.base.path,
-        checkout: source,
-        state_dir,
-        carry: request.carry,
-        unit,
-        environment,
-        block,
-        installs,
+    Ok(Prepared {
+        params: Params {
+            ports: port_names(&effective.recipe),
+            recipe: effective.recipe,
+            project,
+            base_path: base.base.path,
+            checkout: source,
+            state_dir,
+            carry: request.carry,
+            unit,
+            environment,
+            block,
+            installs,
+        },
+        runner,
     })
 }
 

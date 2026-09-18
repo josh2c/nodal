@@ -38,7 +38,7 @@ use nodal_core::model::{EnvId, Session};
 use nodal_core::store::{environments, projects, sessions, units};
 use nodal_safety::process::Owned;
 use nodal_safety::process::{alive, in_a_group_of_its_own, wait_for};
-use nodal_safety::{InState as _, Machine, answer, git, stderr};
+use nodal_safety::{InState as _, Machine, answer, stderr};
 
 /// The unit every test here makes.
 const UNIT: &str = "worker-import";
@@ -68,17 +68,10 @@ fn backgrounds(record: &Path) -> String {
 
 /// The fixture project with `hooks` declared in its recipe and approved on this machine.
 ///
-/// Committed, because the recipe is a tracked file of the project and a home cloned from
-/// a dirty tree is a home the uniqueness check has something to say about. Approved
-/// through `nodal init`, because an unapproved command is refused before it runs and
-/// every property here is about one that ran.
+/// Approved through `nodal init`, because an unapproved command is refused before it
+/// runs and every property here is about one that ran.
 fn machine_declaring(hooks: &str) -> Machine {
-    let machine = Machine::new();
-    let path = machine.source.join(nodal_fixture::RECIPE);
-    let recipe = std::fs::read_to_string(&path).unwrap();
-    std::fs::write(&path, format!("{recipe}\n[hooks]\n{hooks}\n")).unwrap();
-    git(&machine.source, &["add", "--", nodal_fixture::RECIPE]);
-    git(&machine.source, &["commit", "--quiet", "--message", "declare the project's hooks"]);
+    let machine = Machine::declaring(hooks);
     let approved = machine.nodal(&["init", "--force"]);
     assert!(approved.status.success(), "the hooks were not approved: {}", stderr(&approved));
     machine
