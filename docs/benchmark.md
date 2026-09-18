@@ -592,8 +592,26 @@ second time, in a `cp -a --reflink=always` copy of it at a new path, and in that
 **The registry.** Read with `sqlite3` against `~/.nodal/registry.db`, because Nodal has no
 command that prints its own history. That is item 5 in the list above.
 
-Nothing in `~/Projects` was changed or removed. The benchmark wrote only to
-`~/.cache/nodal-bench-benchmark-1` and to temporary registries under it.
+Nothing in `~/Projects` was changed or removed. The benchmark of 2026-09-11 wrote to
+`~/.cache/nodal-bench-benchmark-1` and to temporary registries under it, and it removed
+none of them: it left 152 GB in fifteen work directories.
+
+**The harness.** The five scripts are `benches/harness/create_bench.sh`,
+`cold_bench.sh`, `ready_bench.sh`, `best_bench.sh` and `fresh_bench.sh`. Each one takes
+its paths from arguments and the environment, and `--help` prints them. A run makes one
+work directory and removes it when it exits, which includes a failed exit. A run that
+gets SIGKILL leaves a work directory whose name carries the script and the process
+identifier, and the next run of any of the five removes it.
+
+Results are the part a run keeps. Each run writes `results.tsv` and its build logs to
+`benches/results/<script>.<time>.<process>/`, which no run removes. The rule is the
+retention `nodal.toml` states under `[reclaim] trash_retention`. This project states
+none, so runs use 14 days, the same number as Nodal's own default. A run prints the
+rule before the first measurement, and `<script>.sh --gc` removes the results that are
+older. It removes only a directory a run of this harness wrote.
+
+To repeat these numbers, build the release binary and run the five scripts. The numbers
+will not be the same: this report was measured on a disk on a USB 2.0 link at 40 MB/s.
 
 ## What this change contains
 
