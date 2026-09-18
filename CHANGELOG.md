@@ -33,7 +33,26 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   of them is not a second object store, because a person clearing a machine removes them
   together.
 
+### Read
+
+- `nodal reclaim --check` on a checkout adopted in place names the build output and the
+  installed dependencies it holds, and says that `--prune` is what removes them. It said
+  before that a trash would keep the local state of such a home. No trash holds it,
+  because no reclaim moves the home.
+- `nodal doctor --machine` names `nodal adopt <path> --in-place` for the clones it found,
+  and `nodal reclaim <unit> --check` after it. It runs neither.
+
+### What it does
+
+- `nodal reclaim <unit> --prune` removes the build output and the installed dependencies
+  from a checkout adopted in place. Every other reclaim of such a checkout leaves the
+  directory exactly as it is, and its report names what `--prune` would remove.
+
 ### What refuses
+
+- `nodal reclaim --prune` removes a path only when an ignore rule covers it and the
+  exclusion table calls it regenerable. It never removes a tracked file, and it never
+  removes the directory. A reclaim that refuses over work prunes nothing.
 
 - `nodal new` and `nodal adopt` ask for hook approval before the operation writes
   anything. A create or an adoption refused for a hook nobody approved leaves no unit, no

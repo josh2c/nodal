@@ -446,6 +446,15 @@ the person's is touched. The environment row carries `managed = false`, which ma
 root: a reclaim unregisters it and never moves it. A directory can be adopted no other way, so
 `--in-place` is stated rather than inferred.
 
+A reclaim of such a root removes nothing from the directory, and its report says what `nodal reclaim
+<unit> --prune` would remove: the build output and the installed dependencies, with the paths and the
+bytes. `--prune` removes them. It is explicit and is never a default, and it passes the two gates the
+trash prune passes: an ignore rule must cover the path, and the exclusion table must call it
+regenerable. The directory itself is never moved and never removed, and `nodal gc` never reaches it.
+`nodal gc` and `nodal merge --remove` never prune: both end a unit with no person present, and that
+is not consent. `nodal reclaim <unit> --check` prints the same paths and the same bytes and removes
+none of them.
+
 `--all` adopts every worktree `git worktree list` names for the project, one at a time. It skips the
 main checkout and any worktree that is already a unit, and it says so. It needs `--in-place`. Each
 row is one line. A summary counts what it did.

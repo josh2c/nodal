@@ -79,6 +79,16 @@ jobs:
       - name: the machine is reported, sized, and left exactly as it was
         run: ci/acceptance-doctor.sh
 
+  acceptance-harness:
+    name: acceptance (harness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: a harness run removes its work directories, and a failed run removes them too
+        run: ci/acceptance-harness.sh
+
   acceptance-tracked:
     name: acceptance (tracked)
     runs-on: ubuntu-latest
