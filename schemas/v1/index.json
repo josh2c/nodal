@@ -1,5 +1,5 @@
 {
-  "generated_by": "nodal-core 0.1.0-rc.2",
+  "generated_by": "nodal-core 0.1.0-rc.3",
   "schemas": [
     {
       "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/project.json",

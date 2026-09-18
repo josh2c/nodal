@@ -1480,7 +1480,7 @@ is still attached to is never reported, whatever the clock says.
 ## Registry schema and upgrades
 
 The registry is one SQLite file, `registry.db`, in Nodal's state directory. SQLite's own
-`PRAGMA user_version` records how far the file has come. **Version 0.1.0-rc.2 reads
+`PRAGMA user_version` records how far the file has come. **Version 0.1.0-rc.3 reads
 registry schema 14.**
 
 This number is not the version of the JSON schema catalogue in `schemas/`. The catalogue
