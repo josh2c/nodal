@@ -78,7 +78,7 @@ fn shown(world: &World) -> UnitDetail {
     let store = world.store();
     let project = world.project();
     let listed = ls::list(store.conn(), &Live, &project, Timestamp::now()).unwrap();
-    show::detail(store.conn(), listed, &world.unit()).unwrap()
+    show::detail(store.conn(), listed, &world.unit(), Vec::new()).unwrap()
 }
 
 /// Whether a report lists this ref.

@@ -79,7 +79,7 @@ use crate::output::view::{AdoptedAll, AdoptedRow, Arrival, Created};
 use crate::paths;
 use crate::services::ports;
 use crate::store::{Store, environments, events, units};
-use crate::substrate::{self, Reporter};
+use crate::substrate::{self, Reporter, warmth};
 use crate::workspace::relocate::{self, InvalidateCache};
 use crate::workspace::sharing::Sharing;
 use crate::workspace::{Excludes, home, select_backend};
@@ -197,8 +197,14 @@ pub fn adopt(
     };
     let created =
         Created::of(&params.unit, &new::read_back(store, environment)?, arrival, Timestamp::now())?;
-    let readiness = crate::substrate::warmth::of(&params.recipe, &params.environment.home);
-    Ok(created.keeping(done.outputs.read(new::MATERIALIZE)?.unwrap_or_default()).ready(readiness))
+    let readiness =
+        crate::substrate::warmth::of(&params.recipe, &params.environment.home, warmth::Tree::Home);
+    let pinned =
+        crate::substrate::tools::readings(&params.recipe, &crate::substrate::build::ThisHost);
+    Ok(created
+        .keeping(done.outputs.read(new::MATERIALIZE)?.unwrap_or_default())
+        .ready(readiness)
+        .pinning(pinned))
 }
 
 /// Adopt every worktree of the project, one at a time, through the ordinary adopt path.

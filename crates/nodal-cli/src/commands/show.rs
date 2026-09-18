@@ -9,6 +9,8 @@ use nodal_core::model::Timestamp;
 use nodal_core::output::{self, Format};
 use nodal_core::runtime::{entry, lock, ls, processes, show};
 use nodal_core::store::Store;
+use nodal_core::substrate::build::ThisHost;
+use nodal_core::substrate::tools;
 
 use crate::commands::context;
 
@@ -69,7 +71,9 @@ impl Show {
         )?;
         let mut listed = ls::rows(&surveyed, &processes::Live, &project, &held, now);
         states::settle(store.conn(), &mut listed.units, now);
-        let answer = show::detail(store.conn(), listed, &unit)?;
+        let recipe = nodal_core::recipe::load(&project.root)?.recipe;
+        let pinned = tools::readings(&recipe, &ThisHost);
+        let answer = show::detail(store.conn(), listed, &unit, pinned)?;
         context::compile(&project, &surveyed);
         output::render(&answer, format)
     }

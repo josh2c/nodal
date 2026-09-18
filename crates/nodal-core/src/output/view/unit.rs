@@ -15,6 +15,7 @@ use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, NONE, Table};
 use crate::output::view::event;
 use crate::output::view::verdict::{RowKind, WorktreeRow};
+use crate::substrate::tools::Pinned;
 
 /// How current a unit's environment is against the project it came from.
 ///
@@ -539,13 +540,22 @@ pub struct UnitDetail {
     pub snapshots: Vec<Snapshot>,
     /// What has happened in it, most recent last.
     pub history: Vec<Event>,
+    /// Every tool the project pins, with what this host answered about it.
+    ///
+    /// The pin is the project's and the answer is this machine's, so the two belong on
+    /// the report about a unit a person is working in rather than only on the one made
+    /// when the home was created ([`crate::substrate::tools`]).
+    #[serde(default)]
+    pub toolchain: Vec<Pinned>,
 }
 
 impl Render for UnitDetail {
     const KIND: &'static str = "unit";
 
     fn doc(&self) -> Doc {
-        let mut doc = Doc::from_iter([Block::fields(detail_fields(&self.unit, self.now))]);
+        let mut fields = detail_fields(&self.unit, self.now);
+        fields.extend(toolchain_fields(&self.toolchain));
+        let mut doc = Doc::from_iter([Block::fields(fields)]);
         if !self.snapshots.is_empty() {
             doc.push(Block::blank());
             doc.push(Block::table(snapshot_table(&self.snapshots, self.now)));
@@ -744,6 +754,11 @@ fn detail_fields(unit: &UnitRow, now: Timestamp) -> Vec<Field> {
     }
     fields.push(Field::new("last", last_cell(unit, now)));
     fields
+}
+
+/// One line per pinned tool: the pin, and what this host answered.
+fn toolchain_fields(pinned: &[Pinned]) -> Vec<Field> {
+    pinned.iter().map(|one| Field::new("toolchain", one.line())).collect()
 }
 
 /// The name a unit's status carries in output. A table, so the words are in one place.

@@ -89,5 +89,31 @@
       "state": "unknown",
       "why": "a `pnpm` build names no output directory this can check"
     }
-  }
+  },
+  "toolchain": [
+    {
+      "tool": "node",
+      "pin": "20",
+      "host": {
+        "answer": "host",
+        "version": "v20.11.1"
+      }
+    },
+    {
+      "tool": "cargo.rust",
+      "pin": "1.85",
+      "host": {
+        "answer": "not_checked",
+        "why": "rustc is not on the path"
+      }
+    },
+    {
+      "tool": "asdf",
+      "pin": "0.14.0",
+      "host": {
+        "answer": "not_checked",
+        "why": "no program here answers for asdf"
+      }
+    }
+  ]
 }

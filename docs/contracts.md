@@ -206,6 +206,25 @@ ecosystem, chosen from the committed file each manager installs from; `pip` is r
 ecosystem is reported not ready, with the manifest and the ecosystem named: nothing would install
 that half, so no base is warm for it.
 
+**An excluded install output means the install runs in the home, not the base.** A base
+installs once and hands the tree to every home, which is what makes a home cheap. That trade
+is off where `base.exclude` names the directory a manager installs into — `node_modules` for
+a Node manager, `.venv` for `uv`, `pip` and an in-project Poetry: no home receives what the
+base wrote there. The base then runs no install for that manager and its readiness line says
+which directory and which manager, rather than reporting a path missing that it was never
+going to write. `nodal new` runs that install in the home, after the branch is taken and
+before the home is activated, at the version the package-manager pin names. A failure stops
+the create and the steps before it are undone, with both of the tool's streams in the error;
+the home's own readiness line then answers out of its own tree, as every home's does. Cargo
+is never moved: its download cache is outside the tree and no exclusion list reaches it.
+
+**A pin in `[toolchain]` is reported and never enforced.** `nodal new`, `nodal adopt` and
+`nodal show` print one line for each tool the recipe pins: the tool, the pin, and what
+`<program> --version` answered on this host. Where no program here answers for the tool, and
+where the program is not on the path, the line says `not checked` with the reason. No command
+refuses over a pin in this table and no command selects a version from it. The one place a pin
+is acted on is the package-manager pin, which a base build runs the install at.
+
 **A base build never installs into the host.** `uv` and Poetry make their own environment; `pip` does
 not, so a base build makes one for it. The build runs `python3 -m venv .venv` as its own step and then
 runs `.venv/bin/pip install -r requirements.txt`, and a host with neither `python3` nor `python` is
@@ -512,7 +531,12 @@ sections: this project, and a separate section for another project's leftovers t
 only.
 
 A unit home is read the way a reclaim reads it (`reclaim --check`, one evaluator), and the row says how
-many of its commits are only here and how many nothing has checked. The row carries the unit's
+many of its commits are only here and how many nothing has checked. The question is asked of the
+project's open homes as a **set**: a home of one of them is not believed as a second object store, so a
+commit that lives only inside two of this project's open homes is reported. Per-unit safety is not joint
+safety, and the person reading this section is about to clear a machine. The checkout, and the clones
+beside it that are nobody's unit home, are believed exactly as they were: they are not going anywhere
+when the units do. The row carries the unit's
 objective as its intent. A home that could not be read is a row too. So the closing sentence of the
 first section — nothing of this project is left behind — is printed only where every home of the
 project read clean, and it is never the answer for a machine holding the only copy of a morning. A worktree another tool holds a lock on is reported as locked and read no further. Removal of
@@ -1227,6 +1251,26 @@ history is on the remote, and reporting all of it would bury the few that are no
 | `not_checked` | nothing here read the remote, and nothing here holds it | unknown, so it is kept |
 | `only_here` | the reading was taken and it is still nowhere else | yes |
 
+**More than one unit may be named, and only to `--check`.** `nodal reclaim --check <unit> <unit> ...`
+reads each unit exactly as it reads one — the per-unit verdict in the report is the verdict that unit
+would get alone — and adds the joint one. A copy that lives only in another home named on the same
+command line does not count, because the same reclaim removes it; each such group becomes one more
+reason on that unit, naming the home and the number of commits. The report closes with the joint
+verdict and the exit code carries it: a person who named three units is asking what happens if all
+three go. Both answers are printed, because both are true. A `nodal reclaim` that is not a check takes
+one unit at a time and refuses a list, so a failure halfway through is never a question about which of
+them happened.
+
+**A commit whose tree a remote tip already holds is named, and it is not a copy.** A force-push
+that rewrites history leaves the remote's new tip and the home's commit as two identifiers over one
+tree object. The commit is still only here, so the refusal stands, and the check says why it is
+about a name: one `content` row per such commit, naming the ref, its tip, the tree, and the
+disposition `reconstructable`. The trees compared are the home's refused commits against the tips
+under `refs/nodal/origin/` and `refs/remotes/` in the home. A row never enters the verdict and never
+weakens a refusal: taking the tree from that ref rebuilds the content, and it does not rebuild the
+commit, its message, its author or its parents. `--force` is how a person says the content is
+enough. A reading that fails is a note, not a row, and leaves the refusal exactly as it was.
+
 **Which object stores "this checkout and the clones beside it" means.** Two: the project's checkout,
 and the other repositories beside it. The second set is found by walking the checkout's parent
 directory, two levels down, which reaches a clone put next to the checkout (`<parent>/mirror`) and one
@@ -1245,6 +1289,17 @@ machine" and safe.
 A project whose checkout sits directly in a home directory is the widest case this reaches, because the
 parent is then the home directory itself. Two levels is what keeps that bounded. There is no way to turn
 the walk off.
+
+**The home being read is never its own second copy.** A checkout adopted in place sits beside the
+project's checkout, which is exactly where the walk looks, so the walk hands the home its own path
+back as a repository that may hold a copy — and it holds every one of them, because they are its own
+commits. The home is therefore taken out of the set, by resolved path, so that one directory reached
+through a symbolic link and reached directly is one directory. Without that, `--check` would answer
+"the second copy is in this very directory" about the directory a reclaim removes.
+
+**A second copy names the repository that holds it.** The `commits` line says `held by <path>` for
+that disposition, because the path is the whole of what "removing this home does not lose it" rests
+on, and it is what the joint reading below discounts when that repository goes too.
 
 A repository counts only where a ref of its own reaches the commit. `git rev-list` run in that
 repository proves it. Two readings a person might expect to count do not.

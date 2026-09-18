@@ -26,12 +26,17 @@ use crate::lifecycle::journal;
 use crate::model::{EnvState, OperationId, Unit};
 use crate::output::view::{Disk, Snapshot, Taker, UnitDetail, UnitList, UnitRow};
 use crate::store::events;
+use crate::substrate::tools::Pinned;
 use crate::{Error, Result};
 
 /// How many events of the unit's log the answer carries, newest last.
 const HISTORY: u32 = 20;
 
-/// Everything known about one unit: its row of `listed`, and its log under it.
+/// Everything known about one unit: its row of `listed`, its log under it, and what
+/// this host answers about every tool the project pins.
+///
+/// `toolchain` is read by the caller, which is the one that holds the recipe, and it is
+/// a reading of this machine rather than of the unit ([`crate::substrate::tools`]).
 ///
 /// The row is found by the unit's identifier and never by its name. A project can carry
 /// several units under one name — a reclaimed unit keeps the name a person typed, and
@@ -41,7 +46,12 @@ const HISTORY: u32 = 20;
 /// # Errors
 /// [`Error::UnitNotFound`] when the list has no such unit, and [`Error::Store`] when the
 /// log could not be read.
-pub fn detail(conn: &Connection, listed: UnitList, unit: &Unit) -> Result<UnitDetail> {
+pub fn detail(
+    conn: &Connection,
+    listed: UnitList,
+    unit: &Unit,
+    toolchain: Vec<Pinned>,
+) -> Result<UnitDetail> {
     let now = listed.now;
     let mut row = listed
         .units
@@ -52,7 +62,7 @@ pub fn detail(conn: &Connection, listed: UnitList, unit: &Unit) -> Result<UnitDe
     let mut history = events::list_recent(conn, unit.id, HISTORY)?;
     history.reverse();
     let snapshots = snapshots(conn, &row, unit);
-    Ok(UnitDetail { now, unit: row, snapshots, history })
+    Ok(UnitDetail { now, unit: row, snapshots, history, toolchain })
 }
 
 /// What Nodal recorded of the home before it changed it, oldest first.

@@ -32,7 +32,7 @@ use nodal_core::output::view::doctor::{Doctor, Finding, Kind};
 use nodal_core::services::docker::{Docker, Output};
 use nodal_core::store::Store;
 use nodal_core::workspace::sharing::Sharing;
-use nodal_safety::git::{self, git_ok as git};
+use nodal_safety::git::{self, git_ok as git, git_text};
 use nodal_safety::rows;
 
 /// The container the fake daemon reports as exited, with a writable layer of 120 MB.
@@ -939,6 +939,23 @@ impl Project {
         Self { directory, checkout, home, store, state }
     }
 
+    /// A second unit home of the same project, beside the checkout so that the reading
+    /// of the first home finds it.
+    fn plant_beside(&self, slug: &'static str, branch: &'static str) -> PathBuf {
+        let home = self.checkout.parent().expect("the checkout has a parent").join(slug);
+        git(
+            self.directory.path(),
+            &["clone", "--quiet", self.checkout.to_str().unwrap(), home.to_str().unwrap()],
+        );
+        let project = nodal_core::store::projects::list(self.store.conn()).unwrap();
+        rows::record(
+            &self.store,
+            project[0].id,
+            &rows::Row { index: 2, slug, branch, home: &home, host: rows::host() },
+        );
+        home
+    }
+
     /// The report this machine produces.
     fn report(&self) -> Doctor {
         let machine = Machine::here(&self.checkout, &self.state, None, None);
@@ -977,6 +994,57 @@ fn a_unit_home_that_holds_the_only_copy_of_a_commit_is_named() {
         rows[0].state
     );
     assert!(rows[0].bytes.is_some_and(|bytes| bytes > 0), "{:?}", rows[0].bytes);
+    drop(planted.directory);
+}
+
+/// Per-unit safety is not joint safety, and doctor's question is about a set.
+///
+/// Two open homes of one project, and the only second copy of the first home's commit is
+/// inside the second. Read one home at a time, the commit has a second copy and earns no
+/// row, so doctor closed with "nothing of this project is left behind" over work that
+/// exists in two directories a person clearing the machine removes together.
+#[test]
+fn a_commit_whose_only_other_copy_is_another_open_home_is_still_named() {
+    let planted = Project::plant();
+    let second = planted.plant_beside("two", "nodal/two");
+
+    write(&planted.home.join("rotate.rs"), "fn rotate() {}\n");
+    git(&planted.home, &["add", "--all"]);
+    commit(&planted.home, "rotate the keys");
+    let oid = git_text(&planted.home, &["rev-parse", "HEAD"]).trim().to_owned();
+    git(
+        &second,
+        &["fetch", "--quiet", planted.home.to_str().unwrap(), &format!("{oid}:refs/heads/copy")],
+    );
+
+    let rows = planted.unique();
+
+    let named: Vec<&str> = rows.iter().map(|row| row.what.as_str()).collect();
+    assert!(named.contains(&"one"), "the commit lives in two homes and nowhere else: {rows:?}");
+    drop(planted.directory);
+}
+
+/// A copy in something the units do not take with them is still a copy. The checkout is
+/// not going anywhere when the units do.
+#[test]
+fn a_commit_a_clone_that_is_no_units_home_holds_earns_no_row() {
+    let planted = Project::plant();
+    let beside = planted.checkout.parent().expect("a parent").join("mirror");
+    git(
+        planted.directory.path(),
+        &["clone", "--quiet", planted.checkout.to_str().unwrap(), beside.to_str().unwrap()],
+    );
+
+    write(&planted.home.join("rotate.rs"), "fn rotate() {}\n");
+    git(&planted.home, &["add", "--all"]);
+    commit(&planted.home, "rotate the keys");
+    let oid = git_text(&planted.home, &["rev-parse", "HEAD"]).trim().to_owned();
+    git(
+        &beside,
+        &["fetch", "--quiet", planted.home.to_str().unwrap(), &format!("{oid}:refs/heads/copy")],
+    );
+
+    assert!(planted.unique().is_empty(), "{:?}", planted.unique());
     drop(planted.directory);
 }
 

@@ -15,6 +15,16 @@
 //! it in the tree ([`crate::substrate::pin::Install::prepare`]). A tree with no `.venv`
 //! is one `pip` has not run in, which is cold.
 //!
+//! # An install output the project excluded
+//!
+//! `base.exclude` names paths no unit home receives. A project that names an install
+//! output there gets a base that does not run that install at all ([`super::pin::Site`]),
+//! because nothing would ever read what it wrote. The base's line says that, rather than
+//! reporting a directory missing that the base was never going to have.
+//!
+//! The home's line does not change. A home runs that install itself, so the home's tree
+//! answers for it exactly as any other tree does.
+//!
 //! # An ecosystem the recipe has no manager for
 //!
 //! A repository may carry a half that the recipe names no manager for: a
@@ -35,36 +45,70 @@
 use std::path::Path;
 
 use crate::model::readiness::{Readiness, State};
-use crate::model::recipe::{Ecosystem, PackageManager, Recipe, VENV};
-
-/// Where a Node install puts what it installed.
-const NODE_MODULES: &str = "node_modules";
-
-/// Poetry's own configuration file, and the key that moves its environment into the
-/// project directory.
-const POETRY_CONFIG: &str = "poetry.toml";
+use crate::model::recipe::{Ecosystem, PackageManager, Recipe, Venv};
+use crate::substrate::pin;
+use crate::workspace::Excludes;
 
 /// Cargo's build output directory, which every profile writes a subdirectory of.
 const TARGET: &str = "target";
 
+/// Which copy a reading is about, which decides one answer and no other.
+///
+/// A base and a home hold the same tree and do not have the same job. An install whose
+/// output the project excluded is the home's to run, so the base is not cold for lacking
+/// it and the home is. Nothing else in this module reads this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tree {
+    /// The tree homes are cloned from.
+    Base,
+    /// A unit home.
+    Home,
+}
+
 /// Whether `tree` holds what a build of `recipe` was to produce.
 #[must_use]
-pub fn of(recipe: &Recipe, tree: &Path) -> Readiness {
-    Readiness { dependencies: dependencies(recipe, tree), build: build(recipe, tree) }
+pub fn of(recipe: &Recipe, tree: &Path, kind: Tree) -> Readiness {
+    Readiness { dependencies: dependencies(recipe, tree, kind), build: build(recipe, tree) }
 }
 
 /// Whether every manager the recipe names has left its dependencies in the tree, and
 /// whether the tree holds an ecosystem no manager of it covers.
-fn dependencies(recipe: &Recipe, tree: &Path) -> State {
+fn dependencies(recipe: &Recipe, tree: &Path, kind: Tree) -> State {
     if recipe.package_manager.is_empty() {
         return State::Unknown { why: String::from("the project names no package manager") };
     }
+    let excludes = Excludes::with_recipe(&recipe.base.exclude);
+    let venv = pin::venv_of(tree);
     recipe
         .package_manager
         .iter()
-        .map(|manager| installed(*manager, tree))
+        .map(|manager| match sited(*manager, &excludes, venv, kind) {
+            Some(elsewhere) => elsewhere,
+            None => installed(*manager, tree, venv),
+        })
         .chain(unmanaged(recipe, tree).into_iter().map(no_manager))
         .fold(State::Ready, State::worse)
+}
+
+/// What a base says about an install it does not run, and nothing for every other case.
+///
+/// Only a base answers here. A home runs that install itself, so its own tree is the
+/// evidence and [`installed`] is what reads it. The state is unknown rather than cold
+/// because the base is not missing anything: a person sent to rebuild it would wait for
+/// an install and get the same tree back.
+fn sited(manager: PackageManager, excludes: &Excludes, venv: Venv, kind: Tree) -> Option<State> {
+    if kind != Tree::Base {
+        return None;
+    }
+    let output = pin::where_it_runs(manager, excludes, venv).excluded()?.clone();
+    Some(State::Unknown {
+        why: format!(
+            "{} is in base.exclude, so no home receives it; `{}` installs in each home \
+             instead of here",
+            output.display(),
+            manager.program()
+        ),
+    })
 }
 
 /// Every ecosystem the tree holds a manifest for that no manager of the recipe covers.
@@ -101,35 +145,32 @@ fn no_manager((ecosystem, manifest): (Ecosystem, &'static str)) -> State {
 
 /// Whether one manager has left its dependencies in the tree.
 ///
-/// The ecosystem answers for the directory, and the manager answers where two managers
-/// of one ecosystem differ: Poetry puts its environment outside the tree unless the
-/// project asked otherwise, and Cargo always does.
-fn installed(manager: PackageManager, tree: &Path) -> State {
-    let program = manager.program();
-    match manager.ecosystem() {
-        Ecosystem::Node => present(tree, NODE_MODULES, program),
-        Ecosystem::Rust => {
-            State::Unknown { why: String::from("cargo keeps its download cache outside the tree") }
-        }
-        Ecosystem::Python if manager == PackageManager::Poetry && !in_project(tree) => {
-            State::Unknown {
-                why: String::from(
-                    "poetry keeps its environment outside the tree unless \
-                     virtualenvs.in-project is set",
-                ),
-            }
-        }
-        Ecosystem::Python => present(tree, VENV, program),
+/// The directory comes from the one table ([`PackageManager::install_output`]) rather
+/// than from a second list of names here, and `venv` is the project's answer about
+/// Poetry that the table needs. A manager the table gives no directory for writes
+/// nothing a tree can be asked about, and [`outside`] says which one it is.
+fn installed(manager: PackageManager, tree: &Path, venv: Venv) -> State {
+    match manager.install_output(venv) {
+        Some(output) => present(tree, output, manager.program()),
+        None => outside(manager),
     }
 }
 
-/// Whether the project asked Poetry to keep its environment beside the code.
-fn in_project(tree: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(tree.join(POETRY_CONFIG)) else { return false };
-    toml::from_str::<toml::Value>(&text)
-        .ok()
-        .and_then(|config| config.get("virtualenvs")?.get("in-project")?.as_bool())
-        .unwrap_or(false)
+/// Why a manager's install leaves nothing in this tree to read.
+///
+/// Both are [`State::Unknown`] and not cold: the tree is missing nothing, because
+/// nothing was ever going to put a directory there. Reporting cold would send a person
+/// to rebuild something that is already where its tool keeps it.
+fn outside(manager: PackageManager) -> State {
+    State::Unknown {
+        why: String::from(match manager {
+            PackageManager::Poetry => {
+                "poetry keeps its environment outside the tree unless \
+                 virtualenvs.in-project is set"
+            }
+            _ => "cargo keeps its download cache outside the tree",
+        }),
+    }
 }
 
 /// Whether the build command's own output directory is in the tree.
@@ -175,9 +216,14 @@ fn present(tree: &Path, relative: &str, program: &str) -> State {
 mod tests {
     use std::path::Path;
 
-    use super::of;
-    use crate::model::readiness::State;
+    use super::Tree;
+    use crate::model::readiness::{Readiness, State};
     use crate::model::recipe::{CommandLine, PackageManager, Recipe};
+
+    /// A reading of a home, which is what every test here asks unless it says otherwise.
+    fn of(recipe: &Recipe, tree: &Path) -> Readiness {
+        super::of(recipe, tree, Tree::Home)
+    }
 
     fn recipe(managers: &[PackageManager], build: Option<&str>) -> Recipe {
         let mut recipe = Recipe { package_manager: managers.to_vec(), ..Recipe::default() };
@@ -212,6 +258,35 @@ mod tests {
         let state = of(&recipe(&[PackageManager::Cargo], None), tree(&[]).path()).dependencies;
         assert!(matches!(state, State::Unknown { .. }), "{state:?}");
         assert!(state.why().unwrap().contains("outside the tree"));
+    }
+
+    /// The base's line says where the install went, rather than reporting a directory
+    /// missing that the base was never going to write.
+    #[test]
+    fn a_base_says_that_an_excluded_install_output_is_installed_in_each_home() {
+        let mut spec = recipe(&[PackageManager::Pnpm], None);
+        spec.base.exclude = vec![std::path::PathBuf::from("node_modules")];
+        let cold = tree(&[]);
+
+        let base = super::of(&spec, cold.path(), Tree::Base).dependencies;
+        assert!(matches!(base, State::Unknown { .. }), "the base lacks nothing: {base:?}");
+        let why = base.why().unwrap();
+        assert!(why.contains("base.exclude"), "{why}");
+        assert!(why.contains("installs in each home"), "{why}");
+    }
+
+    /// The home's line does not change. The home runs the install, so the home's own tree
+    /// is the evidence.
+    #[test]
+    fn a_home_answers_for_an_excluded_install_output_out_of_its_own_tree() {
+        let mut spec = recipe(&[PackageManager::Pnpm], None);
+        spec.base.exclude = vec![std::path::PathBuf::from("node_modules")];
+
+        let cold = of(&spec, tree(&[]).path()).dependencies;
+        assert!(matches!(cold, State::Cold { .. }), "{cold:?}");
+        assert!(cold.why().unwrap().contains("node_modules"));
+
+        assert_eq!(of(&spec, tree(&["node_modules"]).path()).dependencies, State::Ready);
     }
 
     /// A repository of three ecosystems is as ready as its least ready manager.

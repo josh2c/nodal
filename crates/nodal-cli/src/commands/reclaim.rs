@@ -29,8 +29,11 @@ use crate::commands::context;
 )]
 pub struct Reclaim {
     /// The unit's handle. Defaults to the unit the working directory is in.
+    ///
+    /// More than one may be named, and only with `--check`: a reclaim does one unit at a
+    /// time, and the joint question is one a person asks before they run any of them.
     #[arg(value_name = "UNIT")]
-    pub unit: Option<String>,
+    pub units: Vec<String>,
 
     /// Report what a reclaim would do and do none of it: what is only here, what has
     /// another copy in this checkout and the clones beside it, what a reading of the
@@ -79,7 +82,10 @@ impl Reclaim {
         if self.check {
             return self.preflight(store, &request);
         }
-        let project = context::project_of(store, self.unit.as_deref(), &request.cwd);
+        if self.units.len() > 1 {
+            return Err(nodal_core::Error::ReclaimOneAtATime { named: self.units.len() });
+        }
+        let project = context::project_of(store, self.only(), &request.cwd);
         let report = reclaim::reclaim(store, &request)?;
         if let Some(project) = &project {
             context::refresh(store, project);
@@ -106,9 +112,43 @@ impl Reclaim {
     /// Propagates a unit that was reclaimed already, a directory that belongs to
     /// another unit, and whatever Git or the registry reported.
     fn preflight(&self, store: &Store, request: &Request) -> nodal_core::Result<ExitCode> {
-        let (text, safe) = Self::checked(store, request, Format::from_json_flag(self.json))?;
+        let format = Format::from_json_flag(self.json);
+        let (text, safe) = if self.units.len() > 1 {
+            Self::checked_all(store, request, &self.units, format)?
+        } else {
+            Self::checked(store, request, format)?
+        };
         crate::commands::emit(&text)?;
         Ok(if safe { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+    }
+
+    /// What `--check` writes over several units, and the joint verdict the exit code
+    /// carries.
+    ///
+    /// The exit code is the joint one. A person who named three units is asking what
+    /// happens if all three go, and a script gating on it is about to run all three.
+    /// Every unit's own verdict is in the report beside it.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the reading of any of the units reported.
+    fn checked_all(
+        store: &Store,
+        request: &Request,
+        units: &[String],
+        format: Format,
+    ) -> nodal_core::Result<(String, bool)> {
+        let report = reclaim::check_all(store, request, units)?;
+        let safe = report.safe_together;
+        Ok((output::render(&report, format)?, safe))
+    }
+
+    /// The one unit named, when exactly one was.
+    fn only(&self) -> Option<&str> {
+        match self.units.as_slice() {
+            [one] => Some(one.as_str()),
+            _ => None,
+        }
     }
 
     /// What `--check` writes, and the verdict the exit code carries.
@@ -137,7 +177,7 @@ impl Reclaim {
     /// unreadable has no unit to name either way.
     pub fn request(&self, hooks: bool) -> Request {
         Request {
-            target: self.unit.clone(),
+            target: self.only().map(str::to_owned),
             force: self.force,
             hooks,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),

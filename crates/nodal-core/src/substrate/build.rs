@@ -332,7 +332,7 @@ pub fn plan(params: &Params, progress: &Arc<dyn Reporter>) -> Result<Plan> {
             objects: params.objects.clone(),
             progress: Arc::clone(progress),
         });
-    for tool in tools(params) {
+    for tool in tools(&params.installs, &params.destination, &params.warm) {
         if tool.argv.is_empty() {
             continue;
         }
@@ -362,37 +362,42 @@ struct ToolStep {
     note: String,
 }
 
-/// The tool steps a build has, in order: every install, then the warm build that needs
-/// what the installs put there.
+/// The tool steps a build has, in order: every install this base runs, then the warm
+/// build that needs what the installs put there.
 ///
 /// Each install is named after its own package manager, so that a repository of three
 /// ecosystems has three keys in the journal rather than one key three times. A resumed
 /// build then restarts at the manager it stopped on and does not repeat the two before
 /// it.
-fn tools(params: &Params) -> Vec<ToolStep> {
+///
+/// An install the project excluded the output of is not a step here. Nothing would ever
+/// read what it wrote: every home leaves that path out of the clone, so the base would
+/// spend the minutes and hand over a tree no home receives that half of
+/// ([`super::pin::Site`]). The create runs it in the home instead.
+fn tools(installs: &[Install], destination: &Path, warm: &[String]) -> Vec<ToolStep> {
     let mut steps: Vec<ToolStep> = Vec::new();
-    for install in &params.installs {
+    for install in installs.iter().filter(|install| install.at.in_base()) {
         let program = install.manager.program();
         if !install.prepare.is_empty() {
             steps.push(ToolStep {
                 name: format!("install.{program}.environment"),
-                argv: runnable(&install.prepare, &params.destination),
+                argv: runnable(&install.prepare, destination),
                 env: install.env.clone(),
                 note: phrase("making the environment", &install.prepare),
             });
         }
         steps.push(ToolStep {
             name: format!("install.{program}"),
-            argv: runnable(&install.argv, &params.destination),
+            argv: runnable(&install.argv, destination),
             env: install.env.clone(),
             note: phrase("installing dependencies", &install.argv),
         });
     }
     steps.push(ToolStep {
         name: String::from("warm"),
-        argv: params.warm.clone(),
+        argv: warm.to_vec(),
         env: Vec::new(),
-        note: phrase("warming the build", &params.warm),
+        note: phrase("warming the build", warm),
     });
     steps
 }
@@ -408,7 +413,10 @@ fn tools(params: &Params) -> Vec<ToolStep> {
 ///
 /// The progress line and the journal keep the relative form, because that is what the
 /// recipe means and it is the same on every host.
-fn runnable(argv: &[String], destination: &Path) -> Vec<String> {
+///
+/// A create resolves against the home for the same reason, for the install the base did
+/// not run.
+pub(crate) fn runnable(argv: &[String], destination: &Path) -> Vec<String> {
     let mut resolved = argv.to_vec();
     if let Some(program) = resolved.first_mut()
         && program.contains('/')
@@ -741,6 +749,10 @@ impl Step for Promote {
 
 /// The one place `substrate` starts a process that is not `git`.
 ///
+/// A create reaches it too, for the one install a base does not run
+/// ([`crate::lifecycle::ops::new`]). One seam, so a tool failure is reported the same way
+/// wherever the install ran.
+///
 /// Output is captured rather than inherited, so an install's thousands of lines do not
 /// bury the progress the build is writing; what a failure wrote is carried in the
 /// error instead.
@@ -749,7 +761,7 @@ impl Step for Promote {
 /// reason to is the tool's choice: pnpm reports a lockfile mismatch on standard output
 /// and exits non-zero with an empty standard error, and a build that kept only the
 /// second reported a failure with no reason in it.
-fn run(dir: &Path, argv: &[String], env: &[(String, String)]) -> Result<()> {
+pub(crate) fn run(dir: &Path, argv: &[String], env: &[(String, String)]) -> Result<()> {
     let Some((program, rest)) = argv.split_first() else {
         return Ok(());
     };
@@ -903,10 +915,11 @@ fn argv(line: &str) -> Option<Vec<String>> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
-    use super::{argv, install_argv, runnable, warm_argv};
+    use super::{Install, argv, install_argv, runnable, tools, warm_argv};
     use crate::model::recipe::{CommandLine, PackageManager, Recipe};
+    use crate::substrate::pin::Site;
 
     fn recipe(managers: &[PackageManager], build: Option<&str>) -> Recipe {
         let mut recipe = Recipe { package_manager: managers.to_vec(), ..Recipe::default() };
@@ -946,6 +959,30 @@ mod tests {
         let recipe = recipe(&[PackageManager::Pnpm], Some("pnpm run build"));
         assert!(warm_argv(&recipe, false).is_empty());
         assert_eq!(warm_argv(&recipe, true), ["pnpm", "run", "build"]);
+    }
+
+    /// An install the project excluded the output of is not a step of the base at all.
+    /// The base used to spend the minutes and hand over a tree no home receives that
+    /// half of.
+    #[test]
+    fn a_base_runs_no_install_whose_output_the_homes_never_receive() {
+        let moved = Install {
+            manager: PackageManager::Pnpm,
+            prepare: Vec::new(),
+            argv: vec![String::from("pnpm"), String::from("install")],
+            env: Vec::new(),
+            at: Site::Home { output: PathBuf::from("node_modules") },
+        };
+        let kept = Install { at: Site::Base, ..moved.clone() };
+
+        let names = |install: &Install| -> Vec<String> {
+            tools(std::slice::from_ref(install), Path::new("/base"), &[])
+                .into_iter()
+                .map(|step| step.name)
+                .collect()
+        };
+        assert_eq!(names(&kept), ["install.pnpm", "warm"]);
+        assert_eq!(names(&moved), ["warm"], "the base would write what no home reads");
     }
 
     #[test]

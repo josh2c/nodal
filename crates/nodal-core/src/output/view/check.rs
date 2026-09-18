@@ -16,6 +16,7 @@
 //! | line | the question it answers |
 //! |---|---|
 //! | `commits` | what is only here, what this disk has twice, what a reading proves the remote has, and what nothing checked |
+//! | `content` | which of the refused commits a remote tip already holds the tree of, under another identifier |
 //! | `files` | what a person wrote that no commit holds |
 //! | `state` | what a tool writes again, and what it does not |
 //! | `runtime` | what the reclaim would stop, and what would make it refuse |
@@ -27,10 +28,12 @@
 
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::doctor::size::Bytes;
-use crate::lifecycle::assess::{Assessment, CommitGroup, PathGroup, Runtime};
+use crate::lifecycle::assess::{
+    Assessment, CommitGroup, Copies, PathGroup, Reason, Runtime, SameContent,
+};
 use crate::lifecycle::uniqueness::Witness;
 use crate::model::Timestamp;
 use crate::output::Render;
@@ -61,6 +64,110 @@ pub struct Preflight {
     /// The reading itself.
     #[serde(flatten)]
     pub assessment: Assessment,
+    /// What the same reading says when every unit of the set goes at once.
+    ///
+    /// `None` for a check of one unit, which has no set to be part of and nothing joint
+    /// to say about itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub together: Option<Together>,
+}
+
+/// What a reclaim of a whole set would find about one of its units.
+///
+/// Beside the per-unit answer and never instead of it. Each unit's own verdict is what a
+/// reclaim of that unit alone would do, and it stays exactly what it was; this is what the
+/// same reading says when every home in the set goes at once.
+///
+/// The verdict is read off the reasons rather than stored beside them, for the reason
+/// [`SameContent`] reads its disposition off its own type: a stored verdict is one that
+/// can drift from what it is a verdict of. [`Serialize`] writes it out, so a script
+/// gates on `safe` without re-deriving it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Together {
+    /// Every reason, ranked, with the per-unit ones first and the joint ones added.
+    pub reasons: Vec<Reason>,
+}
+
+impl Together {
+    /// Whether a reclaim of the whole set would go ahead over this unit.
+    ///
+    /// The same predicate [`Assessment::safe_to_reclaim`] reads off the per-unit reasons,
+    /// over the joint ones, so the two verdicts differ only where the reasons do.
+    #[must_use]
+    pub fn safe(&self) -> bool {
+        !self.reasons.iter().any(|reason| reason.needs.refuses())
+    }
+}
+
+impl Serialize for Together {
+    /// The reasons, with the verdict written out from [`Together::safe`].
+    fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+
+        let mut joint = out.serialize_struct("Together", 2)?;
+        joint.serialize_field("safe", &self.safe())?;
+        joint.serialize_field("reasons", &self.reasons)?;
+        joint.end()
+    }
+}
+
+/// What a reclaim of several units would do, without doing any of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Preflights {
+    /// The instant the answer was taken.
+    pub now: Timestamp,
+    /// One answer per unit, in the order they were named.
+    pub units: Vec<Preflight>,
+    /// Whether a reclaim of every one of them would go ahead.
+    ///
+    /// Not the conjunction of the per-unit verdicts. A pair of units that each hold the
+    /// other's only second copy are each safe alone and are not safe together.
+    pub safe_together: bool,
+}
+
+impl Preflights {
+    /// The answer over a set of units already read and already joined.
+    #[must_use]
+    pub fn new(now: Timestamp, units: Vec<Preflight>) -> Self {
+        let safe_together = units.iter().all(|unit| match &unit.together {
+            Some(together) => together.safe(),
+            None => unit.safe_to_reclaim,
+        });
+        Self { now, units, safe_together }
+    }
+}
+
+impl Render for Preflights {
+    const KIND: &'static str = "reclaim preflight";
+
+    fn doc(&self) -> Doc {
+        let mut doc = Doc::new();
+        for unit in &self.units {
+            for block in unit.doc().blocks() {
+                doc.push(block.clone());
+            }
+            doc.push(Block::blank());
+        }
+        doc.push(Block::fields(vec![Field::new("together", self.verdict_cell())]));
+        doc
+    }
+}
+
+impl Preflights {
+    /// The joint verdict, and what it rests on.
+    fn verdict_cell(&self) -> String {
+        if self.safe_together {
+            return format!(
+                "safe — a reclaim of all {} would go ahead; no copy any of them relies on \
+                 lives only in another of them",
+                self.units.len()
+            );
+        }
+        format!(
+            "refuse — a reclaim of all {} would stop; per-unit safety is not joint safety",
+            self.units.len()
+        )
+    }
 }
 
 impl Preflight {
@@ -72,7 +179,22 @@ impl Preflight {
         trash: Option<PathBuf>,
         assessment: Assessment,
     ) -> Self {
-        Self { now, slug, safe_to_reclaim: assessment.safe_to_reclaim(), trash, assessment }
+        Self {
+            now,
+            slug,
+            safe_to_reclaim: assessment.safe_to_reclaim(),
+            trash,
+            assessment,
+            together: None,
+        }
+    }
+
+    /// Record what a reclaim of the whole set would find about this unit.
+    ///
+    /// The per-unit verdict above is untouched, for the reason [`Together`] exists: both
+    /// answers are true and a person needs the one that matches what they are about to do.
+    pub fn together(&mut self, reasons: Vec<Reason>) {
+        self.together = Some(Together { reasons });
     }
 }
 
@@ -86,10 +208,12 @@ impl Render for Preflight {
             Field::new("verdict", self.verdict_cell()),
             Field::new("because", self.because_cell()),
             Field::new("commits", self.commits_cell()),
+            Field::new("content", self.content_cell()),
             Field::new("files", self.paths_cell(false)),
             Field::new("state", self.paths_cell(true)),
             Field::new("runtime", self.runtime_cell()),
             Field::new("trash", self.trash_cell()),
+            Field::new("with the rest", self.together_cell()),
         ];
         fields.retain(|field| !field.value.is_empty());
         let mut doc = Doc::from_iter([Block::fields(fields)]);
@@ -144,6 +268,15 @@ impl Preflight {
         self.assessment.commits.iter().map(commit_line).collect::<Vec<String>>().join("\n")
     }
 
+    /// One line per refused commit whose tree a remote tip already holds.
+    ///
+    /// Empty for every home this is not true of, and the field is then dropped. It never
+    /// says safe: the tree is one object and the commit is still only here, which is
+    /// what the line states and what the verdict above it goes on saying.
+    fn content_cell(&self) -> String {
+        self.assessment.content.iter().map(SameContent::line).collect::<Vec<String>>().join("\n")
+    }
+
     /// The working tree, or the ignored state, whichever was asked for.
     ///
     /// Two lines of one table, split because they answer different questions. What a
@@ -190,6 +323,24 @@ impl Preflight {
         lines.join("\n")
     }
 
+    /// What a reclaim of the whole set would find about this unit, when one was asked.
+    ///
+    /// Empty for a check of one unit, and the field is then dropped. Where the two
+    /// verdicts agree the line says so in one clause, because the interesting case is the
+    /// one where they do not.
+    fn together_cell(&self) -> String {
+        let Some(together) = &self.together else { return String::new() };
+        if together.safe() {
+            return String::from("safe with the other units named here too");
+        }
+        let joined: Vec<String> = together
+            .reasons
+            .iter()
+            .map(|reason| format!("{}: {}", reason.needs.label(), reason.detail))
+            .collect();
+        format!("refuse with the other units named here — {}", joined.join(JOIN))
+    }
+
     /// Where the home would go, and that it did not go there.
     fn trash_cell(&self) -> String {
         match &self.trash {
@@ -222,7 +373,25 @@ fn commit_line(group: &CommitGroup) -> String {
             group.copies.witness().map(Witness::because).unwrap_or_default(),
         )
     };
-    format!("{} ({}): {sample} — {means}{because}", group.copies.label(), group.count)
+    format!(
+        "{} ({}): {sample} — {means}{because}{}",
+        group.copies.label(),
+        group.count,
+        holder(&group.copies)
+    )
+}
+
+/// Which repository holds the second copy, for the one disposition that rests on one.
+///
+/// The store was always in the reading and only `--json` printed it. It is the whole of
+/// what "removing this home does not lose it" rests on, and it is what a joint reading
+/// then discounts when that repository goes too, so a person reading the line has to be
+/// able to see which directory is being relied on.
+fn holder(copies: &Copies) -> String {
+    match copies {
+        Copies::SecondLocalCopy { held_by } => format!(", held by {}", held_by.display()),
+        _ => String::new(),
+    }
 }
 
 /// One path disposition as a line: how many, which, what it holds, and why.
@@ -320,9 +489,11 @@ mod tests {
 
     use std::path::PathBuf;
 
-    use super::Preflight;
+    use super::{Preflight, Preflights};
     use crate::doctor::size::Bytes;
-    use crate::lifecycle::assess::{Assessment, CommitGroup, Copies, Held, PathGroup, Runtime};
+    use crate::lifecycle::assess::{
+        Assessment, CommitGroup, Copies, Held, PathGroup, Runtime, SameContent,
+    };
     use crate::lifecycle::uniqueness::Witness;
     use crate::model::Timestamp;
     use crate::output::Render;
@@ -438,6 +609,105 @@ mod tests {
             not_checked.contains("nothing here read the remote to check them"),
             "{not_checked}"
         );
+    }
+
+    /// The case a reading of five unit homes found and nothing answered. Two units each
+    /// hold the
+    /// other's only second copy: each is safe alone, and a reclaim of both loses the work.
+    /// Both answers are printed, because both are true.
+    #[test]
+    fn two_units_that_hold_each_others_only_copy_are_safe_apart_and_not_together() {
+        let homes = [PathBuf::from("/state/project/e/E1"), PathBuf::from("/state/project/e/E2")];
+        let mut units = Vec::new();
+        for (mine, theirs) in [(0, 1), (1, 0)] {
+            let mut assessment = clear();
+            assessment.home = homes[mine].clone();
+            assessment.commits.push(CommitGroup {
+                copies: Copies::SecondLocalCopy { held_by: homes[theirs].clone() },
+                count: 2,
+                sample: vec![crate::git::Oid::parse(&"ab".repeat(20)).unwrap()],
+            });
+            assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+            let mut one = preflight(assessment);
+            assert!(one.safe_to_reclaim, "each unit is safe on its own");
+            one.together(crate::lifecycle::assess::together(&one.assessment, &homes));
+            units.push(one);
+        }
+
+        let report = Preflights::new(Timestamp::parse("2026-09-07T09:00:00Z").unwrap(), units);
+        assert!(!report.safe_together, "the pair is not safe");
+        let lines = report.doc().lines().join("\n");
+        assert!(
+            lines.contains("safe — a reclaim would go ahead"),
+            "the per-unit one stays: {lines}"
+        );
+        assert!(lines.contains("refuse with the other units named here"), "{lines}");
+        assert!(lines.contains("which the same removal takes"), "{lines}");
+        assert!(
+            lines.contains("refuse — a reclaim of all 2 would stop"),
+            "the joint verdict is printed: {lines}"
+        );
+
+        let written = serde_json::to_value(&report).unwrap();
+        assert_eq!(written["safe_together"], serde_json::json!(false));
+        assert_eq!(written["units"][0]["safe_to_reclaim"], serde_json::json!(true));
+        assert_eq!(written["units"][0]["together"]["safe"], serde_json::json!(false));
+    }
+
+    /// A copy held by something the reclaim does not remove counts, and the two verdicts
+    /// agree.
+    #[test]
+    fn a_copy_outside_the_set_still_counts_when_the_set_goes() {
+        let mut assessment = clear();
+        assessment.commits.push(CommitGroup {
+            copies: Copies::SecondLocalCopy { held_by: PathBuf::from("/w/project") },
+            count: 1,
+            sample: vec![crate::git::Oid::parse(&"ab".repeat(20)).unwrap()],
+        });
+        assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+        let mut one = preflight(assessment);
+        let homes = [PathBuf::from("/state/project/e/E1")];
+        one.together(crate::lifecycle::assess::together(&one.assessment, &homes));
+
+        assert!(one.safe_to_reclaim);
+        let report = Preflights::new(Timestamp::parse("2026-09-07T09:00:00Z").unwrap(), vec![one]);
+        assert!(report.safe_together);
+        let lines = report.doc().lines().join("\n");
+        assert!(lines.contains("safe with the other units named here too"), "{lines}");
+        assert!(lines.contains("safe — a reclaim of all 1 would go ahead"), "{lines}");
+    }
+
+    /// A row that says the content is elsewhere never says the commit is. The verdict
+    /// above it is the verdict it would have been with no row at all.
+    #[test]
+    fn same_content_under_another_id_is_named_and_moves_no_verdict() {
+        let mut assessment = clear();
+        assessment.commits.push(CommitGroup {
+            copies: Copies::OnlyHere { witness: Witness::NoRemote },
+            count: 1,
+            sample: vec![crate::git::Oid::parse(&"ab".repeat(20)).unwrap()],
+        });
+        assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+        let without = preflight(assessment.clone());
+
+        assessment.content.push(SameContent {
+            commit: crate::git::Oid::parse(&"ab".repeat(20)).unwrap(),
+            reference: String::from("refs/nodal/origin/nodal/payroll"),
+            tip: crate::git::Oid::parse(&"cd".repeat(20)).unwrap(),
+            tree: crate::git::Oid::parse(&"ef".repeat(20)).unwrap(),
+        });
+        assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+        let with = preflight(assessment);
+
+        assert_eq!(with.safe_to_reclaim, without.safe_to_reclaim, "the row is not evidence");
+        assert!(!with.safe_to_reclaim);
+        let lines = with.doc().lines().join("\n");
+        assert!(lines.contains("same content as refs/nodal/origin/nodal/payroll"), "{lines}");
+        assert!(lines.contains("under a different id"), "{lines}");
+        assert!(lines.contains("a reclaim keeps this home"), "{lines}");
+
+        let written = serde_json::to_string(&with).unwrap();
+        assert!(written.contains("\"disposition\":\"reconstructable\""), "{written}");
     }
 
     /// The bytes are apparent and the line says so. A person clearing a disk who reads

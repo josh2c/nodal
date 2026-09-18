@@ -31,7 +31,7 @@ pub mod verdict;
 pub use crate::output::view::adopt::{AdoptOutcome, AdoptedAll, AdoptedRow};
 pub use crate::output::view::approve::{Approval, Approved};
 pub use crate::output::view::base::{BaseBuild, BaseList, BaseRow, BaseSweep};
-pub use crate::output::view::check::Preflight;
+pub use crate::output::view::check::{Preflight, Preflights, Together};
 pub use crate::output::view::created::{Arrival, Created};
 pub use crate::output::view::doctor::{Checkout, Doctor, Finding, Kind, Note};
 pub use crate::output::view::done::Done;

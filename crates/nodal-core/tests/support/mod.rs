@@ -428,6 +428,7 @@ impl World {
             environment: self.environment(),
             block: PortBlock { project_id: id('1'), first: 20_000, last: 20_099 },
             ports: vec!["app".parse().unwrap()],
+            installs: Vec::new(),
         }
     }
 

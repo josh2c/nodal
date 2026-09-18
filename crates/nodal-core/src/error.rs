@@ -494,6 +494,20 @@ pub enum Error {
         repo: PathBuf,
     },
 
+    /// More than one unit was named to a reclaim that is not a check.
+    ///
+    /// A reclaim does one unit at a time, so that a failure halfway through a list is
+    /// never a question about which of them happened. The joint reading is what several
+    /// names are for, and it is what `--check` answers.
+    #[error(
+        "reclaim takes one unit at a time; {named} were named. \
+         `nodal reclaim --check <unit> <unit> ...` reads them together and changes nothing"
+    )]
+    ReclaimOneAtATime {
+        /// How many were named.
+        named: usize,
+    },
+
     /// `--carry` and `--from` name two different commits for the unit to start at.
     #[error(
         "--carry starts the unit at the checkout's HEAD, so it cannot also take --from {branch}"
