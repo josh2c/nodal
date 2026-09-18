@@ -916,6 +916,9 @@ fn remove(store: &mut Store, request: &Request, params: &Params, done: &mut Merg
         target: Some(params.unit.slug.to_string()),
         force: false,
         hooks: request.hooks,
+        // Never. `nodal merge --remove` ends a unit; it is not consent to remove
+        // anything from a checkout the person adopted in place.
+        prune: false,
         cwd: request.cwd.clone(),
     };
     match super::reclaim::reclaim(store, &asked) {

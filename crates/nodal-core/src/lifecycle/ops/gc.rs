@@ -238,6 +238,9 @@ fn retire(
             target: Some(unit.slug.to_string()),
             force: false,
             hooks,
+            // Never. An idle unit is retired without a person present, and the build
+            // output of a checkout somebody adopted is theirs to give up.
+            prune: false,
             cwd: project.root.clone(),
         };
         match reclaim::reclaim(store, &request) {

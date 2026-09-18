@@ -170,6 +170,28 @@ pub fn sweep(path: &Path) -> Report {
     report
 }
 
+/// What a sweep of the home at `path` would remove, without removing any of it.
+///
+/// The same classification [`sweep`] acts on, written as the removals it would make, so
+/// a report that warns a person and a prune that acts cannot name different paths. A
+/// reclaim of a checkout adopted in place prints this before `--prune` exists on the
+/// command line, because the report is the warning and the flag is the consent.
+#[must_use]
+pub fn would_remove(path: &Path) -> Vec<Removal> {
+    survey(path)
+        .candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let reason = candidate.reason?;
+            Some(Removal {
+                path: candidate.path,
+                bytes: candidate.bytes,
+                reason: reason.to_owned(),
+            })
+        })
+        .collect()
+}
+
 /// One path an ignore rule covers, and what the same contract says may become of it.
 ///
 /// The reason is the whole of the classification: `Some` is a directory the exclusion

@@ -521,6 +521,7 @@ impl World {
             unit: self.unit(),
             environment: self.environment(),
             entry: Some(self.trashed()),
+            prune: false,
             tethers: Vec::new(),
             wrappers: Vec::new(),
             force: false,

@@ -834,6 +834,23 @@ fn tether_of(workspace: &Workspace) -> u32 {
     })
 }
 
+/// Start a detached process inside a directory carrying no unit identifier, and answer
+/// with its process id.
+///
+/// This is the bystander the move and the prune both refuse over: a scan matches it by
+/// working directory alone, which is the same match a tmux pane, an editor server over
+/// SSH and a teammate's shell make. Nodal never signals one, so it is still running
+/// when the step that refuses over it asks.
+fn plant_stranger(home: &Path, command: &str) -> Owned {
+    let line = format!("{command} >/dev/null 2>&1 & printf %s \"$!\"");
+    let mut planting = Command::new("sh");
+    planting.arg("-c").arg(line).current_dir(home).env_remove("NODAL_ID");
+    let output = process::mark(&mut planting).output().unwrap();
+    let pid: u32 = String::from_utf8(output.stdout).unwrap().trim().parse().unwrap();
+    assert!(alive(pid), "the stranger is running");
+    Owned::adopt(pid)
+}
+
 /// Start a detached process inside a home, carrying that unit's identifier, and answer
 /// with its process id.
 ///
@@ -1079,6 +1096,133 @@ fn a_checkout_adopted_in_place_is_unregistered_and_never_trashed() {
 
     // The one home Nodal did make is untouched by any of this.
     assert_eq!(workspace.homes().len(), 1, "{:?}", workspace.homes());
+}
+
+/// Plant the three kinds of state a prune has to tell apart, and say what each is.
+///
+/// `node_modules` an ignore rule covers and the exclusion table calls regenerable, so a
+/// prune takes it. `built` an ignore rule covers and the table does not name, so it is
+/// local state and stays. `notes.txt` no ignore rule covers, so it is the person's work
+/// and a reclaim refuses over it before a prune is reached at all.
+fn plant_state(root: &Path) {
+    std::fs::create_dir_all(root.join("node_modules/react")).unwrap();
+    std::fs::write(root.join("node_modules/react/index.js"), "module.exports = {};").unwrap();
+    std::fs::create_dir_all(root.join("built")).unwrap();
+    std::fs::write(root.join("built/report.json"), "{}").unwrap();
+}
+
+#[test]
+fn prune_takes_the_build_output_of_a_checkout_adopted_in_place_and_nothing_else() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let root = workspace.adopt_in_place("in-place");
+    plant_state(&root);
+    std::fs::write(root.join("app/second.txt"), "untracked and no rule covers it").unwrap();
+
+    // The untracked file is work, so the reclaim refuses before it prunes anything.
+    let refused = stderr(&workspace.nodal(&["reclaim", "in-place", "--prune"]));
+    assert!(refused.contains("untracked files"), "{refused}");
+    assert!(root.join("node_modules").is_dir(), "a refused reclaim prunes nothing");
+
+    std::fs::remove_file(root.join("app/second.txt")).unwrap();
+    let report = stdout(&workspace.nodal(&["reclaim", "in-place", "--prune"]));
+    assert_nothing_left(&report);
+    assert!(report.contains("node_modules"), "the report names what went: {report}");
+
+    assert!(root.is_dir(), "the directory is never removed");
+    assert!(!root.join("node_modules").exists(), "the build output goes");
+    assert!(root.join("built/report.json").is_file(), "local state no table names stays");
+    assert!(root.join("app/main.txt").is_file(), "every tracked file stays");
+    assert!(root.join(".git").is_dir(), "and the repository");
+    assert!(workspace.trashed().is_empty(), "nothing was moved to the trash");
+    assert_eq!(
+        git(&root, &["status", "--porcelain"]).trim(),
+        "",
+        "the checkout is clean, so no tracked file was touched"
+    );
+}
+
+#[test]
+fn a_reclaim_without_prune_removes_nothing_and_says_what_prune_would_remove() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let root = workspace.adopt_in_place("in-place");
+    plant_state(&root);
+
+    let report = stdout(&workspace.nodal(&["reclaim", "in-place"]));
+    assert!(report.contains("node_modules"), "the warning names the path: {report}");
+    assert!(report.contains("--prune"), "and the command that acts on it: {report}");
+    assert!(root.join("node_modules/react/index.js").is_file(), "and removes none of it");
+    assert!(root.join("built/report.json").is_file(), "nor anything else");
+}
+
+#[test]
+fn check_on_a_checkout_adopted_in_place_names_the_bytes_and_offers_no_trash() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let root = workspace.adopt_in_place("in-place");
+    plant_state(&root);
+
+    let report = stdout(&workspace.nodal(&["reclaim", "in-place", "--check"]));
+    assert!(report.contains("node_modules"), "{report}");
+    assert!(report.contains("`nodal reclaim --prune` removes it"), "{report}");
+    assert!(
+        !report.contains("the trash keeps it"),
+        "no trash holds the state of a home no reclaim moves: {report}"
+    );
+    assert!(root.join("node_modules/react/index.js").is_file(), "--check removes nothing");
+}
+
+#[test]
+fn prune_refuses_over_a_process_standing_in_the_checkout_and_force_goes_ahead() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let root = workspace.adopt_in_place("in-place");
+    plant_state(&root);
+    // A build running in the person's own checkout is writing the very directory the
+    // prune would remove. Nothing here carries the unit's identifier, so the teardown
+    // does not stop it and it is still running when the prune asks.
+    let standing = plant_stranger(&root, &readable_sleep(300));
+
+    let refused = workspace.nodal(&["reclaim", "in-place", "--prune"]);
+    assert!(!refused.status.success(), "the prune ran with a process standing in the checkout");
+    let told = stderr(&refused);
+    assert!(told.contains("in-place"), "the refusal names the unit: {told}");
+    assert!(
+        root.join("node_modules/react/index.js").is_file(),
+        "a refused prune removes nothing: {told}"
+    );
+    assert!(alive(standing.pid()), "and the refusal never signalled what it refused over");
+
+    // The unit is still there to reclaim: a refusal before the first removal leaves the
+    // whole operation undone.
+    //
+    // Read with `answer` and not `stdout`: the stranger is still standing in the
+    // directory when the verification looks, so the reclaim reports a leftover and exits
+    // non-zero. That is the report doing its job, not the command failing.
+    let report = answer(&workspace.nodal(&["reclaim", "in-place", "--prune", "--force"]));
+    assert!(report.contains("node_modules"), "--force goes ahead over it: {report}");
+    assert!(!root.join("node_modules").exists(), "and the build output goes");
+    assert!(root.join("built/report.json").is_file(), "local state still stays");
+    assert!(root.is_dir(), "and the directory is still the person's");
+}
+
+#[test]
+fn prune_does_not_reach_the_build_output_of_a_home_nodal_made() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (_, home) = workspace.one_unit_and_home();
+    plant_state(&home);
+
+    // The flag is accepted and changes nothing here: the home is moved whole, and the
+    // trash prune that runs on the copy is the one that takes its build output.
+    let report = stdout(&workspace.nodal(&["reclaim", "worker-import", "--prune"]));
+    assert!(report.contains("home moved to"), "{report}");
+    assert!(!home.exists(), "the home Nodal made is in the trash");
+    let trashed = workspace.trashed();
+    let copy = trashed.first().expect("the home went to the trash");
+    assert!(!copy.join("node_modules").exists(), "the trash does not keep build output");
+    assert!(copy.join("built/report.json").is_file(), "and keeps the local state");
 }
 
 #[test]

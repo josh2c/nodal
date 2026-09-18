@@ -70,6 +70,82 @@ does not add to a release it finds; it makes one.
 Every refusal `CHANGELOG.md` states must be a refusal some code prints. Name the file
 and the test in the commit message that adds the line.
 
+## Your workstation
+
+This repository builds a large Rust workspace. One built checkout holds 5 to 45 GB of
+`target/`. A machine that holds many checkouts holds that many times over. The rules
+below keep the cost visible and bounded.
+
+### Build output lives per unit, and goes with the unit
+
+Each unit home keeps its own `target/`. Nodal does not share one `CARGO_TARGET_DIR`
+between homes: Cargo build output records the path it was built at, and two units that
+shared a directory would race and would rebuild each other's work.
+
+A home Nodal made goes to the trash on `nodal reclaim`, and the trash does not keep its
+build output. `nodal gc` then removes the trashed home after the retention.
+
+A checkout you adopted with `nodal adopt --in-place` is your own directory. A reclaim
+unregisters the unit and leaves the directory exactly as it is, build output included.
+Read what it holds first, then remove it:
+
+```
+nodal reclaim <unit> --check        # names the paths and the bytes; removes nothing
+nodal reclaim <unit> --prune        # removes the build output; keeps the directory
+```
+
+`--prune` removes a path only when an ignore rule covers it and the exclusion table
+calls it regenerable. It never removes a tracked file, and it never removes the
+directory.
+
+A clone that is not a unit is a clone Nodal cannot answer for. `nodal doctor --machine
+~/Projects` lists them with their ignored bytes.
+
+### Exclude build output from the file indexer
+
+Most systems index the file system each day. The index usually excludes `.git`, `.hg`
+and `.svn`, and does not exclude build output. On a machine that holds several
+checkouts of this repository the indexer then reads hundreds of thousands of files it
+will never be asked about.
+
+Exclude `target`, `node_modules` and `.cache` from your indexer. Where that is
+`plocate`, the line is `PRUNENAMES` in `/etc/updatedb.conf`:
+
+```
+PRUNENAMES = ".git .hg .svn target node_modules .cache"
+```
+
+Other systems name the setting differently; the three directories are the same. Your
+operating system owns that file. This repository does not change it.
+
+### Scratch directories and their retention
+
+The benchmark harness in `benches/harness/` makes one work directory per run and
+removes it when the run exits, including a run that fails. A run that gets `SIGKILL`
+leaves a directory whose name carries the script and the process identifier; the next
+run removes it.
+
+Harness results go to `benches/results/`, which is not committed. They are held for the
+retention `nodal.toml` states under `[reclaim] trash_retention`. This project states
+none, so runs use 14 days, the same number as Nodal's own default. Remove the older
+ones:
+
+```
+benches/harness/create_bench.sh --gc
+```
+
+Every script prints its retention rule before its first measurement.
+
+### The cost of a slow disk
+
+A build-heavy repository on a slow disk blocks every other program on the machine.
+`rustc` and `rust-lld` fill the disk queue, and everything else waits behind them. The
+machine then looks faulty: load average climbs with no CPU demand and with memory free.
+It is not faulty. It is waiting for the disk.
+
+Check what a build costs you before you conclude otherwise. `nodal doctor --machine
+~/Projects` prints what the checkouts hold.
+
 ## What belongs in the repository
 
 Commit only what the project needs to build, test, and document itself. Do not commit:

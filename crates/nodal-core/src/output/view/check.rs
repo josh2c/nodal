@@ -403,7 +403,7 @@ fn path_line(group: &PathGroup) -> String {
         group.held.label(),
         group.count,
         named(&names, group.count),
-        group.held.why()
+        group.held.why(group.fate)
     )
 }
 
@@ -492,7 +492,7 @@ mod tests {
     use super::{Preflight, Preflights};
     use crate::doctor::size::Bytes;
     use crate::lifecycle::assess::{
-        Assessment, CommitGroup, Copies, Held, PathGroup, Runtime, SameContent,
+        Assessment, CommitGroup, Copies, Fate, Held, PathGroup, Runtime, SameContent,
     };
     use crate::lifecycle::uniqueness::Witness;
     use crate::model::Timestamp;
@@ -539,7 +539,13 @@ mod tests {
 
     /// One path group of one path.
     fn group(held: Held) -> PathGroup {
-        PathGroup { held, count: 1, sample: vec![PathBuf::from("scratch.md")], bytes: None }
+        PathGroup {
+            held,
+            fate: Fate::Trashed,
+            count: 1,
+            sample: vec![PathBuf::from("scratch.md")],
+            bytes: None,
+        }
     }
 
     /// The verdict word and the exit code a script reads are one value, and the reasons
@@ -717,6 +723,7 @@ mod tests {
         let mut assessment = clear();
         assessment.paths.push(PathGroup {
             held: Held::Generated,
+            fate: Fate::Trashed,
             count: 1,
             sample: vec![PathBuf::from("target")],
             bytes: Some(Bytes {
@@ -796,6 +803,7 @@ mod tests {
         let mut assessment = clear();
         assessment.paths.push(PathGroup {
             held: Held::Uncommitted,
+            fate: Fate::Trashed,
             count: 13,
             sample: (0..10).map(|n| PathBuf::from(format!("f{n}.rs"))).collect(),
             bytes: None,

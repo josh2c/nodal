@@ -327,6 +327,15 @@ const LISTED: usize = 10;
 /// What the person needs to do about a clone that holds the only copy of its commits.
 const RESCUE: &str = "to send one of these to its remote, run `git push origin HEAD` in the clone";
 
+/// What the person needs to do about the build output of a clone this report named.
+///
+/// Every row here is a clone Nodal did not make, so Nodal has no way to reach the
+/// `target` or the `node_modules` the size column counts. `nodal adopt <path>
+/// --in-place` gives it one, and `nodal reclaim <unit> --check` then says what would go.
+/// This report only reports: it runs neither command and removes nothing.
+const ADOPT: &str = "to let nodal answer for the ignored bytes of one of these, run `nodal adopt <path> \
+     --in-place`, then `nodal reclaim <unit> --check`";
+
 /// The clones of one group that hold work, named, with a count each.
 ///
 /// Two lists, because they answer two questions. The first is the one the uniqueness
@@ -356,6 +365,9 @@ fn details(group: &Group) -> Vec<Block> {
     blocks.extend(unreadable(&unread));
     if !only.is_empty() {
         blocks.push(Block::line(RESCUE).at(2));
+    }
+    if group.ignored.iter().any(|dir| dir.bytes > 0) {
+        blocks.push(Block::line(ADOPT).at(2));
     }
     blocks
 }
@@ -478,6 +490,32 @@ mod tests {
         clean.groups[0].repositories[0].unpushed = Some(0);
         clean.groups[0].repositories[0].only_copy = Some(0);
         clean
+    }
+
+    /// A clone holding ignored bytes is told what would let Nodal answer for them.
+    ///
+    /// The report counts those bytes in every row and can act on none of them: a clone
+    /// Nodal did not make has no unit row, so no reclaim and no gc reaches its `target`.
+    /// The line names the two commands that change that, and the report runs neither.
+    #[test]
+    fn a_group_holding_ignored_bytes_names_the_command_that_would_reach_them() {
+        let text = report().doc().to_string();
+        assert!(text.contains("nodal adopt <path> --in-place"), "{text}");
+        assert!(text.contains("nodal reclaim <unit> --check"), "{text}");
+    }
+
+    /// And a group holding none is not told to adopt anything.
+    ///
+    /// The line is an offer to answer for bytes. A group with no ignored bytes has
+    /// nothing for it to answer for, and an instruction with no purpose is noise in a
+    /// report a person reads to find the one row that matters.
+    #[test]
+    fn a_group_holding_no_ignored_bytes_is_not_told_to_adopt() {
+        let mut report = report();
+        report.groups[0].ignored = Vec::new();
+        report.groups[0].repositories[0].ignored = Vec::new();
+        let text = report.doc().to_string();
+        assert!(!text.contains("nodal adopt"), "{text}");
     }
 
     /// The fault this column was rebuilt for: a clone the run could not read used to

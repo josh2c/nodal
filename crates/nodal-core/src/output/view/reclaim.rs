@@ -88,6 +88,11 @@ impl Leftover {
     }
 }
 
+/// The paths of a set of removals, in the order the prune found them.
+fn named_paths(removals: &[prune::Removal]) -> Vec<String> {
+    removals.iter().map(|removal| removal.path.display().to_string()).collect()
+}
+
 /// What one reclaim did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reclaimed {
@@ -117,6 +122,15 @@ pub struct Reclaimed {
     /// The directory that was left exactly as it is, when the unit was adopted in
     /// place. A root is unregistered, never trashed.
     pub root: Option<PathBuf>,
+    /// What `nodal reclaim --prune` would take out of that directory, for the run that
+    /// did not ask for it. Empty for a home Nodal made, and for the run that pruned:
+    /// [`Reclaimed::trimmed`] then says what went.
+    ///
+    /// This is the warning the person reads before they consent to anything. The two
+    /// fields hold the same type because they are the same classification, read once
+    /// and acted on once.
+    #[serde(default)]
+    pub prunable: Vec<prune::Removal>,
     /// The hooks that ran, in the order they ran.
     pub hooks: Vec<Ran>,
     /// The signals that could not be read, and why. A note is not a failure; it is the
@@ -142,7 +156,7 @@ impl Render for Reclaimed {
             Field::new(self.home_label(), self.home_cell()),
         ];
         if !self.trimmed.kept.is_empty() {
-            fields.push(Field::new("local state kept in the trash", self.kept_cell()));
+            fields.push(Field::new(self.kept_label(), self.kept_cell()));
         }
         if !self.hooks.is_empty() {
             fields.push(Field::new("hooks", self.hooks_cell()));
@@ -209,10 +223,28 @@ impl Reclaimed {
         if self.root.is_some() { "root" } else { "trash" }
     }
 
+    /// Which word the kept-state line is labelled with.
+    ///
+    /// The same split as [`Reclaimed::home_label`], and for the same reason. A home
+    /// Nodal made is in the trash and a person goes there to get an `.env.local` back.
+    /// A checkout adopted in place was never moved, so the same file is where they left
+    /// it, and a line that sent them to a trash would send them nowhere.
+    fn kept_label(&self) -> &'static str {
+        if self.root.is_some() {
+            "local state left where it is"
+        } else {
+            "local state kept in the trash"
+        }
+    }
+
     /// Where the home is now, and until when.
     fn home_cell(&self) -> String {
         if let Some(root) = &self.root {
-            return format!("{} left in place; the unit is no longer registered", root.display());
+            let mut lines =
+                vec![format!("{} left in place; the unit is no longer registered", root.display())];
+            lines.push(self.root_prune_line());
+            lines.extend(self.trimmed.notes.clone());
+            return lines.join("\n");
         }
         let Some(entry) = &self.trashed else { return String::from(NONE) };
         let mut lines = vec![format!(
@@ -225,6 +257,34 @@ impl Reclaimed {
         lines.join("\n")
     }
 
+    /// What the prune took out of the checkout, or what `--prune` would take.
+    ///
+    /// A checkout adopted in place is the person's own directory and a reclaim never
+    /// moves it, so its build output is reachable by nothing else. The line says the
+    /// bytes either way: after `--prune` it is a record of what went, and without it, it
+    /// is the warning that the flag answers. A checkout holding no regenerable state
+    /// says so, because a missing line and "there was none" are different claims.
+    fn root_prune_line(&self) -> String {
+        if !self.trimmed.changed_nothing() {
+            return format!(
+                "removed {} of build output and dependencies: {}",
+                human::bytes(self.trimmed.bytes),
+                human::join(&named_paths(&self.trimmed.removed))
+            );
+        }
+        if self.prunable.is_empty() {
+            return String::from("it holds no build output an ignore rule covers");
+        }
+        let bytes: u64 = self.prunable.iter().map(|removal| removal.bytes).sum();
+        format!(
+            "it holds {} of build output and dependencies that stay: {}. `nodal reclaim {} \
+             --prune` removes them",
+            human::bytes(bytes),
+            human::join(&named_paths(&self.prunable)),
+            self.slug,
+        )
+    }
+
     /// What the trash did not have to keep, and what it holds instead.
     ///
     /// The contract in one line: the trash holds the home without its build output and
@@ -235,24 +295,18 @@ impl Reclaimed {
         if self.trimmed.changed_nothing() {
             return String::from("the trash holds the whole home; it held no build output");
         }
-        let names = self
-            .trimmed
-            .removed
-            .iter()
-            .map(|removal| removal.path.display().to_string())
-            .collect::<Vec<String>>();
         format!(
             "dropped {} of build output and dependencies: {}",
             human::bytes(self.trimmed.bytes),
-            human::join(&names)
+            human::join(&named_paths(&self.trimmed.removed))
         )
     }
 
-    /// The ignored state the trash kept, which is what a person goes back for.
+    /// The ignored state the prune did not take, which is what a person goes back for.
     ///
     /// Named one by one while there are few enough to read ([`prune::NAMED`]), and
     /// counted with a total after that. Either way the answer is the same claim: this
-    /// is what is in the trash that no commit holds.
+    /// is what no commit holds and no prune removed.
     fn kept_cell(&self) -> String {
         let kept = &self.trimmed.kept;
         if kept.len() > prune::NAMED {
@@ -476,6 +530,7 @@ mod tests {
 
     fn reclaimed() -> Reclaimed {
         Reclaimed {
+            prunable: Vec::new(),
             now: Timestamp::parse("2026-09-07T09:00:00Z").unwrap(),
             slug: String::from("worker-import"),
             findings: Vec::new(),

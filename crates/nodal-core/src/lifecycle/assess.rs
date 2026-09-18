@@ -176,6 +176,10 @@ pub struct Input<'a> {
     /// A store is only ever believed when it holds the object, proved by `git rev-list`
     /// in that repository ([`local_copies`]). A name never counts.
     pub siblings: &'a [PathBuf],
+    /// What a reclaim does with this home: move it to the trash, or leave the person
+    /// the checkout they adopted. It decides what the report says becomes of the paths
+    /// in it, and it is a reading of the registry rather than a guess.
+    pub fate: Fate,
     /// Whether to classify the ignored state the home holds.
     pub state: bool,
     /// Whether to say where else each commit lives, rather than only which commits
@@ -202,13 +206,28 @@ impl<'a> Input<'a> {
     /// No runtime, so no move question, so nothing here to get wrong about a home that
     /// would not move. The refusal a reclaim raises is about the work in a home, and it
     /// is the same refusal for a home Nodal made and for a checkout adopted in place.
+    ///
+    /// [`Input::fate`] is unread by this reading and is not a claim about the home.
+    /// `state: false` is what makes that true: the two dispositions whose sentence
+    /// depends on the fate are [`Held::LocalState`] and [`Held::Generated`], both of
+    /// them made only by the ignored state this does not read, and the two it does make
+    /// say the same thing about a home that moves and a home that does not.
+    /// `a_refusal_reading_makes_no_group_whose_sentence_depends_on_the_fate` holds it.
     #[must_use]
     pub const fn refusal(
         home: &'a Path,
         checkout: Option<&'a Checkout>,
         siblings: &'a [PathBuf],
     ) -> Self {
-        Self { home, checkout, siblings, state: false, dispositions: false, runtime: None }
+        Self {
+            home,
+            checkout,
+            siblings,
+            fate: Fate::Trashed,
+            state: false,
+            dispositions: false,
+            runtime: None,
+        }
     }
 }
 
@@ -398,6 +417,31 @@ pub enum Survival {
     Reconstructable,
 }
 
+/// What a reclaim does with the home itself, which decides what it does with the
+/// paths in it.
+///
+/// Two answers and not a boolean, because each one names an operation a person can read
+/// about. `Trashed` is a home Nodal made: it moves whole, and the prune takes the build
+/// output out of the copy on the way in. `LeftInPlace` is a checkout the person made and
+/// Nodal adopted: the unit is unregistered and the directory is never moved, so the
+/// build output in it is reachable only through `nodal reclaim --prune`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fate {
+    /// A home Nodal made, which a reclaim moves to the trash.
+    Trashed,
+    /// A checkout adopted in place, which a reclaim unregisters and leaves.
+    LeftInPlace,
+}
+
+impl Fate {
+    /// The fate of a home the registry calls managed, or not.
+    #[must_use]
+    pub const fn of(managed: bool) -> Self {
+        if managed { Self::Trashed } else { Self::LeftInPlace }
+    }
+}
+
 /// What a home holds that a reclaim has an opinion about.
 ///
 /// The disposition and the sentence are read off this rather than stored beside it, so
@@ -438,17 +482,34 @@ impl Held {
 
     /// Why it has that disposition, in one clause. Never empty: a disposition without a
     /// reason is a claim a person cannot check.
+    ///
+    /// Two of the four clauses say what becomes of the path, and what becomes of it
+    /// depends on where the home goes. A home Nodal made is moved to the trash, which
+    /// keeps the local state and drops the build output. A checkout adopted in place is
+    /// not moved at all, so nothing goes to a trash and the build output goes only when
+    /// the person asks for it. [`Fate`] is that fact, and it is read rather than
+    /// guessed: a report that offered the trash for a home no reclaim moves would name
+    /// a directory the person could not go to.
     #[must_use]
-    pub const fn why(self) -> &'static str {
-        match self {
-            Self::Uncommitted => "no commit holds it, so removing the home loses it",
-            Self::Untracked => "git does not track it and no ignore rule covers it",
-            Self::LocalState => {
+    pub const fn why(self, fate: Fate) -> &'static str {
+        match (self, fate) {
+            (Self::Uncommitted, _) => "no commit holds it, so removing the home loses it",
+            (Self::Untracked, _) => "git does not track it and no ignore rule covers it",
+            (Self::LocalState, Fate::Trashed) => {
                 "an ignore rule covers it and no tool writes it again; the trash keeps it \
                  until nodal gc takes it"
             }
-            Self::Generated => {
-                "an ignore rule covers it and the exclusion table calls it regenerable"
+            (Self::LocalState, Fate::LeftInPlace) => {
+                "an ignore rule covers it and no tool writes it again; the home is not \
+                 moved, so it stays where it is"
+            }
+            (Self::Generated, Fate::Trashed) => {
+                "an ignore rule covers it and the exclusion table calls it regenerable; \
+                 the trash does not keep it"
+            }
+            (Self::Generated, Fate::LeftInPlace) => {
+                "an ignore rule covers it and the exclusion table calls it regenerable; \
+                 `nodal reclaim --prune` removes it and nothing else does"
             }
         }
     }
@@ -468,13 +529,18 @@ impl Held {
 /// The paths of one home under one disposition.
 ///
 /// The disposition and the sentence that justifies it are written out by
-/// [`PathGroup`]'s own [`Serialize`], read off [`Held`] rather than stored beside it. A
-/// reader of `--json` gets `disposition` and `why` without this value being able to hold
-/// a disposition that disagrees with what it is a group of.
+/// [`PathGroup`]'s own [`Serialize`], read off [`Held`] and [`Fate`] rather than stored
+/// beside them. A reader of `--json` gets `disposition` and `why` without this value
+/// being able to hold a disposition that disagrees with what it is a group of.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PathGroup {
     /// What they are, which is what decides their disposition.
     pub held: Held,
+    /// What a reclaim does with the home these paths are in, which is the other half of
+    /// the sentence. Every group of one reading carries the same value, set once from
+    /// [`Input::fate`]: a home is moved or it is not, and the paths in it do not each
+    /// get to answer that differently.
+    pub fate: Fate,
     /// How many there are. Exact.
     pub count: usize,
     /// The first [`SAMPLE`] of them, in the order they were found.
@@ -496,7 +562,7 @@ impl Serialize for PathGroup {
         let mut group = out.serialize_struct("PathGroup", 6)?;
         group.serialize_field("held", &self.held)?;
         group.serialize_field("disposition", &self.held.survival())?;
-        group.serialize_field("why", self.held.why())?;
+        group.serialize_field("why", self.held.why(self.fate))?;
         group.serialize_field("count", &self.count)?;
         group.serialize_field("sample", &self.sample)?;
         group.serialize_field("bytes", &self.bytes)?;
@@ -971,10 +1037,10 @@ impl Assessment {
 pub fn assess(input: &Input<'_>) -> Result<Assessment> {
     let git = Git::open(input.home)?;
     let status = git.status()?;
-    let mut paths = working(&status);
+    let mut paths = working(&status, input.fate);
     let mut notes = Vec::new();
     if input.state {
-        paths.extend(ignored(input.home, &mut notes));
+        paths.extend(ignored(input.home, input.fate, &mut notes));
     }
     let (commits, remotes, content) = history(&git, input, &mut notes)?;
     let mut assessment = Assessment {
@@ -997,23 +1063,29 @@ pub fn assess(input: &Input<'_>) -> Result<Assessment> {
 // ---------------------------------------------------------------------------
 
 /// The paths of the working tree that carry work, in the two kinds they come in.
-fn working(status: &Summary) -> Vec<PathGroup> {
+fn working(status: &Summary, fate: Fate) -> Vec<PathGroup> {
     let tracked =
         paths_where(status, |entry| matches!(entry.state, State::Tracked { .. } | State::Unmerged));
     let untracked = paths_where(status, |entry| entry.state == State::Untracked);
-    [group(Held::Uncommitted, tracked), group(Held::Untracked, untracked)]
+    [group(Held::Uncommitted, fate, tracked), group(Held::Untracked, fate, untracked)]
         .into_iter()
         .flatten()
         .collect()
 }
 
 /// One group over a list of paths, or nothing when the list is empty.
-fn group(held: Held, paths: Vec<PathBuf>) -> Option<PathGroup> {
+fn group(held: Held, fate: Fate, paths: Vec<PathBuf>) -> Option<PathGroup> {
     if paths.is_empty() {
         return None;
     }
     let count = paths.len();
-    Some(PathGroup { held, count, sample: paths.into_iter().take(SAMPLE).collect(), bytes: None })
+    Some(PathGroup {
+        held,
+        fate,
+        count,
+        sample: paths.into_iter().take(SAMPLE).collect(),
+        bytes: None,
+    })
 }
 
 /// The paths of the entries a rule selects, in the order Git listed them, leaving out
@@ -1053,26 +1125,26 @@ fn is_nodals_own(entry: &Entry) -> bool {
 ///
 /// The classification is [`prune::survey`] and not a copy of it, so what the preflight
 /// calls reconstructable is exactly what the prune would drop.
-fn ignored(home: &Path, notes: &mut Vec<String>) -> Vec<PathGroup> {
+fn ignored(home: &Path, fate: Fate, notes: &mut Vec<String>) -> Vec<PathGroup> {
     let surveyed = prune::survey(home);
     notes.extend(surveyed.notes);
     let (generated, local): (Vec<prune::Candidate>, Vec<prune::Candidate>) =
         surveyed.candidates.into_iter().partition(|candidate| candidate.reason.is_some());
-    [measured(Held::Generated, generated), measured(Held::LocalState, local)]
+    [measured(Held::Generated, fate, generated), measured(Held::LocalState, fate, local)]
         .into_iter()
         .flatten()
         .collect()
 }
 
 /// One group over classified paths, with what they hold, or nothing when there are none.
-fn measured(held: Held, candidates: Vec<prune::Candidate>) -> Option<PathGroup> {
+fn measured(held: Held, fate: Fate, candidates: Vec<prune::Candidate>) -> Option<PathGroup> {
     if candidates.is_empty() {
         return None;
     }
     let apparent = candidates.iter().map(|candidate| candidate.bytes).sum();
     let count = candidates.len();
     let sample = candidates.into_iter().take(SAMPLE).map(|candidate| candidate.path).collect();
-    Some(PathGroup { held, count, sample, bytes: Some(Bytes::of(apparent, true)) })
+    Some(PathGroup { held, fate, count, sample, bytes: Some(Bytes::of(apparent, true)) })
 }
 
 // ---------------------------------------------------------------------------
@@ -1492,8 +1564,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        Assessment, CommitGroup, Copies, Held, Needs, Own, PathGroup, Reason, Timestamp, Wrapper,
-        bystander, owns, reasons,
+        Assessment, CommitGroup, Copies, Fate, Held, Needs, Own, PathGroup, Reason, Timestamp,
+        Wrapper, bystander, owns, reasons,
     };
     use crate::git::Oid;
     use crate::git::status::{Change, Entry, State, Submodule};
@@ -1673,7 +1745,13 @@ mod tests {
 
     /// One path group of one path.
     fn paths(held: Held) -> PathGroup {
-        PathGroup { held, count: 1, sample: vec![PathBuf::from("a.rs")], bytes: None }
+        PathGroup {
+            held,
+            fate: Fate::Trashed,
+            count: 1,
+            sample: vec![PathBuf::from("a.rs")],
+            bytes: None,
+        }
     }
 
     /// The two dispositions that mean the work survives are the two that let a reclaim
@@ -1819,12 +1897,40 @@ mod tests {
         assert!(!assessed(Vec::new(), vec![paths(Held::Untracked)]).safe_to_reclaim());
     }
 
+    /// A refusal reading makes no group whose sentence depends on the fate, which is
+    /// what lets [`Input::refusal`] state one without knowing the answer.
+    ///
+    /// The two dispositions that read the fate come only from the ignored state, and a
+    /// refusal reading does not ask for it. This asserts the half that is a property of
+    /// the type: the sentence of each of the other two is the same either way. The other
+    /// half is `state: false`, which the constructor writes and the compiler holds.
+    #[test]
+    fn a_refusal_reading_makes_no_group_whose_sentence_depends_on_the_fate() {
+        for held in [Held::Uncommitted, Held::Untracked] {
+            assert_eq!(
+                held.why(Fate::Trashed),
+                held.why(Fate::LeftInPlace),
+                "{held:?} is a disposition a refusal reading makes, so it must not read the fate"
+            );
+        }
+        for held in [Held::LocalState, Held::Generated] {
+            assert_ne!(
+                held.why(Fate::Trashed),
+                held.why(Fate::LeftInPlace),
+                "{held:?} says what becomes of the path, which a home that moves and a home \
+                 that does not answer differently"
+            );
+        }
+    }
+
     /// Every disposition says why it is that disposition. A report that allowed a
     /// removal without a reason would be asking to be believed.
     #[test]
     fn every_disposition_gives_a_reason() {
         for held in [Held::Uncommitted, Held::Untracked, Held::LocalState, Held::Generated] {
-            assert!(!held.why().is_empty(), "{held:?}");
+            for fate in [Fate::Trashed, Fate::LeftInPlace] {
+                assert!(!held.why(fate).is_empty(), "{held:?} {fate:?}");
+            }
             assert!(!held.label().is_empty(), "{held:?}");
         }
     }
