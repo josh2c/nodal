@@ -1,6 +1,9 @@
 # build output
 target/
 
+# benchmark harness results — held for the trash retention, removed by `--gc`
+benches/results/
+
 # local tool and editor state — never commit
 .claude/
 .vscode/
