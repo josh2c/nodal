@@ -168,6 +168,10 @@ pub struct Request {
     pub force: bool,
     /// Whether the project's own hooks run. `false` is `--no-hooks`.
     pub hooks: bool,
+    /// Whether the build output and the installed dependencies go from a checkout
+    /// adopted in place. `--prune`, and never a default: the directory is the person's
+    /// own and a reclaim of it otherwise removes nothing from it.
+    pub prune: bool,
     /// Where the command was run, which decides the unit when no target was given.
     pub cwd: PathBuf,
 }
@@ -184,6 +188,11 @@ pub struct Params {
     /// Where the home is going and when it may be removed, for a home Nodal made.
     /// `None` for a checkout adopted in place, which is unregistered and left alone.
     pub entry: Option<Trashed>,
+    /// Whether the person asked for the regenerable ignored state of a checkout adopted
+    /// in place to go. Journalled, because the step that acts on it is replayed from
+    /// here and a replay must not remove what the first run was not asked to.
+    #[serde(default)]
+    pub prune: bool,
     /// The process groups the unit's open recorded sessions hold — a tether, or a group
     /// a recipe hook left behind — read after `pre_reclaim` and before anything moves.
     /// These are the teardown's first and most certain targets.
@@ -331,6 +340,9 @@ fn read(
         // repositories beside the project's checkout, proved by their own object stores
         // and never by a name.
         siblings: &crate::doctor::scan::siblings(&project.root),
+        // What a reclaim does with this home, which decides what the report says becomes
+        // of the paths in it. Read from the registry row, not guessed from the path.
+        fate: assess::Fate::of(environment.managed),
         state: true,
         // The preflight is what a person reads, so it pays for the two readings that say
         // where else each commit lives. The reclaim itself acts on the refusal alone.
@@ -447,19 +459,40 @@ pub fn plan(params: &Params) -> Result<Plan> {
         if params.environment.managed {
             return Ok(plan);
         }
-        return Ok(plan.then(Unadopt { home: params.environment.home.clone() }));
+        let home = params.environment.home.clone();
+        // The prune is before the unadopt so that the survey reads the repository in the
+        // state `nodal reclaim --check` surveyed it, with every rule Nodal added to the
+        // exclude file still in place. The preflight and the prune must not be able to
+        // disagree about which paths an ignore rule covers.
+        let plan = if params.prune {
+            plan.then(HomePrune { occupancy: occupancy(params, &home), force: params.force })
+        } else {
+            plan
+        };
+        return Ok(plan.then(Unadopt { home }));
     };
     Ok(plan
         .then(TrashHome {
-            slug: params.unit.slug.clone(),
-            unit: params.unit.id,
-            home: entry.home.clone(),
+            occupancy: occupancy(params, &entry.home),
             path: entry.path.clone(),
             force: params.force,
-            groups: params.tethers.clone(),
-            wrappers: params.wrappers.clone(),
         })
         .then(TrashPrune { path: entry.path.clone() }))
+}
+
+/// The occupancy question for one directory of this unit.
+///
+/// The identity and the recorded groups are the unit's and are the same whichever
+/// directory is asked about; only the path differs, because a managed home is asked
+/// about where it is now and a checkout adopted in place is asked about where it stays.
+fn occupancy(params: &Params, home: &Path) -> Occupancy {
+    Occupancy {
+        slug: params.unit.slug.clone(),
+        unit: params.unit.id,
+        home: home.to_path_buf(),
+        groups: params.tethers.clone(),
+        wrappers: params.wrappers.clone(),
+    }
 }
 
 /// The registry write that finishes a reclaim.
@@ -654,26 +687,76 @@ impl StopRuntime {
     }
 }
 
+/// Whether a step may act on a home, asked of the process table.
+///
+/// Two steps ask it, and they act on the same kind of directory: one a person may be
+/// standing in at the instant the step runs. [`TrashHome`] moves a home Nodal made;
+/// [`HomePrune`] removes the build output of a checkout the person adopted. A `cargo
+/// build` running in either is the same surprise, so there is one value that carries
+/// the question and one function that answers it.
+///
+/// It is asked after the teardown. Everything carrying the unit's identifier has been
+/// stopped by then, so what a scan still finds is something Nodal did not start: a tmux
+/// pane, an editor server over SSH, a teammate's shell.
+#[derive(Debug, Clone)]
+struct Occupancy {
+    /// The unit's handle, which is what the refusal names.
+    slug: crate::model::Slug,
+    /// The unit whose home this is, which is what the scan attributes a process by.
+    unit: UnitId,
+    /// The directory to ask about.
+    home: PathBuf,
+    /// The process groups the registry recorded for the unit, so a process inside one is
+    /// not the stranger a step refuses to act over.
+    groups: Vec<u32>,
+    /// The `nodal run` each group hangs off. Both steps run after the groups were
+    /// stopped, which is exactly when that relation can no longer be read, so it is
+    /// carried here from before.
+    wrappers: Vec<assess::Wrapper>,
+}
+
+impl Occupancy {
+    /// Refuse when something stands in the home, or when the table could not be read.
+    ///
+    /// A host whose process table cannot be read is not a host that found nothing:
+    /// "nothing was found standing in the home" and "I could not look" are different
+    /// answers, and acting on the first when the second is true is the one thing this
+    /// refusal exists to prevent. [`prepare`] already refused over a table it could not
+    /// read, before the teardown ([`refuse_unread`]), so this arm answers only for a
+    /// table that became unreadable since.
+    ///
+    /// The rule is [`assess::unmovable`], which is the rule `nodal reclaim --check`
+    /// reports, so the preflight and the operation cannot disagree about it.
+    ///
+    /// # Errors
+    /// [`Error::HomeInUse`] naming what stands in the home, and
+    /// [`Error::ProcessTableUnread`] with the reason the scan gave.
+    fn refuse(&self) -> Result<()> {
+        let seen = assess::processes_of(
+            Own::of(self.unit, &self.groups).and_wrappers(&self.wrappers),
+            std::slice::from_ref(&self.home),
+        );
+        match assess::unmovable(&seen) {
+            None => Ok(()),
+            Some(Unmovable::Standing(standing)) => {
+                Err(Error::HomeInUse { slug: self.slug.clone(), standing: standing.to_vec() })
+            }
+            Some(Unmovable::Unread(note)) => {
+                Err(Error::ProcessTableUnread { slug: self.slug.clone(), why: note.why.clone() })
+            }
+        }
+    }
+}
+
 /// Move the home into the project's trash directory, unless something Nodal did not
 /// start is standing in it.
 struct TrashHome {
-    /// The unit's handle, which is what the refusal names.
-    slug: crate::model::Slug,
-    /// The unit whose home this is.
-    unit: UnitId,
-    /// Where the home is.
-    home: PathBuf,
+    /// Whether anything stands in the home this is about to move.
+    occupancy: Occupancy,
     /// Where it goes.
     path: PathBuf,
     /// Whether the move goes ahead over a process standing in the home.
     force: bool,
-    /// The process groups the registry recorded for the unit, so a process inside one is
-    /// not the stranger the move refuses to act over.
-    groups: Vec<u32>,
-    /// The `nodal run` each group hangs off. This step runs after the groups were
-    /// stopped, which is exactly when that relation can no longer be read, so it is
-    /// carried here from before.
-    wrappers: Vec<assess::Wrapper>,
 }
 
 impl Step for TrashHome {
@@ -699,39 +782,16 @@ impl Step for TrashHome {
     /// `nodal reclaim --check` reports. `--force` moves the home over both refusals.
     fn apply(&self) -> Result<Output> {
         if !self.force {
-            self.refuse_over_the_table()?;
+            self.occupancy.refuse()?;
         }
-        move_tree(&self.home, &self.path)?;
+        move_tree(&self.occupancy.home, &self.path)?;
         Ok(nothing())
     }
 
     /// Move it back. This is why the trash is a move and not a delete: the operation's
     /// own recovery needs the directory to still exist.
     fn undo(&self) -> Result<()> {
-        move_tree(&self.path, &self.home)
-    }
-}
-
-impl TrashHome {
-    /// Refuse the move when something stands in the home or the table could not be read.
-    ///
-    /// # Errors
-    /// [`Error::HomeInUse`] naming what stands in the home, and
-    /// [`Error::ProcessTableUnread`] with the reason the scan gave.
-    fn refuse_over_the_table(&self) -> Result<()> {
-        let seen = assess::processes_of(
-            Own::of(self.unit, &self.groups).and_wrappers(&self.wrappers),
-            std::slice::from_ref(&self.home),
-        );
-        match assess::unmovable(&seen) {
-            None => Ok(()),
-            Some(Unmovable::Standing(standing)) => {
-                Err(Error::HomeInUse { slug: self.slug.clone(), standing: standing.to_vec() })
-            }
-            Some(Unmovable::Unread(note)) => {
-                Err(Error::ProcessTableUnread { slug: self.slug.clone(), why: note.why.clone() })
-            }
-        }
+        move_tree(&self.path, &self.occupancy.home)
     }
 }
 
@@ -777,6 +837,68 @@ impl Step for TrashPrune {
     /// there, so a reclaim rolled back after this one leaves the person their home with
     /// a cold build in it. Nothing that was only in this home is gone: the uniqueness
     /// check ran before any of it, and an ignore rule covered every path this touched.
+    fn undo(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Take the build output and the installed dependencies out of a checkout adopted in
+/// place, and take nothing else.
+///
+/// This is the one step of a reclaim that removes anything from a directory Nodal did
+/// not make, and it is in the plan only when the person wrote `--prune`. A reclaim of a
+/// checkout adopted in place otherwise removes nothing from it: the report says what
+/// this step would have taken, and the flag is the answer to it.
+///
+/// What it may remove is settled by the same two gates the trash prune uses
+/// ([`prune`]), and the gates are the whole of the safety. An ignore rule has to cover
+/// the path, which comes from `git ls-files --others --ignored` and so can never reach
+/// a path any commit holds, whatever its name is. The exclusion table then has to call
+/// it regenerable, which leaves every `.env.local` and every local database where it
+/// is. The directory itself is never touched: it is the person's checkout, they are
+/// probably still standing in it, and a `target` that a build writes again is the whole
+/// of what a reclaim of it has to offer.
+///
+/// "Probably still standing in it" is why this asks [`Occupancy`] first, and it is the
+/// same question [`TrashHome`] asks. A `cargo build` running in the checkout is writing
+/// the very directory this step would remove, and a host whose process table cannot be
+/// read cannot say that no build is. `--force` goes ahead over both, as it does for the
+/// move.
+struct HomePrune {
+    /// Whether anything stands in the checkout this is about to remove from.
+    occupancy: Occupancy,
+    /// Whether the prune goes ahead over a process standing in the checkout.
+    force: bool,
+}
+
+impl Step for HomePrune {
+    fn key(&self) -> String {
+        String::from(PRUNE)
+    }
+
+    /// Repeatable: a second run finds nothing an ignore rule covers that the table
+    /// calls regenerable, and removes nothing.
+    ///
+    /// The refusal is the one exception to "it never fails", and it is before any
+    /// removal rather than during one. After it, a removal that could not be made is a
+    /// note on the report, for the reason [`TrashPrune`] gives: failing a reclaim over
+    /// a build directory that would not go would leave the unit registered to pay for
+    /// it.
+    ///
+    /// # Errors
+    /// [`Error::HomeInUse`] and [`Error::ProcessTableUnread`], from [`Occupancy`].
+    fn apply(&self) -> Result<Output> {
+        if !self.force {
+            self.occupancy.refuse()?;
+        }
+        let report = prune::sweep(&self.occupancy.home);
+        serde_json::to_value(report).map_err(|source| Error::Render { kind: "home prune", source })
+    }
+
+    /// Nothing. Every path this removed is state a tool writes again from the tree that
+    /// is still there, and the tree is still there: this step never moves the checkout.
+    /// A reclaim rolled back after it leaves the person their own directory with a cold
+    /// build in it.
     fn undo(&self) -> Result<()> {
         Ok(())
     }
@@ -910,6 +1032,7 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
         unit,
         environment,
         entry,
+        prune: request.prune,
         tethers: Vec::new(),
         wrappers: Vec::new(),
         force: request.force,
@@ -1209,6 +1332,7 @@ fn report(
         trimmed,
         pruned,
         root: root_of(params),
+        prunable: prunable(params),
         hooks,
         notes,
         leftovers,
@@ -1247,6 +1371,21 @@ fn offer_remove(params: &Params, findings: &[Finding]) -> Option<PathBuf> {
     }
     let standing = Bases::default().standing(&git, &params.unit).ok()?;
     standing.integration.is_integrated().then(|| home.clone())
+}
+
+/// What `--prune` would have taken out of a checkout adopted in place, for the run that
+/// did not ask for it.
+///
+/// This is the warning, and the report is where a person reads it. A reclaim of their
+/// own checkout leaves the directory and everything in it, so a `target` that a reclaim
+/// of a managed home would have dropped stays on the disk until somebody says to drop
+/// it. Empty for a home Nodal made, whose build output the trash prune already took,
+/// and empty for the run that pruned, whose report says what went instead.
+fn prunable(params: &Params) -> Vec<prune::Removal> {
+    if params.prune || params.environment.managed || params.entry.is_some() {
+        return Vec::new();
+    }
+    prune::would_remove(&params.environment.home)
 }
 
 /// The directory an adopted checkout was left at, when that is what this was.

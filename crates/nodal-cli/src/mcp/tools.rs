@@ -105,6 +105,9 @@ fn reading() -> Vec<Tool> {
             },
             call: |cli, arguments| {
                 let command = Reclaim {
+                    // The tool surface reads; it never removes build output from a
+                    // checkout somebody adopted in place.
+                    prune: false,
                     units: text(arguments, "unit").into_iter().collect(),
                     check: true,
                     force: false,

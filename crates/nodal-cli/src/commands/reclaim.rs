@@ -44,7 +44,7 @@ pub struct Reclaim {
     /// repositories beside it, two directory levels under its parent. It is not this
     /// host: `nodal ps` reads the host, and these are two scopes and now two phrases. A
     /// copy counts only where that repository's own object store holds the commit.
-    #[arg(long, conflicts_with_all = ["force", "yes"])]
+    #[arg(long, conflicts_with_all = ["force", "yes", "prune"])]
     pub check: bool,
 
     /// Reclaim a unit whose home holds work that exists nowhere else, or whose home
@@ -53,6 +53,23 @@ pub struct Reclaim {
     /// being deleted, so nothing here is a way to lose a commit.
     #[arg(long)]
     pub force: bool,
+
+    /// Remove the build output and the installed dependencies from a checkout adopted
+    /// in place, which a reclaim otherwise leaves exactly as it is.
+    ///
+    /// Two gates decide what goes, and both have to pass: an ignore rule has to cover
+    /// the path, which is what puts every tracked file out of reach, and the exclusion
+    /// table has to call it regenerable, which is what leaves an `.env.local` and a
+    /// local database where they are. The directory itself is never removed and never
+    /// moved.
+    ///
+    /// It does nothing to a home Nodal made. That home goes to the trash whole and the
+    /// trash prune already takes its build output on the way in.
+    ///
+    /// Run `nodal reclaim <unit> --check` first. It prints the same paths and the same
+    /// bytes, and it removes none of them.
+    #[arg(long)]
+    pub prune: bool,
 
     /// Run `git worktree remove` for a done adopted worktree without being asked.
     #[arg(short = 'y', long)]
@@ -180,6 +197,7 @@ impl Reclaim {
             target: self.only().map(str::to_owned),
             force: self.force,
             hooks,
+            prune: self.prune,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
