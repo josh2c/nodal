@@ -26,7 +26,7 @@ or a changed type is a breaking change. It lands as a new `v2/` directory. The p
 directory stays in place, so older bundles stay readable.
 The version lives in `SCHEMA_VERSION` in `crates/nodal-core/src/model/schema.rs`.
 
-The catalogue version is not the registry schema version. This release, `0.1.0-rc.2`,
+The catalogue version is not the registry schema version. This release, `0.1.0-rc.3`,
 publishes catalogue `v1` and reads registry schema 14. The registry number lives in
 `SCHEMA_VERSION` in `crates/nodal-core/src/store/migrations.rs`, and `docs/contracts.md`
 states what a binary does with a registry at another number.

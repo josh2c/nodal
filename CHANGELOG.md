@@ -3,7 +3,35 @@
 This file records what each release of Nodal lets a person do, and what it refuses.
 One line per behaviour. Versions follow [semantic versioning](https://semver.org).
 
-## Unreleased
+## 0.1.0-rc.3 — 2026-09-18
+
+### Read
+
+- `nodal new`, `nodal adopt` and `nodal show` print one line for each tool the project
+  pins. The line names the tool, the pin, and the version this host answered. A tool this
+  host has no program for reads `not checked`, with the reason.
+- `nodal reclaim --check` names the repository that holds the second copy of a commit.
+  The path is what the claim rests on, so the report states it.
+- `nodal reclaim --check` prints one `content` row for a refused commit whose tree a
+  remote tip already holds. The row names the ref, its tip and the tree. It moves no
+  verdict, because the ref rebuilds the content and not the commit.
+
+### Make
+
+- `nodal new` installs the dependencies in the home when `base.exclude` keeps the install
+  output out of the base. The base runs no install for that manager, and its readiness
+  line names the directory and the manager. Cargo never moves, because its download cache
+  is outside the tree.
+
+### Reclaim
+
+- `nodal reclaim --check` takes more than one unit. Each unit keeps the verdict it would
+  get alone. A second copy that lives only in another home on the same command line
+  becomes one more reason on that unit. The report closes with the joint verdict, and the
+  exit code carries it.
+- `nodal doctor` asks the same question of a project's open homes as a set. A home of one
+  of them is not a second object store, because a person clearing a machine removes them
+  together.
 
 ### What refuses
 
