@@ -96,7 +96,7 @@ the path of the file you moved.
 On macOS, a file that you download with a browser does not run. The browser adds the
 quarantine attribute, and macOS refuses a file with that attribute that is not
 notarized. This file is not notarized. A download with `curl`, as above, adds no
-attribute and runs. For a browser download, remove the attribute with
+quarantine attribute, so the file runs. For a browser download, remove the attribute with
 `xattr -d com.apple.quarantine <file>`. Before you do this, check the sha256 of the file.
 
 **Build from source.** Rust 1.88 or later. This needs no clone either.
