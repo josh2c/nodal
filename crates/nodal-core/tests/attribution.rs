@@ -230,10 +230,6 @@ fn a_process_of_another_account_is_withheld_and_never_read() {
 
 #[test]
 fn a_listener_on_a_granted_port_is_attributed_to_its_unit() {
-    if !cfg!(target_os = "linux") {
-        eprintln!("skipped: a listener scan reads /proc/net/tcp, which this host does not have");
-        return;
-    }
     let directory = tempfile::tempdir().unwrap();
     let home = make_home(directory.path());
 

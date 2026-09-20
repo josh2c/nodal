@@ -372,8 +372,11 @@ pub enum Error {
         attempts: usize,
     },
 
-    /// A listener scan was asked for on a host that does not publish the table it reads.
-    #[error("a listener scan reads /proc/net/tcp, which {host} does not have")]
+    /// A listener scan was asked for on a host that publishes no table it can read.
+    ///
+    /// Linux writes `/proc/net/tcp` and macOS answers `net.inet.tcp.pcblist_n`. A third
+    /// host has neither, and the scan says so rather than answering nothing found.
+    #[error("a listener scan reads the kernel's socket table, which {host} does not publish")]
     ListenerScanUnsupported {
         /// The operating system the process is running on.
         host: &'static str,
