@@ -312,12 +312,16 @@ jobs:
 
   acceptance-ports:
     name: acceptance (ports)
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: two units get distinct ports and a pinned port names its holder
+      - name: two units get distinct ports, a pinned port names its holder, and a listener is found
         run: ci/acceptance-ports.sh
 
   acceptance-materialize:
