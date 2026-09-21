@@ -220,7 +220,7 @@ fn rounded(length: usize) -> usize {
 /// Asking macOS for its table of sockets, which the kernel answers as one buffer.
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::ffi::{CStr, c_void};
+    use std::ffi::CStr;
     use std::path::PathBuf;
 
     use crate::{Error, Result};
@@ -238,41 +238,28 @@ mod macos {
     /// # Errors
     /// [`Error::Io`] with the reason the kernel set, for the probe or for the read.
     pub(super) fn pcblist() -> Result<Vec<u8>> {
-        let mut buffer = vec![0_u8; size()?.saturating_add(SLACK)];
-        let mut written = buffer.len();
-        // SAFETY: `TABLE` is a name that ends in a zero byte. `buffer` is `written`
-        // bytes, the kernel writes at most that many into it and sets `written` to the
-        // count it wrote. The last two arguments are the null that sets no new value.
-        let answered = unsafe {
-            libc::sysctlbyname(
-                TABLE.as_ptr(),
-                buffer.as_mut_ptr().cast::<c_void>(),
-                &raw mut written,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if answered != 0 {
-            return Err(failed());
-        }
+        let mut buffer = vec![0_u8; read(&mut [])?.saturating_add(SLACK)];
+        let written = read(&mut buffer)?;
         buffer.truncate(written);
         Ok(buffer)
     }
 
-    /// How many bytes the table needs, which a read with no buffer asks for.
-    fn size() -> Result<usize> {
-        let mut size = 0_usize;
-        // SAFETY: `TABLE` is a name that ends in a zero byte. A null buffer asks for the
-        // size alone, so nothing is written to it and the answer is in `size`. The last
-        // two arguments are the null that sets no new value.
+    /// One read of the table into `buffer`, or of the size it needs when `buffer` is
+    /// empty. Answers the byte count the kernel set.
+    ///
+    /// # Errors
+    /// [`Error::Io`] with the reason the kernel set.
+    fn read(buffer: &mut [u8]) -> Result<usize> {
+        let mut size = buffer.len();
+        let into =
+            if buffer.is_empty() { std::ptr::null_mut() } else { buffer.as_mut_ptr().cast() };
+        // SAFETY: `TABLE` is a name that ends in a zero byte. `into` is null for an empty
+        // buffer, which asks the kernel for the size alone and writes nothing; otherwise
+        // it is `buffer`, which is `size` bytes, and the kernel writes at most that many
+        // into it. Either way the kernel sets `size` to the count. The last two arguments
+        // are the null that sets no new value.
         let answered = unsafe {
-            libc::sysctlbyname(
-                TABLE.as_ptr(),
-                std::ptr::null_mut(),
-                &raw mut size,
-                std::ptr::null_mut(),
-                0,
-            )
+            libc::sysctlbyname(TABLE.as_ptr(), into, &raw mut size, std::ptr::null_mut(), 0)
         };
         if answered == 0 { Ok(size) } else { Err(failed()) }
     }
