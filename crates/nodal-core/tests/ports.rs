@@ -424,7 +424,6 @@ fn concurrent_claims_on_one_fixed_port_leave_one_holder_everybody_names() {
 /// The two ports come from the operating system, not from the block: one socket is kept
 /// open for the length of the test, and one is closed as soon as its port is known, so
 /// the pair is a port that is bound and a port that is not.
-#[cfg(target_os = "linux")]
 #[test]
 fn the_scan_finds_a_test_listener_and_not_a_closed_one() {
     let bound = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -442,13 +441,4 @@ fn the_scan_finds_a_test_listener_and_not_a_closed_one() {
     assert_eq!((app.port, app.listening), (listening, true), "the test listener is bound");
     assert_eq!((api.port, api.listening), (quiet, false), "a closed socket is not bound");
     assert!(listeners::listening_ports().unwrap().contains(&listening));
-}
-
-/// Off Linux the scan says it cannot answer rather than answering nothing found.
-#[cfg(not(target_os = "linux"))]
-#[test]
-fn the_scan_refuses_a_host_without_the_table_it_reads() {
-    let granted = Ports(BTreeMap::from([(name("app"), 20_000)]));
-    let error = listeners::scan(&granted).unwrap_err();
-    assert!(matches!(error, Error::ListenerScanUnsupported { .. }), "{error}");
 }

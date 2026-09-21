@@ -139,14 +139,6 @@ fn concurrent_grants_never_hand_out_one_port_twice() {
 
 #[test]
 fn a_bound_port_is_seen_for_the_unit_that_holds_it_and_for_no_other() {
-    if !platform::reads_bound_ports()
-        && platform::skipped(
-            "a bound port is seen for its own unit only",
-            "the scan reads /proc/net/tcp*, which this host does not publish",
-        )
-    {
-        return;
-    }
     let machine = Machine::new();
     machine.unit("worker-import");
     machine.unit("payroll-export");

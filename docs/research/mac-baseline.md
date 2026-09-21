@@ -2,7 +2,8 @@
 
 This file records each sentence where Nodal says that it cannot read something on a Mac.
 The work that adds a process scan on macOS compares its result against this table. When a
-row in the table changes, that work must say why.
+row in the table changes, that work must say why. A row that is struck through is a
+sentence Nodal no longer says, and the cell that follows says what it says instead.
 
 ## The host
 
@@ -90,7 +91,7 @@ in each state.
 | `nodal ps` | no session, live shell | `<host>: nothing attributed to a unit` | None on this line. The next lines give it. | `nodal-core/src/output/view/ps.rs` |
 | `nodal ps` | no session, live shell | `env, cwd: a process scan reads /proc, which macos does not have` | No `/proc` on this host | `nodal-core/src/output/view/ps.rs` (notes joined by `nodal-core/src/output/notice.rs`), text from `nodal-core/src/error.rs` |
 | `nodal ps` | no session, live shell | `docker: Cannot connect to the Docker daemon at unix://~/.docker/run/docker.sock. Is the docker daemon running?` | The Docker daemon does not answer | Docker's own message, passed on by `nodal-core/src/services/docker.rs` |
-| `nodal ps` | no session, live shell | `listener: a listener scan reads /proc/net/tcp, which macos does not have` | No `/proc/net/tcp` on this host | `nodal-core/src/services/listeners.rs`, text from `nodal-core/src/error.rs` (`ListenerScanUnsupported`) |
+| `nodal ps` | no session, live shell | ~~`listener: a listener scan reads /proc/net/tcp, which macos does not have`~~ Gone. `ps` now names the bound port under its unit, as it does on Linux: `macos-listeners  listener  app  —  20101  probable  listener` | The scan reads `net.inet.tcp.pcblist_n`, which macOS publishes host-wide to an ordinary account | `nodal-core/src/services/listeners.rs` |
 | `nodal reclaim probe --check` | no session, live shell | `verdict  safe — a reclaim would go ahead` | None | `nodal-core/src/output/view/check.rs` (`verdict_cell`), from `nodal-core/src/lifecycle/assess.rs` (`safe_to_reclaim`) |
 | `nodal reclaim probe --check` | no session, live shell | `because  nothing that is only here, and nothing standing in the home` | None | `nodal-core/src/output/view/check.rs` (`because_cell`) |
 | `nodal reclaim probe --check` | no session, live shell | `runtime  would stop: 0 recorded groups · env could not be read · docker could not be read` | The env signal and the Docker signal did not answer | `nodal-core/src/output/view/check.rs` (`counted`) |
@@ -133,7 +134,9 @@ file.
   never signalled` and says `a reclaim would refuse to move the home`. On macOS the
   verdict is `safe`.
 - **Listeners.** On Linux, `services/listeners.rs` reads `/proc/net/tcp` to find which
-  allocated port is bound. On macOS `ps` prints the listener note and no port.
+  allocated port is bound. On macOS it reads `net.inet.tcp.pcblist_n`, which gives the
+  same answer for IPv4 and IPv6 together. Both readings are host-wide: a socket held by
+  another account is in them. This row changed after this baseline was taken.
 - **Reclaim verify.** On Linux, when every signal answers, `reclaim` prints `nothing left
   by id`. On macOS it prints `nothing found by id; a signal could not be read`, even with
   Docker running.
