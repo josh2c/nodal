@@ -1009,7 +1009,12 @@ pub enum Error {
     /// writes its reason to is the tool's choice and not ours. A package manager that
     /// reports a lockfile mismatch on standard output and nothing on standard error
     /// produced, until both were kept, an error with no reason in it at all.
-    #[error("{program} {args} in {dir}{output}", args = args.join(" "), dir = dir.display())]
+    #[error(
+        "{program} {args} in {dir}{output}{put_back}",
+        args = args.join(" "),
+        dir = dir.display(),
+        put_back = listed("put back", put_back)
+    )]
     Tool {
         /// The program that was run.
         program: String,
@@ -1025,6 +1030,9 @@ pub enum Error {
         /// crate pays for the largest variant of this enum, so two more strings here
         /// would be two more words on the stack of code that never runs a tool.
         output: Box<Streams>,
+        /// The tracked paths an install changed before it failed, put back in the copy
+        /// it ran in. Empty for every tool that is not an install.
+        put_back: Vec<PathBuf>,
     },
 
     /// A project pins a package-manager version this host cannot run, and nothing on
@@ -1042,6 +1050,44 @@ pub enum Error {
         /// What the host answers, as a major series such as `10.x`, or `nothing` when
         /// the tool is not on the path at all.
         found: String,
+    },
+
+    /// A frozen install refused because the lockfile disagrees with its manifest.
+    ///
+    /// The tool's own sentence, then Nodal's: which file disagrees with which, and that
+    /// the fix is in the project. A unit is a clone of the project, so a lockfile fixed
+    /// in a unit is fixed in one copy and every later unit is refused again.
+    #[error(
+        "{tool} refused: {sentence}\n{lockfile} disagrees with {manifest}; fix it in the project's checkout and commit, not in a unit"
+    )]
+    LockfileMismatch {
+        /// The package manager that refused.
+        tool: String,
+        /// The lockfile it installs from.
+        lockfile: String,
+        /// The file the lockfile has to agree with.
+        manifest: String,
+        /// The line on which the tool said so.
+        sentence: String,
+    },
+
+    /// An install changed a file the project tracks.
+    ///
+    /// Nodal never writes a tracked file, and an install runs on Nodal's behalf. The
+    /// change was put back in the copy the install ran in, and the step refused, so no
+    /// home is born dirty over a file nobody in it touched.
+    #[error(
+        "{tool} wrote {paths} in {dir}, which the project tracks; the change was put back and the install refused",
+        paths = paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", "),
+        dir = dir.display()
+    )]
+    InstallWroteTracked {
+        /// The package manager that wrote it.
+        tool: String,
+        /// The tracked paths it changed, put back.
+        paths: Vec<PathBuf>,
+        /// The base or home it ran in.
+        dir: PathBuf,
     },
 
     /// A package manager installs into an environment it does not make, and this host
@@ -1086,6 +1132,15 @@ impl core::fmt::Display for Streams {
         }
         Ok(())
     }
+}
+
+/// `paths` on one line after `label`, or nothing when there are none.
+fn listed(label: &str, paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return String::new();
+    }
+    let names: Vec<String> = paths.iter().map(|path| path.display().to_string()).collect();
+    format!("\n{label}: {}", names.join(", "))
 }
 
 impl Error {

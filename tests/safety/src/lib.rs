@@ -120,7 +120,7 @@ pub mod text;
 pub mod tree;
 
 pub use git::{git, git_ok, try_git};
-pub use machine::Machine;
+pub use machine::{Machine, NPM_ARGV, NPM_PROJECT_NAME};
 pub use project::Workspace;
 pub use state::InState;
 pub use text::{answer, json, stderr, stdout};

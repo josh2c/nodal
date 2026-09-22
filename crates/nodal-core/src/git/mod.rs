@@ -678,6 +678,40 @@ impl Git {
         Ok(Some((branch.to_owned(), Oid::parse(oid)?)))
     }
 
+    /// The tracked paths that differ from HEAD, in the index or the tree, by name.
+    ///
+    /// The reading an install is held to: what a tool wrote where Git tracks. Untracked
+    /// paths are not read at all, so an install's `node_modules` of fifty thousand files
+    /// costs this nothing. The names are for the refusal; [`Git::reset_to_head`] is what
+    /// puts them back.
+    ///
+    /// # Errors
+    /// As [`Git::status`].
+    pub fn changed_tracked(&self) -> Result<Vec<PathBuf>> {
+        let summary = self.status_reading(&["--untracked-files=no"])?;
+        Ok(summary
+            .entries
+            .into_iter()
+            .filter(|entry| {
+                matches!(entry.state, status::State::Tracked { .. } | status::State::Unmerged)
+            })
+            .map(|entry| entry.path)
+            .collect())
+    }
+
+    /// Put every tracked path back as HEAD has it: a changed file to its content, a
+    /// staged addition and the new name of a rename removed. Untracked paths stay.
+    ///
+    /// One fixed command rather than a `checkout` of named paths, which git refuses whole
+    /// when one of the names is not in HEAD, as a staged addition is not.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when Git refused.
+    pub fn reset_to_head(&self) -> Result<()> {
+        cmd::run_ok(&self.root, &["reset", "-q", "--hard", "HEAD"])?;
+        Ok(())
+    }
+
     /// Put the working tree at a revision, with HEAD detached at it.
     ///
     /// Detached rather than on a branch because a base is a substrate and not a piece

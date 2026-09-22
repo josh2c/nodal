@@ -26,20 +26,56 @@
 use crate::model::recipe::{Ecosystem, PackageManager, Recipe, ToolVersion};
 use crate::recipe::infer::{Confidence, Project, Proposal};
 
-/// The committed file each package manager installs from, most specific first.
-const INSTALLS_FROM: &[(&str, PackageManager)] = &[
-    ("pnpm-lock.yaml", PackageManager::Pnpm),
-    ("yarn.lock", PackageManager::Yarn),
-    ("package-lock.json", PackageManager::Npm),
-    ("bun.lockb", PackageManager::Bun),
-    ("Cargo.lock", PackageManager::Cargo),
-    ("uv.lock", PackageManager::Uv),
-    ("poetry.lock", PackageManager::Poetry),
-    ("requirements.txt", PackageManager::Pip),
+/// Every package manager, most specific first inside its ecosystem.
+///
+/// The file each one is proposed on is [`PackageManager::lockfiles`]: the same table a
+/// base build reads to hold the install to, so the file that names a manager is the
+/// file its install never changes.
+const INSTALLS_FROM: [PackageManager; 8] = [
+    PackageManager::Pnpm,
+    PackageManager::Yarn,
+    PackageManager::Npm,
+    PackageManager::Bun,
+    PackageManager::Cargo,
+    PackageManager::Uv,
+    PackageManager::Poetry,
+    PackageManager::Pip,
 ];
 
 /// The `package.json` field that names the manager the repository is driven by.
 const PIN: &str = "packageManager";
+
+/// The fields a `package-lock.json` records about the manifest it was written from.
+const RECORDED: [&str; 2] = ["name", "version"];
+
+/// One line saying where the project's npm lockfile records a name or version its
+/// manifest no longer has, and what to do. `None` for a project npm does not install,
+/// and for one whose two files agree.
+///
+/// Only npm's lockfile records the manifest's own name and version; the others record
+/// dependencies alone. `npm ci` installs from such a lockfile as it is, and `npm
+/// install` rewrites it, which is how every home of a project whose lockfile name
+/// disagreed with its manifest was born dirty. So `nodal init` says it, before the
+/// first `nodal new`. A sentence and not a struct, because the one reader prints it.
+#[must_use]
+pub fn disagreement(project: &Project, recipe: &Recipe) -> Option<String> {
+    let manager = PackageManager::Npm;
+    if !recipe.package_manager.contains(&manager) {
+        return None;
+    }
+    let lockfile = manager.lockfiles()[0];
+    let recorded = project.read_json(lockfile)?;
+    let stated = project.package_json();
+    RECORDED.into_iter().find_map(|field| {
+        let (recorded, stated) = (recorded.get(field)?.as_str()?, stated.get(field)?.as_str()?);
+        (recorded != stated).then(|| {
+            format!(
+                "{lockfile} records {field} {recorded:?} and {manifest} says {stated:?}; run `npm install` in the project and commit the lockfile, or units are installed from the lockfile as it is",
+                manifest = manager.manifest(),
+            )
+        })
+    })
+}
 
 /// Propose `package_manager` and `package_manager_pin`.
 ///
@@ -52,12 +88,13 @@ const PIN: &str = "packageManager";
 pub fn infer(project: &Project, _so_far: &Recipe) -> Proposal {
     let mut proposal = Proposal::default();
     let mut ecosystems: Vec<Ecosystem> = Vec::new();
-    for (installs_from, manager) in INSTALLS_FROM {
-        if !project.exists(installs_from) || ecosystems.contains(&manager.ecosystem()) {
+    for manager in INSTALLS_FROM {
+        let carried = manager.lockfiles().iter().any(|installs_from| project.exists(installs_from));
+        if !carried || ecosystems.contains(&manager.ecosystem()) {
             continue;
         }
         ecosystems.push(manager.ecosystem());
-        proposal.recipe.package_manager.push(*manager);
+        proposal.recipe.package_manager.push(manager);
     }
     if !proposal.recipe.package_manager.is_empty() {
         proposal = proposal.sure("package_manager", Confidence::High);

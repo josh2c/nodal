@@ -97,7 +97,7 @@ const STUB_FAILS_ONCE: &str = concat!(
     "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
     "if [ ! -f '@WITNESS@' ]; then\n",
     "  : > '@WITNESS@'\n",
-    "  echo 'ERR_PNPM_OUTDATED_LOCKFILE  the lockfile does not match package.json'\n",
+    "  echo 'ERR_PNPM_FETCH_404  GET https://registry.invalid/left-pad: Not Found - 404'\n",
     "  echo 'a note that is not the reason' >&2\n",
     "  exit 1\n",
     "fi\n",
@@ -153,6 +153,50 @@ const STUB_VERSIONED: &str = concat!(
     "mkdir -p node_modules || exit 1\n",
     "echo 'the safety suite installs nothing' >> node_modules/installed.txt\n",
 );
+
+/// A stub that installs and then rewrites a file the project tracks.
+///
+/// What `npm install` did on a project whose lockfile name disagreed with its manifest. Every home cloned from that base was dirty at birth over a
+/// file nobody in it had touched.
+const STUB_WRITES_TRACKED: &str = concat!(
+    "#!/bin/sh\n",
+    "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
+    "mkdir -p node_modules || exit 1\n",
+    "echo 'the safety suite installs nothing' >> node_modules/installed.txt\n",
+    "printf '{ \"rewritten\": true }\\n' > package.json\n",
+);
+
+/// A stub that refuses to install, in the words pnpm uses when the lockfile disagrees
+/// with the manifest. The words were read off pnpm 12.
+///
+/// Sixty lines of usage follow the sentence, as they do after npm's. An error carries
+/// the tail of what a tool wrote, and a reading of that tail would never see the
+/// sentence; the reading has to be of the whole.
+const STUB_REFUSES_LOCKFILE: &str = concat!(
+    "#!/bin/sh\n",
+    "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
+    "echo 'Error: ERR_PNPM_OUTDATED_LOCKFILE'\n",
+    "echo 'Cannot install with \"frozen-lockfile\" because pnpm-lock.yaml is not up to date with package.json.'\n",
+    "i=0; while [ $i -lt 60 ]; do echo \"usage line $i\"; i=$((i+1)); done\n",
+    "exit 1\n",
+);
+
+/// A stub `npm`, for the machine whose project npm installs.
+///
+/// It records the arguments it was run with, so that a property about which form of
+/// the install ran reads one file. It writes nothing else the project tracks.
+const STUB_NPM: &str = concat!(
+    "#!/bin/sh\n",
+    "case \"$1\" in --version) echo '11.0.0'; exit 0;; esac\n",
+    "mkdir -p node_modules || exit 1\n",
+    "echo \"$*\" > node_modules/argv.txt\n",
+);
+
+/// Where the stub `npm` records its arguments, relative to the tree it ran in.
+pub const NPM_ARGV: &str = "node_modules/argv.txt";
+
+/// The name the npm project's manifest states. Its lockfile may record another.
+pub const NPM_PROJECT_NAME: &str = "demo";
 
 /// The programs a sealed machine keeps, beyond the stub package manager.
 ///
@@ -352,6 +396,53 @@ impl Machine {
         machine
     }
 
+    /// A machine whose package manager installs and then rewrites a tracked file.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    pub fn rewriting_a_tracked_file() -> Self {
+        Self::built(&Setup { stub: Some(STUB_WRITES_TRACKED), ..Setup::default() })
+    }
+
+    /// A machine whose package manager refuses the lockfile in pnpm's own words.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    pub fn refusing_the_lockfile() -> Self {
+        Self::built(&Setup { stub: Some(STUB_REFUSES_LOCKFILE), ..Setup::default() })
+    }
+
+    /// A machine whose project is an npm project with no recipe: a `package.json` that
+    /// says [`NPM_PROJECT_NAME`] and a `package-lock.json` that records `lock_name`. A
+    /// stub `npm` stands in for the real one.
+    ///
+    /// The shape that was measured: a lockfile whose name disagrees with its manifest,
+    /// which `npm install` rewrote in the base.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    pub fn npm_project(lock_name: &str) -> Self {
+        Self::built(&Setup { node: Some(lock_name), ..Setup::default() })
+    }
+
+    /// The same project, installed by the `npm` this host has. `None` on a host with
+    /// none, which is what a test says on standard output rather than asserting.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    pub fn npm_project_on_this_host(lock_name: &str) -> Option<Self> {
+        which("npm")?;
+        Some(Self::built(&Setup { node: Some(lock_name), host_npm: true, ..Setup::default() }))
+    }
+
     /// A machine whose checkout has a bare `origin` beside it, with `main` pushed to it.
     ///
     /// Every base of this project is a clone of that bare repository, so every home
@@ -386,12 +477,18 @@ impl Machine {
     #[must_use]
     fn built(setup: &Setup<'_>) -> Self {
         let root = TempDir::new().expect("a temporary directory");
-        let source = nodal_fixture::write(root.path().join("project"));
+        let source = match setup.node {
+            Some(lock_name) => write_npm_project(&root.path().join("project"), lock_name),
+            None => nodal_fixture::write(root.path().join("project")),
+        };
         let state = root.path().join("state");
         let tools = root.path().join("tools");
         let witness = tools.join("attempted").to_str().expect("a printable path").to_owned();
         let reports = setup.reports.as_deref().unwrap_or(nodal_fixture::PACKAGE_MANAGER_PIN);
         write_stub(&tools, setup.stub.unwrap_or(STUB), &witness, reports);
+        if setup.node.is_some() && !setup.host_npm {
+            write_runnable(&tools.join("npm"), STUB_NPM);
+        }
         if setup.sealed {
             link_tools(&tools);
         } else {
@@ -586,6 +683,10 @@ struct Setup<'a> {
     pin: Option<String>,
     /// Whether the checkout gets a bare `origin` beside it, with `main` pushed to it.
     remote: bool,
+    /// An npm project in place of the fixture, with a lockfile recording this name.
+    node: Option<&'a str>,
+    /// Leave the host's own `npm` in front rather than the stub.
+    host_npm: bool,
 }
 
 impl Default for Machine {
@@ -605,6 +706,28 @@ fn publish(root: &Path, source: &Path) -> PathBuf {
     git(source, &["remote", "add", "origin", named]);
     git(source, &["push", "--quiet", "--set-upstream", "origin", "main"]);
     bare
+}
+
+/// An npm project with no recipe, whose lockfile records `lock_name` as its name.
+///
+/// No dependencies, so the `npm` this host has can install it with no network. The
+/// ignore file keeps `node_modules` out of the commit, as every Node project does.
+fn write_npm_project(root: &Path, lock_name: &str) -> PathBuf {
+    std::fs::create_dir_all(root).expect("the project directory is made");
+    let manifest = format!(
+        "{{\n  \"name\": \"{NPM_PROJECT_NAME}\",\n  \"version\": \"1.0.0\",\n  \"private\": true\n}}\n"
+    );
+    let lockfile = format!(
+        "{{\n  \"name\": \"{lock_name}\",\n  \"version\": \"1.0.0\",\n  \"lockfileVersion\": 3,\n  \"requires\": true,\n  \"packages\": {{\n    \"\": {{\n      \"name\": \"{lock_name}\",\n      \"version\": \"1.0.0\"\n    }}\n  }}\n}}\n"
+    );
+    for (name, text) in [
+        ("package.json", manifest),
+        ("package-lock.json", lockfile),
+        (".gitignore", String::from("node_modules/\n")),
+    ] {
+        std::fs::write(root.join(name), text).expect("the npm project is written");
+    }
+    root.to_path_buf()
 }
 
 /// Add a `base.exclude` table to the fixture's own recipe, as a person would write it.

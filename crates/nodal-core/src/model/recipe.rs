@@ -217,6 +217,68 @@ impl PackageManager {
         }
     }
 
+    /// The committed files this manager installs from and must never change, most
+    /// specific first.
+    ///
+    /// A lockfile for every manager that writes one; `requirements.txt` for `pip`,
+    /// which installs from the file it is handed and writes nothing back. A base build
+    /// installs frozen when the project carries one of these
+    /// ([`crate::substrate::build::install_argv`]), and inference proposes the manager
+    /// when one is there (`crate::recipe::infer::package_manager`): one table, so the
+    /// file that names a manager is the file its install is held to.
+    ///
+    /// Bun has written `bun.lock` since 1.2 and `bun.lockb` before that, and a
+    /// repository carries one or the other.
+    #[must_use]
+    pub const fn lockfiles(self) -> &'static [&'static str] {
+        match self {
+            Self::Pnpm => &["pnpm-lock.yaml"],
+            Self::Yarn => &["yarn.lock"],
+            Self::Npm => &["package-lock.json"],
+            Self::Bun => &["bun.lock", "bun.lockb"],
+            Self::Cargo => &["Cargo.lock"],
+            Self::Uv => &["uv.lock"],
+            Self::Poetry => &["poetry.lock"],
+            Self::Pip => &["requirements.txt"],
+        }
+    }
+
+    /// The file a lockfile of this manager has to agree with.
+    ///
+    /// Named in a refusal: a frozen install that fails because the two disagree tells
+    /// the person which file to fix, and the fix is in the project and never in a unit.
+    #[must_use]
+    pub const fn manifest(self) -> &'static str {
+        match self {
+            Self::Pnpm | Self::Yarn | Self::Npm | Self::Bun => "package.json",
+            Self::Cargo => "Cargo.toml",
+            Self::Uv | Self::Poetry => "pyproject.toml",
+            Self::Pip => "requirements.txt",
+        }
+    }
+
+    /// What this manager writes when a frozen install finds the lockfile disagreeing
+    /// with the manifest. Empty for a manager that has no frozen form.
+    ///
+    /// The tool's own words, so that a refusal can be told from every other failure an
+    /// install has: a registry that is down or a package that will not build exits
+    /// non-zero too, and neither is fixed by editing the lockfile. Each phrase was read
+    /// off the tool named. `uv sync --frozen` installs from the lockfile without
+    /// comparing it, so `uv` never says this, and `poetry install` has no frozen form.
+    #[must_use]
+    pub const fn lockfile_disagrees(self) -> &'static [&'static str] {
+        match self {
+            Self::Pnpm => &["ERR_PNPM_OUTDATED_LOCKFILE"],
+            Self::Yarn => &["lockfile would have been modified", "lockfile needs to be updated"],
+            Self::Npm => {
+                &["can only install packages when your package.json and package-lock.json"]
+            }
+            Self::Bun => &["lockfile had changes, but lockfile is frozen"],
+            Self::Cargo => &["needs to be updated but --locked was passed"],
+            Self::Uv | Self::Poetry | Self::Pip => &[],
+        }
+    }
+
     /// The binary this package manager is invoked as.
     #[must_use]
     pub fn program(self) -> &'static str {

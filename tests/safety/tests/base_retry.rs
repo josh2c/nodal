@@ -29,7 +29,7 @@ use nodal_safety::InState as _;
 use nodal_safety::{Machine, answer, stderr};
 
 /// What the stub package manager writes to standard output when it refuses to install.
-const REASON: &str = "ERR_PNPM_OUTDATED_LOCKFILE";
+const REASON: &str = "ERR_PNPM_FETCH_404";
 
 /// What it writes to standard error at the same moment.
 const NOTE: &str = "a note that is not the reason";

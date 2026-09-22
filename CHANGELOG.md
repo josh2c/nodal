@@ -55,6 +55,13 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   output out of the base. The base runs no install for that manager, and its readiness
   line names the directory and the manager. Cargo never moves, because its download cache
   is outside the tree.
+- A base build and a home install run the form of each package manager that installs
+  from the lockfile and refuses to change it: `npm ci`, `pnpm install --frozen-lockfile`,
+  `yarn install --immutable` (`--frozen-lockfile` when the project pins Yarn 1),
+  `bun install --frozen-lockfile`, `uv sync --frozen`, `cargo fetch --locked`. A project
+  with no lockfile keeps the plain install, and the progress line says so.
+- `nodal init` prints one line when `package-lock.json` records a name or version that
+  `package.json` no longer states. The line names both.
 
 ### Reclaim
 
@@ -90,6 +97,12 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
 - `nodal new` and `nodal adopt` ask for hook approval before the operation writes
   anything. A create or an adoption refused for a hook nobody approved leaves no unit, no
   branch, no port lease and no home.
+- An install that changes a file the project tracks is refused. The change is put back
+  in the base or the home it ran in, never in the checkout, and the refusal names the
+  file and the tool. This holds for every package manager.
+- A frozen install that fails because the lockfile disagrees with its manifest is refused
+  with the tool's own sentence and one line of Nodal's: which file disagrees with which,
+  and that the fix goes in the project's checkout. The create leaves no unit.
 
 ## 0.1.0-rc.2 — 2026-09-17
 

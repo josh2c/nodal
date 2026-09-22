@@ -243,6 +243,7 @@ fn one(line: &str) -> Result<Container> {
         args: vec![String::from("inspect")],
         dir: PathBuf::from("."),
         code: Some(0),
+        put_back: Vec::new(),
         // The standard output stays empty, and deliberately so: `docker inspect` writes
         // every container's environment there, and the reason below is the whole of
         // what may be said about this document.
@@ -396,6 +397,7 @@ fn one_exited(line: &str) -> Result<Exited> {
         args: vec![String::from("inspect")],
         dir: PathBuf::from("."),
         code: Some(0),
+        put_back: Vec::new(),
         // The standard output stays empty, and deliberately so: `docker inspect` writes
         // every container's environment there, and the reason below is the whole of
         // what may be said about this document.

@@ -167,6 +167,11 @@ impl Init {
         self.hand_the_root_to_a_group()?;
         let root = self.path.clone().unwrap_or_else(|| PathBuf::from("."));
         let plan = recipe::plan_init(&root)?;
+        // Said in every mode, and first: a person who pipes `--json` into a file still
+        // hears it, and hears it before the first `nodal new` installs from the lockfile.
+        if let Some(disagreement) = &plan.disagreement {
+            eprintln!("nodal: {disagreement}");
+        }
         let report = InitReport::from_plan(&plan);
         if self.json {
             return write(&report, Format::Json);

@@ -133,6 +133,14 @@ pub struct Install {
     /// still rebuilds: that release ran every install in the base.
     #[serde(default = "in_the_base")]
     pub at: Site,
+    /// The committed file the install is held to ([`PackageManager::lockfiles`]), or
+    /// `None` for a project that carries none, whose install is the plain one and may
+    /// write one. The name and not a flag, so the line a person reads can say which.
+    ///
+    /// Defaulted when absent: a journal an earlier release wrote recorded the plain
+    /// argument list, and the plan rebuilt from it runs what it recorded.
+    #[serde(default)]
+    pub lockfile: Option<PathBuf>,
 }
 
 /// Where an install recorded before [`Site`] existed ran.
@@ -173,7 +181,10 @@ const INTERPRETERS: [&str; 2] = ["python3", "python"];
 /// is called where it is.
 pub fn installs(recipe: &Recipe, host: &dyn Host, tree: &Path) -> Result<Vec<Install>> {
     let sites = sites(recipe, tree);
-    sites.into_iter().map(|(manager, site)| Ok(install(recipe, manager, host)?.at(site))).collect()
+    sites
+        .into_iter()
+        .map(|(manager, site)| Ok(install(recipe, manager, host, tree)?.at(site)))
+        .collect()
 }
 
 /// Where each of the recipe's managers has to install, in the recipe's order.
@@ -236,13 +247,22 @@ pub fn in_the_home(recipe: &Recipe, host: &dyn Host, tree: &Path) -> Result<Vec<
     sites(recipe, tree)
         .into_iter()
         .filter(|(_, site)| !site.in_base())
-        .map(|(manager, site)| Ok(install(recipe, manager, host)?.at(site)))
+        .map(|(manager, site)| Ok(install(recipe, manager, host, tree)?.at(site)))
         .collect()
 }
 
-/// The install one manager runs, with its own pin acted on.
-fn install(recipe: &Recipe, manager: PackageManager, host: &dyn Host) -> Result<Install> {
-    let argv = super::build::install_argv(manager);
+/// The install one manager runs, frozen to the lockfile `tree` carries and with its
+/// own pin acted on.
+fn install(
+    recipe: &Recipe,
+    manager: PackageManager,
+    host: &dyn Host,
+    tree: &Path,
+) -> Result<Install> {
+    let lockfile = lockfile_of(manager, tree);
+    let pin = pinned(recipe, manager);
+    let series = pin.as_deref().and_then(|pin| major(&version_of(pin, manager.program())));
+    let argv = super::build::install_argv(manager, lockfile.as_deref(), series);
     let prepare = environment_for(manager, host)?;
     let plain = |argv: Vec<String>| Install {
         manager,
@@ -250,8 +270,9 @@ fn install(recipe: &Recipe, manager: PackageManager, host: &dyn Host) -> Result<
         argv,
         env: Vec::new(),
         at: Site::Base,
+        lockfile: lockfile.clone(),
     };
-    let (Some(pin), Some((program, rest))) = (pinned(recipe, manager), argv.split_first()) else {
+    let (Some(pin), Some((program, rest))) = (pin, argv.split_first()) else {
         return Ok(plain(argv));
     };
     let wanted = version_of(&pin, program);
@@ -261,7 +282,7 @@ fn install(recipe: &Recipe, manager: PackageManager, host: &dyn Host) -> Result<
         through.extend_from_slice(rest);
         let (name, value) = NO_DOWNLOAD_PROMPT;
         let env = vec![(name.to_owned(), value.to_owned())];
-        return Ok(Install { manager, prepare, argv: through, env, at: Site::Base });
+        return Ok(Install { env, ..plain(through) });
     }
 
     if host.on_path("mise") {
@@ -281,6 +302,16 @@ fn install(recipe: &Recipe, manager: PackageManager, host: &dyn Host) -> Result<
             Err(Error::ToolPin { tool: program.clone(), wanted: stated(&pin, program), found })
         }
     }
+}
+
+/// The committed file `manager` is held to, when `tree` carries one.
+///
+/// The one reading of the lockfile's presence, here with the other readings of a working
+/// copy; a refusal in [`super::build`] names the file by the same reading. The first
+/// name of [`PackageManager::lockfiles`] that is there, so a repository carrying Bun's
+/// two forms is held to the newer one.
+pub(crate) fn lockfile_of(manager: PackageManager, tree: &Path) -> Option<PathBuf> {
+    manager.lockfiles().iter().map(PathBuf::from).find(|name| tree.join(name).is_file())
 }
 
 /// What makes the environment `manager` installs into, when it does not make its own.

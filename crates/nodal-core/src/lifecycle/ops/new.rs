@@ -869,14 +869,16 @@ impl Step for InstallDependencies {
     }
 
     /// Each install, in order, with its environment made first where it needs one.
+    /// Both run through [`build::install`], so the home is held to what the base is
+    /// held to: no tracked file written, and a lockfile that disagrees named.
     fn apply(&self) -> Result<Output> {
         for install in &self.installs {
             if !install.prepare.is_empty() {
                 let prepare = build::runnable(&install.prepare, &self.home);
-                build::run(&self.home, &prepare, &install.env)?;
+                build::install(&self.home, install.manager, &prepare, &install.env)?;
             }
             let argv = build::runnable(&install.argv, &self.home);
-            build::run(&self.home, &argv, &install.env)?;
+            build::install(&self.home, install.manager, &argv, &install.env)?;
         }
         Ok(nothing())
     }
@@ -1382,6 +1384,21 @@ mod tests {
     use crate::model::{Objective, Recipe, ServiceName, Slug};
     use crate::substrate::pin::Site;
 
+    /// A home for an install to run in: a repository with one tracked file, because an
+    /// install is held to the tracked files of the copy it runs in.
+    fn home() -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
+        for args in [
+            &["init", "--quiet", "."][..],
+            &["add", "--all"],
+            &["-c", "user.email=t@example.invalid", "-c", "user.name=test", "commit", "-qm", "x"],
+        ] {
+            crate::git::cmd::run_ok(home.path(), args).unwrap();
+        }
+        home
+    }
+
     /// An install of `argv`, sited in the home, with `prepare` run before it.
     fn moved(prepare: &[&str], argv: &[&str]) -> Install {
         Install {
@@ -1390,6 +1407,7 @@ mod tests {
             argv: argv.iter().map(|word| (*word).to_owned()).collect(),
             env: Vec::new(),
             at: Site::Home { output: PathBuf::from("node_modules") },
+            lockfile: None,
         }
     }
 
@@ -1397,7 +1415,7 @@ mod tests {
     /// first. A second apply is a resumed create and must be allowed.
     #[test]
     fn the_install_a_base_skipped_runs_in_the_home() {
-        let home = tempfile::tempdir().unwrap();
+        let home = home();
         let step = InstallDependencies {
             home: home.path().to_path_buf(),
             installs: vec![moved(
@@ -1416,7 +1434,7 @@ mod tests {
     /// are not there. What the tool wrote is in the error.
     #[test]
     fn a_failed_install_in_the_home_stops_the_create() {
-        let home = tempfile::tempdir().unwrap();
+        let home = home();
         let step = InstallDependencies {
             home: home.path().to_path_buf(),
             installs: vec![moved(&[], &["/bin/sh", "-c", "echo no lockfile >&2; exit 1"])],
@@ -1425,6 +1443,85 @@ mod tests {
         let told = failed.to_string();
         assert!(matches!(failed, crate::Error::Tool { .. }), "the wrong error: {told}");
         assert!(told.contains("no lockfile"), "{told}");
+    }
+
+    /// An install that changes a tracked file is refused, and the file is put back in
+    /// the home. The refusal names the file and the tool.
+    #[test]
+    fn an_install_that_writes_a_tracked_file_is_refused_and_the_file_put_back() {
+        let home = home();
+        let step = InstallDependencies {
+            home: home.path().to_path_buf(),
+            installs: vec![moved(&[], &["/bin/sh", "-c", "echo rewritten > package.json"])],
+        };
+        let refused = step.apply().unwrap_err();
+        let told = refused.to_string();
+        assert!(matches!(refused, crate::Error::InstallWroteTracked { .. }), "{told}");
+        assert!(told.contains("package.json") && told.contains("pnpm"), "{told}");
+        let content = std::fs::read_to_string(home.path().join("package.json")).unwrap();
+        assert_eq!(content, "{\"name\":\"demo\"}\n", "the tracked file was not put back");
+    }
+
+    /// A staged addition is not in HEAD, and a rename's new name is not either. Both are
+    /// put back by the one reset, and the copy reads clean.
+    #[test]
+    fn a_staged_addition_and_a_rename_are_both_put_back() {
+        for script in [
+            "echo x > added.txt && git add added.txt",
+            "git mv package.json renamed.json",
+            "git mv package.json renamed.json && echo x > added.txt && git add added.txt",
+        ] {
+            let home = home();
+            let step = InstallDependencies {
+                home: home.path().to_path_buf(),
+                installs: vec![moved(&[], &["/bin/sh", "-c", script])],
+            };
+            let refused = step.apply().unwrap_err();
+            assert!(matches!(refused, crate::Error::InstallWroteTracked { .. }), "{refused}");
+            assert!(home.path().join("package.json").is_file(), "{script}: not put back");
+            assert!(!home.path().join("added.txt").exists(), "{script}: the addition stayed");
+            assert!(!home.path().join("renamed.json").exists(), "{script}: the new name stayed");
+            let status = crate::git::cmd::run_ok(home.path(), &["status", "--porcelain"]).unwrap();
+            assert_eq!(status.text().unwrap(), "", "{script}: the copy is still dirty");
+        }
+    }
+
+    /// A tool that wrote a tracked file and then failed has the file put back, and the
+    /// failure names it beside the tool's exit.
+    #[test]
+    fn a_failed_install_that_wrote_a_tracked_file_names_what_was_put_back() {
+        let home = home();
+        let step = InstallDependencies {
+            home: home.path().to_path_buf(),
+            installs: vec![moved(&[], &["/bin/sh", "-c", "echo rewritten > package.json; exit 1"])],
+        };
+        let told = step.apply().unwrap_err().to_string();
+        assert!(told.contains("put back: package.json"), "{told}");
+        let content = std::fs::read_to_string(home.path().join("package.json")).unwrap();
+        assert_eq!(content, "{\"name\":\"demo\"}\n");
+    }
+
+    /// A frozen install that fails with the tool's lockfile sentence is a refusal that
+    /// names the lockfile and the manifest, and says where the fix goes.
+    #[test]
+    fn a_lockfile_that_disagrees_is_refused_with_both_files_named() {
+        let home = home();
+        std::fs::write(home.path().join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+        let step = InstallDependencies {
+            home: home.path().to_path_buf(),
+            installs: vec![moved(
+                &[],
+                &["/bin/sh", "-c", "echo ERR_PNPM_OUTDATED_LOCKFILE; seq 60; exit 1"],
+            )],
+        };
+        let refused = step.apply().unwrap_err();
+        let told = refused.to_string();
+        assert!(matches!(refused, crate::Error::LockfileMismatch { .. }), "{told}");
+        for word in
+            ["ERR_PNPM_OUTDATED_LOCKFILE", "pnpm-lock.yaml", "package.json", "in the project"]
+        {
+            assert!(told.contains(word), "{word} is not in the refusal: {told}");
+        }
     }
 
     /// The ordinary project moves no install, and the step does nothing at all.
