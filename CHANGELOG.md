@@ -60,6 +60,8 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   `yarn install --immutable`, `bun install --frozen-lockfile`, `uv sync --frozen`,
   `cargo fetch --locked`. A project with no lockfile keeps the plain install, and the
   progress line says so.
+- `nodal init` prints one line when `package-lock.json` records a name or version that
+  `package.json` no longer states. The line names both.
 
 ### Reclaim
 

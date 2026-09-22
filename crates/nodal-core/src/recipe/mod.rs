@@ -89,6 +89,9 @@ pub struct InitPlan {
     /// a set when it writes the file, and they are here so that it does not have to
     /// read the recipe a second time to know what it is approving.
     pub hooks: crate::model::Hooks,
+    /// Where the lockfile of the inferred manager disagrees with its manifest, so that
+    /// `nodal init` can say so before the first `nodal new` installs from it.
+    pub disagreement: Option<infer::package_manager::Disagreement>,
 }
 
 /// Work out what `nodal init` should write for the project at `root`. Reads only.
@@ -99,12 +102,15 @@ pub struct InitPlan {
 pub fn plan_init(root: impl AsRef<Path>) -> Result<InitPlan> {
     let root = root.as_ref();
     let effective = load(root)?;
+    let disagreement =
+        infer::package_manager::disagreement(&Project::open(root), &effective.recipe);
     Ok(InitPlan {
         path: root.join(FILE_NAME),
         contents: render::render(&effective.recipe, &effective.gaps),
         gaps: effective.gaps,
         existing: effective.file,
         hooks: effective.recipe.hooks,
+        disagreement,
     })
 }
 

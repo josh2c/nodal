@@ -21,6 +21,9 @@
 //!   manager that exits zero after rewriting `package.json`, which is the case no exit
 //!   code catches.
 //!
+//! And `nodal init` says, before the first `nodal new`, when npm's lockfile records a
+//! name its manifest no longer has, so the person hears it where they can fix it.
+//!
 //! The last test runs the `npm` this host has on the founder's shape. A host with none
 //! says so on standard output; CI's runners carry `git` and `sh` and nothing else.
 
@@ -128,6 +131,25 @@ fn a_lockfile_that_disagrees_refuses_the_create_with_both_files_named() {
         assert!(told.contains(expected), "the refusal does not say {expected:?}: {told}");
     }
     no_unit(&machine, &told);
+}
+
+/// `nodal init` names both names when npm's lockfile records one its manifest no longer
+/// states, and says nothing of the kind when the two agree.
+#[test]
+fn init_says_when_the_lockfile_records_another_name() {
+    let disagreeing = Machine::npm_project("demo-before-the-rename");
+    let warned = disagreeing.nodal(&["init"]);
+    let told = stderr(&warned);
+    assert!(warned.status.success(), "init failed over a name: {told}");
+    for expected in ["package-lock.json", "demo-before-the-rename", Machine::npm_project_name()] {
+        assert!(told.contains(expected), "the line does not name {expected:?}: {told}");
+    }
+
+    let agreeing = Machine::npm_project(Machine::npm_project_name());
+    let quiet = agreeing.nodal(&["init"]);
+    let told = stderr(&quiet);
+    assert!(quiet.status.success(), "{told}");
+    assert!(!told.contains("package-lock.json"), "init warned over two files that agree: {told}");
 }
 
 /// An npm project is installed with `npm ci`, whatever the lockfile records as its name.

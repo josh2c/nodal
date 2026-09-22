@@ -45,6 +45,66 @@ const INSTALLS_FROM: [PackageManager; 8] = [
 /// The `package.json` field that names the manager the repository is driven by.
 const PIN: &str = "packageManager";
 
+/// The fields a `package-lock.json` records about the manifest it was written from.
+const RECORDED: [&str; 2] = ["name", "version"];
+
+/// A lockfile's record of its manifest, where the manifest now says something else.
+///
+/// Only npm's lockfile records the manifest's own name and version; the others record
+/// dependencies alone. `npm ci` installs from such a lockfile as it is, and `npm
+/// install` rewrites it, which is how every home of the founder's project was born
+/// dirty. So `nodal init` says it, before the first `nodal new`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Disagreement {
+    /// The lockfile.
+    pub lockfile: &'static str,
+    /// The manifest it was written from.
+    pub manifest: &'static str,
+    /// The field the two disagree on.
+    pub field: &'static str,
+    /// What the lockfile records.
+    pub recorded: String,
+    /// What the manifest says now.
+    pub stated: String,
+}
+
+impl std::fmt::Display for Disagreement {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            out,
+            "{lockfile} records {field} {recorded:?} and {manifest} says {stated:?}; run `npm install` in the project and commit the lockfile, or units are installed from the lockfile as it is",
+            lockfile = self.lockfile,
+            field = self.field,
+            recorded = self.recorded,
+            manifest = self.manifest,
+            stated = self.stated,
+        )
+    }
+}
+
+/// Where the project's npm lockfile records a name or version its manifest no longer
+/// has. `None` for a project npm does not install, and for one whose two files agree.
+#[must_use]
+pub fn disagreement(project: &Project, recipe: &Recipe) -> Option<Disagreement> {
+    let manager = PackageManager::Npm;
+    if !recipe.package_manager.contains(&manager) {
+        return None;
+    }
+    let lockfile = manager.lockfiles()[0];
+    let recorded = project.read_json(lockfile)?;
+    let stated = project.package_json();
+    RECORDED.into_iter().find_map(|field| {
+        let (recorded, stated) = (recorded.get(field)?.as_str()?, stated.get(field)?.as_str()?);
+        (recorded != stated).then(|| Disagreement {
+            lockfile,
+            manifest: manager.manifest(),
+            field,
+            recorded: recorded.to_owned(),
+            stated: stated.to_owned(),
+        })
+    })
+}
+
 /// Propose `package_manager` and `package_manager_pin`.
 ///
 /// One manager per ecosystem. Two such files of one ecosystem are a repository mid-way
