@@ -98,6 +98,9 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
 - An install that changes a file the project tracks is refused. The change is put back
   in the base or the home it ran in, never in the checkout, and the refusal names the
   file and the tool. This holds for every package manager.
+- A frozen install that fails because the lockfile disagrees with its manifest is refused
+  with the tool's own sentence and one line of Nodal's: which file disagrees with which,
+  and that the fix goes in the project's checkout. The create leaves no unit.
 
 ## 0.1.0-rc.2 — 2026-09-17
 

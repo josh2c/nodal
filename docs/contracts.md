@@ -35,7 +35,8 @@ is put back in that copy with `git checkout --`, never in the checkout, and the 
 the file and the tool named. Every install runs in the form that installs from the lockfile and
 refuses to change it (`npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable`,
 `bun install --frozen-lockfile`, `uv sync --frozen`, `cargo fetch --locked`); a project with no
-lockfile keeps the plain install.
+lockfile keeps the plain install. A frozen install that fails because the lockfile disagrees with
+its manifest is a refusal that names both files, and the fix goes in the project's checkout.
 
 A project that commits its own `.envrc` — direnv and Nix users do — keeps it: Nodal writes
 `.nodal/env`, which the committed `.envrc` reads, and states in one line that it left the tracked file

@@ -812,12 +812,18 @@ fn failed(dir: &Path, program: &str, args: &[String], output: &std::process::Out
 /// `dir`, which is a base or a home and never the person's checkout. It does not depend
 /// on which tool ran, so it holds for a manager added after this was written.
 ///
+/// **A lockfile that disagrees with its manifest is a refusal with the reason.** A
+/// frozen install that exits non-zero with the tool's own sentence for that case
+/// ([`PackageManager::lockfile_disagrees`]) is reported as one
+/// ([`Error::LockfileMismatch`]), naming the lockfile and the file it disagrees with.
+///
 /// A create reaches this too, for the install a base does not run
 /// ([`crate::lifecycle::ops::new`]), so both copies are held to the same two promises
 /// by the same code.
 ///
 /// # Errors
-/// [`Error::InstallWroteTracked`], [`Error::Tool`] for any other non-zero exit, [`Error::ToolSpawn`] when the program could not be
+/// [`Error::InstallWroteTracked`], [`Error::LockfileMismatch`], [`Error::Tool`] for
+/// any other non-zero exit, [`Error::ToolSpawn`] when the program could not be
 /// started, and [`Error::Git`] when the tree could not be read or put back.
 pub(crate) fn install(
     dir: &Path,
@@ -837,7 +843,26 @@ pub(crate) fn install(
         }
         return Err(Error::InstallWroteTracked { tool, paths: restored, dir: dir.to_path_buf() });
     }
+    // Read off the whole of what the tool wrote, before it is tailed: npm follows its
+    // sentence with sixty lines of usage, and a reading of the tail would never see it.
+    if let Some(sentence) = disagreement(manager, &output) {
+        return Err(Error::LockfileMismatch {
+            tool,
+            lockfile: lockfile_in(dir, manager),
+            manifest: manager.manifest().to_owned(),
+            sentence,
+        });
+    }
     Err(failed(dir, program, rest, &output))
+}
+
+/// The lockfile of `manager` that `dir` holds, by name, for a refusal to name.
+///
+/// A frozen install ran because one was there, so the first name that is not there
+/// answers only for a tool that removed its own lockfile on the way out.
+fn lockfile_in(dir: &Path, manager: PackageManager) -> String {
+    let names = manager.lockfiles();
+    names.iter().find(|name| dir.join(name).exists()).unwrap_or(&names[0]).to_string()
 }
 
 /// Put back every tracked path of `dir` a tool changed, and name them.
@@ -856,6 +881,18 @@ fn restore_tracked(dir: &Path) -> Result<Vec<PathBuf>> {
         git.restore(&changed)?;
     }
     Ok(changed)
+}
+
+/// The line on which `manager` said its lockfile disagrees with its manifest, if it did.
+fn disagreement(manager: PackageManager, output: &std::process::Output) -> Option<String> {
+    let phrases = manager.lockfile_disagrees();
+    let (stdout, stderr) =
+        (String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    [&stdout, &stderr]
+        .into_iter()
+        .flat_map(|stream| stream.lines())
+        .find(|line| phrases.iter().any(|phrase| line.contains(phrase)))
+        .map(|line| line.trim().to_owned())
 }
 
 /// The one spawn seam for every tool that is not `git`.
@@ -931,8 +968,8 @@ fn remove(path: &Path) -> Result<()> {
 /// A base is built for a workspace fingerprint that includes the lockfile, so the
 /// lockfile is exactly what the install is asked to realise, and an install that would
 /// change it is asked to realise something else. A branch whose lockfile disagrees with
-/// its manifest is refused with the tool's reason rather than built from a lockfile the
-/// tool rewrote on the way.
+/// its manifest is refused with the tool's reason ([`Error::LockfileMismatch`]) rather
+/// than built from a lockfile the tool rewrote on the way.
 #[must_use]
 pub fn install_argv(manager: PackageManager, lockfile: Option<&Path>) -> Vec<String> {
     // One table, two columns: the form that installs from the lockfile and refuses to

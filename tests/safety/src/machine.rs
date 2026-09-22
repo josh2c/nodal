@@ -97,7 +97,7 @@ const STUB_FAILS_ONCE: &str = concat!(
     "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
     "if [ ! -f '@WITNESS@' ]; then\n",
     "  : > '@WITNESS@'\n",
-    "  echo 'ERR_PNPM_OUTDATED_LOCKFILE  the lockfile does not match package.json'\n",
+    "  echo 'ERR_PNPM_FETCH_404  GET https://registry.invalid/left-pad: Not Found - 404'\n",
     "  echo 'a note that is not the reason' >&2\n",
     "  exit 1\n",
     "fi\n",
@@ -165,6 +165,21 @@ const STUB_WRITES_TRACKED: &str = concat!(
     "mkdir -p node_modules || exit 1\n",
     "echo 'the safety suite installs nothing' >> node_modules/installed.txt\n",
     "printf '{ \"rewritten\": true }\\n' > package.json\n",
+);
+
+/// A stub that refuses to install, in the words pnpm uses when the lockfile disagrees
+/// with the manifest. The words were read off pnpm 12.
+///
+/// Sixty lines of usage follow the sentence, as they do after npm's. An error carries
+/// the tail of what a tool wrote, and a reading of that tail would never see the
+/// sentence; the reading has to be of the whole.
+const STUB_REFUSES_LOCKFILE: &str = concat!(
+    "#!/bin/sh\n",
+    "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
+    "echo 'Error: ERR_PNPM_OUTDATED_LOCKFILE'\n",
+    "echo 'Cannot install with \"frozen-lockfile\" because pnpm-lock.yaml is not up to date with package.json.'\n",
+    "i=0; while [ $i -lt 60 ]; do echo \"usage line $i\"; i=$((i+1)); done\n",
+    "exit 1\n",
 );
 
 /// A stub `npm`, for the machine whose project npm installs.
@@ -390,6 +405,16 @@ impl Machine {
     #[must_use]
     pub fn rewriting_a_tracked_file() -> Self {
         Self::built(&Setup { stub: Some(STUB_WRITES_TRACKED), ..Setup::default() })
+    }
+
+    /// A machine whose package manager refuses the lockfile in pnpm's own words.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    pub fn refusing_the_lockfile() -> Self {
+        Self::built(&Setup { stub: Some(STUB_REFUSES_LOCKFILE), ..Setup::default() })
     }
 
     /// A machine whose project is an npm project with no recipe: a `package.json` that

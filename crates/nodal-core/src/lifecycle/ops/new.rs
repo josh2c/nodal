@@ -1462,6 +1462,29 @@ mod tests {
         assert_eq!(content, "{\"name\":\"demo\"}\n", "the tracked file was not put back");
     }
 
+    /// A frozen install that fails with the tool's lockfile sentence is a refusal that
+    /// names the lockfile and the manifest, and says where the fix goes.
+    #[test]
+    fn a_lockfile_that_disagrees_is_refused_with_both_files_named() {
+        let home = home();
+        std::fs::write(home.path().join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n").unwrap();
+        let step = InstallDependencies {
+            home: home.path().to_path_buf(),
+            installs: vec![moved(
+                &[],
+                &["/bin/sh", "-c", "echo ERR_PNPM_OUTDATED_LOCKFILE; seq 60; exit 1"],
+            )],
+        };
+        let refused = step.apply().unwrap_err();
+        let told = refused.to_string();
+        assert!(matches!(refused, crate::Error::LockfileMismatch { .. }), "{told}");
+        for word in
+            ["ERR_PNPM_OUTDATED_LOCKFILE", "pnpm-lock.yaml", "package.json", "in the project"]
+        {
+            assert!(told.contains(word), "{word} is not in the refusal: {told}");
+        }
+    }
+
     /// The ordinary project moves no install, and the step does nothing at all.
     #[test]
     fn a_project_that_excludes_no_install_output_runs_nothing_in_the_home() {

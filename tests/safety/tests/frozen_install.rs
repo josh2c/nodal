@@ -12,6 +12,9 @@
 //! * **Installs are frozen.** A project that carries a lockfile is installed in the form
 //!   that installs from it and refuses to change it. The base's provenance records the
 //!   form that ran, and the home reads clean.
+//! * **A lockfile that disagrees is a refusal with the reason.** A frozen install that
+//!   fails in the tool's own words for that case is reported with those words, the two
+//!   files named, and where the fix goes. The create leaves no unit.
 //! * **The guard does not depend on the tool.** Whatever an install does to a tracked
 //!   file, in the base or in the home, the file is put back in that copy, the step is
 //!   refused, and the refusal names the file and the tool. The stub here is a package
@@ -31,6 +34,9 @@ use nodal_safety::{Machine, git, stderr, stdout};
 
 /// The unit each machine here makes, or is refused.
 const UNIT: &str = "frozen";
+
+/// What the stub package manager says when it refuses the lockfile, in pnpm's words.
+const REASON: &str = "ERR_PNPM_OUTDATED_LOCKFILE";
 
 /// `git status` over tracked paths in `tree`, which is empty for a clean copy.
 fn dirty(tree: &Path) -> String {
@@ -107,6 +113,21 @@ fn an_install_that_rewrites_a_tracked_file_is_refused_and_the_file_put_back() {
         manifest,
         "the checkout's manifest changed"
     );
+}
+
+/// **A lockfile that disagrees is a refusal with the reason.** The tool's sentence, the
+/// two files, and where the fix goes; and no unit.
+#[test]
+fn a_lockfile_that_disagrees_refuses_the_create_with_both_files_named() {
+    let machine = Machine::refusing_the_lockfile();
+    let refused = machine.nodal(&["new", "--name", UNIT]);
+
+    let told = stderr(&refused);
+    assert!(!refused.status.success(), "a lockfile the tool refused was installed anyway");
+    for expected in [REASON, "pnpm-lock.yaml", "package.json", "in the project"] {
+        assert!(told.contains(expected), "the refusal does not say {expected:?}: {told}");
+    }
+    no_unit(&machine, &told);
 }
 
 /// An npm project is installed with `npm ci`, whatever the lockfile records as its name.

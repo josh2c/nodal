@@ -257,6 +257,28 @@ impl PackageManager {
         }
     }
 
+    /// What this manager writes when a frozen install finds the lockfile disagreeing
+    /// with the manifest. Empty for a manager that has no frozen form.
+    ///
+    /// The tool's own words, so that a refusal can be told from every other failure an
+    /// install has: a registry that is down or a package that will not build exits
+    /// non-zero too, and neither is fixed by editing the lockfile. Each phrase was read
+    /// off the tool named. `uv sync --frozen` installs from the lockfile without
+    /// comparing it, so `uv` never says this, and `poetry install` has no frozen form.
+    #[must_use]
+    pub const fn lockfile_disagrees(self) -> &'static [&'static str] {
+        match self {
+            Self::Pnpm => &["ERR_PNPM_OUTDATED_LOCKFILE"],
+            Self::Yarn => &["lockfile would have been modified", "lockfile needs to be updated"],
+            Self::Npm => {
+                &["can only install packages when your package.json and package-lock.json"]
+            }
+            Self::Bun => &["lockfile had changes, but lockfile is frozen"],
+            Self::Cargo => &["needs to be updated but --locked was passed"],
+            Self::Uv | Self::Poetry | Self::Pip => &[],
+        }
+    }
+
     /// The binary this package manager is invoked as.
     #[must_use]
     pub fn program(self) -> &'static str {

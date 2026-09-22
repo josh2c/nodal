@@ -1044,6 +1044,25 @@ pub enum Error {
         found: String,
     },
 
+    /// A frozen install refused because the lockfile disagrees with its manifest.
+    ///
+    /// The tool's own sentence, then Nodal's: which file disagrees with which, and that
+    /// the fix is in the project. A unit is a clone of the project, so a lockfile fixed
+    /// in a unit is fixed in one copy and every later unit is refused again.
+    #[error(
+        "{tool} refused: {sentence}\n{lockfile} disagrees with {manifest}; fix it in the project's checkout and commit, not in a unit"
+    )]
+    LockfileMismatch {
+        /// The package manager that refused.
+        tool: String,
+        /// The lockfile it installs from.
+        lockfile: String,
+        /// The file the lockfile has to agree with.
+        manifest: String,
+        /// The line on which the tool said so.
+        sentence: String,
+    },
+
     /// An install changed a file the project tracks.
     ///
     /// Nodal never writes a tracked file, and an install runs on Nodal's behalf. The
