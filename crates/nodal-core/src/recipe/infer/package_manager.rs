@@ -48,44 +48,17 @@ const PIN: &str = "packageManager";
 /// The fields a `package-lock.json` records about the manifest it was written from.
 const RECORDED: [&str; 2] = ["name", "version"];
 
-/// A lockfile's record of its manifest, where the manifest now says something else.
+/// One line saying where the project's npm lockfile records a name or version its
+/// manifest no longer has, and what to do. `None` for a project npm does not install,
+/// and for one whose two files agree.
 ///
 /// Only npm's lockfile records the manifest's own name and version; the others record
 /// dependencies alone. `npm ci` installs from such a lockfile as it is, and `npm
-/// install` rewrites it, which is how every home of the founder's project was born
-/// dirty. So `nodal init` says it, before the first `nodal new`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Disagreement {
-    /// The lockfile.
-    pub lockfile: &'static str,
-    /// The manifest it was written from.
-    pub manifest: &'static str,
-    /// The field the two disagree on.
-    pub field: &'static str,
-    /// What the lockfile records.
-    pub recorded: String,
-    /// What the manifest says now.
-    pub stated: String,
-}
-
-impl std::fmt::Display for Disagreement {
-    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            out,
-            "{lockfile} records {field} {recorded:?} and {manifest} says {stated:?}; run `npm install` in the project and commit the lockfile, or units are installed from the lockfile as it is",
-            lockfile = self.lockfile,
-            field = self.field,
-            recorded = self.recorded,
-            manifest = self.manifest,
-            stated = self.stated,
-        )
-    }
-}
-
-/// Where the project's npm lockfile records a name or version its manifest no longer
-/// has. `None` for a project npm does not install, and for one whose two files agree.
+/// install` rewrites it, which is how every home of a project whose lockfile name
+/// disagreed with its manifest was born dirty. So `nodal init` says it, before the
+/// first `nodal new`. A sentence and not a struct, because the one reader prints it.
 #[must_use]
-pub fn disagreement(project: &Project, recipe: &Recipe) -> Option<Disagreement> {
+pub fn disagreement(project: &Project, recipe: &Recipe) -> Option<String> {
     let manager = PackageManager::Npm;
     if !recipe.package_manager.contains(&manager) {
         return None;
@@ -95,12 +68,11 @@ pub fn disagreement(project: &Project, recipe: &Recipe) -> Option<Disagreement> 
     let stated = project.package_json();
     RECORDED.into_iter().find_map(|field| {
         let (recorded, stated) = (recorded.get(field)?.as_str()?, stated.get(field)?.as_str()?);
-        (recorded != stated).then(|| Disagreement {
-            lockfile,
-            manifest: manager.manifest(),
-            field,
-            recorded: recorded.to_owned(),
-            stated: stated.to_owned(),
+        (recorded != stated).then(|| {
+            format!(
+                "{lockfile} records {field} {recorded:?} and {manifest} says {stated:?}; run `npm install` in the project and commit the lockfile, or units are installed from the lockfile as it is",
+                manifest = manager.manifest(),
+            )
         })
     })
 }

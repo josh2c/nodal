@@ -156,8 +156,7 @@ const STUB_VERSIONED: &str = concat!(
 
 /// A stub that installs and then rewrites a file the project tracks.
 ///
-/// What `npm install` did on the founder's project when the lockfile's name disagreed
-/// with `package.json`. Every home cloned from that base was dirty at birth over a
+/// What `npm install` did on a project whose lockfile name disagreed with its manifest. Every home cloned from that base was dirty at birth over a
 /// file nobody in it had touched.
 const STUB_WRITES_TRACKED: &str = concat!(
     "#!/bin/sh\n",
@@ -194,10 +193,10 @@ const STUB_NPM: &str = concat!(
 );
 
 /// Where the stub `npm` records its arguments, relative to the tree it ran in.
-const NPM_ARGV: &str = "node_modules/argv.txt";
+pub const NPM_ARGV: &str = "node_modules/argv.txt";
 
 /// The name the npm project's manifest states. Its lockfile may record another.
-const NPM_PROJECT_NAME: &str = "demo";
+pub const NPM_PROJECT_NAME: &str = "demo";
 
 /// The programs a sealed machine keeps, beyond the stub package manager.
 ///
@@ -418,11 +417,11 @@ impl Machine {
     }
 
     /// A machine whose project is an npm project with no recipe: a `package.json` that
-    /// says [`Machine::npm_project_name`] and a `package-lock.json` that records
-    /// `lock_name`. A stub `npm` stands in for the real one.
+    /// says [`NPM_PROJECT_NAME`] and a `package-lock.json` that records `lock_name`. A
+    /// stub `npm` stands in for the real one.
     ///
-    /// The founder's shape: the two names disagreed, and `npm install` rewrote the
-    /// lockfile in the base.
+    /// The shape that was measured: a lockfile whose name disagrees with its manifest,
+    /// which `npm install` rewrote in the base.
     ///
     /// # Panics
     ///
@@ -442,18 +441,6 @@ impl Machine {
     pub fn npm_project_on_this_host(lock_name: &str) -> Option<Self> {
         which("npm")?;
         Some(Self::built(&Setup { node: Some(lock_name), host_npm: true, ..Setup::default() }))
-    }
-
-    /// What the npm project's manifest names itself.
-    #[must_use]
-    pub const fn npm_project_name() -> &'static str {
-        NPM_PROJECT_NAME
-    }
-
-    /// Where the stub `npm` recorded its arguments, relative to the tree it ran in.
-    #[must_use]
-    pub const fn npm_argv() -> &'static str {
-        NPM_ARGV
     }
 
     /// A machine whose checkout has a bare `origin` beside it, with `main` pushed to it.

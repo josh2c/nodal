@@ -57,9 +57,9 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   is outside the tree.
 - A base build and a home install run the form of each package manager that installs
   from the lockfile and refuses to change it: `npm ci`, `pnpm install --frozen-lockfile`,
-  `yarn install --immutable`, `bun install --frozen-lockfile`, `uv sync --frozen`,
-  `cargo fetch --locked`. A project with no lockfile keeps the plain install, and the
-  progress line says so.
+  `yarn install --immutable` (`--frozen-lockfile` when the project pins Yarn 1),
+  `bun install --frozen-lockfile`, `uv sync --frozen`, `cargo fetch --locked`. A project
+  with no lockfile keeps the plain install, and the progress line says so.
 - `nodal init` prints one line when `package-lock.json` records a name or version that
   `package.json` no longer states. The line names both.
 

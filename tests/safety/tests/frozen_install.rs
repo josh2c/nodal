@@ -1,11 +1,11 @@
 //! An install never writes a file the project tracks, and a unit is never born dirty.
 //!
-//! `nodal new` on a fresh clone of the founder's own Node project ran `npm install` in the
+//! `nodal new` on a fresh clone of a Node project with no recipe ran `npm install` in the
 //! base. The lockfile's `name` disagreed with `package.json`, so npm rewrote
 //! `package-lock.json`, and every home cloned from that base held a dirty tracked file
 //! nobody in it had touched: `nodal ls` read `unique loss`, `nodal reclaim --check`
 //! refused over it, and `--force` committed npm's rewrite into the pre-reclaim record.
-//! It happened on two release candidates.
+//! It happened on a real project on two release candidates.
 //!
 //! Three things hold now, and each one is a test here.
 //!
@@ -24,7 +24,7 @@
 //! And `nodal init` says, before the first `nodal new`, when npm's lockfile records a
 //! name its manifest no longer has, so the person hears it where they can fix it.
 //!
-//! The last test runs the `npm` this host has on the founder's shape. A host with none
+//! The last test runs the `npm` this host has on that shape. A host with none
 //! says so on standard output; CI's runners carry `git` and `sh` and nothing else.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
@@ -33,7 +33,7 @@ use std::path::Path;
 
 use nodal_core::store::bases;
 use nodal_safety::InState as _;
-use nodal_safety::{Machine, git, stderr, stdout};
+use nodal_safety::{Machine, NPM_ARGV, NPM_PROJECT_NAME, git, stderr, stdout};
 
 /// The unit each machine here makes, or is refused.
 const UNIT: &str = "frozen";
@@ -141,11 +141,11 @@ fn init_says_when_the_lockfile_records_another_name() {
     let warned = disagreeing.nodal(&["init"]);
     let told = stderr(&warned);
     assert!(warned.status.success(), "init failed over a name: {told}");
-    for expected in ["package-lock.json", "demo-before-the-rename", Machine::npm_project_name()] {
+    for expected in ["package-lock.json", "demo-before-the-rename", NPM_PROJECT_NAME] {
         assert!(told.contains(expected), "the line does not name {expected:?}: {told}");
     }
 
-    let agreeing = Machine::npm_project(Machine::npm_project_name());
+    let agreeing = Machine::npm_project(NPM_PROJECT_NAME);
     let quiet = agreeing.nodal(&["init"]);
     let told = stderr(&quiet);
     assert!(quiet.status.success(), "{told}");
@@ -158,16 +158,16 @@ fn an_npm_project_is_installed_with_npm_ci() {
     let machine = Machine::npm_project("demo-before-the-rename");
     let home = machine.unit(UNIT);
 
-    let ran = std::fs::read_to_string(home.join(Machine::npm_argv())).unwrap();
+    let ran = std::fs::read_to_string(home.join(NPM_ARGV)).unwrap();
     assert_eq!(ran.trim(), "ci", "npm was not run in its frozen form");
     assert_eq!(dirty(&home), "", "the home is dirty the moment it was made");
 }
 
-/// **The founder's shape, with the real tool.** A lockfile whose name disagrees with
-/// `package.json`, installed by the `npm` this host has: the home reads clean and the
-/// lockfile is byte for byte the project's.
+/// **The measured shape, with the real tool.** A lockfile whose name disagrees with its
+/// manifest, installed by the `npm` this host has: the home reads clean and the lockfile
+/// is byte for byte the project's.
 #[test]
-fn the_founders_shape_leaves_the_lockfile_as_the_project_committed_it() {
+fn a_lockfile_whose_name_disagrees_with_its_manifest_is_left_as_committed() {
     let Some(machine) = Machine::npm_project_on_this_host("demo-before-the-rename") else {
         println!("not checked: this host has no npm");
         return;

@@ -391,17 +391,16 @@ fn tools(installs: &[Install], destination: &Path, warm: &[String]) -> Vec<ToolS
                 note: phrase("making the environment", &install.prepare),
             });
         }
-        let what = if install.lockfile.is_some() {
-            "installing dependencies"
-        } else {
-            "installing dependencies with no lockfile to hold them to"
+        let what = match &install.lockfile {
+            Some(lockfile) => format!("installing dependencies from {}", lockfile.display()),
+            None => String::from("installing dependencies with no lockfile to hold them to"),
         };
         steps.push(ToolStep {
             name: format!("install.{program}"),
             manager: Some(install.manager),
             argv: runnable(&install.argv, destination),
             env: install.env.clone(),
-            note: phrase(what, &install.argv),
+            note: phrase(&what, &install.argv),
         });
     }
     steps.push(ToolStep {
@@ -786,16 +785,24 @@ pub(crate) fn run(dir: &Path, argv: &[String], env: &[(String, String)]) -> Resu
     if output.status.success() {
         return Ok(());
     }
-    Err(failed(dir, program, rest, &output))
+    Err(failed(dir, program, rest, &output, Vec::new()))
 }
 
-/// A tool that exited non-zero, as the error that carries the tail of both its streams.
-fn failed(dir: &Path, program: &str, args: &[String], output: &std::process::Output) -> Error {
+/// A tool that exited non-zero, as the error that carries the tail of both its streams
+/// and the tracked paths that were put back after it.
+fn failed(
+    dir: &Path,
+    program: &str,
+    args: &[String],
+    output: &std::process::Output,
+    put_back: Vec<PathBuf>,
+) -> Error {
     Error::Tool {
         program: program.to_owned(),
         args: args.to_vec(),
         dir: dir.to_path_buf(),
         code: output.status.code(),
+        put_back,
         output: Box::new(crate::error::Streams {
             stdout: tail(&output.stdout),
             stderr: tail(&output.stderr),
@@ -835,34 +842,29 @@ pub(crate) fn install(
         return Ok(());
     };
     let output = capture(Some(dir), program, rest, env)?;
-    let restored = restore_tracked(dir)?;
+    let put_back = restore_tracked(dir)?;
     let tool = manager.program().to_owned();
     if output.status.success() {
-        if restored.is_empty() {
+        if put_back.is_empty() {
             return Ok(());
         }
-        return Err(Error::InstallWroteTracked { tool, paths: restored, dir: dir.to_path_buf() });
+        return Err(Error::InstallWroteTracked { tool, paths: put_back, dir: dir.to_path_buf() });
     }
     // Read off the whole of what the tool wrote, before it is tailed: npm follows its
     // sentence with sixty lines of usage, and a reading of the tail would never see it.
     if let Some(sentence) = disagreement(manager, &output) {
+        // The first name answers only for a tool that removed its own lockfile on the
+        // way out: a frozen install ran because one was there.
+        let lockfile = super::pin::lockfile_of(manager, dir)
+            .map_or_else(|| manager.lockfiles()[0].to_owned(), |name| name.display().to_string());
         return Err(Error::LockfileMismatch {
             tool,
-            lockfile: lockfile_in(dir, manager),
+            lockfile,
             manifest: manager.manifest().to_owned(),
             sentence,
         });
     }
-    Err(failed(dir, program, rest, &output))
-}
-
-/// The lockfile of `manager` that `dir` holds, by name, for a refusal to name.
-///
-/// A frozen install ran because one was there, so the first name that is not there
-/// answers only for a tool that removed its own lockfile on the way out.
-fn lockfile_in(dir: &Path, manager: PackageManager) -> String {
-    let names = manager.lockfiles();
-    names.iter().find(|name| dir.join(name).exists()).unwrap_or(&names[0]).to_string()
+    Err(failed(dir, program, rest, &output, put_back))
 }
 
 /// Put back every tracked path of `dir` a tool changed, and name them.
@@ -878,7 +880,7 @@ fn restore_tracked(dir: &Path) -> Result<Vec<PathBuf>> {
     let git = Git::open(dir)?;
     let changed = git.changed_tracked()?;
     if !changed.is_empty() {
-        git.restore(&changed)?;
+        git.reset_to_head()?;
     }
     Ok(changed)
 }
@@ -971,13 +973,20 @@ fn remove(path: &Path) -> Result<()> {
 /// its manifest is refused with the tool's reason ([`Error::LockfileMismatch`]) rather
 /// than built from a lockfile the tool rewrote on the way.
 #[must_use]
-pub fn install_argv(manager: PackageManager, lockfile: Option<&Path>) -> Vec<String> {
+pub fn install_argv(
+    manager: PackageManager,
+    lockfile: Option<&Path>,
+    pinned_major: Option<u32>,
+) -> Vec<String> {
     // One table, two columns: the form that installs from the lockfile and refuses to
     // change it, and the plain form for a project that has none. Every home is a clone
     // of what the install left, so an install that rewrote the lockfile made every home
     // dirty at birth over a file nobody in it touched; `npm install` does that when the
-    // lockfile's name disagrees with `package.json`, and it did on the founder's own
-    // project. The frozen form cannot.
+    // lockfile's name disagrees with `package.json`. The frozen form cannot.
+    //
+    // Yarn's row splits by major series: 1.x reads `--frozen-lockfile` and ignores
+    // `--immutable`, and saves the lockfile; Berry (2 and later) reads `--immutable`.
+    // A project that pins no version gets Berry's flag.
     //
     // `pip` is the row that is not a program on the path with a verb after it: it is
     // named by a path into the environment the build made for it
@@ -999,6 +1008,9 @@ pub fn install_argv(manager: PackageManager, lockfile: Option<&Path>) -> Vec<Str
         (PackageManager::Uv, None) => &["sync"],
         (PackageManager::Npm, Some(_)) => &["ci"],
         (PackageManager::Pnpm | PackageManager::Bun, Some(_)) => &["install", "--frozen-lockfile"],
+        (PackageManager::Yarn, Some(_)) if pinned_major == Some(1) => {
+            &["install", "--frozen-lockfile"]
+        }
         (PackageManager::Yarn, Some(_)) => &["install", "--immutable"],
         (
             PackageManager::Npm
@@ -1062,11 +1074,11 @@ mod tests {
 
     #[test]
     fn each_package_manager_installs_in_its_own_words() {
-        assert_eq!(install_argv(PackageManager::Pnpm, None), ["pnpm", "install"]);
-        assert_eq!(install_argv(PackageManager::Cargo, None), ["cargo", "fetch"]);
-        assert_eq!(install_argv(PackageManager::Uv, None), ["uv", "sync"]);
+        assert_eq!(install_argv(PackageManager::Pnpm, None, None), ["pnpm", "install"]);
+        assert_eq!(install_argv(PackageManager::Cargo, None, None), ["cargo", "fetch"]);
+        assert_eq!(install_argv(PackageManager::Uv, None, None), ["uv", "sync"]);
         assert_eq!(
-            install_argv(PackageManager::Pip, None),
+            install_argv(PackageManager::Pip, None, None),
             [".venv/bin/pip", "install", "-r", "requirements.txt"],
             "pip is run out of the environment the build made, and handed its file"
         );
@@ -1079,11 +1091,20 @@ mod tests {
     fn a_project_with_a_lockfile_installs_frozen_to_it() {
         let frozen = |manager: PackageManager| {
             let name = manager.lockfiles()[0];
-            install_argv(manager, Some(Path::new(name)))
+            install_argv(manager, Some(Path::new(name)), None)
         };
         assert_eq!(frozen(PackageManager::Npm), ["npm", "ci"]);
         assert_eq!(frozen(PackageManager::Pnpm), ["pnpm", "install", "--frozen-lockfile"]);
-        assert_eq!(frozen(PackageManager::Yarn), ["yarn", "install", "--immutable"]);
+        assert_eq!(frozen(PackageManager::Yarn), ["yarn", "install", "--immutable"], "Berry");
+        assert_eq!(
+            install_argv(PackageManager::Yarn, Some(Path::new("yarn.lock")), Some(1)),
+            ["yarn", "install", "--frozen-lockfile"],
+            "Yarn 1.x ignores --immutable and saves the lockfile"
+        );
+        assert_eq!(
+            install_argv(PackageManager::Yarn, Some(Path::new("yarn.lock")), Some(4)),
+            ["yarn", "install", "--immutable"]
+        );
         assert_eq!(frozen(PackageManager::Bun), ["bun", "install", "--frozen-lockfile"]);
         assert_eq!(frozen(PackageManager::Uv), ["uv", "sync", "--frozen"]);
         assert_eq!(frozen(PackageManager::Cargo), ["cargo", "fetch", "--locked"]);
@@ -1115,7 +1136,7 @@ mod tests {
             note(&plain),
             "installing dependencies with no lockfile to hold them to: pnpm install"
         );
-        assert_eq!(note(&frozen), "installing dependencies: pnpm install");
+        assert_eq!(note(&frozen), "installing dependencies from pnpm-lock.yaml: pnpm install");
     }
 
     /// A program named by a path is resolved against the base, because Rust does not
@@ -1124,11 +1145,11 @@ mod tests {
     #[test]
     fn a_program_inside_the_base_is_run_by_its_whole_path() {
         let base = Path::new("/state/b/ABCD1234");
-        let inside = runnable(&install_argv(PackageManager::Pip, None), base);
+        let inside = runnable(&install_argv(PackageManager::Pip, None, None), base);
         assert_eq!(inside[0], "/state/b/ABCD1234/.venv/bin/pip");
         assert_eq!(&inside[1..], ["install", "-r", "requirements.txt"]);
 
-        let named = runnable(&install_argv(PackageManager::Pnpm, None), base);
+        let named = runnable(&install_argv(PackageManager::Pnpm, None, None), base);
         assert_eq!(named, ["pnpm", "install"], "a name is for the path to find");
         assert!(runnable(&[], base).is_empty(), "an empty list has no program to resolve");
     }

@@ -58,7 +58,11 @@ pub struct Effective {
 /// [`Error::Io`] if `nodal.toml` exists but cannot be read, and [`Error::Recipe`] if it
 /// is not a recipe.
 pub fn load(root: impl AsRef<Path>) -> Result<Effective> {
-    let root = root.as_ref();
+    loaded(root.as_ref()).map(|(effective, _)| effective)
+}
+
+/// [`load`], with the project it read, for a caller that reads the project once more.
+fn loaded(root: &Path) -> Result<(Effective, Project)> {
     let path = root.join(FILE_NAME);
     let (explicit, file) = match std::fs::read_to_string(&path) {
         Ok(text) => (parse::parse(&text, &path)?, Some(text)),
@@ -66,10 +70,11 @@ pub fn load(root: impl AsRef<Path>) -> Result<Effective> {
         Err(error) => return Err(Error::io(&path)(error)),
     };
 
-    let proposed = infer::infer(&Project::open(root));
+    let project = Project::open(root);
+    let proposed = infer::infer(&project);
     let recipe = explicit.merge(proposed.recipe);
     let gaps = proposed.gaps.into_iter().filter(|gap| !gap.key.is_answered_by(&recipe)).collect();
-    Ok(Effective { recipe, gaps, confidence: proposed.confidence, file })
+    Ok((Effective { recipe, gaps, confidence: proposed.confidence, file }, project))
 }
 
 /// What `nodal init` would write, and what it would leave for a person.
@@ -91,7 +96,7 @@ pub struct InitPlan {
     pub hooks: crate::model::Hooks,
     /// Where the lockfile of the inferred manager disagrees with its manifest, so that
     /// `nodal init` can say so before the first `nodal new` installs from it.
-    pub disagreement: Option<infer::package_manager::Disagreement>,
+    pub disagreement: Option<String>,
 }
 
 /// Work out what `nodal init` should write for the project at `root`. Reads only.
@@ -101,9 +106,8 @@ pub struct InitPlan {
 /// Whatever [`load`] returns.
 pub fn plan_init(root: impl AsRef<Path>) -> Result<InitPlan> {
     let root = root.as_ref();
-    let effective = load(root)?;
-    let disagreement =
-        infer::package_manager::disagreement(&Project::open(root), &effective.recipe);
+    let (effective, project) = loaded(root)?;
+    let disagreement = infer::package_manager::disagreement(&project, &effective.recipe);
     Ok(InitPlan {
         path: root.join(FILE_NAME),
         contents: render::render(&effective.recipe, &effective.gaps),

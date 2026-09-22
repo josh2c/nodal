@@ -1462,6 +1462,45 @@ mod tests {
         assert_eq!(content, "{\"name\":\"demo\"}\n", "the tracked file was not put back");
     }
 
+    /// A staged addition is not in HEAD, and a rename's new name is not either. Both are
+    /// put back by the one reset, and the copy reads clean.
+    #[test]
+    fn a_staged_addition_and_a_rename_are_both_put_back() {
+        for script in [
+            "echo x > added.txt && git add added.txt",
+            "git mv package.json renamed.json",
+            "git mv package.json renamed.json && echo x > added.txt && git add added.txt",
+        ] {
+            let home = home();
+            let step = InstallDependencies {
+                home: home.path().to_path_buf(),
+                installs: vec![moved(&[], &["/bin/sh", "-c", script])],
+            };
+            let refused = step.apply().unwrap_err();
+            assert!(matches!(refused, crate::Error::InstallWroteTracked { .. }), "{refused}");
+            assert!(home.path().join("package.json").is_file(), "{script}: not put back");
+            assert!(!home.path().join("added.txt").exists(), "{script}: the addition stayed");
+            assert!(!home.path().join("renamed.json").exists(), "{script}: the new name stayed");
+            let status = crate::git::cmd::run_ok(home.path(), &["status", "--porcelain"]).unwrap();
+            assert_eq!(status.text().unwrap(), "", "{script}: the copy is still dirty");
+        }
+    }
+
+    /// A tool that wrote a tracked file and then failed has the file put back, and the
+    /// failure names it beside the tool's exit.
+    #[test]
+    fn a_failed_install_that_wrote_a_tracked_file_names_what_was_put_back() {
+        let home = home();
+        let step = InstallDependencies {
+            home: home.path().to_path_buf(),
+            installs: vec![moved(&[], &["/bin/sh", "-c", "echo rewritten > package.json; exit 1"])],
+        };
+        let told = step.apply().unwrap_err().to_string();
+        assert!(told.contains("put back: package.json"), "{told}");
+        let content = std::fs::read_to_string(home.path().join("package.json")).unwrap();
+        assert_eq!(content, "{\"name\":\"demo\"}\n");
+    }
+
     /// A frozen install that fails with the tool's lockfile sentence is a refusal that
     /// names the lockfile and the manifest, and says where the fix goes.
     #[test]

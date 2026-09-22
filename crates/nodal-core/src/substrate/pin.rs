@@ -260,7 +260,9 @@ fn install(
     tree: &Path,
 ) -> Result<Install> {
     let lockfile = lockfile_of(manager, tree);
-    let argv = super::build::install_argv(manager, lockfile.as_deref());
+    let pin = pinned(recipe, manager);
+    let series = pin.as_deref().and_then(|pin| major(&version_of(pin, manager.program())));
+    let argv = super::build::install_argv(manager, lockfile.as_deref(), series);
     let prepare = environment_for(manager, host)?;
     let plain = |argv: Vec<String>| Install {
         manager,
@@ -270,7 +272,7 @@ fn install(
         at: Site::Base,
         lockfile: lockfile.clone(),
     };
-    let (Some(pin), Some((program, rest))) = (pinned(recipe, manager), argv.split_first()) else {
+    let (Some(pin), Some((program, rest))) = (pin, argv.split_first()) else {
         return Ok(plain(argv));
     };
     let wanted = version_of(&pin, program);
@@ -305,9 +307,10 @@ fn install(
 /// The committed file `manager` is held to, when `tree` carries one.
 ///
 /// The one reading of the lockfile's presence, here with the other readings of a working
-/// copy. The first name of [`PackageManager::lockfiles`] that is there, so a repository
-/// carrying Bun's two forms is held to the newer one.
-fn lockfile_of(manager: PackageManager, tree: &Path) -> Option<PathBuf> {
+/// copy; a refusal in [`super::build`] names the file by the same reading. The first
+/// name of [`PackageManager::lockfiles`] that is there, so a repository carrying Bun's
+/// two forms is held to the newer one.
+pub(crate) fn lockfile_of(manager: PackageManager, tree: &Path) -> Option<PathBuf> {
     manager.lockfiles().iter().map(PathBuf::from).find(|name| tree.join(name).is_file())
 }
 

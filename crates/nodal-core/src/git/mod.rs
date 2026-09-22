@@ -678,12 +678,12 @@ impl Git {
         Ok(Some((branch.to_owned(), Oid::parse(oid)?)))
     }
 
-    /// The tracked paths whose content differs from HEAD, in the index or the tree.
+    /// The tracked paths that differ from HEAD, in the index or the tree, by name.
     ///
     /// The reading an install is held to: what a tool wrote where Git tracks. Untracked
     /// paths are not read at all, so an install's `node_modules` of fifty thousand files
-    /// costs this nothing. A renamed path is named by both of its names, so the restore
-    /// puts back the one that was removed.
+    /// costs this nothing. The names are for the refusal; [`Git::reset_to_head`] is what
+    /// puts them back.
     ///
     /// # Errors
     /// As [`Git::status`].
@@ -695,23 +695,20 @@ impl Git {
             .filter(|entry| {
                 matches!(entry.state, status::State::Tracked { .. } | status::State::Unmerged)
             })
-            .flat_map(|entry| std::iter::once(entry.path).chain(entry.origin))
+            .map(|entry| entry.path)
             .collect())
     }
 
-    /// Put `paths` back as HEAD has them, in the index and the tree.
+    /// Put every tracked path back as HEAD has it: a changed file to its content, a
+    /// staged addition and the new name of a rename removed. Untracked paths stay.
+    ///
+    /// One fixed command rather than a `checkout` of named paths, which git refuses whole
+    /// when one of the names is not in HEAD, as a staged addition is not.
     ///
     /// # Errors
-    /// [`Error::GitEncoding`] when a path is not UTF-8, [`Error::Git`] when Git refused.
-    pub fn restore(&self, paths: &[PathBuf]) -> Result<()> {
-        let mut args = vec!["checkout", "HEAD", "--"];
-        for path in paths {
-            let named = path.to_str().ok_or_else(|| Error::GitEncoding {
-                args: vec![String::from("checkout"), path.to_string_lossy().into_owned()],
-            })?;
-            args.push(named);
-        }
-        cmd::run_ok(&self.root, &args)?;
+    /// [`Error::Git`] when Git refused.
+    pub fn reset_to_head(&self) -> Result<()> {
+        cmd::run_ok(&self.root, &["reset", "-q", "--hard", "HEAD"])?;
         Ok(())
     }
 

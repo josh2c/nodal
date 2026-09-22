@@ -1009,7 +1009,12 @@ pub enum Error {
     /// writes its reason to is the tool's choice and not ours. A package manager that
     /// reports a lockfile mismatch on standard output and nothing on standard error
     /// produced, until both were kept, an error with no reason in it at all.
-    #[error("{program} {args} in {dir}{output}", args = args.join(" "), dir = dir.display())]
+    #[error(
+        "{program} {args} in {dir}{output}{put_back}",
+        args = args.join(" "),
+        dir = dir.display(),
+        put_back = listed("put back", put_back)
+    )]
     Tool {
         /// The program that was run.
         program: String,
@@ -1025,6 +1030,9 @@ pub enum Error {
         /// crate pays for the largest variant of this enum, so two more strings here
         /// would be two more words on the stack of code that never runs a tool.
         output: Box<Streams>,
+        /// The tracked paths an install changed before it failed, put back in the copy
+        /// it ran in. Empty for every tool that is not an install.
+        put_back: Vec<PathBuf>,
     },
 
     /// A project pins a package-manager version this host cannot run, and nothing on
@@ -1124,6 +1132,15 @@ impl core::fmt::Display for Streams {
         }
         Ok(())
     }
+}
+
+/// `paths` on one line after `label`, or nothing when there are none.
+fn listed(label: &str, paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return String::new();
+    }
+    let names: Vec<String> = paths.iter().map(|path| path.display().to_string()).collect();
+    format!("\n{label}: {}", names.join(", "))
 }
 
 impl Error {

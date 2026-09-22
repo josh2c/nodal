@@ -33,9 +33,9 @@ The rule holds for what runs on Nodal's behalf. A package manager's install, in 
 home, is read afterwards with `git status` over tracked paths. A tracked file the install changed
 is put back in that copy with `git checkout --`, never in the checkout, and the step refuses with
 the file and the tool named. Every install runs in the form that installs from the lockfile and
-refuses to change it (`npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable`,
-`bun install --frozen-lockfile`, `uv sync --frozen`, `cargo fetch --locked`); a project with no
-lockfile keeps the plain install. A frozen install that fails because the lockfile disagrees with
+refuses to change it (`npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable`, or
+`--frozen-lockfile` when the project pins Yarn 1, `bun install --frozen-lockfile`, `uv sync --frozen`,
+`cargo fetch --locked`); a project with no lockfile keeps the plain install. A frozen install that fails because the lockfile disagrees with
 its manifest is a refusal that names both files, and the fix goes in the project's checkout.
 
 A project that commits its own `.envrc` — direnv and Nix users do — keeps it: Nodal writes
