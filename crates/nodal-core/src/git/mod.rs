@@ -678,6 +678,43 @@ impl Git {
         Ok(Some((branch.to_owned(), Oid::parse(oid)?)))
     }
 
+    /// The tracked paths whose content differs from HEAD, in the index or the tree.
+    ///
+    /// The reading an install is held to: what a tool wrote where Git tracks. Untracked
+    /// paths are not read at all, so an install's `node_modules` of fifty thousand files
+    /// costs this nothing. A renamed path is named by both of its names, so the restore
+    /// puts back the one that was removed.
+    ///
+    /// # Errors
+    /// As [`Git::status`].
+    pub fn changed_tracked(&self) -> Result<Vec<PathBuf>> {
+        let summary = self.status_reading(&["--untracked-files=no"])?;
+        Ok(summary
+            .entries
+            .into_iter()
+            .filter(|entry| {
+                matches!(entry.state, status::State::Tracked { .. } | status::State::Unmerged)
+            })
+            .flat_map(|entry| std::iter::once(entry.path).chain(entry.origin))
+            .collect())
+    }
+
+    /// Put `paths` back as HEAD has them, in the index and the tree.
+    ///
+    /// # Errors
+    /// [`Error::GitEncoding`] when a path is not UTF-8, [`Error::Git`] when Git refused.
+    pub fn restore(&self, paths: &[PathBuf]) -> Result<()> {
+        let mut args = vec!["checkout", "HEAD", "--"];
+        for path in paths {
+            let named = path.to_str().ok_or_else(|| Error::GitEncoding {
+                args: vec![String::from("checkout"), path.to_string_lossy().into_owned()],
+            })?;
+            args.push(named);
+        }
+        cmd::run_ok(&self.root, &args)?;
+        Ok(())
+    }
+
     /// Put the working tree at a revision, with HEAD detached at it.
     ///
     /// Detached rather than on a branch because a base is a substrate and not a piece

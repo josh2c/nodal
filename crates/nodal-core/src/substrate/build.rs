@@ -339,6 +339,7 @@ pub fn plan(params: &Params, progress: &Arc<dyn Reporter>) -> Result<Plan> {
         plan = plan.then(Tool {
             destination: params.destination.clone(),
             name: tool.name,
+            manager: tool.manager,
             argv: tool.argv,
             env: tool.env,
             note: tool.note,
@@ -354,6 +355,9 @@ pub fn plan(params: &Params, progress: &Arc<dyn Reporter>) -> Result<Plan> {
 struct ToolStep {
     /// The journal key, which is what a resumed build and a failure report name.
     name: String,
+    /// Whose install this is, for the two promises an install is held to
+    /// ([`install`]). `None` for the warm build, which is the project's own command.
+    manager: Option<PackageManager>,
     /// The program and its arguments.
     argv: Vec<String>,
     /// Variables it needs on top of the ones it inherits.
@@ -381,6 +385,7 @@ fn tools(installs: &[Install], destination: &Path, warm: &[String]) -> Vec<ToolS
         if !install.prepare.is_empty() {
             steps.push(ToolStep {
                 name: format!("install.{program}.environment"),
+                manager: Some(install.manager),
                 argv: runnable(&install.prepare, destination),
                 env: install.env.clone(),
                 note: phrase("making the environment", &install.prepare),
@@ -393,6 +398,7 @@ fn tools(installs: &[Install], destination: &Path, warm: &[String]) -> Vec<ToolS
         };
         steps.push(ToolStep {
             name: format!("install.{program}"),
+            manager: Some(install.manager),
             argv: runnable(&install.argv, destination),
             env: install.env.clone(),
             note: phrase(what, &install.argv),
@@ -400,6 +406,7 @@ fn tools(installs: &[Install], destination: &Path, warm: &[String]) -> Vec<ToolS
     }
     steps.push(ToolStep {
         name: String::from("warm"),
+        manager: None,
         argv: warm.to_vec(),
         env: Vec::new(),
         note: phrase("warming the build", warm),
@@ -673,6 +680,8 @@ struct Tool {
     /// What the step is called in the journal. One install step per package manager,
     /// so the name carries which manager it belongs to.
     name: String,
+    /// Whose install this is; `None` for the warm build.
+    manager: Option<PackageManager>,
     /// The program and its arguments.
     argv: Vec<String>,
     /// Variables it needs on top of the ones it inherits.
@@ -690,7 +699,11 @@ impl Step for Tool {
 
     fn apply(&self) -> Result<Output> {
         self.progress.line(&self.note);
-        run(work(&self.destination)?, &self.argv, &self.env)?;
+        let dir = work(&self.destination)?;
+        match self.manager {
+            Some(manager) => install(dir, manager, &self.argv, &self.env)?,
+            None => run(dir, &self.argv, &self.env)?,
+        }
         Ok(nothing())
     }
 
@@ -754,9 +767,8 @@ impl Step for Promote {
 
 /// The one place `substrate` starts a process that is not `git`.
 ///
-/// A create reaches it too, for the one install a base does not run
-/// ([`crate::lifecycle::ops::new`]). One seam, so a tool failure is reported the same way
-/// wherever the install ran.
+/// Every install comes through [`install`] on its way here, so a tool failure is
+/// reported the same way wherever the install ran.
 ///
 /// Output is captured rather than inherited, so an install's thousands of lines do not
 /// bury the progress the build is writing; what a failure wrote is carried in the
@@ -774,16 +786,76 @@ pub(crate) fn run(dir: &Path, argv: &[String], env: &[(String, String)]) -> Resu
     if output.status.success() {
         return Ok(());
     }
-    Err(Error::Tool {
-        program: program.clone(),
-        args: rest.to_vec(),
+    Err(failed(dir, program, rest, &output))
+}
+
+/// A tool that exited non-zero, as the error that carries the tail of both its streams.
+fn failed(dir: &Path, program: &str, args: &[String], output: &std::process::Output) -> Error {
+    Error::Tool {
+        program: program.to_owned(),
+        args: args.to_vec(),
         dir: dir.to_path_buf(),
         code: output.status.code(),
         output: Box::new(crate::error::Streams {
             stdout: tail(&output.stdout),
             stderr: tail(&output.stderr),
         }),
-    })
+    }
+}
+
+/// Run one install and hold it to the two promises every install is held to.
+///
+/// **A tracked file is never written by Nodal.** Whatever the tool did, the tracked
+/// paths of `dir` are read afterwards, and one the tool changed is put back and the
+/// step refused with the file and the tool named ([`Error::InstallWroteTracked`]). The
+/// reading is `git status` over tracked paths and the restore is `git checkout --` in
+/// `dir`, which is a base or a home and never the person's checkout. It does not depend
+/// on which tool ran, so it holds for a manager added after this was written.
+///
+/// A create reaches this too, for the install a base does not run
+/// ([`crate::lifecycle::ops::new`]), so both copies are held to the same two promises
+/// by the same code.
+///
+/// # Errors
+/// [`Error::InstallWroteTracked`], [`Error::Tool`] for any other non-zero exit, [`Error::ToolSpawn`] when the program could not be
+/// started, and [`Error::Git`] when the tree could not be read or put back.
+pub(crate) fn install(
+    dir: &Path,
+    manager: PackageManager,
+    argv: &[String],
+    env: &[(String, String)],
+) -> Result<()> {
+    let Some((program, rest)) = argv.split_first() else {
+        return Ok(());
+    };
+    let output = capture(Some(dir), program, rest, env)?;
+    let restored = restore_tracked(dir)?;
+    let tool = manager.program().to_owned();
+    if output.status.success() {
+        if restored.is_empty() {
+            return Ok(());
+        }
+        return Err(Error::InstallWroteTracked { tool, paths: restored, dir: dir.to_path_buf() });
+    }
+    Err(failed(dir, program, rest, &output))
+}
+
+/// Put back every tracked path of `dir` a tool changed, and name them.
+///
+/// Read before the exit code is looked at, so that a tool that wrote a tracked file and
+/// then failed leaves the copy as clean as one that wrote it and succeeded. Only paths
+/// Git tracks are read: what an install writes under `node_modules` or `.venv` is the
+/// install, and a copy is meant to hold it.
+///
+/// # Errors
+/// [`Error::Git`] when `dir` could not be read or a path could not be put back.
+fn restore_tracked(dir: &Path) -> Result<Vec<PathBuf>> {
+    let git = Git::open(dir)?;
+    let changed = git.changed_tracked()?;
+    if !changed.is_empty() {
+        git.restore(&changed)?;
+    }
+    Ok(changed)
 }
 
 /// The one spawn seam for every tool that is not `git`.

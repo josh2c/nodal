@@ -95,6 +95,9 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
 - `nodal new` and `nodal adopt` ask for hook approval before the operation writes
   anything. A create or an adoption refused for a hook nobody approved leaves no unit, no
   branch, no port lease and no home.
+- An install that changes a file the project tracks is refused. The change is put back
+  in the base or the home it ran in, never in the checkout, and the refusal names the
+  file and the tool. This holds for every package manager.
 
 ## 0.1.0-rc.2 — 2026-09-17
 

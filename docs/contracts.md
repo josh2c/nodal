@@ -29,7 +29,10 @@ from the moment it exists, and a home that is dirty at birth is one `nodal recla
 | `AGENTS.md` | pointer | where Nodal created it | the one line, and the file when that was all of it |
 | `.claude/settings.json` | Claude Code settings | where Nodal wrote it | Nodal's hooks, and the file when they were all of it |
 
-The rule holds for what runs on Nodal's behalf. Every install runs in the form that installs from the lockfile and
+The rule holds for what runs on Nodal's behalf. A package manager's install, in a base or in a
+home, is read afterwards with `git status` over tracked paths. A tracked file the install changed
+is put back in that copy with `git checkout --`, never in the checkout, and the step refuses with
+the file and the tool named. Every install runs in the form that installs from the lockfile and
 refuses to change it (`npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable`,
 `bun install --frozen-lockfile`, `uv sync --frozen`, `cargo fetch --locked`); a project with no
 lockfile keeps the plain install.

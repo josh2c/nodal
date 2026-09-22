@@ -154,6 +154,19 @@ const STUB_VERSIONED: &str = concat!(
     "echo 'the safety suite installs nothing' >> node_modules/installed.txt\n",
 );
 
+/// A stub that installs and then rewrites a file the project tracks.
+///
+/// What `npm install` did on the founder's project when the lockfile's name disagreed
+/// with `package.json`. Every home cloned from that base was dirty at birth over a
+/// file nobody in it had touched.
+const STUB_WRITES_TRACKED: &str = concat!(
+    "#!/bin/sh\n",
+    "case \"$1\" in --version) echo '@VERSION@'; exit 0;; esac\n",
+    "mkdir -p node_modules || exit 1\n",
+    "echo 'the safety suite installs nothing' >> node_modules/installed.txt\n",
+    "printf '{ \"rewritten\": true }\\n' > package.json\n",
+);
+
 /// A stub `npm`, for the machine whose project npm installs.
 ///
 /// It records the arguments it was run with, so that a property about which form of
@@ -367,6 +380,16 @@ impl Machine {
         git(&machine.source, &["add", "--", nodal_fixture::RECIPE]);
         git(&machine.source, &["commit", "--quiet", "--message", "declare the project's hooks"]);
         machine
+    }
+
+    /// A machine whose package manager installs and then rewrites a tracked file.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    pub fn rewriting_a_tracked_file() -> Self {
+        Self::built(&Setup { stub: Some(STUB_WRITES_TRACKED), ..Setup::default() })
     }
 
     /// A machine whose project is an npm project with no recipe: a `package.json` that

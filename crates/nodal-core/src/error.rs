@@ -1044,6 +1044,25 @@ pub enum Error {
         found: String,
     },
 
+    /// An install changed a file the project tracks.
+    ///
+    /// Nodal never writes a tracked file, and an install runs on Nodal's behalf. The
+    /// change was put back in the copy the install ran in, and the step refused, so no
+    /// home is born dirty over a file nobody in it touched.
+    #[error(
+        "{tool} wrote {paths} in {dir}, which the project tracks; the change was put back and the install refused",
+        paths = paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", "),
+        dir = dir.display()
+    )]
+    InstallWroteTracked {
+        /// The package manager that wrote it.
+        tool: String,
+        /// The tracked paths it changed, put back.
+        paths: Vec<PathBuf>,
+        /// The base or home it ran in.
+        dir: PathBuf,
+    },
+
     /// A package manager installs into an environment it does not make, and this host
     /// has no interpreter to make one with.
     ///
