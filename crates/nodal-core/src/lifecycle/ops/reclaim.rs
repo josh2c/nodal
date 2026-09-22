@@ -127,12 +127,12 @@ use crate::lifecycle::hooks::{
 };
 use crate::lifecycle::journal::Operation;
 use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
-use crate::lifecycle::uniqueness::{self, Finding};
+use crate::lifecycle::uniqueness::Finding;
 use crate::lifecycle::witness::Checkout;
 use crate::lifecycle::{Done, Rebuild, marker, run};
 use crate::model::{
-    EnvId, EnvState, Environment, EventKind, Project, Recipe, Timestamp, Trashed, Unit, UnitId,
-    UnitStatus, expiry,
+    EnvId, EnvState, Environment, EventKind, Project, Recipe, Rested, Timestamp, Trashed, Unit,
+    UnitId, UnitStatus, expiry,
 };
 use crate::output::view::{Leftover, Preflight, Preflights, Pruned, Reclaimed};
 use crate::runtime::attribute::{Note, Source};
@@ -336,6 +336,8 @@ fn read(
     assess::assess(&assess::Input {
         home,
         checkout: Some(&Checkout::read(&project.root)),
+        // A live home, so the work is what the branch a person is on reaches.
+        work: assess::Work::Checkout,
         // The rest of what "another copy on this machine" promises: the other
         // repositories beside the project's checkout, proved by their own object stores
         // and never by a name.
@@ -1014,13 +1016,14 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
     let project = project_of(store.conn(), &unit)?;
     let placed = placement(&environment)?;
     let recipe = recipe_of(&project.root);
-    let findings = examine(&placed, &project.root, &unit, request.force)?;
+    let examined = examine(&placed, &project.root, &unit, request.force)?;
     if !request.force {
         refuse_unread(&placed, &unit)?;
     }
-    let snapshot = snapshot(&placed, &unit, &findings)?;
+    let snapshot = snapshot(&placed, &unit, &examined.findings)?;
     let state_dir = home::directory()?;
-    let entry = trashed((&project, &unit, &environment), &placed, &recipe, snapshot)?;
+    let kept = Kept { recipe: &recipe, snapshot, rested: examined.rested };
+    let entry = trashed((&project, &unit, &environment), &placed, &kept)?;
     let runner = Runner {
         project: project.root.clone(),
         hooks: recipe.hooks.clone(),
@@ -1037,7 +1040,7 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
         wrappers: Vec::new(),
         force: request.force,
     };
-    Ok(Prepared { params, findings, runner })
+    Ok(Prepared { params, findings: examined.findings, runner })
 }
 
 /// The process groups an environment's open recorded groups hold: what
@@ -1097,21 +1100,50 @@ fn placement(environment: &Environment) -> Result<Placement> {
     }
 }
 
+/// What one uniqueness check decided about the home a reclaim is about to take.
+#[derive(Debug, Clone, Default)]
+struct Examined {
+    /// What the check found, which is empty unless `--force` was given.
+    findings: Vec<Finding>,
+    /// What the verdict rested on, for the row the trash keeps.
+    rested: Rested,
+}
+
 /// The uniqueness check, and the refusal that comes of it.
 ///
 /// Every destructive path calls this. `--force` does not skip it: the findings are
 /// carried into the report, and the caller takes a snapshot before it goes on.
-fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Result<Vec<Finding>> {
-    let Some(home) = placed.path() else { return Ok(Vec::new()) };
-    let found = uniqueness::check(
+///
+/// The reading asks for the dispositions, which the refusal itself does not need, and
+/// the two `rev-list` runs they cost are what lets the record say where each commit the
+/// reclaim did not refuse over also lives. A verdict that rests on a copy in another
+/// repository is only as true as that copy, and after the home is in the trash nothing
+/// reads it again until `gc` does ([`super::gc`]); a record that named nothing would
+/// leave that sweep unable to say which copy had gone. The dispositions change what is
+/// reported and never what is decided ([`assess::Input::dispositions`]).
+fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Result<Examined> {
+    let Some(home) = placed.path() else { return Ok(Examined::default()) };
+    let assessment = assess::assess(&assess::Input {
         home,
-        Some(&Checkout::read(source)),
-        &crate::doctor::scan::siblings(source),
-    )?;
-    if found.is_clear() || force {
-        return Ok(found.findings);
+        checkout: Some(&Checkout::read(source)),
+        siblings: &crate::doctor::scan::siblings(source),
+        work: assess::Work::Checkout,
+        fate: assess::Fate::Trashed,
+        state: false,
+        dispositions: true,
+        runtime: None,
+    })?;
+    let findings = assessment.findings();
+    if findings.is_empty() {
+        return Ok(Examined {
+            findings,
+            rested: Rested::Safe { copies: assess::outside_copies(&assessment) },
+        });
     }
-    Err(Error::NotUnique { slug: unit.slug.clone(), findings: found.findings })
+    if force {
+        return Ok(Examined { findings, rested: Rested::Forced });
+    }
+    Err(Error::NotUnique { slug: unit.slug.clone(), findings })
 }
 
 /// Refuse before anything runs when the home would move and the process table cannot
@@ -1144,12 +1176,25 @@ fn snapshot(placed: &Placement, unit: &Unit, findings: &[Finding]) -> Result<Opt
     Ok(taken.map(|snapshot| snapshot.reference))
 }
 
+/// What the reclaim decided, for the row the trash keeps about the home.
+///
+/// One value rather than three parameters, because the three are one answer: how long
+/// the directory is kept, where its work was written before anything moved, and what the
+/// check that allowed the move rested on.
+struct Kept<'a> {
+    /// The project's recipe, which says the retention.
+    recipe: &'a Recipe,
+    /// The ref a forced reclaim committed the work to.
+    snapshot: Option<String>,
+    /// What the uniqueness check decided, and what it rested on.
+    rested: Rested,
+}
+
 /// The trash entry a managed home gets, and nothing for a root or a home that is gone.
 fn trashed(
     subject: (&Project, &Unit, &Environment),
     placed: &Placement,
-    recipe: &Recipe,
-    snapshot: Option<String>,
+    kept: &Kept<'_>,
 ) -> Result<Option<Trashed>> {
     let (project, unit, environment) = subject;
     let Placement::Managed(home) = placed else { return Ok(None) };
@@ -1161,10 +1206,11 @@ fn trashed(
         slug: unit.slug.clone(),
         home: home.clone(),
         path: home::trashed(&home::directory()?, &project.name, environment.id),
-        snapshot,
+        snapshot: kept.snapshot.clone(),
         pruned_bytes: 0,
+        rested: kept.rested.clone(),
         trashed_at: at,
-        expires_at: expiry(at, recipe.trash_retention_days()),
+        expires_at: expiry(at, kept.recipe.trash_retention_days()),
     }))
 }
 

@@ -39,6 +39,9 @@ const EMBEDDED_TYPES: &[&str] = &[
     "Provenance",
     // A program's version, which is a scalar with an order rather than a record.
     "Version",
+    // One repository that held a copy of a trashed home's commits, published inside
+    // `Trashed` as part of what the reclaim's verdict rested on.
+    "Outside",
 ];
 
 fn model_dir() -> PathBuf {

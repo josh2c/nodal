@@ -179,6 +179,16 @@ impl Witness {
         matches!(self, Self::NoRemote | Self::Direct { .. })
     }
 
+    /// The repositories whose reading stands behind this one, which is none where
+    /// nothing read the remote and none where there is no remote to read.
+    #[must_use]
+    pub fn by(&self) -> &[PathBuf] {
+        match self {
+            Self::Checked { by } | Self::Direct { by } => by,
+            Self::Unchecked | Self::NoRemote => &[],
+        }
+    }
+
     /// Which case this is, for a home with these remotes and this reading of them.
     ///
     /// Public because the assessment that produces every finding is the caller
@@ -297,7 +307,8 @@ pub fn check(
     elsewhere: Option<&Checkout>,
     siblings: &[PathBuf],
 ) -> Result<Uniqueness> {
-    let assessed = assess::assess(&assess::Input::refusal(home, elsewhere, siblings))?;
+    let input = assess::Input::refusal(home, assess::Work::Checkout, elsewhere, siblings);
+    let assessed = assess::assess(&input)?;
     Ok(Uniqueness { home: home.to_path_buf(), findings: assessed.findings() })
 }
 

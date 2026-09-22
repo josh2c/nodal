@@ -188,10 +188,18 @@ impl Render for Reclaimed {
 }
 
 impl Reclaimed {
-    /// What the uniqueness check said, and what a `--force` accepted losing.
+    /// What the uniqueness check said, what it rested on, and what a `--force` accepted
+    /// losing.
+    ///
+    /// A verdict of "nothing that is only here" is a statement about other repositories,
+    /// and the line names them. A person reading it can see what the removal depends on,
+    /// and so can the sweep that removes the directory later: the same names are on the
+    /// trash row, and `nodal gc` prints them again if the copy has gone by then.
     fn check_cell(&self) -> String {
         if self.findings.is_empty() {
-            return String::from("nothing that is only here");
+            let mut lines = vec![String::from("nothing that is only here")];
+            lines.extend(self.rested_lines());
+            return lines.join("\n");
         }
         let mut lines: Vec<String> = self
             .findings
@@ -202,6 +210,21 @@ impl Reclaimed {
             lines.push(format!("work committed to {reference}"));
         }
         lines.join("\n")
+    }
+
+    /// Where the commits this reclaim did not refuse over also live, one line each.
+    ///
+    /// Nothing at all for a home that held no commit of its own, because there is then
+    /// no second copy for the verdict to have rested on and a line saying so would be
+    /// about a question nobody asked.
+    fn rested_lines(&self) -> Vec<String> {
+        let entry = self.trashed.as_ref();
+        entry
+            .map(|entry| entry.rested.copies())
+            .unwrap_or_default()
+            .iter()
+            .map(|copy| format!("{} of them are also in {}", copy.commits, copy.describe()))
+            .collect()
     }
 
     /// The tethers, processes, containers and ports that were given up.
@@ -535,8 +558,10 @@ fn plural(count: usize, one: &str, many: &str) -> String {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
+    use std::path::PathBuf;
+
     use super::{Leftover, Pruned, Reclaimed, plural};
-    use crate::model::Timestamp;
+    use crate::model::{Outside, Rested, Timestamp};
     use crate::output::Render;
 
     fn reclaimed() -> Reclaimed {
@@ -598,6 +623,59 @@ mod tests {
         let lines = report.doc().lines().join("\n");
         assert!(lines.contains("origin is unreachable"), "{lines}");
         assert!(lines.contains("nothing left by id"), "{lines}");
+    }
+
+    /// A reclaim that went ahead over a copy somewhere else says where that copy is.
+    /// The person reads what the removal depends on, and `nodal gc` prints the same
+    /// names again if the copy has gone by the time the retention runs out.
+    #[test]
+    fn a_verdict_that_rested_on_a_copy_names_the_repository_and_the_ref() {
+        let mut report = reclaimed();
+        report.trashed = Some(trashed(Rested::Safe {
+            copies: vec![Outside {
+                repository: PathBuf::from("/w/project"),
+                references: vec![String::from("refs/remotes/origin/topic")],
+                commits: 3,
+            }],
+        }));
+        let lines = report.doc().lines().join("\n");
+        assert!(lines.contains("nothing that is only here"), "{lines}");
+        assert!(
+            lines.contains("3 of them are also in /w/project (refs/remotes/origin/topic)"),
+            "{lines}"
+        );
+    }
+
+    /// A home that held no commit of its own rested on nothing, and a line saying so
+    /// would answer a question nobody asked.
+    #[test]
+    fn a_home_with_nothing_to_hold_prints_no_line_about_where_it_is_held() {
+        let mut report = reclaimed();
+        report.trashed = Some(trashed(Rested::Safe { copies: Vec::new() }));
+        let lines = report.doc().lines().join("\n");
+        assert!(lines.contains("nothing that is only here"), "{lines}");
+        assert!(!lines.contains("also in"), "{lines}");
+    }
+
+    /// A canonical identifier, for the row the properties below are about.
+    const ID: &str = "01J0000000000000000000000A";
+
+    /// One trash row, for the properties about what the check line says.
+    fn trashed(rested: Rested) -> crate::model::Trashed {
+        let at = Timestamp::parse("2026-09-07T09:00:00Z").unwrap();
+        crate::model::Trashed {
+            environment_id: crate::model::EnvId::parse(ID).unwrap(),
+            unit_id: crate::model::UnitId::parse(ID).unwrap(),
+            project_id: crate::model::ProjectId::parse(ID).unwrap(),
+            slug: crate::model::Slug::parse("worker-import").unwrap(),
+            home: PathBuf::from("/w/home"),
+            path: PathBuf::from("/w/trash/home"),
+            snapshot: None,
+            pruned_bytes: 0,
+            rested,
+            trashed_at: at,
+            expires_at: at,
+        }
     }
 
     #[test]

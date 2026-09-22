@@ -539,6 +539,7 @@ impl World {
             path: self.state.join("project").join("trash").join("00000001"),
             snapshot: None,
             pruned_bytes: 0,
+            rested: nodal_core::model::Rested::Unrecorded,
             trashed_at: at(),
             expires_at: at(),
         }

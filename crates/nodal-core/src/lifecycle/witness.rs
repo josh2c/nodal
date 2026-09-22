@@ -112,16 +112,13 @@ use std::time::SystemTime;
 use crate::Result;
 use crate::doctor::unique::{Evidence, RemoteTip, Subject, Trusted, believed};
 use crate::doctor::{inspect, origin};
-use crate::git::{Git, Oid, union};
+use crate::git::{Git, Oid, refs, union};
 
 /// The remote a home's uniqueness question is about.
 ///
 /// Named, and that is the point. A project may have an `upstream` it was forked from or
 /// a `backup` it mirrors to, and neither says whether `origin` has a commit.
 const ORIGIN: &str = "origin";
-
-/// Where a repository keeps its own branches.
-const HEADS: &str = "refs/heads/";
 
 /// What this machine can prove already exists outside one home.
 ///
@@ -535,11 +532,11 @@ fn resolved(path: &Path) -> Option<String> {
 /// One `git for-each-ref`. [`Checkout::heads`] is what calls it, and keeps the answer.
 fn heads(repo: &Path) -> Vec<RemoteTip> {
     Git::at(repo)
-        .list_refs(HEADS)
+        .list_refs(refs::HEADS)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|reference| {
-            let branch = reference.name.strip_prefix(HEADS)?.to_owned();
+            let branch = reference.name.strip_prefix(refs::HEADS)?.to_owned();
             Some(RemoteTip { branch, oid: reference.oid })
         })
         .collect()

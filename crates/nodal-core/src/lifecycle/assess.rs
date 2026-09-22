@@ -103,7 +103,7 @@ use crate::git::status::{Entry, State, Summary};
 use crate::git::{Git, Oid, union};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
 use crate::lifecycle::witness::{self, Checkout};
-use crate::model::{Needs, Timestamp, UnitId};
+use crate::model::{Needs, Outside, Timestamp, UnitId};
 use crate::paths;
 use crate::runtime::attribute::{Note, Source, Standing};
 use crate::runtime::processes::{self, Processes as _};
@@ -142,6 +142,37 @@ pub struct Attribution<'a> {
     pub moves: bool,
 }
 
+/// Where one home's work is read from.
+///
+/// A live home is read from `HEAD`, because a person works on the branch they are
+/// checked out on and every commit of theirs is behind it.
+///
+/// A trashed home is read from the tips its caller names instead, and the difference is
+/// not a preference. Nothing is checked out in the trash, and a forced reclaim wrote the
+/// working tree onto `refs/nodal/<unit>/wip`, which no branch reaches: a reading from
+/// `HEAD` alone would call that snapshot no part of the home and let the directory
+/// holding it go.
+#[derive(Debug, Clone, Copy)]
+pub enum Work<'a> {
+    /// The branch the home is on.
+    Checkout,
+    /// The commits these tips reach, and nothing else. An empty list is a home with no
+    /// work on any ref, which is a fact and not a failure.
+    Tips(&'a [Oid]),
+}
+
+impl Work<'_> {
+    /// The commits of this home that none of `held` reaches, newest first.
+    ///
+    /// One `rev-list` either way.
+    fn outside(self, git: &Git, held: &[Oid]) -> Result<Vec<Oid>> {
+        match self {
+            Self::Checkout => git.commits_outside("HEAD", held),
+            Self::Tips(tips) => git.among_outside(tips, held),
+        }
+    }
+}
+
 /// One home, and how much of it to read.
 ///
 /// The three switches are not a preference. Each reading past the refusal costs processes
@@ -176,6 +207,9 @@ pub struct Input<'a> {
     /// A store is only ever believed when it holds the object, proved by `git rev-list`
     /// in that repository ([`local_copies`]). A name never counts.
     pub siblings: &'a [PathBuf],
+    /// Where this home's work is read from: the branch it is on, or the tips a caller
+    /// names because nothing is checked out in it.
+    pub work: Work<'a>,
     /// What a reclaim does with this home: move it to the trash, or leave the person
     /// the checkout they adopted. It decides what the report says becomes of the paths
     /// in it, and it is a reading of the registry rather than a guess.
@@ -216,6 +250,7 @@ impl<'a> Input<'a> {
     #[must_use]
     pub const fn refusal(
         home: &'a Path,
+        work: Work<'a>,
         checkout: Option<&'a Checkout>,
         siblings: &'a [PathBuf],
     ) -> Self {
@@ -223,6 +258,7 @@ impl<'a> Input<'a> {
             home,
             checkout,
             siblings,
+            work,
             fate: Fate::Trashed,
             state: false,
             dispositions: false,
@@ -1035,6 +1071,62 @@ impl Assessment {
     }
 }
 
+/// Name the repositories and refs that hold the commits this home would not lose.
+///
+/// A naming and never a second reading of safety. The verdict is
+/// [`Assessment::safe_to_reclaim`] and it is already made; what this adds is the name of
+/// the store each surviving commit is also in, so that the record of the reclaim says
+/// what its verdict rested on and a later sweep can say which copy has since gone
+/// ([`crate::lifecycle::ops::gc`]).
+///
+/// One `for-each-ref` per repository, over the commits of the groups that repository
+/// answered for. A reading that fails names no ref and drops no repository: the
+/// repository held the commits either way, and the refs are how a person finds them.
+///
+/// The commits it asks about are each group's sample, so a group of forty names the ten
+/// the report already prints. [`Outside::commits`] is the exact count, and the refs are
+/// the ones that reach at least one of the ten.
+///
+/// Empty for a home with no commit of its own, and for one whose commits are all
+/// refused: there is then nothing outside the home to name.
+#[must_use]
+pub fn outside_copies(assessment: &Assessment) -> Vec<Outside> {
+    let mut order: Vec<PathBuf> = Vec::new();
+    let mut found: BTreeMap<PathBuf, (usize, Vec<Oid>)> = BTreeMap::new();
+    for group in assessment.commits.iter().filter(|group| group.copies.survives()) {
+        for repository in holders(&group.copies) {
+            let seen = found.entry(repository.clone()).or_insert_with(|| {
+                order.push(repository.clone());
+                (0, Vec::new())
+            });
+            seen.0 += group.count;
+            seen.1.extend(group.sample.iter().cloned());
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|repository| {
+            let (commits, sample) = found.remove(&repository)?;
+            let references = Git::at(&repository).reaching(&sample, SAMPLE);
+            Some(Outside { repository, references, commits })
+        })
+        .collect()
+}
+
+/// The repositories one disposition credits, and none for a disposition that credits
+/// nothing.
+///
+/// A second local copy is one store. A commit proved on the remote is credited to the
+/// repositories whose reading of that remote was believed ([`Witness::by`]), which is
+/// where the ref that proves it is readable on this disk.
+fn holders(copies: &Copies) -> Vec<PathBuf> {
+    match copies {
+        Copies::SecondLocalCopy { held_by } => vec![held_by.clone()],
+        Copies::RemoteProved { witness } => witness.by().to_vec(),
+        Copies::OnlyHere { .. } | Copies::NotChecked { .. } => Vec::new(),
+    }
+}
+
 /// Read `home`, and report everything a reclaim of it would have an opinion about.
 ///
 /// One `git status`, one `rev-list` for the refusal, and whatever [`Input`] asked for
@@ -1196,13 +1288,13 @@ fn history(
         let refused = refusing(git, input, &found, &remotes)?;
         return Ok((refused, remotes, Vec::new()));
     }
-    let ours = git.commits_outside("HEAD", &found.own)?;
+    let ours = input.work.outside(git, &found.own)?;
     if ours.is_empty() {
         return Ok((Vec::new(), remotes, Vec::new()));
     }
     let witness = Witness::of(&remotes, &found);
-    let off_remote = git.commits_outside("HEAD", &union(&found.own, &found.remote))?;
-    let unproved = git.commits_outside("HEAD", &found.tips())?;
+    let off_remote = input.work.outside(git, &union(&found.own, &found.remote))?;
+    let unproved = input.work.outside(git, &found.tips())?;
     let proved = difference(&ours, &off_remote);
     let second = difference(&off_remote, &unproved);
     let (held, only) = local_copies(input.home, checkout, input.siblings, unproved);
@@ -1297,7 +1389,7 @@ fn refusing(
     found: &witness::Elsewhere,
     remotes: &[String],
 ) -> Result<Vec<CommitGroup>> {
-    let unproved = git.commits_outside("HEAD", &found.tips())?;
+    let unproved = input.work.outside(git, &found.tips())?;
     if unproved.is_empty() {
         return Ok(Vec::new());
     }

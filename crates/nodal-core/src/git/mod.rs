@@ -437,6 +437,17 @@ impl Git {
         refs::list(&self.root, prefix)
     }
 
+    /// The names of the refs of this repository that reach any of `commits`.
+    ///
+    /// A naming and never a proof: [`Git::held`] is what says a second copy exists, and
+    /// this says what the repository holding it calls the ref. One process, and a
+    /// reading that failed is no name rather than an error, because a name nobody could
+    /// read is not a reason to refuse anything.
+    #[must_use]
+    pub fn reaching(&self, commits: &[Oid], limit: usize) -> Vec<String> {
+        refs::reaching(&self.root, commits, limit)
+    }
+
     /// Every ref this repository has, sorted by name.
     ///
     /// One process. A tip is a commit this object store holds, which is what a proof

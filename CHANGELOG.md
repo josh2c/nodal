@@ -26,6 +26,9 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
 
 - `nodal reclaim` prints a `record` line naming the ref the home was committed to before
   the first step, `refs/nodal/<unit>/pre/<operation>`, for every reclaim that took one.
+- `nodal reclaim` names on its `check` line where the commits it did not refuse over
+  also live: the repository that holds them and the refs in it. The trash row records the
+  same, so a later sweep can name the copy the verdict rested on.
 
 ### Make
 
