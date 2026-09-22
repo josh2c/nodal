@@ -247,9 +247,10 @@ still holds them; standard output carries the one document about the file that n
 `--json` carries the same list as `changes`.
 
 ## CLI
-`init, approve, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, mcp, run, ps, start, note, ask,
-handoff, sync, done, merge, prune, reclaim, reclaim --check, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
-`--json`; `status --watch` emits newline-delimited JSON. Global `--store` and `--no-hooks`.
+`init, approve, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, mcp, run, ps,
+handoff, done, merge, reclaim, reclaim --check, reclaim --prune, gc, doctor, base, uninstall, upgrade`. Every command
+this list names is a subcommand `nodal --help` prints; `crates/nodal-cli/tests/contract.rs` reads the list and
+checks it. Every read command accepts `--json`. Global `--store` and `--no-hooks`.
 
 `nodal done --wip` says on standard error what the flag sends — every uncommitted and untracked file of
 the home — before the push, not after it.
@@ -658,11 +659,6 @@ The walk writes nothing.
 `--json` and the default output are two renderings of one value, so a field a person sees is a field a
 tool can read. A read type carries the instant it was taken as `now`, and every relative time it prints
 is measured from that, so a rendering is a function of its inputs.
-
-`status --watch` polls; there is no daemon. One line is one whole `status` document, identical in shape
-to `status --json`, and a line is written only when the answer has changed — the instant moving on its
-own is not a change. A consumer therefore holds the last line as current state, and silence means
-unchanged rather than gone.
 
 ## The list
 `nodal ls`, and `nodal` with no subcommand, answer with one row per unit of the project the
