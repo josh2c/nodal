@@ -68,6 +68,10 @@ pub use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Recovery, Step, 
 pub struct Done {
     /// Which run this was, as the journal names it.
     pub id: OperationId,
+    /// The ref the home was committed to before the first step, when a record was
+    /// taken ([`record`]). The report of an operation that moves or removes a home
+    /// names it, so a person is told where the home as it was can be read back.
+    pub record: Option<String>,
     /// What every step of it produced.
     pub outputs: Outputs,
     /// What the registry write itself produced, which is [`nothing`] for the
@@ -196,15 +200,19 @@ pub fn run(store: &mut Store, plan: &Plan) -> Result<Done> {
     let id = OperationId::from_ulid(ulid::Ulid::new());
     let owner = Owner::current();
     journal::start(store.conn(), id, plan, &owner, Timestamp::now())?;
-    if let Err(why) = record(plan, id) {
-        // The record is taken after the run is opened, because the run is what names the
-        // ref. A run that stops here has applied no step, so there is nothing to undo and
-        // nothing for the next command to resolve — but the row is open, and an open row
-        // with no steps is a run the next `nodal` would announce as rolled back. It is
-        // closed here, as every other way out of this function closes it.
-        close(store.conn(), id, plan.kind, State::Failed)?;
-        return Err(why);
-    }
+    let recorded = match record(plan, id) {
+        Ok(recorded) => recorded,
+        Err(why) => {
+            // The record is taken after the run is opened, because the run is what names
+            // the ref. A run that stops here has applied no step, so there is nothing to
+            // undo and nothing for the next command to resolve — but the row is open, and
+            // an open row with no steps is a run the next `nodal` would announce as
+            // rolled back. It is closed here, as every other way out of this function
+            // closes it.
+            close(store.conn(), id, plan.kind, State::Failed)?;
+            return Err(why);
+        }
+    };
     let mut outputs = Outputs::new();
     for (position, step) in plan.steps.iter().enumerate() {
         let position = position_of(position)?;
@@ -231,7 +239,7 @@ pub fn run(store: &mut Store, plan: &Plan) -> Result<Done> {
         }
     }
     match commit(store, id, plan, &outputs) {
-        Ok(committed) => Ok(Done { id, outputs, committed }),
+        Ok(committed) => Ok(Done { id, record: recorded, outputs, committed }),
         Err(source) => {
             undo_applied(store, id, plan)?;
             Err(source)
@@ -256,19 +264,19 @@ pub fn run(store: &mut Store, plan: &Plan) -> Result<Done> {
 /// Three things are not a failure and take no record: a plan that says it changes no
 /// home, a home that is not on the disk any more, and a directory Git cannot open. A
 /// home with no commit yet has nothing to build a commit on and answers the same way.
+/// All four answer `None`; the ref is answered only when a commit is on it.
 ///
 /// Anything else is a failure of the run, raised here where nothing has been done yet.
 /// A safety net that quietly did not run is worse than an operation that stopped.
-fn record(plan: &Plan, id: OperationId) -> Result<()> {
-    let Some(records) = &plan.records else { return Ok(()) };
+fn record(plan: &Plan, id: OperationId) -> Result<Option<String>> {
+    let Some(records) = &plan.records else { return Ok(None) };
     if !records.home.is_dir() {
-        return Ok(());
+        return Ok(None);
     }
-    let Ok(git) = crate::git::Git::open(&records.home) else { return Ok(()) };
+    let Ok(git) = crate::git::Git::open(&records.home) else { return Ok(None) };
     let reference = crate::git::refs::pre(&records.unit.to_string(), &id.to_string());
     let message = format!("nodal: the home before {}", plan.kind);
-    git.snapshot(&reference, &message)?;
-    Ok(())
+    Ok(git.snapshot(&reference, &message)?.map(|_| reference))
 }
 
 /// Write down what a failed step reported, and close the run as `failed`.
@@ -327,7 +335,8 @@ pub fn retry(store: &mut Store, id: OperationId, plan: &Plan) -> Result<Done> {
         }
     }
     let committed = commit(store, id, plan, &outputs)?;
-    Ok(Done { id, outputs, committed })
+    // Only `run` takes a record; the one plan a retry resumes records no home.
+    Ok(Done { id, record: None, outputs, committed })
 }
 
 /// Put a `failed` run back into `running`, under this process.

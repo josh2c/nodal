@@ -1210,7 +1210,7 @@ Nodal records a unit's home before it changes it. The runner takes one commit be
 any operation that changes a unit's tree or its refs: `merge`, an `adopt` of a checkout that is already
 here, and `reclaim`. The commit goes on `refs/nodal/<unit>/pre/<operation>`, named by the run in the
 journal, so a second run never writes over the record of the first. `nodal done` and
-`nodal reclaim --force` write the work-in-progress ref `refs/nodal/<unit>/wip` as before.
+`nodal reclaim --force` write the work-in-progress ref `refs/nodal/<unit>/wip` as before. The reclaim report names the ref on its `record` line, so the report that says where the home went also says where the home as it was can be read back.
 
 The commit is built in an index file of its own, so the person's staged work is untouched and no
 tracked file is written. A home with no commit yet has nothing to build on and is not recorded, which
