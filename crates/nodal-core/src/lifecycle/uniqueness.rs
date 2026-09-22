@@ -158,14 +158,14 @@ impl Witness {
     /// ([`crate::output::view::check`]). A person who reads one and then the other must
     /// not be given two accounts of one reading.
     #[must_use]
-    pub fn because(&self) -> String {
+    pub fn because(&self) -> Option<String> {
         match self {
-            Self::NoRemote | Self::Direct { .. } => String::new(),
-            Self::Checked { by } => format!(
-                "; the newest reading of the remote here is {}, and it does not reach them",
+            Self::NoRemote | Self::Direct { .. } => None,
+            Self::Checked { by } => Some(format!(
+                "the newest reading of the remote here is {}, and it does not reach them",
                 names(by.iter().map(|path| path.display().to_string()))
-            ),
-            Self::Unchecked => format!("; {UNREAD}"),
+            )),
+            Self::Unchecked => Some(String::from(UNREAD)),
         }
     }
 
@@ -243,7 +243,9 @@ impl Finding {
         let more = self.count().saturating_sub(SAMPLE);
         let tail = if more == 0 { String::new() } else { format!(" and {more} more") };
         let why = match self {
-            Self::Unpushed { witness, .. } => witness.because(),
+            Self::Unpushed { witness, .. } => {
+                witness.because().map(|clause| format!("; {clause}")).unwrap_or_default()
+            }
             _ => String::new(),
         };
         format!("{} ({}): {listed}{tail}{why}", self.label(), self.count())

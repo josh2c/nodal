@@ -365,20 +365,25 @@ fn commit_line(group: &CommitGroup) -> String {
     // open. It is the same clause a refusal prints, from the same value, so a person who
     // reads the preflight and then the refusal is given one account of one reading. The
     // sentence and the clause are read off one branch, so the two cannot disagree.
+    //
+    // The clause goes on a line of its own under the row. With the sample and the
+    // sentence it ran past two hundred columns in one cell, and a cell that carries an
+    // instruction puts the instruction where a person can read it, as `runtime` does.
     let (means, because) = if group.copies.survives() {
-        ("removing this home does not lose it", String::new())
+        ("removing this home does not lose it", None)
     } else {
-        (
-            "a reclaim keeps this home",
-            group.copies.witness().map(Witness::because).unwrap_or_default(),
-        )
+        ("a reclaim keeps this home", group.copies.witness().and_then(Witness::because))
     };
-    format!(
-        "{} ({}): {sample} — {means}{because}{}",
+    let row = format!(
+        "{} ({}): {sample} — {means}{}",
         group.copies.label(),
         group.count,
         holder(&group.copies)
-    )
+    );
+    match because {
+        Some(clause) => format!("{row}\n{clause}"),
+        None => row,
+    }
 }
 
 /// Which repository holds the second copy, for the one disposition that rests on one.
@@ -615,6 +620,25 @@ mod tests {
             not_checked.contains("nothing here read the remote to check them"),
             "{not_checked}"
         );
+    }
+
+    /// The clause is a line under the row, not a tail on it: the row ends at the
+    /// sentence, and the next line starts with the clause, whole, with the instruction
+    /// it carries.
+    #[test]
+    fn the_witness_clause_is_a_line_under_the_commits_row() {
+        let mut assessment = clear();
+        assessment.commits.push(CommitGroup {
+            copies: Copies::NotChecked { witness: Witness::Unchecked },
+            count: 1,
+            sample: vec![crate::git::Oid::parse(&"ab".repeat(20)).unwrap()],
+        });
+        let lines = preflight(assessment).doc().lines();
+        let row = lines.iter().position(|line| line.contains("not checked (1)")).unwrap();
+        assert!(lines[row].ends_with("a reclaim keeps this home"), "{}", lines[row]);
+        let clause = lines[row + 1].trim_start();
+        assert!(clause.starts_with("this home's own remote-tracking refs"), "{clause}");
+        assert!(clause.ends_with("Fetch in the project checkout and reclaim again."), "{clause}");
     }
 
     /// The case a reading of five unit homes found and nothing answered. Two units each

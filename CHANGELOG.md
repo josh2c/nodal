@@ -12,6 +12,12 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
 - `nodal ls` prints `unknown` in `NEEDS` for every home when the process table could not be
   read, with the reason under the table. It no longer reads an unread table as nothing
   standing in the home.
+- `nodal doctor --machine` names a directory the walk took for a clone and Git could not
+  open once, with what the walk saw: "taken for a clone because its `.git` is a file naming
+  a Git directory, and Git finds no repository there".
+- `nodal reclaim --check` puts the witness clause of a `commits` row on a line under the
+  row. The row ends at "a reclaim keeps this home"; the clause and its instruction follow
+  whole.
 - The `nodal` shell function finds the binary each time it runs: the path it was printed
   with, else the one on the `PATH`. When neither holds one, it prints "nodal is not on the
   path" and exits 127, where it ran an empty command and printed `permission denied`.
