@@ -7,12 +7,19 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
 
 ### Read
 
+- `nodal ls` prints one note for a unit whose home is not on this disk. It runs no `git` in
+  the missing directory, and no longer prints what each `git` said about it.
 - `nodal ls` prints `unknown` in `NEEDS` for every home when the process table could not be
   read, with the reason under the table. It no longer reads an unread table as nothing
   standing in the home.
 - The `nodal` shell function finds the binary each time it runs: the path it was printed
   with, else the one on the `PATH`. When neither holds one, it prints "nodal is not on the
   path" and exits 127, where it ran an empty command and printed `permission denied`.
+
+### Reclaim
+
+- `nodal reclaim` prints a `record` line naming the ref the home was committed to before
+  the first step, `refs/nodal/<unit>/pre/<operation>`, for every reclaim that took one.
 
 ### Make
 

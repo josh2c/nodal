@@ -82,7 +82,14 @@ pub struct Report {
 /// written is a note, not a failure: the command that called this did its own work, and
 /// losing the memory of one unit is not a reason to report that the work failed.
 pub fn refresh(conn: &Connection, project: &Project) -> Result<Report> {
-    Ok(compile(project, &survey::project(conn, project)?))
+    let surveyed = survey::project(conn, project)?;
+    let mut report = compile(project, &surveyed);
+    // The survey's own notes, for a caller that prints nothing else of the survey. The
+    // list and the detail print them under their table, so they are not in `compile`.
+    report.notes.extend(surveyed.iter().flat_map(|subject| {
+        subject.notes.iter().map(|cause| Notice::about(subject.unit.slug.to_string(), cause))
+    }));
+    Ok(report)
 }
 
 /// The same, from a survey the caller has already taken.
@@ -90,21 +97,21 @@ pub fn refresh(conn: &Connection, project: &Project) -> Result<Report> {
 /// The `ls` and `show` commands take the survey themselves, because they answer from it
 /// as well as write from it ([`crate::runtime::ls::rows`]). Every other command calls
 /// [`refresh`], which takes one and hands it here.
+///
+/// The report's notes are the writes' own. What the survey could not read is in each
+/// snapshot, and the commands that took the survey print it under their table once;
+/// [`refresh`] adds it for the commands that print nothing else.
 #[must_use]
 pub fn compile(project: &Project, surveyed: &[survey::Snapshot]) -> Report {
     let command = test_command(&project.root);
     let mut report = Report::default();
     for subject in surveyed {
-        report.notes.extend(
-            subject.notes.iter().map(|cause| Notice::about(subject.unit.slug.to_string(), cause)),
-        );
+        // A home that is not on this disk was the survey's note, and there is nothing
+        // to write into.
         let Some(home) = subject.home.as_ref().map(|environment| &environment.home) else {
             continue;
         };
         if !home.is_dir() {
-            report
-                .notes
-                .push(Notice::about(subject.unit.slug.to_string(), "its home is not on this disk"));
             continue;
         }
         let ledger = ledger::of(subject, surveyed);

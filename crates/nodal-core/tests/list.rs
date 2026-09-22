@@ -349,7 +349,13 @@ fn a_signal_that_cannot_run_is_a_note_and_the_rows_still_print() {
     assert_eq!(list.units.len(), shapes::BRANCHES.len(), "every unit still has a row");
     assert!(list.units.iter().all(|row| row.sessions.is_empty()));
     assert!(list.notes.iter().any(|note| note.starts_with("who: ")), "{:?}", list.notes);
-    assert!(list.notes.iter().any(|note| note.starts_with("ahead: ")), "{:?}", list.notes);
+    let about_ahead: Vec<&String> =
+        list.notes.iter().filter(|note| note.starts_with("ahead: ")).collect();
+    assert_eq!(
+        about_ahead,
+        vec!["ahead: its home is not on this disk"],
+        "one note, the fact, and not what each git said about the missing directory"
+    );
     let gone = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
     assert!(gone.work.is_none(), "a home that is not there has no Git answer");
     drop(fixture.directory);
