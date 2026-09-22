@@ -1,0 +1,302 @@
+//! The trash never becomes the only copy without a refusal and a line.
+//!
+//! `nodal reclaim` lets a home go when every commit in it exists somewhere else. Where
+//! that somewhere else is another repository on this disk — a clone two directories away,
+//! the project's own checkout, a reading of the remote taken in one — the verdict is only
+//! as true as that repository. After the home is in the trash, the copy can go: somebody
+//! deletes a branch in the clone, a host drops the branch a pull request merged.
+//!
+//! Nothing read the home again between the reclaim and the retention running out, so
+//! `nodal gc` removed a directory that by then held the last copy of a commit. No
+//! refusal, no line, and the only signal was the clock. That is the first line of the
+//! never list broken on a timer, and this suite is the proof it is not.
+//!
+//! Every property here runs on a machine whose checkout has a bare `origin` beside it,
+//! and every `git` Nodal starts on it may use the local file transport and nothing else.
+//! `gc` reads; it never fetches.
+//!
+//! | property | test |
+//! |---|---|
+//! | a lost sibling copy keeps the home | `a_home_whose_sibling_copy_went_survives_its_retention` |
+//! | a restored copy lets it go | `the_same_home_is_removed_once_the_copy_is_back` |
+//! | a lost remote branch keeps it | `a_home_whose_remote_branch_went_survives_its_retention` |
+//! | a copy nothing named still keeps it | `a_home_the_checkout_alone_held_is_kept_and_says_what_it_knows` |
+//! | the ordinary home still goes | `a_home_whose_commits_are_in_the_checkout_is_removed_on_time` |
+//! | a reclaim writes into no other home | `a_reclaim_of_one_unit_writes_into_no_other_home` |
+//!
+//! Both hosts read every signal these properties use, so each one asserts the same thing
+//! on Linux and on macOS.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
+
+use std::path::{Path, PathBuf};
+
+use nodal_safety::InState as _;
+use nodal_safety::{Machine, Snapshot, git, json, stderr, stdout};
+
+/// The unit every property here reclaims. It is one of the fixture's own handles.
+const SLUG: &str = "worker-import";
+
+/// The unit a reclaim of `SLUG` must not write into.
+const BYSTANDER: &str = "payroll-export";
+
+/// A path no ignore rule of the fixture covers, so a commit of it is work.
+const ONLY: &str = "only-here.txt";
+
+/// The branch a second repository keeps its copy of the home's commit on.
+const COPY: &str = "rescued";
+
+/// A second clone of the project, beside the checkout, where a person keeps a copy.
+const SIBLING: &str = "sibling";
+
+/// The branch a home pushes its work to, as a review branch on the remote.
+const TOPIC: &str = "topic";
+
+/// Only the local file transport, so no property here can reach a network.
+const ONLY_LOCAL: (&str, &str) = ("GIT_ALLOW_PROTOCOL", "file");
+
+/// No proxy either, for the same reason.
+const NO_PROXY: (&str, &str) = ("GIT_PROXY_COMMAND", "false");
+
+/// A machine with a remote, whose trash keeps nothing.
+///
+/// The retention is nought, so a reclaimed home is expired the instant it is trashed and
+/// the next `nodal gc` is the one that decides. What that sweep reads is the whole of
+/// what these properties are about, and a fortnight of waiting is not part of it.
+fn machine() -> Machine {
+    let machine = Machine::with_remote().with_env(ONLY_LOCAL).with_env(NO_PROXY);
+    let recipe = machine.source.join("nodal.toml");
+    let written = std::fs::read_to_string(&recipe).unwrap();
+    std::fs::write(&recipe, format!("{written}\n[reclaim]\ntrash_retention = 0\n")).unwrap();
+    machine
+}
+
+/// A unit whose one commit exists only in its home, and that commit.
+fn only_here(machine: &Machine, slug: &str) -> (PathBuf, String) {
+    let home = machine.unit(slug);
+    std::fs::write(home.join(ONLY), "the only copy\n").unwrap();
+    git(&home, &["add", "--all"]);
+    git(&home, &["commit", "--quiet", "--message", "work only this home has"]);
+    let tip = git(&home, &["rev-parse", "HEAD"]);
+    (home, tip)
+}
+
+/// Reclaim the unit, insisting that it went ahead and that the home is in the trash.
+fn reclaimed(machine: &Machine, slug: &str) -> PathBuf {
+    let done = machine.nodal(&["reclaim", slug]);
+    assert!(done.status.success(), "the reclaim refused: {}", stderr(&done));
+    let said = stdout(&done);
+    assert!(said.contains("nothing that is only here"), "{said}");
+    let trashed = machine.trashed();
+    assert_eq!(trashed.len(), 1, "the trash holds exactly the home that was reclaimed");
+    trashed.into_iter().next().unwrap()
+}
+
+/// A second repository beside the checkout, holding `tip` on a branch of its own.
+///
+/// Beside the checkout and not inside it, because that is where the reading looks: a
+/// destructive path asks the repositories under the checkout's parent
+/// ([`nodal_core::doctor::scan::siblings`]).
+fn sibling_holding(machine: &Machine, from: &Path, tip: &str) -> PathBuf {
+    let parent = machine.source.parent().unwrap();
+    let path = parent.join(SIBLING);
+    let named = path.to_str().unwrap();
+    git(parent, &["init", "--quiet", "--initial-branch", "main", named]);
+    let spec = format!("{tip}:refs/heads/{COPY}");
+    git(&path, &["fetch", "--quiet", from.to_str().unwrap(), &spec]);
+    assert!(reaches(&path, tip), "the sibling does not hold the commit");
+    path
+}
+
+/// A path as the filesystem spells it.
+///
+/// Every path Nodal reports is resolved, because one directory reached through a
+/// symbolic link and reached directly is one directory with two spellings
+/// ([`nodal_core::paths`]). A temporary directory under a linked `/tmp` is exactly that
+/// pair, so a test comparing the two spellings would pass on one runner and fail on the
+/// other.
+fn resolved(path: &Path) -> String {
+    std::fs::canonicalize(path).unwrap().to_str().unwrap().to_owned()
+}
+
+/// Whether a repository reaches this commit from a ref of its own.
+fn reaches(repo: &Path, tip: &str) -> bool {
+    git(repo, &["rev-list", "--all"]).lines().any(|line| line == tip)
+}
+
+/// The invariant: the trashed home is still there and plain Git still reads the work out
+/// of it. A sweep that kept a row and took the directory would keep nothing.
+fn readable(trash: &Path, tip: &str) {
+    assert!(trash.is_dir(), "the sweep removed the home it said it kept");
+    assert_eq!(git(trash, &["cat-file", "-t", tip]), "commit", "the commit is not readable");
+    assert_eq!(std::fs::read_to_string(trash.join(ONLY)).unwrap(), "the only copy\n");
+}
+
+/// A verdict of "second local copy" rests on a ref in another repository, and that ref
+/// can go while the home sits in the trash. When it does, the sweep keeps the home and
+/// names the copy the reclaim rested on.
+#[test]
+fn a_home_whose_sibling_copy_went_survives_its_retention() {
+    let machine = machine();
+    let (home, tip) = only_here(&machine, SLUG);
+    let sibling = sibling_holding(&machine, &home, &tip);
+    let trash = reclaimed(&machine, SLUG);
+
+    // The copy the verdict rested on goes, which is one ordinary command in a
+    // repository Nodal never touched.
+    git(&sibling, &["update-ref", "-d", &format!("refs/heads/{COPY}")]);
+    git(&sibling, &["reflog", "expire", "--expire=now", "--all"]);
+    assert!(!reaches(&sibling, &tip), "the sibling still reaches the commit");
+
+    let swept = machine.nodal(&["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    let report = stdout(&swept);
+    assert!(report.contains(&format!("kept: {}", &tip[..8])), "{report}");
+    assert!(report.contains("is only here"), "{report}");
+    assert!(report.contains(&resolved(&sibling)), "the line does not name it: {report}");
+    assert!(report.contains(&format!("refs/heads/{COPY}")), "or the ref: {report}");
+    assert!(report.contains("is gone"), "{report}");
+    readable(&trash, &tip);
+    assert_eq!(machine.trashed(), vec![trash.clone()], "and the row was kept with it");
+
+    carries_the_same_in_json(&machine);
+    readable(&trash, &tip);
+}
+
+/// The same answer in `--json`, because a script deciding whether work is still
+/// reachable reads that and not the table.
+fn carries_the_same_in_json(machine: &Machine) {
+    let carried = json(&machine.nodal(&["gc", "--json"]));
+    let held = carried["held"].as_array().expect("the answer carries the homes it kept");
+    assert_eq!(held.len(), 1, "{carried}");
+    assert_eq!(held[0]["holding"]["kind"], "only_here", "{carried}");
+    assert_eq!(held[0]["holding"]["count"], 1, "{carried}");
+    assert_eq!(held[0]["entry"]["rested"]["kind"], "safe", "{carried}");
+}
+
+/// The other half of the same property. A kept home keeps its row and stays expired, so
+/// the next sweep reads it again: a copy somebody restores is all it takes.
+#[test]
+fn the_same_home_is_removed_once_the_copy_is_back() {
+    let machine = machine();
+    let (home, tip) = only_here(&machine, SLUG);
+    let sibling = sibling_holding(&machine, &home, &tip);
+    let trash = reclaimed(&machine, SLUG);
+
+    git(&sibling, &["update-ref", "-d", &format!("refs/heads/{COPY}")]);
+    git(&sibling, &["reflog", "expire", "--expire=now", "--all"]);
+    assert!(stdout(&machine.nodal(&["gc"])).contains("is only here"), "the sweep kept it");
+    assert!(trash.is_dir(), "the home is still there");
+
+    // The person puts the copy back, out of the trashed home itself, which is what the
+    // line told them was there to rescue.
+    let back = format!("{tip}:refs/heads/{COPY}");
+    git(&sibling, &["fetch", "--quiet", trash.to_str().unwrap(), &back]);
+    assert!(reaches(&sibling, &tip), "the sibling does not reach the commit again");
+
+    let swept = machine.nodal(&["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    assert!(!trash.exists(), "the home stayed although the copy is back: {}", stdout(&swept));
+    assert!(machine.trashed().is_empty(), "and the row went with the directory");
+}
+
+/// A verdict of "proved on the remote" rests on a branch a host can delete the moment a
+/// pull request merges. The sweep reads the home again and keeps it.
+#[test]
+fn a_home_whose_remote_branch_went_survives_its_retention() {
+    let machine = machine();
+    let (home, tip) = only_here(&machine, SLUG);
+    git(&home, &["push", "--quiet", "origin", &format!("HEAD:refs/heads/{TOPIC}")]);
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+    let trash = reclaimed(&machine, SLUG);
+
+    // The host deletes the branch, and the person's next fetch drops their reading of it.
+    git(machine.origin(), &["update-ref", "-d", &format!("refs/heads/{TOPIC}")]);
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+    git(&machine.source, &["reflog", "expire", "--expire=now", "--all"]);
+    assert!(!reaches(&machine.source, &tip), "the checkout still reaches the commit");
+
+    let swept = machine.nodal(&["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    let report = stdout(&swept);
+    assert!(report.contains(&format!("kept: {}", &tip[..8])), "{report}");
+    assert!(report.contains("is only here"), "{report}");
+    assert!(report.contains(&resolved(&machine.source)), "{report}");
+    assert!(report.contains(&format!("refs/remotes/origin/{TOPIC}")), "{report}");
+    readable(&trash, &tip);
+}
+
+/// A copy on a branch of the project's own checkout is not reported as a second copy at
+/// all: the checkout's own refs are the denominator every disposition is drawn from, so
+/// a commit one of them reaches is the project's history rather than this unit's work
+/// ([`nodal_core::lifecycle::assess`]). The reclaim therefore writes down no copy.
+///
+/// The sweep still keeps the home, because it reads the machine again rather than the
+/// row, and the line says exactly what it knows: this commit is only here, and this
+/// home's reclaim recorded no copy outside it.
+#[test]
+fn a_home_the_checkout_alone_held_is_kept_and_says_what_it_knows() {
+    let machine = machine();
+    let (home, tip) = only_here(&machine, SLUG);
+    let spec = format!("HEAD:refs/heads/{COPY}");
+    git(&machine.source, &["fetch", "--quiet", home.to_str().unwrap(), &spec]);
+    let trash = reclaimed(&machine, SLUG);
+
+    git(&machine.source, &["update-ref", "-d", &format!("refs/heads/{COPY}")]);
+    git(&machine.source, &["reflog", "expire", "--expire=now", "--all"]);
+    assert!(!reaches(&machine.source, &tip), "the checkout still reaches the commit");
+
+    let swept = machine.nodal(&["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    let report = stdout(&swept);
+    assert!(report.contains(&format!("kept: {}", &tip[..8])), "{report}");
+    assert!(report.contains("recorded no copy outside it"), "{report}");
+    readable(&trash, &tip);
+}
+
+/// The control, and the reason this is a reading rather than a refusal to collect. A
+/// home whose commits the project's own checkout reaches holds no last copy of anything,
+/// and the retention running out removes it exactly as it always did.
+#[test]
+fn a_home_whose_commits_are_in_the_checkout_is_removed_on_time() {
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    assert!(home.is_dir());
+    let trash = reclaimed(&machine, SLUG);
+
+    let swept = machine.nodal(&["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    assert!(stdout(&swept).contains("1 home"), "{}", stdout(&swept));
+    assert!(!trash.exists(), "the sweep kept a home holding nothing: {}", stdout(&swept));
+    assert!(machine.trashed().is_empty());
+}
+
+/// A reclaim of one unit writes into that unit's home and into the registry, and into
+/// nothing else.
+///
+/// It used to write three things into every other open home of the project — a rewritten
+/// `WORKUNIT.md`, a fetched set of refs, and a dangling tree object — under a report that
+/// said it had changed nothing of theirs. The whole tree is compared, `.git` included, so
+/// every one of the three is a difference.
+#[test]
+fn a_reclaim_of_one_unit_writes_into_no_other_home() {
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    let bystander = machine.unit(BYSTANDER);
+    assert!(home.is_dir());
+
+    let before = Snapshot::of(&bystander);
+    let refs_before = git(&bystander, &["for-each-ref", "--format=%(refname) %(objectname)"]);
+    assert!(before.len() > 1, "the snapshot read the home");
+
+    let done = machine.nodal(&["reclaim", SLUG]);
+    assert!(done.status.success(), "{}", stderr(&done));
+    assert!(stdout(&done).contains("wrote into no other unit's home"), "{}", stdout(&done));
+
+    before.assert_unchanged(&Snapshot::of(&bystander), "a reclaim wrote into another home");
+    assert_eq!(
+        git(&bystander, &["for-each-ref", "--format=%(refname) %(objectname)"]),
+        refs_before,
+        "a reclaim moved a ref in another home"
+    );
+}
