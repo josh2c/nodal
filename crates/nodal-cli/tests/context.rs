@@ -13,7 +13,9 @@
 //!    is that nothing had to.
 //! 2. The ledger names what a sibling touched, on the sibling's own branch, and what
 //!    the branch everybody merges into gained under this unit.
-//! 3. The memory is written again by `ls`, `show`, `new`, `merge` and `reclaim`.
+//! 3. The memory is written again by `ls`, `show`, `new` and `merge`. A reclaim is the
+//!    one command that writes no memory but its own unit's, because it writes into the
+//!    unit it names and into the registry and into nothing else.
 //! 4. Every sibling is capped, the cap states what it dropped, and a project with a
 //!    dozen busy units still compiles to a file somebody reads.
 //! 5. The pointer is one line in `CLAUDE.md` and one in `AGENTS.md`, it stays one line
@@ -367,13 +369,24 @@ fn every_command_that_touches_a_unit_writes_the_memory_again() {
     let after = read(&memory);
     assert!(!after.contains("payroll-export · "), "a merged unit leaves the ledger:\n{after}");
 
-    // And a reclaim does the same.
+    // A reclaim is the one command that does not. It writes into the unit it names and
+    // into the registry, and into nothing else, so the sibling's memory still names the
+    // reclaimed unit until a command that reads the sibling writes it again.
     workspace.create("second-look", "a second look");
     assert!(read(&memory).contains("second-look · "), "the new unit is in the ledger");
     let reclaimed = workspace.nodal(&["reclaim", "second-look"], &workspace.source);
     assert!(reclaimed.status.success(), "{}", text(&reclaimed.stderr));
     let after = read(&memory);
-    assert!(!after.contains("second-look · "), "a reclaimed unit leaves the ledger:\n{after}");
+    assert!(after.contains("second-look · "), "a reclaim wrote into another home:\n{after}");
+    assert!(
+        text(&reclaimed.stdout).contains("wrote into no other unit's home"),
+        "and the report says it did not: {}",
+        text(&reclaimed.stdout)
+    );
+
+    workspace.ok(&["ls"], &workspace.source);
+    let later = read(&memory);
+    assert!(!later.contains("second-look · "), "the next command writes it again:\n{later}");
 }
 
 #[test]

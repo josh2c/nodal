@@ -94,6 +94,17 @@ fn named_paths(removals: &[prune::Removal]) -> Vec<String> {
     removals.iter().map(|removal| removal.path.display().to_string()).collect()
 }
 
+/// What a reclaim does not write, said in the report rather than left to be found.
+///
+/// The label is six characters, as every other label of this report is, so that adding
+/// the line moved no other line of it.
+///
+/// Every other command that touches a unit compiles the memory of every unit of the
+/// project. A reclaim does not, because a reclaim of one unit writes into that unit's
+/// home and into the registry, and into nothing else.
+const MEMORIES: &str = "this reclaim wrote into no other unit's home. The next nodal command that reads \
+     them writes their WORKUNIT.md again";
+
 /// What one reclaim did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reclaimed {
@@ -177,6 +188,7 @@ impl Render for Reclaimed {
             fields.push(Field::new("remote", pruned.cell()));
         }
         fields.push(Field::new("verify", self.verify_cell()));
+        fields.push(Field::new("memory", MEMORIES));
         if let Some(path) = &self.worktree_remove {
             fields.push(Field::new("remove", crate::output::view::adopt::removal_command(path)));
         }

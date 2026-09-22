@@ -34,6 +34,10 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   reaches keeps the home and its row, and one line names the commit and the copy that is
   gone. Nothing is removed on a reading that could not be made. A home a reclaim forced
   past a finding is removed on its retention as before.
+- `nodal reclaim` writes into the home of the unit it names and into the registry, and
+  into nothing else. It no longer rewrites `WORKUNIT.md`, fetches refs or writes a tree
+  object into every other open home. The report says so, and the next command that reads
+  those units writes their memory again.
 
 ### Make
 
