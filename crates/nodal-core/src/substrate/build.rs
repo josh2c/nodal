@@ -386,11 +386,16 @@ fn tools(installs: &[Install], destination: &Path, warm: &[String]) -> Vec<ToolS
                 note: phrase("making the environment", &install.prepare),
             });
         }
+        let what = if install.lockfile.is_some() {
+            "installing dependencies"
+        } else {
+            "installing dependencies with no lockfile to hold them to"
+        };
         steps.push(ToolStep {
             name: format!("install.{program}"),
             argv: runnable(&install.argv, destination),
             env: install.env.clone(),
-            note: phrase("installing dependencies", &install.argv),
+            note: phrase(what, &install.argv),
         });
     }
     steps.push(ToolStep {
@@ -848,35 +853,54 @@ fn remove(path: &Path) -> Result<()> {
     remove_tree(path)
 }
 
-/// Installing dependencies, as one package manager spells it.
+/// Installing dependencies, as one package manager spells it: frozen to `lockfile` when
+/// the project carries one, plain when it carries none.
 ///
-/// Plain `install` rather than a frozen or offline form: a base is built for a
-/// workspace fingerprint that includes the lockfile, so the lockfile is exactly what
-/// the install is being asked to realise, and a base built for a branch that is
-/// updating its dependencies must still build.
+/// A base is built for a workspace fingerprint that includes the lockfile, so the
+/// lockfile is exactly what the install is asked to realise, and an install that would
+/// change it is asked to realise something else. A branch whose lockfile disagrees with
+/// its manifest is refused with the tool's reason rather than built from a lockfile the
+/// tool rewrote on the way.
 #[must_use]
-pub fn install_argv(manager: PackageManager) -> Vec<String> {
-    // One table. `pip` is the row that is not a program on the path with a verb after
-    // it: it is named by a path into the environment the build made for it
+pub fn install_argv(manager: PackageManager, lockfile: Option<&Path>) -> Vec<String> {
+    // One table, two columns: the form that installs from the lockfile and refuses to
+    // change it, and the plain form for a project that has none. Every home is a clone
+    // of what the install left, so an install that rewrote the lockfile made every home
+    // dirty at birth over a file nobody in it touched; `npm install` does that when the
+    // lockfile's name disagrees with `package.json`, and it did on the founder's own
+    // project. The frozen form cannot.
+    //
+    // `pip` is the row that is not a program on the path with a verb after it: it is
+    // named by a path into the environment the build made for it
     // ([`super::pin::Install::prepare`]), and it is handed the file to install from.
-    // The `pip` on the path would install into the host.
-    match manager {
-        PackageManager::Pip => vec![
-            format!("{VENV}/bin/{program}", program = manager.program()),
-            String::from("install"),
-            String::from("-r"),
-            String::from(PIP_REQUIREMENTS),
-        ],
-        PackageManager::Cargo => vec![manager.program().to_owned(), String::from("fetch")],
-        PackageManager::Uv => vec![manager.program().to_owned(), String::from("sync")],
-        PackageManager::Pnpm
-        | PackageManager::Yarn
-        | PackageManager::Npm
-        | PackageManager::Bun
-        | PackageManager::Poetry => {
-            vec![manager.program().to_owned(), String::from("install")]
+    // The `pip` on the path would install into the host. Poetry has no frozen form.
+    let program = manager.program().to_owned();
+    let words: &[&str] = match (manager, lockfile) {
+        (PackageManager::Pip, _) => {
+            return vec![
+                format!("{VENV}/bin/{program}"),
+                String::from("install"),
+                String::from("-r"),
+                String::from(PIP_REQUIREMENTS),
+            ];
         }
-    }
+        (PackageManager::Cargo, Some(_)) => &["fetch", "--locked"],
+        (PackageManager::Cargo, None) => &["fetch"],
+        (PackageManager::Uv, Some(_)) => &["sync", "--frozen"],
+        (PackageManager::Uv, None) => &["sync"],
+        (PackageManager::Npm, Some(_)) => &["ci"],
+        (PackageManager::Pnpm | PackageManager::Bun, Some(_)) => &["install", "--frozen-lockfile"],
+        (PackageManager::Yarn, Some(_)) => &["install", "--immutable"],
+        (
+            PackageManager::Npm
+            | PackageManager::Pnpm
+            | PackageManager::Bun
+            | PackageManager::Yarn
+            | PackageManager::Poetry,
+            _,
+        ) => &["install"],
+    };
+    std::iter::once(program).chain(words.iter().map(|word| (*word).to_owned())).collect()
 }
 
 /// The file `pip` is handed. The same name the recipe reads `pip` out of
@@ -929,14 +953,60 @@ mod tests {
 
     #[test]
     fn each_package_manager_installs_in_its_own_words() {
-        assert_eq!(install_argv(PackageManager::Pnpm), ["pnpm", "install"]);
-        assert_eq!(install_argv(PackageManager::Cargo), ["cargo", "fetch"]);
-        assert_eq!(install_argv(PackageManager::Uv), ["uv", "sync"]);
+        assert_eq!(install_argv(PackageManager::Pnpm, None), ["pnpm", "install"]);
+        assert_eq!(install_argv(PackageManager::Cargo, None), ["cargo", "fetch"]);
+        assert_eq!(install_argv(PackageManager::Uv, None), ["uv", "sync"]);
         assert_eq!(
-            install_argv(PackageManager::Pip),
+            install_argv(PackageManager::Pip, None),
             [".venv/bin/pip", "install", "-r", "requirements.txt"],
             "pip is run out of the environment the build made, and handed its file"
         );
+    }
+
+    /// A project that carries a lockfile is installed from it, in the form that refuses
+    /// to change it. The plain form rewrote `package-lock.json` when its name disagreed
+    /// with `package.json`, and every home was born dirty over it.
+    #[test]
+    fn a_project_with_a_lockfile_installs_frozen_to_it() {
+        let frozen = |manager: PackageManager| {
+            let name = manager.lockfiles()[0];
+            install_argv(manager, Some(Path::new(name)))
+        };
+        assert_eq!(frozen(PackageManager::Npm), ["npm", "ci"]);
+        assert_eq!(frozen(PackageManager::Pnpm), ["pnpm", "install", "--frozen-lockfile"]);
+        assert_eq!(frozen(PackageManager::Yarn), ["yarn", "install", "--immutable"]);
+        assert_eq!(frozen(PackageManager::Bun), ["bun", "install", "--frozen-lockfile"]);
+        assert_eq!(frozen(PackageManager::Uv), ["uv", "sync", "--frozen"]);
+        assert_eq!(frozen(PackageManager::Cargo), ["cargo", "fetch", "--locked"]);
+        assert_eq!(frozen(PackageManager::Poetry), ["poetry", "install"], "no frozen form");
+        assert_eq!(
+            frozen(PackageManager::Pip),
+            [".venv/bin/pip", "install", "-r", "requirements.txt"],
+            "pip is already frozen to the file it is handed"
+        );
+    }
+
+    /// The person hears, in the progress line, that an install has no lockfile to hold
+    /// it to, so that a tool that writes one is no surprise.
+    #[test]
+    fn an_install_with_no_lockfile_says_so_in_its_line() {
+        let plain = Install {
+            manager: PackageManager::Pnpm,
+            prepare: Vec::new(),
+            argv: vec![String::from("pnpm"), String::from("install")],
+            env: Vec::new(),
+            at: Site::Base,
+            lockfile: None,
+        };
+        let frozen = Install { lockfile: Some(PathBuf::from("pnpm-lock.yaml")), ..plain.clone() };
+        let note = |install: &Install| {
+            tools(std::slice::from_ref(install), Path::new("/base"), &[]).remove(0).note
+        };
+        assert_eq!(
+            note(&plain),
+            "installing dependencies with no lockfile to hold them to: pnpm install"
+        );
+        assert_eq!(note(&frozen), "installing dependencies: pnpm install");
     }
 
     /// A program named by a path is resolved against the base, because Rust does not
@@ -945,11 +1015,11 @@ mod tests {
     #[test]
     fn a_program_inside_the_base_is_run_by_its_whole_path() {
         let base = Path::new("/state/b/ABCD1234");
-        let inside = runnable(&install_argv(PackageManager::Pip), base);
+        let inside = runnable(&install_argv(PackageManager::Pip, None), base);
         assert_eq!(inside[0], "/state/b/ABCD1234/.venv/bin/pip");
         assert_eq!(&inside[1..], ["install", "-r", "requirements.txt"]);
 
-        let named = runnable(&install_argv(PackageManager::Pnpm), base);
+        let named = runnable(&install_argv(PackageManager::Pnpm, None), base);
         assert_eq!(named, ["pnpm", "install"], "a name is for the path to find");
         assert!(runnable(&[], base).is_empty(), "an empty list has no program to resolve");
     }
@@ -972,6 +1042,7 @@ mod tests {
             argv: vec![String::from("pnpm"), String::from("install")],
             env: Vec::new(),
             at: Site::Home { output: PathBuf::from("node_modules") },
+            lockfile: None,
         };
         let kept = Install { at: Site::Base, ..moved.clone() };
 

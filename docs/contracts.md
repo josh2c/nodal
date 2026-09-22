@@ -29,6 +29,11 @@ from the moment it exists, and a home that is dirty at birth is one `nodal recla
 | `AGENTS.md` | pointer | where Nodal created it | the one line, and the file when that was all of it |
 | `.claude/settings.json` | Claude Code settings | where Nodal wrote it | Nodal's hooks, and the file when they were all of it |
 
+The rule holds for what runs on Nodal's behalf. Every install runs in the form that installs from the lockfile and
+refuses to change it (`npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable`,
+`bun install --frozen-lockfile`, `uv sync --frozen`, `cargo fetch --locked`); a project with no
+lockfile keeps the plain install.
+
 A project that commits its own `.envrc` — direnv and Nix users do — keeps it: Nodal writes
 `.nodal/env`, which the committed `.envrc` reads, and states in one line that it left the tracked file
 alone. Such a home gets its identity and its generated values from direnv and its secrets from the

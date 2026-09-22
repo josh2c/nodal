@@ -217,6 +217,46 @@ impl PackageManager {
         }
     }
 
+    /// The committed files this manager installs from and must never change, most
+    /// specific first.
+    ///
+    /// A lockfile for every manager that writes one; `requirements.txt` for `pip`,
+    /// which installs from the file it is handed and writes nothing back. A base build
+    /// installs frozen when the project carries one of these
+    /// ([`crate::substrate::build::install_argv`]), and inference proposes the manager
+    /// when one is there (`crate::recipe::infer::package_manager`): one table, so the
+    /// file that names a manager is the file its install is held to.
+    ///
+    /// Bun has written `bun.lock` since 1.2 and `bun.lockb` before that, and a
+    /// repository carries one or the other.
+    #[must_use]
+    pub const fn lockfiles(self) -> &'static [&'static str] {
+        match self {
+            Self::Pnpm => &["pnpm-lock.yaml"],
+            Self::Yarn => &["yarn.lock"],
+            Self::Npm => &["package-lock.json"],
+            Self::Bun => &["bun.lock", "bun.lockb"],
+            Self::Cargo => &["Cargo.lock"],
+            Self::Uv => &["uv.lock"],
+            Self::Poetry => &["poetry.lock"],
+            Self::Pip => &["requirements.txt"],
+        }
+    }
+
+    /// The file a lockfile of this manager has to agree with.
+    ///
+    /// Named in a refusal: a frozen install that fails because the two disagree tells
+    /// the person which file to fix, and the fix is in the project and never in a unit.
+    #[must_use]
+    pub const fn manifest(self) -> &'static str {
+        match self {
+            Self::Pnpm | Self::Yarn | Self::Npm | Self::Bun => "package.json",
+            Self::Cargo => "Cargo.toml",
+            Self::Uv | Self::Poetry => "pyproject.toml",
+            Self::Pip => "requirements.txt",
+        }
+    }
+
     /// The binary this package manager is invoked as.
     #[must_use]
     pub fn program(self) -> &'static str {

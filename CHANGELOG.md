@@ -55,6 +55,11 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   output out of the base. The base runs no install for that manager, and its readiness
   line names the directory and the manager. Cargo never moves, because its download cache
   is outside the tree.
+- A base build and a home install run the form of each package manager that installs
+  from the lockfile and refuses to change it: `npm ci`, `pnpm install --frozen-lockfile`,
+  `yarn install --immutable`, `bun install --frozen-lockfile`, `uv sync --frozen`,
+  `cargo fetch --locked`. A project with no lockfile keeps the plain install, and the
+  progress line says so.
 
 ### Reclaim
 

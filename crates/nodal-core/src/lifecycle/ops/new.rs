@@ -1390,6 +1390,7 @@ mod tests {
             argv: argv.iter().map(|word| (*word).to_owned()).collect(),
             env: Vec::new(),
             at: Site::Home { output: PathBuf::from("node_modules") },
+            lockfile: None,
         }
     }
 
