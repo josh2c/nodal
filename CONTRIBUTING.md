@@ -40,6 +40,9 @@ author, and the author field says so. Do not add trailer lines: no `Co-Authored-
 and a push to `main`, whose commits hold one. Its header comment states the exact rule,
 including what git itself counts as a trailer.
 
+A pull-request title holds no colon. GitHub's merge commit carries the title as its body,
+and a last line with a colon reads as a trailer to git.
+
 ## Releases
 
 A change that a person can see adds one line to `CHANGELOG.md`, under the section for the
