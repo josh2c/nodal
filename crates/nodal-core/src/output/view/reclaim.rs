@@ -16,9 +16,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::git::Oid;
 use crate::lifecycle::hooks::Ran;
 use crate::lifecycle::uniqueness::Finding;
-use crate::model::{Slug, Timestamp, Trashed};
+use crate::model::{Outside, Slug, Timestamp, Trashed};
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, JOIN, NONE, Table};
 use crate::runtime::attribute::{Note, Source};
@@ -408,7 +409,82 @@ pub struct Idle {
     pub since: Timestamp,
 }
 
-/// What one `nodal gc` removed.
+/// One expired home `nodal gc` did not remove, and why it stayed.
+///
+/// The row stays with the directory, so the entry is still in the trash, still expired,
+/// and read again by the next sweep. A copy somebody restores is therefore all it takes
+/// for the home to go on the sweep after that.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldBack {
+    /// The entry that stays.
+    pub entry: Trashed,
+    /// Why it stays.
+    pub holding: Holding,
+}
+
+/// Why `nodal gc` kept an expired home.
+///
+/// Two answers and not one, because "this home holds the last copy of a commit" and "I
+/// could not read this home" are different facts, and a report that printed the second
+/// as the first would claim a reading it did not make.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Holding {
+    /// Commits in the home that no ref outside it reaches. Removing the directory would
+    /// take the last copy of each of them.
+    OnlyHere {
+        /// How many there are. Exact.
+        count: usize,
+        /// The first ten of them, newest first. A sample; the count is the fact.
+        sample: Vec<Oid>,
+    },
+    /// The home could not be read, so nothing about what it holds is proved. Nothing is
+    /// removed on a reading nobody could make.
+    Unread {
+        /// What could not be read, and why.
+        why: String,
+    },
+}
+
+impl HeldBack {
+    /// What the sweep says about this home, one line at a time.
+    ///
+    /// Each line names one commit and the copy the reclaim rested on, because those two
+    /// together are what a person acts on: the commit says what would have gone, and the
+    /// repository and ref say where to look for what took its place.
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        match &self.holding {
+            Holding::Unread { why } => {
+                vec![format!("kept: {} could not be read: {why}", self.entry.path.display())]
+            }
+            Holding::OnlyHere { count, sample } => {
+                let mut lines: Vec<String> =
+                    sample.iter().map(|oid| self.only_here_line(oid)).collect();
+                let more = count.saturating_sub(sample.len());
+                if more > 0 {
+                    lines.push(format!("kept: and {more} more commit(s) only in this home"));
+                }
+                lines
+            }
+        }
+    }
+
+    /// The line about one commit, which names what the reclaim rested on.
+    fn only_here_line(&self, oid: &Oid) -> String {
+        let short: String = oid.as_str().chars().take(8).collect();
+        let copies = self.entry.rested.copies();
+        if copies.is_empty() {
+            return format!(
+                "kept: {short} is only here; this home's reclaim recorded no copy outside it"
+            );
+        }
+        let gone: Vec<String> = copies.iter().map(Outside::describe).collect();
+        format!("kept: {short} is only here; the copy in {} is gone", gone.join(", "))
+    }
+}
+
+/// What one `nodal gc` removed, and what it would not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Swept {
     /// The instant the answer was taken.
@@ -417,6 +493,10 @@ pub struct Swept {
     pub removed: Vec<Trashed>,
     /// The entries whose retention has not run out, and are therefore still there.
     pub kept: Vec<Trashed>,
+    /// The expired entries this sweep did not remove, because removing one would have
+    /// taken the last copy of a commit with it, or because the home could not be read.
+    #[serde(default)]
+    pub held: Vec<HeldBack>,
     /// What the removed directories occupied, when it was measured.
     pub freed_bytes: Option<u64>,
     /// Runtime that was stopped because it belonged to a home that is not there.
@@ -449,7 +529,7 @@ impl Render for Swept {
     fn doc(&self) -> Doc {
         let mut fields = vec![
             Field::new("freed", self.freed_cell()),
-            Field::new("kept", plural(self.kept.len(), "home in trash", "homes in trash")),
+            Field::new("kept", self.kept_cell()),
             Field::new("merged", self.retired_cell()),
             Field::new("runtime", self.runtime_cell()),
             Field::new(
@@ -464,6 +544,7 @@ impl Render for Swept {
         if !self.removed.is_empty() {
             blocks.push(Block::table(self.removed_table()));
         }
+        blocks.extend(self.held.iter().flat_map(HeldBack::lines).map(Block::line));
         if !self.idle.is_empty() {
             blocks.push(Block::table(self.idle_table()));
         }
@@ -476,6 +557,20 @@ impl Render for Swept {
 }
 
 impl Swept {
+    /// How many homes are still in the trash, and how many of them are past their
+    /// retention and stayed anyway.
+    ///
+    /// The second number is the one worth reading. A home past its retention that is
+    /// still there is one this sweep refused to remove, and the lines under the table
+    /// say about which commit.
+    fn kept_cell(&self) -> String {
+        let kept = plural(self.kept.len() + self.held.len(), "home in trash", "homes in trash");
+        if self.held.is_empty() {
+            return kept;
+        }
+        format!("{kept}{JOIN}{} past its retention and kept", self.held.len())
+    }
+
     /// How much went, and how many homes it was.
     fn freed_cell(&self) -> String {
         let homes = plural(self.removed.len(), "home", "homes");

@@ -58,6 +58,29 @@
 //! other order would leave a directory nothing knows about, which nothing would ever
 //! clean up.
 //!
+//! Each of them is read again first, and that reading is the reason this step is not a
+//! timer. A reclaim let the home go because its commits existed somewhere else, and that
+//! somewhere else is a repository on this disk. The copy can go while the home sits in
+//! the trash — somebody deletes a branch in a clone, a host drops a merged branch — and
+//! until this sweep nothing looked again. The retention running out then removed the last
+//! copy of a commit, with no refusal and no line.
+//!
+//! So every expired home is read with the reading a reclaim makes
+//! ([`crate::lifecycle::assess`]), over the refs that home holds rather than over `HEAD`:
+//! nothing is checked out in the trash, and a forced reclaim wrote the working tree onto
+//! `refs/nodal/<unit>/wip`, which no branch reaches. A commit no ref outside the
+//! directory reaches keeps the home, keeps the row, and prints one line naming the commit
+//! and the copy the reclaim rested on ([`crate::model::Rested`]). The row stays expired,
+//! so the next sweep reads it again and a copy somebody restores is all it takes.
+//!
+//! A home the reclaim forced past a finding is not read again. The loss was named,
+//! printed and accepted before the home was moved, and a sweep that refused to act on it
+//! would keep every forced reclaim's home for ever and make `--force` mean nothing.
+//!
+//! Nothing is removed on a reading that could not be made. A home Git will not open, and
+//! a project the registry has lost, are each one line of the report and a directory that
+//! stays.
+//!
 //! **Then the records of runs that are over go.** The runner writes one ref per run
 //! before it takes its first step ([`crate::git::snapshot`]), and until this sweep
 //! nothing ever removed one. A record is kept for the same window a trashed home is
@@ -92,15 +115,17 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
-use crate::git::{Git, refs, snapshot};
+use crate::git::{Git, Oid, refs, snapshot};
+use crate::lifecycle::assess;
 use crate::lifecycle::idle;
 use crate::lifecycle::journal;
 use crate::lifecycle::uniqueness::Finding;
+use crate::lifecycle::witness::Checkout;
 use crate::model::{
     EnvState, OperationId, OperationState, Project, SessionId, Timestamp, Trashed, Unit, UnitId,
     UnitStatus, trash as retention,
 };
-use crate::output::view::{Idle, Leftover, Retired, Swept};
+use crate::output::view::{HeldBack, Holding, Idle, Leftover, Retired, Swept};
 use crate::runtime::attribute::{Note, Source, Standing};
 use crate::runtime::processes::{Processes, Running};
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
@@ -142,12 +167,13 @@ pub fn collect(store: &mut Store, now: Timestamp, options: &Options) -> Result<S
     let host = crate::model::HostName::current();
     let gone = crate::runtime::sessions::close_dead_groups(store.conn(), &host, now)?;
     tracing::debug!(gone, "recorded groups that had already ended");
-    let retentions = retentions(store.conn(), &mut leftovers)?;
+    let registered = projects::list(store.conn())?;
+    let retentions = retentions(&registered, &mut leftovers);
     let retired = retire(store, now, options.hooks, &retentions, &mut leftovers)?;
     let expired = trash::list_expired(store.conn(), now)?;
     let stopped = stop_absent(store.conn())?;
-    let (removed, freed, mut swept_leftovers) = sweep(store, &expired)?;
-    leftovers.append(&mut swept_leftovers);
+    let mut expiry = sweep(store, &expired, &registered)?;
+    leftovers.append(&mut expiry.leftovers);
     let records = forget(store.conn(), now, &retentions, &mut leftovers)?;
     let released = release_lapsed(store.conn(), now, &mut leftovers)?;
     for process in &stopped.standing {
@@ -155,9 +181,10 @@ pub fn collect(store: &mut Store, now: Timestamp, options: &Options) -> Result<S
     }
     Ok(Swept {
         now,
-        removed,
+        removed: expiry.removed,
         kept: kept(store.conn(), now)?,
-        freed_bytes: Some(freed),
+        held: expiry.held,
+        freed_bytes: Some(expiry.freed),
         stopped: stopped.stopped,
         containers: stopped.containers,
         leases: released,
@@ -195,19 +222,24 @@ struct Retention {
 /// the sweep removes nothing of it and touches nothing of it. The alternative is the
 /// default window, which for a project that asked for a longer one takes a home away
 /// early; a number nobody could read is not a number to act on.
-fn retentions(conn: &Connection, leftovers: &mut Vec<Leftover>) -> Result<Vec<Retention>> {
+///
+/// The projects arrive read, because the expiry step reads them too: a trashed home is
+/// read again against the checkout of the project it belonged to, and that project is
+/// one of these rows whether or not its recipe loads.
+fn retentions(registered: &[Project], leftovers: &mut Vec<Leftover>) -> Vec<Retention> {
     let mut read = Vec::new();
-    for project in projects::list(conn)? {
+    for project in registered {
         match crate::recipe::load(&project.root) {
-            Ok(effective) => {
-                read.push(Retention { days: effective.recipe.trash_retention_days(), project });
-            }
+            Ok(effective) => read.push(Retention {
+                days: effective.recipe.trash_retention_days(),
+                project: project.clone(),
+            }),
             Err(why) => {
                 leftovers.push(Leftover::new("project", format!("{}: {why}", project.name)));
             }
         }
     }
-    Ok(read)
+    read
 }
 
 // ---------------------------------------------------------------------------
@@ -422,23 +454,134 @@ fn kept(conn: &Connection, now: Timestamp) -> Result<Vec<Trashed>> {
     Ok(trash::list(conn)?.into_iter().filter(|entry| !entry.has_expired(now)).collect())
 }
 
-/// Remove each expired home and forget it, reporting what would not go.
-fn sweep(store: &Store, expired: &[Trashed]) -> Result<(Vec<Trashed>, u64, Vec<Leftover>)> {
-    let mut removed = Vec::new();
-    let mut freed = 0;
-    let mut leftovers = Vec::new();
+/// What the expiry step did with the homes whose retention had run out.
+#[derive(Debug, Default)]
+struct Expiry {
+    /// The homes that went, oldest first.
+    removed: Vec<Trashed>,
+    /// What those directories occupied.
+    freed: u64,
+    /// The homes that stayed although their retention had run out, and why.
+    held: Vec<HeldBack>,
+    /// The directories that would not go.
+    leftovers: Vec<Leftover>,
+}
+
+/// Read each expired home again, remove the ones that hold no last copy, and forget them.
+///
+/// The reading comes first, and a home it keeps keeps its row as well. The row is still
+/// expired afterwards, so the next sweep reads the same home again: a copy somebody
+/// restores is all it takes for the directory to go then.
+fn sweep(store: &Store, expired: &[Trashed], registered: &[Project]) -> Result<Expiry> {
+    let mut swept = Expiry::default();
     for entry in expired {
+        let project = registered.iter().find(|project| project.id == entry.project_id);
+        if let Some(holding) = holding(entry, project) {
+            swept.held.push(HeldBack { entry: entry.clone(), holding });
+            continue;
+        }
         let size = size_of(&entry.path);
         match remove(&entry.path) {
             Ok(()) => {
                 trash::remove(store.conn(), entry.environment_id)?;
-                freed += size;
-                removed.push(entry.clone());
+                swept.freed += size;
+                swept.removed.push(entry.clone());
             }
-            Err(why) => leftovers.push(Leftover::new("directory", why.to_string())),
+            Err(why) => swept.leftovers.push(Leftover::new("directory", why.to_string())),
         }
     }
-    Ok((removed, freed, leftovers))
+    Ok(swept)
+}
+
+/// Why this expired home may not be removed, and nothing when it may.
+///
+/// A reclaim that was forced past a finding is not asked again: the loss it accepted was
+/// named and printed before the home moved, and re-asking would keep every forced
+/// reclaim's home for ever.
+///
+/// Everything else is read again. A project the registry has lost is a home with no
+/// checkout to ask, which is not a reading that found nothing — it is no reading at all,
+/// and nothing is removed on one.
+fn holding(entry: &Trashed, project: Option<&Project>) -> Option<Holding> {
+    if !entry.rested.re_asks() {
+        return None;
+    }
+    let Some(project) = project else {
+        return Some(Holding::Unread {
+            why: String::from("the registry holds no project it belonged to"),
+        });
+    };
+    match only_here(entry, project) {
+        Ok(None) => None,
+        Ok(Some((count, sample))) => Some(Holding::OnlyHere { count, sample }),
+        Err(why) => Some(Holding::Unread { why: why.to_string() }),
+    }
+}
+
+/// The commits of a trashed home that no ref outside the directory reaches.
+///
+/// The reading a reclaim makes, and deliberately not a second one
+/// ([`crate::lifecycle::uniqueness`]). Two things differ, and each is a fact about a home
+/// nobody is working in.
+///
+/// The work is read from the home's own refs and not from `HEAD`, because nothing is
+/// checked out in the trash and a forced reclaim wrote the working tree onto
+/// `refs/nodal/<unit>/wip`, which no branch reaches.
+///
+/// The paths of the working tree decide nothing, because a reclaim already settled them:
+/// a home with none was the condition of an ordinary reclaim, and a forced one put what
+/// it found on a ref. An untracked file the trash still holds would otherwise keep a home
+/// for ever over a file nobody committed.
+///
+/// # Errors
+/// [`Error::Git`] and [`Error::NotARepository`] when the trashed home could not be read.
+/// The caller turns either into a line and a directory that stays.
+fn only_here(entry: &Trashed, project: &Project) -> Result<Option<(usize, Vec<Oid>)>> {
+    let git = Git::open(&entry.path)?;
+    let tips = work_tips(&git, entry.unit_id)?;
+    let checkout = Checkout::read(&project.root);
+    let siblings = crate::doctor::scan::siblings(&project.root);
+    let input =
+        assess::Input::refusal(&entry.path, assess::Work::Tips(&tips), Some(&checkout), &siblings);
+    Ok(assess::assess(&input)?.findings().into_iter().find_map(|finding| match finding {
+        Finding::Unpushed { count, sample, .. } => Some((count, sample)),
+        Finding::Uncommitted { .. } | Finding::Untracked { .. } => None,
+    }))
+}
+
+/// The refs a trashed home's own work is on: its branches, the work-in-progress snapshot
+/// a forced reclaim wrote, and the branch a merge squashed.
+///
+/// Three kinds and not every ref, because most of what a home holds is a copy of somebody
+/// else's. `refs/nodal/origin/*` and `refs/nodal/checkout/*` are readings Nodal fetched in
+/// from the person's own checkout, and `refs/nodal/<unit>/target` is a copy of the branch
+/// the unit was to merge into. Reading one of those as this home's work would keep the
+/// home over a branch the person deleted in their own checkout.
+///
+/// **A pre-operation record is not work either, and this is the one that has to be
+/// argued.** Every reclaim writes one before its first step ([`crate::git::snapshot`]),
+/// so every trashed home holds a commit no other store has — the record of the home as it
+/// was on the way to the trash. Reading it as work would keep every trashed home for
+/// ever, which is a leak and not a safety property.
+///
+/// It also holds nothing the rest of this list does not. A record's tree is the home's
+/// working tree and its parent is the home's own branch. The homes read here are the ones
+/// whose reclaim found nothing only there, so their working trees held no uncommitted and
+/// no untracked work, and a record of such a tree adds no content to `HEAD`. Where a
+/// reclaim did find something, `--force` put it on `wip`, which is named above, and
+/// [`crate::model::Rested::re_asks`] keeps that home out of this reading altogether.
+fn work_tips(git: &Git, unit: UnitId) -> Result<Vec<Oid>> {
+    let unit = unit.to_string();
+    let (wip, premerge) = (refs::wip(&unit), refs::premerge(&unit));
+    let mut tips: Vec<Oid> = git.list_refs(refs::HEADS)?.into_iter().map(|one| one.oid).collect();
+    for one in git.list_refs(&format!("{}{unit}/", refs::NAMESPACE))? {
+        if one.name == wip || one.name == premerge {
+            tips.push(one.oid);
+        }
+    }
+    tips.sort_unstable();
+    tips.dedup();
+    Ok(tips)
 }
 
 /// Stop what is still running for a unit whose home is not there any more.

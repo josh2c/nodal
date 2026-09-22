@@ -29,6 +29,11 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
 - `nodal reclaim` names on its `check` line where the commits it did not refuse over
   also live: the repository that holds them and the refs in it. The trash row records the
   same, so a later sweep can name the copy the verdict rested on.
+- `nodal gc` reads every expired home again before it removes it, with the reading a
+  reclaim makes, over the refs that home holds. A commit no ref outside the directory
+  reaches keeps the home and its row, and one line names the commit and the copy that is
+  gone. Nothing is removed on a reading that could not be made. A home a reclaim forced
+  past a finding is removed on its retention as before.
 
 ### Make
 
