@@ -3,6 +3,17 @@
 This file records what each release of Nodal lets a person do, and what it refuses.
 One line per behaviour. Versions follow [semantic versioning](https://semver.org).
 
+## Unreleased
+
+### Read
+
+- `nodal ls` prints `unknown` in `NEEDS` for every home when the process table could not be
+  read, with the reason under the table. It no longer reads an unread table as nothing
+  standing in the home.
+- The `nodal` shell function finds the binary each time it runs: the path it was printed
+  with, else the one on the `PATH`. When neither holds one, it prints "nodal is not on the
+  path" and exits 127, where it ran an empty command and printed `permission denied`.
+
 ## 0.1.0-rc.3 — 2026-09-18
 
 ### Read

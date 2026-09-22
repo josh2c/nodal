@@ -786,7 +786,7 @@ both places. It is ranked, and the first that applies is the one printed:
 |---|---|---|
 | 1 | `unique loss` | the working tree holds changed, staged or untracked paths |
 | 2 | `blocked` | something Nodal did not start is standing in the home |
-| 3 | `unknown` | the unit is ahead of the base, the project has a remote, and nothing here has read that remote since the home last wrote its own record of it |
+| 3 | `unknown` | the process table could not be read, so whether something stands in the home is not known; or the unit is ahead of the base, the project has a remote, and nothing here has read that remote since the home last wrote its own record of it |
 
 | 4 | `diverged` | merging would conflict, or the base has moved under the branch |
 | 5 | `review` | the work is on the base, or the branch is ahead and clean |
@@ -810,6 +810,11 @@ newest reading of the remote once for the whole list, compared against each home
 cheap necessary half of the witness rule and not the rule: `unknown` marks a row whose remote
 evidence **cannot** be current, and whether a current reading actually reaches the commits is
 what `nodal reclaim --check` costs a few processes to answer.
+
+Row 2 and the first half of row 3 read one process table. A table that was read and shows
+nothing standing in the home is not `blocked`. A table that could not be read is `unknown` for
+every home, because what could not be read is not evidence that nothing stands there, and `nodal
+reclaim --check` refuses over the same unread table.
 
 Who is attached to each unit comes from the process table, by the same signals `nodal ps`
 reads. A host whose process table Nodal cannot read still lists every unit and says under the

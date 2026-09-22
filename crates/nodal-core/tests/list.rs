@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use nodal_core::git::Git;
 use nodal_core::model::{
-    Actor, ActorKind, ActorName, Digest, HostName, Lock, Project, ProjectId, ProjectName,
+    Actor, ActorKind, ActorName, Digest, HostName, Lock, Needs, Project, ProjectId, ProjectName,
     Timestamp, UnitId,
 };
 use nodal_core::output::Render;
@@ -352,6 +352,28 @@ fn a_signal_that_cannot_run_is_a_note_and_the_rows_still_print() {
     assert!(list.notes.iter().any(|note| note.starts_with("ahead: ")), "{:?}", list.notes);
     let gone = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
     assert!(gone.work.is_none(), "a home that is not there has no Git answer");
+    drop(fixture.directory);
+}
+
+/// A table that could not be read says nothing about what stands in a home, so no row
+/// reads as clear to reclaim: every home the list could read is `unknown`, the word
+/// `nodal reclaim --check` prints over the same unread table.
+#[test]
+fn an_unread_process_table_makes_every_readable_home_unknown() {
+    let fixture = Fixture::build();
+
+    let list = fixture.list(&Unreadable);
+
+    for row in &list.units {
+        assert_eq!(
+            row.needs,
+            Some(Needs::UnknownEvidence),
+            "{} reads {:?} over a table nothing read",
+            row.slug,
+            row.needs
+        );
+    }
+    assert!(list.notes.iter().any(|note| note.starts_with("who: ")), "{:?}", list.notes);
     drop(fixture.directory);
 }
 
