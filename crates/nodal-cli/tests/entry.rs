@@ -10,6 +10,8 @@
 //! 3. `nodal cd` moves the shell a person is in, in bash and in zsh.
 //! 4. `nodal run` runs the command in the unit's environment and records one event,
 //!    with the credential replaced by the name that holds it.
+//! 5. The shell function finds the binary when it runs, not when it was sourced: the
+//!    path it was printed with, else the `PATH`, else it says so and exits 127.
 //!
 //! A shell this machine does not have reports itself as skipped rather than failing, so
 //! the file runs anywhere; the CI job installs bash, zsh, fish and direnv, which is what
@@ -208,6 +210,103 @@ fn nodal_cd_moves_the_zsh_it_is_run_from() {
     let fixture = Fixture::new();
     let terminal = Terminal::zsh(zsh, fixture.root());
     assert_eq!(terminal.typed(&cd_line(&fixture), &fixture.outside()), moved(&fixture));
+}
+
+/// What the binary prints for `--version`, which is what the function has to print
+/// whichever way it found the binary.
+fn version() -> String {
+    let output = Command::new(Fixture::binary()).arg("--version").output().unwrap();
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// The directory the binary is in, for a `PATH` that holds it.
+fn binary_directory() -> String {
+    Fixture::binary().parent().unwrap().to_string_lossy().into_owned()
+}
+
+/// A copy of the binary under `root`, which a test emits the function from and then
+/// removes, so that the path the function was printed with no longer exists.
+fn copy_of_the_binary(root: &Path) -> PathBuf {
+    let directory = root.join("moved");
+    std::fs::create_dir_all(&directory).unwrap();
+    let copy = directory.join("nodal");
+    std::fs::copy(Fixture::binary(), &copy).unwrap();
+    copy
+}
+
+/// What the function prints when it finds no binary anywhere.
+const NOT_ON_THE_PATH: &str = "nodal is not on the path\nexit 127";
+
+/// Claim 5 in a POSIX shell: the variable emptied, the emitting binary removed, and
+/// neither of them there.
+fn a_posix_function_finds_the_binary_when_it_runs(terminal: &Terminal, shell: &str) {
+    let fixture = Fixture::new();
+    let outside = fixture.outside();
+    let on_path = format!("PATH='{}':\"$PATH\"", binary_directory());
+
+    let emptied = format!("{on_path}\n__nodal_bin=''\nnodal --version");
+    assert_eq!(terminal.typed(&emptied, &outside), version(), "with the variable empty");
+
+    let copy = copy_of_the_binary(fixture.root());
+    let moved = format!(
+        "{on_path}\neval \"$('{copy}' shell-init {shell})\"\nrm '{copy}'\nnodal --version",
+        copy = copy.display(),
+    );
+    assert_eq!(terminal.typed(&moved, &outside), version(), "with the binary moved");
+
+    let absent =
+        "__nodal_bin=''\nPATH='/nonexistent'\nnodal --version 2>&1\nprintf 'exit %s' \"$?\"";
+    assert_eq!(terminal.typed(absent, &outside), NOT_ON_THE_PATH, "with no binary anywhere");
+}
+
+#[test]
+fn the_bash_function_finds_the_binary_when_it_runs() {
+    let bash = shell_or_skip!("bash");
+    let fixture = Fixture::new();
+    let terminal = Terminal::bash(bash, fixture.root());
+    a_posix_function_finds_the_binary_when_it_runs(&terminal, "bash");
+}
+
+#[test]
+fn the_zsh_function_finds_the_binary_when_it_runs() {
+    let zsh = shell_or_skip!("zsh");
+    let fixture = Fixture::new();
+    let terminal = Terminal::zsh(zsh, fixture.root());
+    a_posix_function_finds_the_binary_when_it_runs(&terminal, "zsh");
+}
+
+#[test]
+fn the_fish_function_finds_the_binary_when_it_runs() {
+    let fish = shell_or_skip!("fish");
+    let fixture = Fixture::new();
+    let outside = fixture.outside();
+    let binary = Fixture::binary();
+    let typed = |script: &str| {
+        let output =
+            Command::new(&fish).arg("-c").arg(script).current_dir(&outside).output().unwrap();
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let on_path = format!("set -gx PATH '{}' $PATH", binary_directory());
+
+    let emptied = format!(
+        "{on_path}\n{binary} shell-init fish | source\nset __nodal_bin ''\nnodal --version",
+        binary = binary.display(),
+    );
+    assert_eq!(typed(&emptied), version(), "with the variable empty");
+
+    let copy = copy_of_the_binary(fixture.root());
+    let moved = format!(
+        "{on_path}\n'{copy}' shell-init fish | source\nrm '{copy}'\nnodal --version",
+        copy = copy.display(),
+    );
+    assert_eq!(typed(&moved), version(), "with the binary moved");
+
+    let absent = format!(
+        "{binary} shell-init fish | source\nset __nodal_bin ''\nset -gx PATH '/nonexistent'\n\
+         nodal --version 2>&1\nprintf 'exit %s' $status",
+        binary = binary.display(),
+    );
+    assert_eq!(typed(&absent), NOT_ON_THE_PATH, "with no binary anywhere");
 }
 
 #[test]

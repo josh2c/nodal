@@ -14,7 +14,20 @@
 # Nodal starts no shell of its own and asks nothing when a shell ends.
 
 set -g __nodal_bin '@NODAL_BIN@'
-test -x "$__nodal_bin"; or set -g __nodal_bin nodal
+
+# The binary, found when a command runs and not when this file was written. The path
+# above is where the binary that printed this file was; an upgrade moves it, and a
+# shell restored from a snapshot can carry the function with the variable empty. Then
+# the PATH answers. `command -s` reads the PATH and never this function. Nothing is
+# printed here: this runs inside a command substitution, whose standard error a
+# redirection on the caller does not reach, so the caller says when nothing was found.
+function __nodal_program
+    if test -x "$__nodal_bin"
+        echo -n $__nodal_bin
+        return 0
+    end
+    command -s nodal 2> /dev/null
+end
 set -q __nodal_entered; or set -g __nodal_entered ''
 
 # The nearest directory at or above the working directory that carries a manifest.
@@ -43,7 +56,9 @@ end
 
 # Export the environment of the home in $argv[1].
 function __nodal_enter
-    set -l exports ($__nodal_bin env --export --shell fish $argv[1])
+    set -l program (__nodal_program)
+    or return 1
+    set -l exports ($program env --export --shell fish $argv[1])
     or return 1
     printf '%s\n' $exports | source
     set -g __nodal_entered $argv[1]
@@ -82,10 +97,15 @@ function __nodal_verb
 end
 
 function nodal
+    set -l program (__nodal_program)
+    or begin
+        echo 'nodal is not on the path' >&2
+        return 127
+    end
     switch (__nodal_verb $argv)
         case cd new
             set -l file (mktemp)
-            NODAL_CD_FILE=$file command $__nodal_bin $argv
+            NODAL_CD_FILE=$file command $program $argv
             set -l answer $status
             if test -s $file
                 cd (cat $file); and __nodal_hook
@@ -93,7 +113,7 @@ function nodal
             rm -f $file
             return $answer
         case '*'
-            command $__nodal_bin $argv
+            command $program $argv
     end
 end
 
