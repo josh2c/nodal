@@ -1,16 +1,16 @@
-  unit       worker-import  (nodal/worker-import)
-  home       /home/j/.nodal/project/e/01J9X2K4
-  ports      app :41230
-  for        worker import: handle missing supervisor_id
-  no value   DATABASE_URL
-             STRIPE_KEY
-  stand-in   REDIS_URL
-             SUPABASE_URL
-             nodal made these values so a generate step can run
-             no service answers on them; an adapter replaces them
-  kept       test-results is excluded by default (test output), but the commit tracks it, so the copy keeps it
-  not ready  dependencies: node_modules is not there; `pnpm` has not run here
-  not ready  build: a `pnpm` build names no output directory this can check
-  toolchain  node: pinned 20, host v20.11.1
-  toolchain  cargo.rust: pinned 1.85, not checked: rustc is not on the path
-  toolchain  asdf: pinned 0.14.0, not checked: no program here answers for asdf
+  unit         worker-import  (nodal/worker-import)
+  home         /home/j/.nodal/project/e/01J9X2K4
+  ports        app :41230
+  for          worker import: handle missing supervisor_id
+  no value     DATABASE_URL
+               STRIPE_KEY
+  stand-in     REDIS_URL
+               SUPABASE_URL
+               nodal made these values so a generate step can run
+               no service answers on them; an adapter replaces them
+  kept         test-results is excluded by default (test output), but the commit tracks it, so the copy keeps it
+  not ready    dependencies: node_modules is not there; `pnpm` has not run here
+  not checked  build: a `pnpm` build names no output directory this can check
+  toolchain    node: pinned 20, host v20.11.1
+  toolchain    cargo.rust: pinned 1.85, not checked: rustc is not on the path
+  toolchain    asdf: pinned 0.14.0, not checked: no program here answers for asdf

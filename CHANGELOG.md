@@ -14,6 +14,15 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   with, else the one on the `PATH`. When neither holds one, it prints "nodal is not on the
   path" and exits 127, where it ran an empty command and printed `permission denied`.
 
+### Make
+
+- `nodal new`, `nodal adopt` and `nodal show` read a Node build at the directory the
+  project says it writes: an output flag or path in the build command or its
+  `package.json` script, a tool's fixed output such as `.next`, or the task cache's
+  `build` outputs. The line reads `not checked` only when the build names no directory.
+- A readiness part nothing here could read is labelled `not checked`, apart from `not
+  ready`, which is a part whose file is not there.
+
 ## 0.1.0-rc.3 — 2026-09-18
 
 ### Read

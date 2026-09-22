@@ -218,6 +218,14 @@ the create and the steps before it are undone, with both of the tool's streams i
 the home's own readiness line then answers out of its own tree, as every home's does. Cargo
 is never moved: its download cache is outside the tree and no exclusion list reaches it.
 
+**The build line reads the directory the build says it writes.** `cargo build` writes `target`
+under its profile. Every other build is read at the directory the project names, in this order: an
+output flag or a path in the build command, the same in the `package.json` script that command
+runs, a tool's one fixed output (`next build` writes `.next`), and the outputs the task cache
+declares for `build`. A part that a file did not prove reads `not ready` with the path that is not
+there. A part nothing here could read reads `not checked` with the reason, and a build that names
+no output directory is one of those.
+
 **A pin in `[toolchain]` is reported and never enforced.** `nodal new`, `nodal adopt` and
 `nodal show` print one line for each tool the recipe pins: the tool, the pin, and what
 `<program> --version` answered on this host. Where no program here answers for the tool, and
