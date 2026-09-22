@@ -178,6 +178,13 @@ fn one(
     checkout: &Checkout<'_>,
 ) -> Result<Snapshot> {
     let mut notes = Vec::new();
+    // A home that is not on this disk is one fact, said once. Nothing below can be read
+    // from it, and each `git` that tried would report the same missing directory in its
+    // own words.
+    if let Some(environment) = home.as_ref().filter(|environment| !environment.home.is_dir()) {
+        notes.push(String::from(HOME_GONE));
+        return snapshot(conn, unit, Some(environment.clone()), None, notes);
+    }
     // Before anything is measured, not after: a BEHIND count taken against refs frozen
     // at the moment the base was built is arithmetic about the wrong commits. A refresh
     // that fails is a note on this unit and nothing more, exactly like a home Git cannot
@@ -207,6 +214,20 @@ fn one(
         },
         None => None,
     };
+    snapshot(conn, unit, home, work, notes)
+}
+
+/// The note a unit gets when its home is not on this disk.
+pub const HOME_GONE: &str = "its home is not on this disk";
+
+/// The snapshot of one unit, with its log read from the registry.
+fn snapshot(
+    conn: &Connection,
+    unit: Unit,
+    home: Option<Environment>,
+    work: Option<Work>,
+    notes: Vec<String>,
+) -> Result<Snapshot> {
     let stated = events::list_recent_of_kinds(
         conn,
         unit.id,

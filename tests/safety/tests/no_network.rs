@@ -179,13 +179,33 @@ fn the_shell_hook_evaluates_only_what_nodals_own_binary_printed() {
         assert_eq!(
             assignments,
             vec![format!(
-                r#"exports="$("$__nodal_bin" env --export --shell {} "$1")" || return 1"#,
+                r#"exports="$("$program" env --export --shell {} "$1")" || return 1"#,
                 shell.name()
             )],
             "the {} integration fills $exports from something else",
             shell.name()
         );
+        let fills: Vec<&str> =
+            body.lines().map(str::trim).filter(|line| line.starts_with("program=")).collect();
+        assert!(
+            !fills.is_empty()
+                && fills.iter().all(|line| line.starts_with(r#"program="$(__nodal_program"#)),
+            "the {} integration names the program from something else: {fills:?}",
+            shell.name()
+        );
+        assert_the_resolver_reads_the_path(&body, shell);
     }
+}
+
+/// `$program` is what `__nodal_program` printed, and that function prints the path the
+/// binary baked in or the `nodal` the PATH holds, and nothing a person did not install.
+fn assert_the_resolver_reads_the_path(body: &str, shell: Shell) {
+    let lookup = match shell {
+        Shell::Bash => "type -P nodal",
+        Shell::Zsh => "whence -p nodal",
+        Shell::Fish => "command -s nodal",
+    };
+    assert!(body.contains(lookup), "the {} resolver does not read the PATH", shell.name());
 }
 
 #[test]
@@ -199,9 +219,16 @@ fn the_fish_hook_sources_only_what_nodals_own_binary_printed() {
         "the fish integration sources something else"
     );
     assert!(
-        body.contains("set -l exports ($__nodal_bin env --export --shell fish $argv[1])"),
+        body.contains("set -l exports ($program env --export --shell fish $argv[1])"),
         "the fish integration fills $exports from something else: {body}"
     );
+    let fills: Vec<&str> =
+        body.lines().map(str::trim).filter(|line| line.starts_with("set -l program")).collect();
+    assert!(
+        fills.iter().all(|line| *line == "set -l program (__nodal_program)"),
+        "the fish integration names the program from something else: {fills:?}"
+    );
+    assert_the_resolver_reads_the_path(&body, Shell::Fish);
 }
 
 #[test]

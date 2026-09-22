@@ -185,13 +185,18 @@ impl Render for Created {
         if !self.kept.is_empty() {
             fields.push(Field::new("kept", kept_cell(&self.kept)));
         }
-        // Every part a file did not prove, cold or unanswerable. An unknown part is
-        // not a fault and is still the difference between "this home is ready" and
-        // "nothing here could say", which is what a person needs before they wonder
-        // why a build behaves unlike the one they expected.
+        // Every part a file did not prove, cold or unanswerable. The two are different
+        // answers and carry different labels: a cold part is not there, and an unknown
+        // part is one nothing here could read, which is not a fault and is still the
+        // difference between "this home is ready" and "nothing here could say".
         for (part, state) in self.readiness.parts() {
+            let label = match state {
+                State::Ready => continue,
+                State::Cold { .. } => "not ready",
+                State::Unknown { .. } => "not checked",
+            };
             if let Some(why) = state.why() {
-                fields.push(Field::new("not ready", format!("{part}: {why}")));
+                fields.push(Field::new(label, format!("{part}: {why}")));
             }
         }
         // One line per pinned tool. The pin was already in the recipe and the host was

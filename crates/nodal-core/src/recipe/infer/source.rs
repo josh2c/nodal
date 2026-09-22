@@ -103,6 +103,12 @@ impl Project {
         }
     }
 
+    /// The JSON document at `relative`, or `None` when it is absent or not valid JSON.
+    #[must_use]
+    pub fn read_json(&self, relative: &str) -> Option<Value> {
+        read_json(&self.root, relative)
+    }
+
     /// The text of `relative`, or `None` when it is absent or not readable as UTF-8.
     #[must_use]
     pub fn read(&self, relative: &str) -> Option<String> {

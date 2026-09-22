@@ -13,7 +13,21 @@
 # Nodal starts no shell of its own and asks nothing when a shell ends.
 
 __nodal_bin='@NODAL_BIN@'
-[ -x "$__nodal_bin" ] || __nodal_bin='nodal'
+
+# The binary, found when a command runs and not when this file was written. The path
+# above is where the binary that printed this file was; an upgrade moves it, and a
+# shell restored from a snapshot can carry the function with the variable empty. Then
+# the PATH answers. `type -P` reads the PATH and never this function, which
+# `command -v` inside the function would name, and calling that would recurse.
+__nodal_program() {
+  if [ -x "$__nodal_bin" ]; then
+    printf '%s' "$__nodal_bin"
+    return 0
+  fi
+  type -P nodal 2> /dev/null && return 0
+  printf 'nodal is not on the path\n' >&2
+  return 127
+}
 
 # The nearest directory at or above the working directory that carries a manifest.
 # The walk is shell code on purpose: it runs on every prompt, and a prompt that starts a
@@ -43,8 +57,14 @@ __nodal_leave() {
 
 # Export the environment of the home in $1.
 __nodal_enter() {
-  local exports
-  exports="$("$__nodal_bin" env --export --shell bash "$1")" || return 1
+  local program exports
+  # The hook runs on every prompt, so a machine with no binary is told once.
+  if [ -n "${__nodal_missing-}" ]; then
+    program="$(__nodal_program 2> /dev/null)" || return 1
+  else
+    program="$(__nodal_program)" || { __nodal_missing=1; return 1; }
+  fi
+  exports="$("$program" env --export --shell bash "$1")" || return 1
   eval "$exports"
   __nodal_entered="$1"
 }
@@ -86,17 +106,19 @@ __nodal_read_verb() {
 }
 
 nodal() {
+  local program
+  program="$(__nodal_program)" || return $?
   __nodal_read_verb "$@"
   case "$__nodal_verb" in
     cd | new) ;;
     *)
-      command "$__nodal_bin" "$@"
+      command "$program" "$@"
       return $?
       ;;
   esac
   local file answer
   file="$(mktemp "${TMPDIR:-/tmp}/nodal-cd.XXXXXX")" || return 1
-  NODAL_CD_FILE="$file" command "$__nodal_bin" "$@"
+  NODAL_CD_FILE="$file" command "$program" "$@"
   answer=$?
   if [ -s "$file" ]; then
     builtin cd -- "$(cat "$file")" && __nodal_hook

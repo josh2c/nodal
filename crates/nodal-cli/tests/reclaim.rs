@@ -574,6 +574,28 @@ fn a_forced_reclaim_commits_the_work_before_it_moves_the_home() {
     assert_eq!(entry.snapshot.as_deref(), Some(reference.as_str()));
 }
 
+/// Every reclaim commits the home as it was before its first step, on a ref the run
+/// names, and the report says so with the ref: a person who reads "moved to the trash"
+/// is told in the same report where the home before the move can be read back.
+#[test]
+fn a_reclaim_names_the_ref_it_recorded_the_home_on() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (id, _) = workspace.one_unit_and_home();
+
+    let report = stdout(&workspace.nodal(&["reclaim", "worker-import"]));
+    let prefix = format!("refs/nodal/{id}/pre/");
+    let line = report
+        .lines()
+        .find(|line| line.contains("record") && line.contains(&prefix))
+        .unwrap_or_else(|| panic!("no record line names {prefix}: {report}"));
+    let reference = line.split_whitespace().last().unwrap();
+
+    let trashed = workspace.trashed().pop().expect("the home is in the trash");
+    let commit = git(&trashed, &["rev-parse", "--verify", reference]);
+    assert!(!commit.trim().is_empty(), "the ref the report names is not in the trash");
+}
+
 /// A caller standing in the home it is reclaiming is never a target of its own stop.
 ///
 /// The command stands in the home it is about, which is where a person runs it from,

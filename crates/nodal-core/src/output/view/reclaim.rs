@@ -105,6 +105,11 @@ pub struct Reclaimed {
     pub findings: Vec<Finding>,
     /// The ref a forced reclaim committed the work to, before anything was removed.
     pub snapshot: Option<String>,
+    /// The ref the run committed the whole home to before its first step, when the
+    /// home had a commit to build on. Every reclaim takes it, forced or not, and it is
+    /// where the home as it was can be read back from the trashed repository.
+    #[serde(default)]
+    pub record: Option<String>,
     /// What was stopped.
     pub stopped: Stopped,
     /// The containers that were removed, by name.
@@ -149,12 +154,18 @@ impl Render for Reclaimed {
     const KIND: &'static str = "reclaimed unit";
 
     fn doc(&self) -> Doc {
-        let mut fields = vec![
-            Field::new("unit", self.slug.clone()),
-            Field::new("check", self.check_cell()),
+        let mut fields =
+            vec![Field::new("unit", self.slug.clone()), Field::new("check", self.check_cell())];
+        if let Some(reference) = &self.record {
+            fields.push(Field::new(
+                "record",
+                format!("the home before this reclaim is on {reference}"),
+            ));
+        }
+        fields.extend([
             Field::new("stop", self.stop_cell()),
             Field::new(self.home_label(), self.home_cell()),
-        ];
+        ]);
         if !self.trimmed.kept.is_empty() {
             fields.push(Field::new(self.kept_label(), self.kept_cell()));
         }
@@ -535,6 +546,7 @@ mod tests {
             slug: String::from("worker-import"),
             findings: Vec::new(),
             snapshot: None,
+            record: None,
             stopped: crate::runtime::stop::Stopped::default(),
             containers: Vec::new(),
             released: crate::services::ports::Released::default(),
@@ -547,6 +559,20 @@ mod tests {
             leftovers: Vec::new(),
             worktree_remove: None,
         }
+    }
+
+    /// A reclaim that recorded the home names the ref, and one that could not take a
+    /// record has no line to print rather than a line saying nothing.
+    #[test]
+    fn the_record_line_names_the_ref_the_home_was_committed_to() {
+        let mut report = reclaimed();
+        assert!(!report.doc().lines().join("\n").contains("record"), "no record, no line");
+        report.record = Some(String::from("refs/nodal/01J/pre/01K"));
+        let lines = report.doc().lines().join("\n");
+        assert!(
+            lines.contains("record  the home before this reclaim is on refs/nodal/01J/pre/01K"),
+            "{lines}"
+        );
     }
 
     /// The line says which refs went and, in the same breath, that the branch did not.

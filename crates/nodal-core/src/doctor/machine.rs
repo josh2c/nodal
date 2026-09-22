@@ -50,13 +50,13 @@ pub fn survey(
     let mut entries = found.entries;
     let mut rows = Vec::new();
     let mut links = inspect::Links::default();
-    for path in found.repositories {
-        match inspect::one(&path, &mut links) {
+    for repository in found.repositories {
+        match inspect::one(&repository.path, &mut links) {
             Ok(inspected) => {
                 entries += inspected.entries;
                 rows.push((inspected.row, inspected.evidence));
             }
-            Err(error) => skipped.push(Skip::new(&path, error.to_string())),
+            Err(error) => skipped.push(Skip::new(&repository.path, unread(&repository, &error))),
         }
     }
     let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -85,6 +85,19 @@ fn avoid_of(registry: &Registry<'_>, request: &Request<'_>) -> Result<(Vec<Avoid
         }
     }
     Ok((avoid, Vec::new()))
+}
+
+/// Why a directory the walk took for a clone was not read, with what the walk saw.
+///
+/// The path is the skip's own and is not repeated here. An error that carries the path
+/// in its words would print it twice, so the one error that does, a directory Git finds
+/// no repository at, is put into words of its own.
+fn unread(repository: &scan::Repository, error: &crate::Error) -> String {
+    let said = match error {
+        crate::Error::NotARepository { .. } => String::from("Git finds no repository there"),
+        other => other.to_string(),
+    };
+    format!("taken for a clone because {}, and {said}", repository.sign.describe())
 }
 
 /// A registry note as a skip row, so the machine report has one list of reasons.

@@ -46,7 +46,7 @@ use std::path::Path;
 
 use crate::model::readiness::{Readiness, State};
 use crate::model::recipe::{Ecosystem, PackageManager, Recipe, Venv};
-use crate::substrate::pin;
+use crate::substrate::{build_output, pin};
 use crate::workspace::Excludes;
 
 /// Cargo's build output directory, which every profile writes a subdirectory of.
@@ -175,12 +175,13 @@ fn outside(manager: PackageManager) -> State {
 
 /// Whether the build command's own output directory is in the tree.
 ///
-/// Only Cargo names one that can be checked, and only for the two profiles whose
-/// directory is part of the command: `cargo build` writes `target/debug` and
-/// `--release` writes `target/release`. A `--profile` names a directory of its own,
-/// which this does not read from the manifest, so that is unknown rather than reported
-/// cold at a path the build never wrote. A Node build writes wherever the project's own
-/// configuration sends it, so there is no directory to look for either.
+/// Cargo names it by profile, and only for the two profiles whose directory is part of
+/// the command: `cargo build` writes `target/debug` and `--release` writes
+/// `target/release`. A `--profile` names a directory of its own, which this does not
+/// read from the manifest, so that is unknown rather than reported cold at a path the
+/// build never wrote. Every other build writes where the project tells its tool to,
+/// and that is read from the command, the script it runs and the task cache
+/// ([`super::build_output`]); a build that names none has no directory to look for.
 fn build(recipe: &Recipe, tree: &Path) -> State {
     let Some(command) = recipe.commands.build.as_ref() else {
         return State::Unknown { why: String::from("the project states no build command") };
@@ -190,8 +191,9 @@ fn build(recipe: &Recipe, tree: &Path) -> State {
         return State::Unknown { why: String::from("the build command is empty") };
     };
     if *program != PackageManager::Cargo.program() {
-        return State::Unknown {
-            why: format!("a `{program}` build names no output directory this can check"),
+        return match build_output::named(recipe, tree, &words) {
+            Some(directory) => present(tree, &directory, program),
+            None => State::Unknown { why: String::from("the build names no output directory") },
         };
     }
     if words.iter().any(|word| word.starts_with("--profile")) {
@@ -343,11 +345,29 @@ mod tests {
         }
     }
 
+    /// A Node build is read at the directory the project says it writes, and a project
+    /// whose build names none is not read at a guessed path.
+    #[test]
+    fn a_node_build_is_checked_at_the_directory_its_script_names() {
+        let root = tree(&[]);
+        std::fs::write(root.path().join("package.json"), r#"{"scripts":{"build":"vite build"}}"#)
+            .unwrap();
+        let npm = recipe(&[PackageManager::Npm], Some("npm run build"));
+        let cold = of(&npm, root.path()).build;
+        assert_eq!(cold.why(), Some("dist is not there; `npm` has not run here"));
+
+        std::fs::create_dir_all(root.path().join("dist")).unwrap();
+        assert_eq!(of(&npm, root.path()).build, State::Ready);
+    }
+
     #[test]
     fn a_build_with_no_output_this_can_name_is_unknown_rather_than_guessed() {
         let root = tree(&[]);
         let stated = of(&recipe(&[], Some("pnpm run build")), root.path()).build;
-        assert!(matches!(stated, State::Unknown { .. }), "{stated:?}");
+        assert_eq!(
+            stated,
+            State::Unknown { why: String::from("the build names no output directory") }
+        );
 
         let none = of(&recipe(&[], None), root.path()).build;
         assert_eq!(none.why(), Some("the project states no build command"));

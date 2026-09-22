@@ -218,6 +218,14 @@ the create and the steps before it are undone, with both of the tool's streams i
 the home's own readiness line then answers out of its own tree, as every home's does. Cargo
 is never moved: its download cache is outside the tree and no exclusion list reaches it.
 
+**The build line reads the directory the build says it writes.** `cargo build` writes `target`
+under its profile. Every other build is read at the directory the project names, in this order: an
+output flag or a path in the build command, the same in the `package.json` script that command
+runs, a tool's one fixed output (`next build` writes `.next`), and the outputs the task cache
+declares for `build`. A part that a file did not prove reads `not ready` with the path that is not
+there. A part nothing here could read reads `not checked` with the reason, and a build that names
+no output directory is one of those.
+
 **A pin in `[toolchain]` is reported and never enforced.** `nodal new`, `nodal adopt` and
 `nodal show` print one line for each tool the recipe pins: the tool, the pin, and what
 `<program> --version` answered on this host. Where no program here answers for the tool, and
@@ -239,9 +247,10 @@ still holds them; standard output carries the one document about the file that n
 `--json` carries the same list as `changes`.
 
 ## CLI
-`init, approve, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, mcp, run, ps, start, note, ask,
-handoff, sync, done, merge, prune, reclaim, reclaim --check, gc, doctor, base, status, uninstall, upgrade`. Every read command accepts
-`--json`; `status --watch` emits newline-delimited JSON. Global `--store` and `--no-hooks`.
+`init, approve, new, new --carry, cd, adopt, ls, show, explain, env, shell, shell-init, claude-code, mcp, run, ps,
+handoff, done, merge, reclaim, reclaim --check, reclaim --prune, gc, doctor, base, uninstall, upgrade`. Every command
+this list names is a subcommand `nodal --help` prints; `crates/nodal-cli/tests/contract.rs` reads the list and
+checks it. Every read command accepts `--json`. Global `--store` and `--no-hooks`.
 
 `nodal done --wip` says on standard error what the flag sends — every uncommitted and untracked file of
 the home — before the push, not after it.
@@ -651,11 +660,6 @@ The walk writes nothing.
 tool can read. A read type carries the instant it was taken as `now`, and every relative time it prints
 is measured from that, so a rendering is a function of its inputs.
 
-`status --watch` polls; there is no daemon. One line is one whole `status` document, identical in shape
-to `status --json`, and a line is written only when the answer has changed — the instant moving on its
-own is not a change. A consumer therefore holds the last line as current state, and silence means
-unchanged rather than gone.
-
 ## The list
 `nodal ls`, and `nodal` with no subcommand, answer with one row per unit of the project the
 working directory is in.
@@ -786,7 +790,7 @@ both places. It is ranked, and the first that applies is the one printed:
 |---|---|---|
 | 1 | `unique loss` | the working tree holds changed, staged or untracked paths |
 | 2 | `blocked` | something Nodal did not start is standing in the home |
-| 3 | `unknown` | the unit is ahead of the base, the project has a remote, and nothing here has read that remote since the home last wrote its own record of it |
+| 3 | `unknown` | the process table could not be read, so whether something stands in the home is not known; or the unit is ahead of the base, the project has a remote, and nothing here has read that remote since the home last wrote its own record of it |
 
 | 4 | `diverged` | merging would conflict, or the base has moved under the branch |
 | 5 | `review` | the work is on the base, or the branch is ahead and clean |
@@ -810,6 +814,11 @@ newest reading of the remote once for the whole list, compared against each home
 cheap necessary half of the witness rule and not the rule: `unknown` marks a row whose remote
 evidence **cannot** be current, and whether a current reading actually reaches the commits is
 what `nodal reclaim --check` costs a few processes to answer.
+
+Row 2 and the first half of row 3 read one process table. A table that was read and shows
+nothing standing in the home is not `blocked`. A table that could not be read is `unknown` for
+every home, because what could not be read is not evidence that nothing stands there, and `nodal
+reclaim --check` refuses over the same unread table.
 
 Who is attached to each unit comes from the process table, by the same signals `nodal ps`
 reads. A host whose process table Nodal cannot read still lists every unit and says under the
@@ -1197,7 +1206,7 @@ Nodal records a unit's home before it changes it. The runner takes one commit be
 any operation that changes a unit's tree or its refs: `merge`, an `adopt` of a checkout that is already
 here, and `reclaim`. The commit goes on `refs/nodal/<unit>/pre/<operation>`, named by the run in the
 journal, so a second run never writes over the record of the first. `nodal done` and
-`nodal reclaim --force` write the work-in-progress ref `refs/nodal/<unit>/wip` as before.
+`nodal reclaim --force` write the work-in-progress ref `refs/nodal/<unit>/wip` as before. The reclaim report names the ref on its `record` line, so the report that says where the home went also says where the home as it was can be read back.
 
 The commit is built in an index file of its own, so the person's staged work is untouched and no
 tracked file is written. A home with no commit yet has nothing to build on and is not recorded, which

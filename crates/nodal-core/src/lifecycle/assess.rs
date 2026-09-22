@@ -641,9 +641,20 @@ pub fn processes_of(own: Own<'_>, homes: &[PathBuf]) -> Runtime {
             seen.bystanders = bystanders;
             seen.notes = withheld;
         }
-        Err(error) => seen.notes.push(Note::new(Source::Environment, error.to_string())),
+        Err(error) => seen.notes.push(unread_table(&error)),
     }
     seen
+}
+
+/// The note a scan that failed leaves: the one fact [`unmovable`] reads to say the
+/// table went unread.
+///
+/// Public because `nodal ls` keeps this note for the same `Err` and asks it the same
+/// question ([`Note::unread`]), so the list and the preflight cannot read one failed
+/// scan two ways.
+#[must_use]
+pub fn unread_table(error: &crate::Error) -> Note {
+    Note::new(Source::Environment, error.to_string())
 }
 
 /// Why a home cannot be moved over what the process table said.

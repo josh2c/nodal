@@ -26,6 +26,7 @@
 
 pub mod bases;
 pub mod build;
+pub mod build_output;
 pub mod lru;
 pub mod pin;
 pub mod progress;

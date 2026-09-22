@@ -185,6 +185,30 @@ fn the_state_directory_is_skipped_even_when_it_holds_a_repository() {
     );
 }
 
+/// An editor keeps a folder wearing a `.git` file that names a directory Git cannot
+/// open. The walk takes it for a linked worktree, the read fails, and the skip says
+/// what the walk saw and what Git said, with the path once.
+#[test]
+fn a_directory_taken_for_a_clone_that_git_cannot_open_says_why_it_was_taken() {
+    let planted = plant();
+    let extension = planted.root.join("extensions").join("tool");
+    std::fs::create_dir_all(&extension).unwrap();
+    std::fs::write(extension.join(".git"), "gitdir: /nowhere/at/all\n").unwrap();
+
+    let report = planted.report();
+    let skip = report
+        .skipped
+        .iter()
+        .find(|skip| skip.path == real(&extension))
+        .unwrap_or_else(|| panic!("the folder was not skipped: {:?}", report.skipped));
+    assert_eq!(
+        skip.why,
+        "taken for a clone because its `.git` is a file naming a Git directory, and Git finds \
+         no repository there"
+    );
+    assert!(!skip.why.contains(extension.to_str().unwrap()), "the path is in the skip once");
+}
+
 #[test]
 fn the_survey_writes_nothing() {
     let planted = plant();

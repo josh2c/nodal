@@ -1322,6 +1322,7 @@ fn report(
         slug: params.unit.slug.to_string(),
         findings: prepared.findings.clone(),
         snapshot: params.entry.as_ref().and_then(|entry| entry.snapshot.clone()),
+        record: done.record.clone(),
         stopped: torn.stopped,
         containers: torn.containers,
         released,

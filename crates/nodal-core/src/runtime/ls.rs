@@ -80,6 +80,7 @@ use crate::output::view::{
     EnvLine, Holder, HolderState, ToolSessions, UnitList, UnitRow, WorkTree,
 };
 use crate::paths;
+use crate::runtime::attribute::{Note, Source};
 use crate::runtime::processes::{Processes, Running};
 use crate::runtime::{attribute, sessions, stop};
 use crate::store::sessions as session_rows;
@@ -267,7 +268,7 @@ fn row(subject: &Snapshot, seen: &Seen, held: &Held, remote: Reading) -> UnitRow
         exists: remote.exists,
         current: witness::read_since(&paths::resolve(&environment.home), remote.heard),
     };
-    row.needs = needs(subject.work.as_ref(), seen.blocked(&environment.home), reading);
+    row.needs = needs(subject.work.as_ref(), seen.standing(&environment.home), reading);
     row
 }
 
@@ -327,12 +328,29 @@ struct Remote {
     current: bool,
 }
 
+/// What the one reading of the process table said about a home.
+///
+/// Three answers, because "nothing was seen" and "nothing could be seen" are different
+/// facts and a `bool` would print one for the other. The shared fact is the scan's
+/// `Err`: [`assess::unread_table`] turns it into the note [`assess::unmovable`] reads
+/// for the preflight, and [`Seen::standing`] keeps that note and asks it the same
+/// question, so the list and the preflight cannot read one failed scan two ways.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Standing {
+    /// The table was read, and nothing this unit may not signal stands in the home.
+    Clear,
+    /// Something Nodal did not start is standing in the home.
+    Blocked,
+    /// The table could not be read, so whether anything stands there is not known.
+    Unread,
+}
+
 /// Why this unit needs a person, most actionable first.
 ///
 /// The order of [`Needs`] is the ranking and the first match wins, so a unit with
 /// uncommitted work and a conflict is reported as the first of the two. Every branch
 /// here is decided from a reading the list already took.
-fn needs(work: Option<&Work>, blocked: bool, remote: Remote) -> Option<Needs> {
+fn needs(work: Option<&Work>, standing: Standing, remote: Remote) -> Option<Needs> {
     // A home Git could not answer for has no ranking, and `Nothing` would be the wrong
     // answer rather than a cautious one. The top of the ranking is the working tree, so
     // a reading that could not see the working tree cannot say that the top is empty.
@@ -341,8 +359,10 @@ fn needs(work: Option<&Work>, blocked: bool, remote: Remote) -> Option<Needs> {
     if work.dirty + work.staged + work.untracked > 0 {
         return Some(Needs::UniqueLoss);
     }
-    if blocked {
-        return Some(Needs::BlockingRuntime);
+    match standing {
+        Standing::Blocked => return Some(Needs::BlockingRuntime),
+        Standing::Unread => return Some(Needs::UnknownEvidence),
+        Standing::Clear => {}
     }
     if stale(work, remote.exists, remote.current) {
         return Some(Needs::UnknownEvidence);
@@ -418,6 +438,9 @@ impl Attached {
 /// reading it twice would double the cost of the column that is cheapest to get wrong.
 #[derive(Debug, Default)]
 struct Seen {
+    /// The note a scan that failed left, the one [`assess::unmovable`] reads. When it is
+    /// here nothing below is a reading, and its reason is the note under the table.
+    unread: Option<Note>,
     /// Who is attached to each home, counted by tool. This is WHO.
     attached: Attached,
     /// The homes something this unit may not signal is standing in.
@@ -431,9 +454,12 @@ struct Seen {
 }
 
 impl Seen {
-    /// Whether something Nodal did not start is standing in this home.
-    fn blocked(&self, home: &Path) -> bool {
-        self.bystanders.contains(home)
+    /// What the table said about this home.
+    fn standing(&self, home: &Path) -> Standing {
+        if self.unread.as_ref().is_some_and(|note| note.unread(Source::Environment)) {
+            return Standing::Unread;
+        }
+        if self.bystanders.contains(home) { Standing::Blocked } else { Standing::Clear }
     }
 }
 
@@ -472,8 +498,9 @@ impl<'a> Placed<'a> {
 ///
 /// A host whose process table Nodal cannot read gets a note and an empty answer, for the
 /// reason `docs/contracts.md` gives: a note is the difference between "nothing is
-/// attached" and "I could not see". A row's NEEDS is then decided without the runtime
-/// half, which understates and never overstates.
+/// attached" and "I could not see". A row's NEEDS then reads `unknown` for every home,
+/// because whether something stands in a home is a fact the list did not get, and the
+/// preflight refuses over the same unread table.
 ///
 /// What counts as standing in a home is [`assess::bystander`] and not a rule of this
 /// module's own. The list and the preflight print the same word over the same process,
@@ -487,8 +514,9 @@ fn scan(processes: &dyn Processes, homes: &[Placed<'_>], notices: &mut Vec<Notic
             // About the run, not about a unit: the table is read once for the whole
             // list, so the reason it could not be read is one line whatever the list
             // holds.
-            notices.push(Notice::general(format!("who: {error}")));
-            return Seen::default();
+            let note = assess::unread_table(&error);
+            notices.push(Notice::general(format!("who: {}", note.why)));
+            return Seen { unread: Some(note), ..Seen::default() };
         }
     };
     let mut whys: Vec<String> =
@@ -528,7 +556,7 @@ fn attached(running: &[Running], notices: &mut Vec<Notice>) -> Attached {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
-    use super::{Holder, HolderState, Needs, Remote, ToolSessions, needs, read_again};
+    use super::{Holder, HolderState, Needs, Remote, Standing, ToolSessions, needs, read_again};
     use crate::context::survey::Work;
     use crate::git::{Divergence, Integration};
     use crate::output::view::Remote as Upstream;
@@ -571,12 +599,12 @@ mod tests {
         work.dirty = 3;
         work.integration = Integration::Conflict;
         work.divergence.behind = 4;
-        assert_eq!(needs(Some(&work), true, STALE), Some(Needs::UniqueLoss));
+        assert_eq!(needs(Some(&work), Standing::Blocked, STALE), Some(Needs::UniqueLoss));
 
         work.dirty = 0;
-        assert_eq!(needs(Some(&work), true, STALE), Some(Needs::BlockingRuntime));
-        assert_eq!(needs(Some(&work), false, STALE), Some(Needs::UnknownEvidence));
-        assert_eq!(needs(Some(&work), false, CURRENT), Some(Needs::Diverged));
+        assert_eq!(needs(Some(&work), Standing::Blocked, STALE), Some(Needs::BlockingRuntime));
+        assert_eq!(needs(Some(&work), Standing::Clear, STALE), Some(Needs::UnknownEvidence));
+        assert_eq!(needs(Some(&work), Standing::Clear, CURRENT), Some(Needs::Diverged));
     }
 
     /// Staged and untracked paths are work no commit holds, exactly as changed ones are.
@@ -591,8 +619,25 @@ mod tests {
         ] {
             let mut work = clean();
             set(&mut work);
-            assert_eq!(needs(Some(&work), false, CURRENT), Some(Needs::UniqueLoss));
+            assert_eq!(needs(Some(&work), Standing::Clear, CURRENT), Some(Needs::UniqueLoss));
         }
+    }
+
+    /// A process table that could not be read leaves whether the home is blocked
+    /// unknown, and the column says so rather than `nothing` or `review`. Uncommitted
+    /// work still ranks first: the working tree was read, and it is certain.
+    #[test]
+    fn an_unread_process_table_is_unknown_and_never_clear() {
+        let work = clean();
+        assert_eq!(needs(Some(&work), Standing::Unread, CURRENT), Some(Needs::UnknownEvidence));
+
+        let mut quiet = clean();
+        quiet.divergence.ahead = 0;
+        assert_eq!(needs(Some(&quiet), Standing::Unread, CURRENT), Some(Needs::UnknownEvidence));
+
+        let mut dirty = clean();
+        dirty.dirty = 1;
+        assert_eq!(needs(Some(&dirty), Standing::Unread, CURRENT), Some(Needs::UniqueLoss));
     }
 
     /// A unit whose remote evidence cannot be current is `unknown` and never `nothing`.
@@ -601,12 +646,12 @@ mod tests {
     #[test]
     fn an_unreadable_remote_is_unknown_only_where_the_unit_has_something_to_lose() {
         let work = clean();
-        assert_eq!(needs(Some(&work), false, STALE), Some(Needs::UnknownEvidence));
-        assert_eq!(needs(Some(&work), false, CURRENT), Some(Needs::Review));
+        assert_eq!(needs(Some(&work), Standing::Clear, STALE), Some(Needs::UnknownEvidence));
+        assert_eq!(needs(Some(&work), Standing::Clear, CURRENT), Some(Needs::Review));
 
         let mut nothing_of_its_own = clean();
         nothing_of_its_own.divergence.ahead = 0;
-        assert_eq!(needs(Some(&nothing_of_its_own), false, STALE), Some(Needs::Nothing));
+        assert_eq!(needs(Some(&nothing_of_its_own), Standing::Clear, STALE), Some(Needs::Nothing));
     }
 
     /// A branch nobody has pushed has no upstream, and that is the case with the most to
@@ -619,7 +664,10 @@ mod tests {
     fn a_unit_that_was_never_pushed_is_unknown_and_not_review() {
         let mut never_pushed = clean();
         never_pushed.remote = None;
-        assert_eq!(needs(Some(&never_pushed), false, STALE), Some(Needs::UnknownEvidence));
+        assert_eq!(
+            needs(Some(&never_pushed), Standing::Clear, STALE),
+            Some(Needs::UnknownEvidence)
+        );
     }
 
     /// A project with no remote at all has no remote reading to be stale, so the age of
@@ -629,7 +677,7 @@ mod tests {
         let mut work = clean();
         work.remote = None;
         let no_remote = Remote { exists: false, current: false };
-        assert_eq!(needs(Some(&work), false, no_remote), Some(Needs::Review));
+        assert_eq!(needs(Some(&work), Standing::Clear, no_remote), Some(Needs::Review));
     }
 
     /// Work the base already carries is a unit somebody should end, and it is the lowest
@@ -639,11 +687,11 @@ mod tests {
         let mut integrated = clean();
         integrated.integration = Integration::Integrated(crate::git::integration::Reason::Ancestor);
         integrated.divergence.ahead = 0;
-        assert_eq!(needs(Some(&integrated), false, CURRENT), Some(Needs::Review));
+        assert_eq!(needs(Some(&integrated), Standing::Clear, CURRENT), Some(Needs::Review));
 
         let mut quiet = clean();
         quiet.divergence.ahead = 0;
-        assert_eq!(needs(Some(&quiet), false, CURRENT), Some(Needs::Nothing));
+        assert_eq!(needs(Some(&quiet), Standing::Clear, CURRENT), Some(Needs::Nothing));
     }
 
     /// A home Git could not be asked about has no ranking at all, and the column prints
@@ -654,7 +702,7 @@ mod tests {
     /// answers and the contract forbids printing one for the other.
     #[test]
     fn a_home_that_could_not_be_read_has_no_ranking_and_is_not_nothing() {
-        assert_eq!(needs(None, true, STALE), None);
+        assert_eq!(needs(None, Standing::Blocked, STALE), None);
         assert_ne!(Needs::Nothing.label(), crate::output::human::NONE);
     }
 

@@ -3,6 +3,39 @@
 This file records what each release of Nodal lets a person do, and what it refuses.
 One line per behaviour. Versions follow [semantic versioning](https://semver.org).
 
+## Unreleased
+
+### Read
+
+- `nodal ls` prints one note for a unit whose home is not on this disk. It runs no `git` in
+  the missing directory, and no longer prints what each `git` said about it.
+- `nodal ls` prints `unknown` in `NEEDS` for every home when the process table could not be
+  read, with the reason under the table. It no longer reads an unread table as nothing
+  standing in the home.
+- `nodal doctor --machine` names a directory the walk took for a clone and Git could not
+  open once, with what the walk saw: "taken for a clone because its `.git` is a file naming
+  a Git directory, and Git finds no repository there".
+- `nodal reclaim --check` puts the witness clause of a `commits` row on a line under the
+  row. The row ends at "a reclaim keeps this home"; the clause and its instruction follow
+  whole.
+- The `nodal` shell function finds the binary each time it runs: the path it was printed
+  with, else the one on the `PATH`. When neither holds one, it prints "nodal is not on the
+  path" and exits 127, where it ran an empty command and printed `permission denied`.
+
+### Reclaim
+
+- `nodal reclaim` prints a `record` line naming the ref the home was committed to before
+  the first step, `refs/nodal/<unit>/pre/<operation>`, for every reclaim that took one.
+
+### Make
+
+- `nodal new`, `nodal adopt` and `nodal show` read a Node build at the directory the
+  project says it writes: an output flag or path in the build command or its
+  `package.json` script, a tool's fixed output such as `.next`, or the task cache's
+  `build` outputs. The line reads `not checked` only when the build names no directory.
+- A readiness part nothing here could read is labelled `not checked`, apart from `not
+  ready`, which is a part whose file is not there.
+
 ## 0.1.0-rc.3 — 2026-09-18
 
 ### Read

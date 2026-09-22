@@ -34,9 +34,11 @@ const FISH: &str = include_str!("../../../../shims/nodal.fish");
 /// The integration for `shell`, with `binary` as the program it calls.
 ///
 /// `binary` is the path of the running executable, so a shell that has not got `nodal`
-/// on its `PATH` yet still calls the right one. The script falls back to the name
-/// `nodal` when that path is no longer executable, which is what a person meets after
-/// an upgrade moved it.
+/// on its `PATH` yet still calls the right one. The script reads that path each time
+/// the function runs, and not once when it is sourced: when the path is no longer
+/// executable, which is what a person meets after an upgrade moved it, or when a shell
+/// restored from a snapshot carries the function with the variable empty, the script
+/// looks on the `PATH` instead. When neither holds a binary, it says so and exits 127.
 #[must_use]
 pub fn script(shell: Shell, binary: &Path) -> String {
     let template = match shell {
@@ -55,7 +57,8 @@ mod tests {
     use crate::runtime::shells::{EXPORTED, Shell};
 
     /// What every script has to do, whichever shell it is written for.
-    const CLAIMS: &[&str] = &["nodal cd", "NODAL_CD_FILE", EXPORTED, "env --export"];
+    const CLAIMS: &[&str] =
+        &["nodal cd", "NODAL_CD_FILE", EXPORTED, "env --export", "nodal is not on the path"];
 
     #[test]
     fn every_script_makes_the_same_claims() {
