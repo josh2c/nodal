@@ -31,11 +31,44 @@ const REMOTE: &[&str] = &[
     "fuse.davfs",
 ];
 
+/// What made the walk take a directory for a repository.
+///
+/// Carried out of the walk because the reading that follows can fail, and a report of
+/// that failure has to say why the directory was read at all: a person who is told a
+/// path "is not a Git repository" and can see a `.git` in it has been told nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Sign {
+    /// `.git` is a directory holding a `HEAD`, the shape of an ordinary clone.
+    Directory,
+    /// `.git` is a file naming a Git directory, the shape of a linked worktree.
+    Worktree,
+}
+
+impl Sign {
+    /// The reason, in the words a report prints after "taken for a clone because".
+    #[must_use]
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Directory => "its `.git` is a directory holding a HEAD",
+            Self::Worktree => "its `.git` is a file naming a Git directory",
+        }
+    }
+}
+
+/// One directory the walk took for a repository.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Repository {
+    /// The working tree, resolved.
+    pub path: PathBuf,
+    /// What made the walk take it.
+    pub sign: Sign,
+}
+
 /// What one walk found.
 #[derive(Debug, Default)]
 pub struct Found {
     /// Repository working trees, resolved, in the order they were met.
-    pub repositories: Vec<PathBuf>,
+    pub repositories: Vec<Repository>,
     /// Paths the walk did not enter, and why.
     pub skipped: Vec<Skip>,
     /// Directory entries the walk looked at.
@@ -85,6 +118,7 @@ pub fn siblings(checkout: &Path) -> Vec<PathBuf> {
     walk(&[parent], SIBLING_DEPTH, &avoid)
         .repositories
         .into_iter()
+        .map(|repository| repository.path)
         .filter(|path| *path != checkout)
         .collect()
 }
@@ -132,7 +166,7 @@ impl Walker<'_> {
             return;
         };
         let mut children = Vec::new();
-        let mut git = false;
+        let mut sign = None;
         for entry in entries {
             let Ok(entry) = entry else {
                 self.found.entries += 1;
@@ -140,13 +174,13 @@ impl Walker<'_> {
             };
             self.found.entries += 1;
             if entry.file_name() == ".git" {
-                git = git || is_repository(&entry.path());
+                sign = sign.or_else(|| repository_sign(&entry.path()));
                 continue;
             }
             children.push(entry.path());
         }
-        if git {
-            self.found.repositories.push(resolve(path));
+        if let Some(sign) = sign {
+            self.found.repositories.push(Repository { path: resolve(path), sign });
             return;
         }
         if depth >= self.depth {
@@ -194,7 +228,7 @@ fn is_under(path: &Path, parent: &Path) -> bool {
     path == parent || path.starts_with(parent)
 }
 
-/// Whether a `.git` entry is one a repository is read out of.
+/// What makes a `.git` entry one a repository is read out of, or nothing.
 ///
 /// The entry's name is not the answer. `.git` is a directory in an ordinary clone and a
 /// file holding a `gitdir:` line in a linked worktree, and anything else wearing the
@@ -202,18 +236,20 @@ fn is_under(path: &Path, parent: &Path) -> bool {
 /// link pointing nowhere — is not a repository. Taking the name for the answer made the
 /// walk stop at such a directory, report it as a clone, and never look at what was
 /// under it. The classification follows the entry where it points, because a clone may
-/// keep its `.git` on another path, and it reads nothing else.
-fn is_repository(dot_git: &Path) -> bool {
-    let Ok(metadata) = fs::metadata(dot_git) else {
-        return false;
-    };
+/// keep its `.git` on another path, and it reads nothing else: a `gitdir:` line that
+/// names a directory Git cannot open is found out when the clone is read, and the
+/// report then says both what the walk saw and what Git said.
+fn repository_sign(dot_git: &Path) -> Option<Sign> {
+    let metadata = fs::metadata(dot_git).ok()?;
     if metadata.is_dir() {
-        return dot_git.join("HEAD").exists();
+        return dot_git.join("HEAD").exists().then_some(Sign::Directory);
     }
     if !metadata.is_file() {
-        return false;
+        return None;
     }
-    fs::read_to_string(dot_git).is_ok_and(|text| text.trim_start().starts_with("gitdir:"))
+    fs::read_to_string(dot_git)
+        .is_ok_and(|text| text.trim_start().starts_with("gitdir:"))
+        .then_some(Sign::Worktree)
 }
 
 /// The path the filesystem uses, when it can be read.
@@ -303,7 +339,7 @@ fn remote(fstype: &str) -> bool {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 mod tests {
-    use super::{remote, walk};
+    use super::{Sign, remote, walk};
     use crate::doctor::scan::Avoid;
     use std::fs;
     use std::path::PathBuf;
@@ -321,6 +357,8 @@ mod tests {
         fs::write(root.path().join("linked/.git"), "gitdir: /somewhere\n").unwrap();
         let found = walk(&[root.path().to_path_buf()], 6, &[]);
         assert_eq!(found.repositories.len(), 2, "{found:?}");
+        let signs: Vec<Sign> = found.repositories.iter().map(|found| found.sign).collect();
+        assert_eq!(signs, vec![Sign::Worktree, Sign::Directory], "linked sorts before plain");
     }
 
     #[test]
@@ -362,7 +400,7 @@ mod tests {
         git_dir(&root.path().join("Projects/app"));
         let found = walk(&[root.path().to_path_buf()], 6, &[]);
         assert_eq!(found.repositories.len(), 1, "{found:?}");
-        assert!(found.repositories[0].ends_with("Projects/app"), "{found:?}");
+        assert!(found.repositories[0].path.ends_with("Projects/app"), "{found:?}");
     }
 
     #[test]
