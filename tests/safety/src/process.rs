@@ -696,7 +696,7 @@ pub fn of_another_unit(unit: &str, its_home: &Path, standing_in: &Path) -> Owned
 
 /// A process holding one file open **for writing**, standing nowhere near it.
 ///
-/// This is the shape occupancy used to miss altogether (FS-8, E2 and E4): a test runner or
+/// This is the shape occupancy used to miss altogether: a test runner or
 /// a dev server started from a terminal that has since changed directory, writing its
 /// database into a git-ignored corner of a home. Its working directory is `/`, it carries
 /// no Nodal variable, and it would go on writing into the inode after the home was

@@ -503,7 +503,7 @@ mod linux {
     /// see, therefore not safe" — the one case that produced no evidence at all: a
     /// process standing in a home under a setuid binary, or under another account on a
     /// shared host, left the scan with no row, no note and nothing for a verdict to rest
-    /// on (FS-6). It is now a [`Withheld::AnotherAccount`] row: its identifier is known,
+    /// on. It is now a [`Withheld::AnotherAccount`] row: its identifier is known,
     /// its lineage is readable in `stat`, and everything else is stated as refused.
     ///
     /// What is still dropped is what is not a process a person could be working in: an
@@ -561,10 +561,14 @@ mod linux {
     /// Everything one process holds that would outlive a rename of the directory above
     /// it: descriptors opened for writing, writable mappings, and the root it sees.
     ///
-    /// Read in the walk the scan already makes, and only there — the walk runs for a
-    /// reclaim and for `nodal reclaim --check`, never for `nodal ls`. Nothing here opens
-    /// a file of another process: every read is of `/proc`, which is the kernel
-    /// answering about itself.
+    /// Read in the walk the scan already makes, so **every reader of the table pays it**
+    /// — the reclaim, its preflight, and `nodal ls`, `nodal ps`, `nodal show` and
+    /// `nodal run` alike. That is deliberate and not an oversight: occupancy is one
+    /// predicate, and a listing that read less than the preflight would print `clear`
+    /// over a home the preflight refuses on. Measured on one machine, the whole walk is
+    /// 12.6–18 ms over 132 processes against 2.5–3.6 ms without it. Nothing here opens a
+    /// file of another process: every read is of `/proc`, which is the kernel answering
+    /// about itself.
     ///
     /// Every failure is silence. A descriptor that closed between the listing and the
     /// read, a mapping file that grew under the read, a process that ended: none of them
@@ -588,12 +592,19 @@ mod linux {
     /// whose links are not paths at all; they are dropped on the link alone and never
     /// cost the second read. Only a descriptor naming a real absolute path is asked what
     /// it was opened for.
+    ///
+    /// **A descriptor on a file that has been unlinked holds nothing a rename could take
+    /// from anybody.** The kernel marks that link `(deleted)`, and the ordinary shape is
+    /// a dev server writing to a log its own rotation has already replaced: refusing
+    /// there would refuse a reclaim over a path that no longer exists. [`mapped_path`]
+    /// drops them for the same reason, and both readings have to, or the two halves of
+    /// occupancy mean different things.
     fn descriptors(directory: &Path) -> Vec<Held> {
         let Ok(entries) = std::fs::read_dir(directory.join(FD)) else { return Vec::new() };
         let mut held = Vec::new();
         for entry in entries.flatten() {
             let Ok(path) = std::fs::read_link(entry.path()) else { continue };
-            if !path.is_absolute() {
+            if !path.is_absolute() || unlinked(&path) {
                 continue;
             }
             let number = entry.file_name();
@@ -648,6 +659,19 @@ mod linux {
         held
     }
 
+    /// What the kernel appends to the name of a file that has been unlinked.
+    const DELETED: &str = " (deleted)";
+
+    /// Whether this name is the kernel's name for a file that is no longer there.
+    ///
+    /// A real file may be called `x (deleted)`; the difference cannot be told from the
+    /// link alone, so the rare honest file is read as gone and refuses nothing. That is
+    /// the direction that under-counts occupancy, and the process is still judged on
+    /// everything else the walk read about it.
+    fn unlinked(path: &Path) -> bool {
+        path.to_str().is_some_and(|name| name.ends_with(DELETED))
+    }
+
     /// How many fields of a `maps` line come before the path.
     ///
     /// The line is `address perms offset dev inode path`, so five.
@@ -664,7 +688,7 @@ mod linux {
             let field = rest.find(char::is_whitespace)?;
             rest = rest[field..].trim_start();
         }
-        (rest.starts_with('/') && !rest.ends_with("(deleted)")).then_some(rest)
+        (rest.starts_with('/') && !rest.ends_with(DELETED)).then_some(rest)
     }
 
     /// The root directory this process sees, when it is not the machine's own.

@@ -130,7 +130,7 @@ use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::uniqueness::Finding;
 use crate::lifecycle::witness::Checkout;
 use crate::lifecycle::{Done, Rebuild, marker, run};
-use crate::model::reading::Reading;
+use crate::model::reading::{Reading, Unchecked};
 use crate::model::{
     EnvId, EnvState, Environment, EventKind, Project, Recipe, Rested, Timestamp, Trashed, Unit,
     UnitId, UnitStatus, expiry,
@@ -155,6 +155,9 @@ const TEARDOWN: &str = "runtime.stop";
 /// The key of the step that takes the build output out of the trashed copy. The
 /// registry write reads it: what the prune dropped is recorded on the trash row.
 const PRUNE: &str = "home.prune";
+
+/// The step that moves the home, whose output is the reading that let it go.
+const MOVE: &str = "home.trash";
 
 /// The message a forced reclaim's snapshot commit carries.
 const SNAPSHOT_MESSAGE: &str = "nodal: work in progress at reclaim";
@@ -547,6 +550,13 @@ fn commit_of(params: &Params) -> Commit {
         // nothing. Only this host's hold is given up: a claim another machine took is
         // that machine's to release.
         crate::runtime::lock::release(tx, unit.id)?;
+        // The reading that decided the rename, where there was a rename to decide. The
+        // one carried in the plan was taken before the teardown, and the machine has
+        // changed since — the whole point of the teardown is that it changes it.
+        let mut runtime = runtime.clone();
+        if let Some(read) = outputs.read::<Option<Runtime>>(MOVE)?.flatten() {
+            runtime = Some(read);
+        }
         let entry = entry.clone().map(|entry| Trashed { pruned_bytes: pruned.bytes, ..entry });
         if let Some(entry) = &entry {
             trash::insert(tx, entry)?;
@@ -819,16 +829,22 @@ impl Occupancy {
     /// The rule is [`assess::unmovable`], which is the rule `nodal reclaim --check`
     /// reports, so the preflight and the operation cannot disagree about it.
     ///
+    /// **It hands back the reading it made.** This is the scan that lets the home go, so
+    /// it is the scan the verdict event has to carry: the one taken before the teardown
+    /// describes a machine the operation has since changed. The caller writes it into the
+    /// step's output and the registry write reads it back
+    /// ([`assess::taken::BEFORE_THE_MOVE`]).
+    ///
     /// # Errors
     /// [`Error::HomeInUse`] naming what stands in the home, and
     /// [`Error::ProcessTableUnread`] with the reason the scan gave.
-    fn refuse(&self) -> Result<()> {
+    fn refuse(&self) -> Result<Runtime> {
         let seen = assess::processes_of(
             Own::of(self.unit, &self.groups).and_wrappers(&self.wrappers),
             std::slice::from_ref(&self.home),
         );
         match assess::unmovable(&seen) {
-            None => Ok(()),
+            None => Ok(seen.clone()),
             Some(Unmovable::Standing(standing)) => {
                 Err(Error::HomeInUse { slug: self.slug.clone(), standing: standing.to_vec() })
             }
@@ -836,6 +852,23 @@ impl Occupancy {
                 Err(Error::ProcessTableUnread { slug: self.slug.clone(), why: note.why.clone() })
             }
         }
+    }
+
+    /// The same reading, as the record a later step writes down.
+    ///
+    /// `None` where `--force` skipped the refusal, which is a move made without asking:
+    /// the record then keeps the reading the operation did make, and says which it is.
+    fn recorded(&self, force: bool) -> Result<Option<Runtime>> {
+        if force {
+            return Ok(None);
+        }
+        let mut seen = self.refuse()?;
+        assess::record_table(
+            &mut Reading::default(),
+            Some(&mut seen),
+            assess::taken::BEFORE_THE_MOVE,
+        );
+        Ok(Some(seen))
     }
 }
 
@@ -852,7 +885,7 @@ struct TrashHome {
 
 impl Step for TrashHome {
     fn key(&self) -> String {
-        String::from("home.trash")
+        String::from(MOVE)
     }
 
     /// Repeatable in each of the three states a killed run can leave: the home where it
@@ -872,11 +905,9 @@ impl Step for TrashHome {
     /// unreadable since. The rule is [`assess::unmovable`], which is the rule
     /// `nodal reclaim --check` reports. `--force` moves the home over both refusals.
     fn apply(&self) -> Result<Output> {
-        if !self.force {
-            self.occupancy.refuse()?;
-        }
+        let read = self.occupancy.recorded(self.force)?;
         move_tree(&self.occupancy.home, &self.path)?;
-        Ok(nothing())
+        serde_json::to_value(read).map_err(|source| Error::Render { kind: "occupancy", source })
     }
 
     /// Move it back. This is why the trash is a move and not a delete: the operation's
@@ -980,7 +1011,7 @@ impl Step for HomePrune {
     /// [`Error::HomeInUse`] and [`Error::ProcessTableUnread`], from [`Occupancy`].
     fn apply(&self) -> Result<Output> {
         if !self.force {
-            self.occupancy.refuse()?;
+            drop(self.occupancy.refuse()?);
         }
         let report = prune::sweep(&self.occupancy.home);
         serde_json::to_value(report).map_err(|source| Error::Render { kind: "home prune", source })
@@ -1106,12 +1137,21 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
     let placed = placement(&environment)?;
     let recipe = recipe_of(&project.root);
     let examined = examine(&placed, &project.root, &unit, request.force)?;
-    let reading = examined.reading;
+    let mut reading = examined.reading;
     // The reading above is about the work in the home and never asks the process table,
     // so the record it carries says the table was not read. This reclaim does read it, a
     // moment later and for its own reason, and the record must describe the reading the
     // operation made rather than the one the check made.
+    //
+    // This is the reading *before the teardown*, and it is not the one that decides the
+    // rename: the move step reads the table again, after the groups have been stopped,
+    // and that second reading is what lets the home go. So this one is recorded as what
+    // it is, and the move step replaces it with its own ([`assess::taken`]). A reclaim
+    // that never reaches the move — a home that is not there, a checkout adopted in
+    // place — keeps this one, and the record says which it is.
     let table = refuse_unread(&placed, &unit, request.force)?;
+    let mut table = table;
+    assess::record_table(&mut reading, table.as_mut(), assess::taken::BEFORE_THE_TEARDOWN);
     let snapshot = snapshot(&placed, &unit, &examined.findings)?;
     let state_dir = home::directory()?;
     let kept = Kept { recipe: &recipe, snapshot, rested: examined.rested };
@@ -1224,7 +1264,18 @@ struct Examined {
 /// that proof's own record — so nothing can write a row that says safe over a reading that
 /// did not.
 fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Result<Examined> {
-    let Some(home) = placed.path() else { return Ok(Examined::default()) };
+    let Some(home) = placed.path() else {
+        // Nothing was read, because there is nothing there to read. An empty record
+        // would say the same bytes as a reading that looked and found nothing, which is
+        // the one thing this record exists to stop.
+        let mut reading = Reading::default();
+        reading.not_checked.push(Unchecked::new(
+            "the home",
+            "not there: the registry holds a row for it and the directory has gone, so \
+             nothing could be read out of it",
+        ));
+        return Ok(Examined { reading, ..Examined::default() });
+    };
     let checkout = Checkout::read(source);
     let siblings = crate::doctor::scan::siblings(source);
     let refusal = assess::Input::refusal(home, Some(&checkout), &siblings);
@@ -1460,6 +1511,12 @@ fn report(
         if !notes.contains(&note) {
             notes.push(note);
         }
+    }
+    // The same substitution the registry write makes: the report and the event describe
+    // one reading, and it is the one that let the home go.
+    let mut runtime = params.runtime.clone();
+    if let Some(read) = done.outputs.read::<Option<Runtime>>(MOVE)?.flatten() {
+        runtime = Some(read);
     }
     Ok(Reclaimed {
         now: Timestamp::now(),

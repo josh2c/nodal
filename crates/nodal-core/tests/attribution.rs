@@ -201,7 +201,7 @@ fn a_restricted_binary_is_found_by_its_directory_and_its_variables_are_not_guess
 /// **This was a host split and it is not one any more.** A Linux scan used to leave such
 /// a process out altogether: no row, no note, nothing. That made the one case the safety
 /// contract is written for — a process this account cannot see, standing in a home — the
-/// one case that produced no evidence at all (FS-6). Both hosts now list it with what was
+/// one case that produced no evidence at all. Both hosts now list it with what was
 /// withheld, so a reader can say how much it could not see.
 ///
 /// The process that started the machine is another account's unless the test runs as

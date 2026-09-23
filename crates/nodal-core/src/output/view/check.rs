@@ -116,8 +116,9 @@ fn table_line(runtime: &Runtime) -> String {
         format!("occupancy is {}", runtime.occupancy.join(JOIN))
     };
     format!(
-        "process table: {} — {} read, {} withheld; {occupancy}",
+        "process table: {}{} — {} read, {} withheld; {occupancy}",
         runtime.reach().label(),
+        runtime.at.as_deref().map(|at| format!(" {at}")).unwrap_or_default(),
         runtime.read,
         runtime.withheld,
     )

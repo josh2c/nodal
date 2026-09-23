@@ -31,7 +31,9 @@
 //! | and the reclaim refuses the same way, naming the path | `a_write_descriptor_inside_the_home_refuses_the_move` |
 //! | a read-only descriptor refuses nothing | `a_read_only_descriptor_is_not_occupancy` |
 //! | a writable shared mapping is occupancy | `a_writable_shared_mapping_is_read_as_a_hold` |
+//! | a write descriptor on an unlinked file refuses nothing | `a_write_descriptor_on_a_file_that_has_been_unlinked_is_not_occupancy` |
 //! | the predicate itself, on a table a test states | `the_predicate_counts_writes_and_ignores_reads_on_every_host` |
+//! | the list, the preflight and the reclaim agree | `the_list_the_preflight_and_the_reclaim_agree_about_one_table` |
 //!
 //! **Hosts.** The predicate is a function of the table
 //! ([`nodal_core::lifecycle::assess::sort`]), so the last test above states a table and
@@ -39,7 +41,8 @@
 //! per-descriptor open flags for a vnode — the read/write split that makes the rule
 //! affordable is not available there — so the three live tests name macOS and skip it,
 //! and [`nodal_core::runtime::processes::OCCUPANCY`] says on every host which readings it
-//! answered. FS-8 is closed on Linux and stated-open on macOS rather than guessed at.
+//! answered. A process writing from a directory elsewhere is caught on Linux, and the gap
+//! is stated rather than guessed at on macOS.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
@@ -95,7 +98,7 @@ fn only_linux(claim: &str) -> bool {
 
 /// A process writing a file inside the home occupies it, wherever it is standing.
 ///
-/// The severe form of FS-8, reproduced as E4 on the released binary: working directory
+/// The severe form of it, reproduced on the released binary: working directory
 /// `/`, no `NODAL_ID`, a descriptor open for writing on a git-ignored file two directories
 /// inside the home. Every other conjunct is silent about it. The verdict was `safe`.
 ///
@@ -168,6 +171,43 @@ fn a_read_only_descriptor_is_not_occupancy() {
         "a reader was named as standing in the home: {answer:#}"
     );
     assert!(nodal_safety::process::alive(reader.pid()), "the check signalled the reader");
+}
+
+/// A descriptor open for writing on a file that has been **unlinked** refuses nothing.
+///
+/// The ordinary shape is a dev server writing to a log its own rotation has already
+/// replaced: the descriptor is open for writing, its target is inside the home, and the
+/// file it names is not there any more. A rename of the directory takes nothing from
+/// anybody, so a refusal would be over a path that no longer exists — and it would be
+/// unclearable, because nothing a person can do closes a descriptor on a deleted file
+/// except stopping the process.
+///
+/// The kernel marks the link `(deleted)`, and the mapping half of occupancy has always
+/// dropped those; this is the descriptor half agreeing with it.
+#[test]
+fn a_write_descriptor_on_a_file_that_has_been_unlinked_is_not_occupancy() {
+    if only_linux("a write descriptor on an unlinked file refuses nothing") {
+        return;
+    }
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    let rotated = home.join(IGNORED);
+    let writer = nodal_safety::process::writing_into(&rotated);
+    // The rotation: the writer keeps the descriptor, and the name it was opened under is
+    // gone.
+    std::fs::remove_file(&rotated).unwrap();
+
+    let answer = check(&machine, SLUG);
+    assert_eq!(
+        answer["safe_to_reclaim"],
+        Value::Bool(true),
+        "a descriptor on a file that is not there refused a reclaim: {answer:#}"
+    );
+    assert!(
+        answer["runtime"]["bystanders"].as_array().unwrap().is_empty(),
+        "a writer of an unlinked file was named as standing in the home: {answer:#}"
+    );
+    assert!(nodal_safety::process::alive(writer.pid()), "the check signalled the writer");
 }
 
 /// A file mapped writably and shared is a hold on it, and the scan reads it.
@@ -286,6 +326,51 @@ fn the_predicate_counts_writes_and_ignores_reads_on_every_host() {
             "a row that blocks over a held path must name it: {row:?}"
         );
     }
+}
+
+/// The list, the preflight and the reclaim say the same thing about one table.
+///
+/// **The shape that made this necessary is a process this account cannot read.** The rule
+/// that judges one needs the whole table in hand — a withheld row is judged by whether
+/// its lineage reaches something standing in the home — so a caller that asked the
+/// per-process predicate got only the half about processes it can read. `nodal ls` asked
+/// that one, and could print `clear` over a home `nodal reclaim --check` refused on and
+/// `nodal reclaim` then refused to move.
+///
+/// There is one entry point now ([`sort`]) and all three reach it. This asserts the three
+/// over the shape any host can hold — a stranger writing into the home — because the
+/// withheld half cannot be made on demand without privilege and is asserted at the seam
+/// in `reclaim_check.rs`.
+#[test]
+fn the_list_the_preflight_and_the_reclaim_agree_about_one_table() {
+    if only_linux("the list, the preflight and the reclaim agree about one table") {
+        return;
+    }
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    let writer = nodal_safety::process::writing_into(&home.join(IGNORED));
+
+    let listed = machine.nodal(&["ls", "--json"]);
+    let read: Value = serde_json::from_str(&answer(&listed)).unwrap();
+    let needs = read["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["unit"] == SLUG || row["slug"] == SLUG)
+        .map(|row| row["needs"].as_str().unwrap_or_default().to_owned())
+        .unwrap_or_default();
+    assert_eq!(
+        needs, "blocking_runtime",
+        "the list does not see what the preflight does: {read:#}"
+    );
+
+    let answer = check(&machine, SLUG);
+    assert_eq!(answer["safe_to_reclaim"], Value::Bool(false), "{answer:#}");
+
+    let refused = machine.nodal(&["reclaim", SLUG]);
+    assert!(!refused.status.success(), "the reclaim went ahead where both readings refused");
+    assert!(home.is_dir(), "the refusal moved the home");
+    assert!(nodal_safety::process::alive(writer.pid()), "a reading signalled the writer");
 }
 
 /// A process carrying no Nodal variable, standing nowhere, with a name.

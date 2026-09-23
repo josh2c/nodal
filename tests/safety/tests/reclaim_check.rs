@@ -738,7 +738,7 @@ fn another_units_process_in_this_home_blocks_the_list_and_the_check_alike() {
 /// that judges it is what is pinned. `nodal-core/tests/attribution.rs` holds the other
 /// half — that the live scan really does keep such a process rather than drop it.
 ///
-/// This was FS-6: `linux::read` returned `None` for exactly this process, so it left the
+/// `linux::read` used to return `None` for exactly this process, so it left the
 /// table with no row, no note and nothing for a verdict to rest on, and a home with a
 /// stranger's command standing in it read as safe.
 ///

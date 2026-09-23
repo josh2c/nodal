@@ -7,8 +7,9 @@
 //! sentence was **unfalsifiable from the output**: the output never said what it saw.
 //!
 //! That is a safety property and not a presentation one. A rule nobody can check is a rule
-//! nobody can find a hole in, and three of the holes this lane is about (FS-2, FS-6, FS-8)
-//! all failed silently to safe. The record does not close them — nothing here changes a
+//! nobody can find a hole in, and the three holes this lane is about — a commit on a ref
+//! `HEAD` does not reach, a process this account may not read, and a process writing from a
+//! directory elsewhere — all failed silently to safe. The record does not close them — nothing here changes a
 //! verdict, and `nothing_in_the_record_changes_the_verdict` holds that — it makes them
 //! visible.
 //!
@@ -121,7 +122,7 @@ fn a_safe_verdict_says_which_stores_it_asked_and_what_each_said() {
 ///
 /// The second list is the honest half. A reading of `HEAD` alone does not reach a branch,
 /// a tag or a stash made inside the home, so a commit on one of those is work the verdict
-/// says nothing about (FS-2, which is another lane's). Until it is walked, an empty
+/// says nothing about, and closing that is another lane's. Until it is walked, an empty
 /// `commits` list must not be allowed to read as an empty home, and this is what stops it.
 #[test]
 fn a_safe_verdict_says_which_refs_it_walked_and_which_it_did_not() {
@@ -209,7 +210,7 @@ fn a_reading_that_was_not_asked_for_is_named_with_the_reason() {
 
 /// The processes the host refused to show are counted, and the count is in the verdict.
 ///
-/// This is what FS-6 becomes when it cannot be closed. A process this account may not read
+/// This is what a process this account may not read becomes when it cannot be ruled out.
 /// could be standing in this home; on Linux it used to leave the table with no row and no
 /// note at all, and a verdict has no way to say "and there were 37 I could not see". Now
 /// it does, and a person or a test can decide for themselves whether a safe verdict taken

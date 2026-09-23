@@ -665,6 +665,14 @@ pub struct Runtime {
     /// place: a second copy in the report is a second thing to drift.
     #[serde(default)]
     pub occupancy: Vec<String>,
+    /// Where in an operation this reading was taken ([`taken`]).
+    ///
+    /// A reclaim reads the table twice — once before the teardown, for its own refusal,
+    /// and once in the step that decides whether the home may move — and only the second
+    /// gated the rename. A record that did not say which reading it held would describe a
+    /// machine as it was before the operation touched it.
+    #[serde(default)]
+    pub at: Option<String>,
 }
 
 impl Runtime {
@@ -792,8 +800,7 @@ pub fn scan(own: Own<'_>, homes: &[PathBuf]) -> Result<Seen> {
     let placed: Vec<PathBuf> = homes.iter().map(|home| paths::resolve(home)).collect();
     let spared = stop::spared();
     let running = processes::Processes::scan(&processes::Live)?;
-    let (certain, mut standing) = sort(&running, own, &placed, &spared);
-    standing.retain(|row| !has_ended(row.pid));
+    let (certain, standing) = sorted(&running, own, &placed, &spared, &has_ended);
     Ok(Seen {
         certain,
         standing,
@@ -824,20 +831,43 @@ pub struct Seen {
 
 /// Sort one reading of the table into what a reclaim signals and what it refuses over.
 ///
+/// **The one entry point.** `nodal ls`, `nodal reclaim --check` and the move step of an
+/// executed reclaim all reach the answer here, over a table each of them read for itself,
+/// so none of them can print `clear` over a home another refuses on. Asking [`bystander`]
+/// directly answers only half of it: the half about a process this account can read.
+///
 /// Split out of [`scan`] so that the whole rule is a function of a table rather than of
 /// this machine. That is what lets a test state the one table no unprivileged test can
 /// make a machine hold — a process whose record this account may not read — and assert
 /// the arm that judges it.
 ///
-/// Nothing here asks the machine anything, so nothing here drops a process that has
-/// ended since the reading. [`scan`] does that afterwards, over the short list rather
-/// than the whole table.
+/// Nothing here asks the machine anything, so nothing here knows which processes have
+/// ended since the reading. [`scan`] passes that reading in; a caller with only a table
+/// has none to give and gets the answer for the table as stated.
 #[must_use]
 pub fn sort(
     running: &[processes::Running],
     own: Own<'_>,
     placed: &[PathBuf],
     spared: &[u32],
+) -> (Vec<u32>, Vec<Standing>) {
+    sorted(running, own, placed, spared, &|_| false)
+}
+
+/// The same, told which processes have gone since the table was read.
+///
+/// **The prune happens before the lineage pass, and that ordering is the rule.** A scan
+/// reads the whole table before any process in it is judged, and a short command can end
+/// in between; a process that has gone is not standing in the home, and it must not be
+/// left anchoring something else to it either. Pruning afterwards would let a shell that
+/// exited during the walk hold a withheld process in the refusal by a relation neither of
+/// them has any more.
+fn sorted(
+    running: &[processes::Running],
+    own: Own<'_>,
+    placed: &[PathBuf],
+    spared: &[u32],
+    ended: &dyn Fn(u32) -> bool,
 ) -> (Vec<u32>, Vec<Standing>) {
     let mut certain = Vec::new();
     let mut standing = Vec::new();
@@ -846,7 +876,7 @@ pub fn sort(
             certain.push(process.pid);
             continue;
         }
-        if !bystander(process, own, placed, spared) {
+        if !bystander(process, own, placed, spared) || ended(process.pid) {
             continue;
         }
         let row = Standing::new(process.pid, process.command.clone());
@@ -855,7 +885,7 @@ pub fn sort(
             None => row,
         });
     }
-    standing.extend(withheld_in_a_home(running, &certain, &standing, spared));
+    standing.extend(withheld_in_a_home(running, &standing, spared, ended));
     (certain, standing)
 }
 
@@ -870,11 +900,12 @@ const LINEAGE: usize = 16;
 
 /// The processes this account could not read that a reading of the home cannot rule out.
 ///
-/// **This is the arm FS-6 is about.** A process whose `/proc` entry this account may not
-/// read — another account's on a shared host, or this account's own running a binary the
-/// kernel marks undumpable, which is what a setuid program becomes — used to be left out
-/// of the table entirely: no row, no note, nothing for a verdict to rest on. It is now in
-/// the table ([`processes::Withheld`]), and this is what a reclaim does with it.
+/// **This is the arm a hidden process is judged by.** A process whose `/proc` entry this
+/// account may not read — another account's on a shared host, or this account's own
+/// running a binary the kernel marks undumpable, which is what a setuid program becomes —
+/// used to be left out of the table entirely: no row, no note, nothing for a verdict to
+/// rest on. It is now in the table ([`processes::Withheld`]), and this is what a reclaim
+/// does with it.
 ///
 /// What it does **not** do is refuse over every one of them. On the machine this was
 /// written on, 36 processes are withheld at any moment and 3 of them belong to this
@@ -886,18 +917,24 @@ const LINEAGE: usize = 16;
 /// refused: its lineage. `/proc/<pid>/stat` stays world-readable when `environ`, `cwd`,
 /// `fd` and `maps` do not, and macOS answers `proc_bsdshortinfo` and `getsid` across
 /// accounts. A withheld process whose parent, group or session reaches something already
-/// found in the home is a command that was started from inside the home, and a reclaim
-/// refuses to move the home out from under it. One whose lineage reaches nothing in the
-/// home is counted in the evidence record and refuses nothing — which is the residual
-/// this reading cannot close, stated rather than hidden.
+/// standing in the home is a command that was started from inside the home, and a reclaim
+/// refuses to move the home out from under it. One whose lineage reaches nothing there is
+/// counted in the evidence record and refuses nothing — which is the residual this
+/// reading cannot close, stated rather than hidden.
+///
+/// **The anchor is what is standing in the home, and never what the unit owns.** A
+/// teardown stops the unit's own processes before the move, so anchoring on one would
+/// make the preflight refuse over a relation the operation itself dissolves a moment
+/// later: the preflight would say refuse and the reclaim would go ahead. A process the
+/// teardown reaches is reached through the group the registry recorded, which is the
+/// record that exists for exactly that.
 fn withheld_in_a_home(
     running: &[processes::Running],
-    certain: &[u32],
     standing: &[Standing],
     spared: &[u32],
+    ended: &dyn Fn(u32) -> bool,
 ) -> Vec<Standing> {
-    let inside: BTreeSet<u32> =
-        certain.iter().chain(standing.iter().map(|row| &row.pid)).copied().collect();
+    let inside: BTreeSet<u32> = standing.iter().map(|row| row.pid).collect();
     if inside.is_empty() {
         return Vec::new();
     }
@@ -907,6 +944,7 @@ fn withheld_in_a_home(
         .iter()
         .filter(|process| process.withheld == Some(processes::Withheld::AnotherAccount))
         .filter(|process| !spared.contains(&process.pid))
+        .filter(|process| !ended(process.pid))
         .filter(|process| descends_from(process, &inside, &lineage))
         .map(|process| Standing::new(process.pid, process.command.clone()).holding(WITHHELD))
         .collect()
@@ -1384,6 +1422,7 @@ pub fn assess(input: &Input<'_>) -> Result<Assessment> {
         reading,
     };
     assessment.ranked(Timestamp::now());
+    record_table(&mut assessment.reading, assessment.runtime.as_mut(), taken::PREFLIGHT);
     Ok(assessment)
 }
 
@@ -1430,10 +1469,68 @@ fn unread(input: &Input<'_>, reading: &mut Reading) {
     }
     if input.runtime.is_none() {
         reading.not_checked.push(Unchecked::new(
-            "the process table",
+            TABLE,
             "not asked for: this reading is about the work in the home, not about what is running",
         ));
     }
+}
+
+/// What the record calls the process table, in the one place that names it.
+///
+/// Written once because two sites read it: the gap a reading that did not ask for the
+/// table leaves, and the removal of that gap by a reading that did. Two spellings would
+/// leave a record that says both that the table was read and that nobody asked for it.
+pub const TABLE: &str = "the process table";
+
+/// Say where in an operation the process table was read, and leave the gap a table
+/// nobody could read deserves.
+///
+/// **The counts are not copied anywhere.** They live on the [`Runtime`], which is the
+/// value the kernel is handed ([`kernel::Evidence::runtime`]) and the value every report
+/// renders; what is set here is the one thing the runtime cannot know about itself, which
+/// is which of an operation's readings it is. A reclaim reads the table twice — once
+/// before the teardown, for its own refusal, and once in the step that decides whether
+/// the home may move — and only the second one gated the rename.
+pub fn record_table(reading: &mut Reading, runtime: Option<&mut Runtime>, at: &str) {
+    // A reading that was asked for and did not answer is not a reading that was made.
+    // The gap stays, and it says which of the two happened, because a record that dropped
+    // the gap would describe a table nobody could see as a table with nothing in it.
+    reading.not_checked.retain(|gap| gap.what != TABLE);
+    let Some(runtime) = runtime else {
+        reading.not_checked.push(Unchecked::new(
+            TABLE,
+            "not asked for: this reading is about the work in the home, not about what is running",
+        ));
+        return;
+    };
+    runtime.at = Some(String::from(at));
+    if runtime.reach() == Reach::Unread {
+        // A table that was not read answered none of the occupancy questions, so it lists
+        // none as taken; printing them beside `unread` would read as readings made over
+        // nothing.
+        runtime.occupancy.clear();
+        reading.not_checked.push(Unchecked::new(TABLE, unread_why(runtime)));
+    }
+}
+
+/// Why a table that was asked for did not answer, in the words the scan gave.
+fn unread_why(runtime: &Runtime) -> String {
+    runtime
+        .notes
+        .iter()
+        .find(|note| note.unread(Source::Environment))
+        .map_or_else(|| String::from("it could not be read"), |note| note.why.clone())
+}
+
+/// Where in a reading the process table was read, for the record beside it.
+pub mod taken {
+    /// By `nodal reclaim --check`, or by the reading an operation refuses on.
+    pub const PREFLIGHT: &str = "the preflight";
+    /// By the step that refuses to move a home somebody is standing in, which is the
+    /// reading that decided the rename.
+    pub const BEFORE_THE_MOVE: &str = "before the move";
+    /// Before the teardown, by an operation that never reached the move.
+    pub const BEFORE_THE_TEARDOWN: &str = "before the teardown";
 }
 
 // ---------------------------------------------------------------------------
