@@ -516,7 +516,7 @@ mod linux {
             std::fs::read(directory.join(ENVIRON)).map(|blob| kept(&blob)).unwrap_or_default();
         let cwd = std::fs::read_link(directory.join(CWD)).ok();
         let line = std::fs::read(directory.join(CMDLINE)).ok();
-        let command = line.as_deref().and_then(|line| command_of(line));
+        let command = line.as_deref().and_then(command_of);
         if vars.is_empty() && cwd.is_none() {
             let real = line.is_some_and(|line| !line.is_empty());
             if !real {

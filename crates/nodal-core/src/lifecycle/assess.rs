@@ -949,6 +949,17 @@ fn descends_from(
     false
 }
 
+/// Whether a process holds anything inside one of these homes, which is the half of the
+/// question [`in_one_of`] does not ask.
+///
+/// Separate from [`holding`] and not a wrapper over it, because this one is asked of every
+/// process in the table by every reader of the predicate, and the answer is a yes or a no.
+/// Naming what it holds is the refusal's business and costs an allocation, which a
+/// listing of forty units should not pay four thousand times.
+fn holds_in_one_of(process: &processes::Running, placed: &[PathBuf]) -> bool {
+    process.held.iter().any(|held| placed.iter().any(|home| held.path.starts_with(home)))
+}
+
 /// What a process holds inside one of these homes, beside standing in it.
 ///
 /// The descriptors it has open for writing, the files it has mapped so that writes reach
@@ -993,7 +1004,7 @@ pub fn bystander(
 ) -> bool {
     !owns(process, own)
         && !spared.contains(&process.pid)
-        && (in_one_of(process, placed) || !holding(process, placed).is_empty())
+        && (in_one_of(process, placed) || holds_in_one_of(process, placed))
         && !vouched_for_by_a_group(process, own)
 }
 

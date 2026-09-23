@@ -649,8 +649,12 @@ fn verdict(
             ("occupancy", runtime.occupancy.join(" ")),
         ]);
     }
-    for gap in &reading.not_checked {
-        refs.push(("not_checked", clipped(&gap.what)));
+    // One reference and not one per gap: an event's references are a map, so two entries
+    // under one name would leave only the last of them and the record would quietly say
+    // less than the reading did.
+    if !reading.not_checked.is_empty() {
+        let gaps: Vec<&str> = reading.not_checked.iter().map(|gap| gap.what.as_str()).collect();
+        refs.push(("not_checked", clipped(&gaps.join("; "))));
     }
     let body = format!("reclaim went ahead; {}", reading.summary());
     events::note(tx, (unit.id, Some(environment.id)), EventKind::Verdict, body, &refs)
