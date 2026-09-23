@@ -13,10 +13,9 @@ const LENGTHS: [usize; 2] = [40, 64];
 /// Two sets of object ids as one sorted set with no repeats.
 ///
 /// The exclusion a `rev-list` is given is a set of tips, and every caller that builds one
-/// out of two readings wants the same three lines. It lives beside [`Oid`] because that
-/// is what it is about, and because the two callers that want it —
-/// [`crate::lifecycle::witness`] and [`crate::lifecycle::assess`] — should not each keep
-/// a copy of it.
+/// out of more than one reading wants the same three lines. It lives beside [`Oid`]
+/// because that is what it is about, and because the callers that want it should not
+/// each keep a copy of it. A caller with one reading passes an empty second list.
 #[must_use]
 pub fn union(left: &[Oid], right: &[Oid]) -> Vec<Oid> {
     let mut all: Vec<Oid> = left.iter().chain(right).cloned().collect();

@@ -300,3 +300,108 @@ fn a_reclaim_of_one_unit_writes_into_no_other_home() {
         "a reclaim moved a ref in another home"
     );
 }
+
+/// `nodal merge` squashes the branch and writes the commits it folded to
+/// `refs/nodal/<unit>/premerge` before it reclaims the unit. Those commits exist nowhere
+/// else by construction: the merge is what put their content on the target branch, and
+/// the objects behind them were never meant to outlive it.
+///
+/// A sweep that read that ref as this home's work would keep every merged unit's home
+/// for ever. The retention still removes it.
+#[test]
+fn a_merged_units_home_is_removed_although_the_squash_left_its_commits_here() {
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    for (name, text) in [("first.txt", "one\n"), ("second.txt", "two\n")] {
+        std::fs::write(home.join(name), text).unwrap();
+        git(&home, &["add", "--all"]);
+        git(&home, &["commit", "--quiet", "--message", name]);
+    }
+    let folded = git(&home, &["rev-parse", "HEAD"]);
+
+    let merged = machine.nodal(&["merge", SLUG, "--yes"]);
+    assert!(merged.status.success(), "{}", stderr(&merged));
+    let trash = machine.trashed().pop().expect("the merge reclaimed the home");
+    assert_eq!(
+        git(&trash, &["rev-parse", &format!("refs/nodal/{}/premerge", unit_id(&machine))]),
+        folded,
+        "the premerge ref is the one this property is about"
+    );
+
+    let swept = machine.nodal(&["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    assert!(!trash.exists(), "a squashed branch kept the home: {}", stdout(&swept));
+    assert!(machine.trashed().is_empty(), "and the row went with the directory");
+}
+
+/// A home whose `HEAD` is detached still holds the person's work, and `HEAD` is the only
+/// ref that reaches it. A reading that named the unit's branch alone would call such a
+/// home empty and let the last copy of a commit go.
+#[test]
+fn a_detached_head_whose_copy_went_keeps_its_home() {
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    git(&home, &["checkout", "--quiet", "--detach"]);
+    std::fs::write(home.join(ONLY), "the only copy\n").unwrap();
+    git(&home, &["add", "--all"]);
+    git(&home, &["commit", "--quiet", "--message", "work on a detached head"]);
+    let tip = git(&home, &["rev-parse", "HEAD"]);
+    let sibling = sibling_holding(&machine, &home, &tip);
+    let trash = reclaimed(&machine, SLUG);
+
+    git(&sibling, &["update-ref", "-d", &format!("refs/heads/{COPY}")]);
+    git(&sibling, &["reflog", "expire", "--expire=now", "--all"]);
+    assert!(!reaches(&sibling, &tip), "the sibling still reaches the commit");
+
+    let swept = machine.nodal(&["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    let report = stdout(&swept);
+    assert!(report.contains(&format!("kept: {}", &tip[..8])), "{report}");
+    readable(&trash, &tip);
+}
+
+/// The identifier of the one unit this machine has, as its refs spell it.
+fn unit_id(machine: &Machine) -> String {
+    let store = machine.store();
+    let project = machine.project(&store);
+    nodal_core::store::units::list(store.conn(), project.id)
+        .unwrap()
+        .into_iter()
+        .find(|unit| unit.slug.as_str() == SLUG)
+        .expect("the unit is registered")
+        .id
+        .to_string()
+}
+
+/// A home carries every branch the base it was copied from had, `refs/heads/main` among
+/// them, and the reclaim reads none of them: it reads the working tree and `HEAD`. A
+/// commit on one of those branches is therefore a commit the reclaim never looked at.
+///
+/// A sweep that read every `refs/heads/*` would find such a commit only in this home and
+/// keep the directory on every sweep from then on, over a ref no reclaim ever proved. gc
+/// reads what the reclaim proved, so the retention removes the home.
+#[test]
+fn a_branch_the_reclaim_never_read_does_not_pin_the_home() {
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    let branch = git(&home, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    git(&home, &["checkout", "--quiet", "-B", "main"]);
+    std::fs::write(home.join(ONLY), "on a branch nobody reads\n").unwrap();
+    git(&home, &["add", "--all"]);
+    git(&home, &["commit", "--quiet", "--message", "work on the copied branch"]);
+    let stranded = git(&home, &["rev-parse", "refs/heads/main"]);
+    git(&home, &["checkout", "--quiet", &branch]);
+    assert!(!reaches(&machine.source, &stranded), "the checkout already holds the commit");
+
+    let trash = reclaimed(&machine, SLUG);
+    assert_eq!(
+        git(&trash, &["rev-parse", "refs/heads/main"]),
+        stranded,
+        "the branch this property is about is not in the trashed home"
+    );
+
+    let swept = machine.nodal(&["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    assert!(!trash.exists(), "a branch the reclaim never read kept the home: {}", stdout(&swept));
+    assert!(machine.trashed().is_empty(), "and the row went with the directory");
+}

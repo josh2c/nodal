@@ -115,7 +115,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
-use crate::git::{Git, Oid, refs, snapshot};
+use crate::git::{Git, Oid, refs, snapshot, union};
 use crate::lifecycle::assess;
 use crate::lifecycle::idle;
 use crate::lifecycle::journal;
@@ -476,7 +476,8 @@ fn sweep(store: &Store, expired: &[Trashed], registered: &[Project]) -> Result<E
     let mut swept = Expiry::default();
     for entry in expired {
         let project = registered.iter().find(|project| project.id == entry.project_id);
-        if let Some(holding) = holding(entry, project) {
+        let branch = branch_of(store.conn(), entry)?;
+        if let Some(holding) = holding(entry, project, branch.as_ref()) {
             swept.held.push(HeldBack { entry: entry.clone(), holding });
             continue;
         }
@@ -502,7 +503,19 @@ fn sweep(store: &Store, expired: &[Trashed], registered: &[Project]) -> Result<E
 /// Everything else is read again. A project the registry has lost is a home with no
 /// checkout to ask, which is not a reading that found nothing — it is no reading at all,
 /// and nothing is removed on one.
-fn holding(entry: &Trashed, project: Option<&Project>) -> Option<Holding> {
+/// The branch the unit owned, for the one ref of the home that `HEAD` may not name.
+///
+/// `None` where the registry no longer holds the unit. The reading then rests on `HEAD`,
+/// which in every home but a detached one names that same branch, and a row the registry
+/// has half lost is not a reason to keep a directory for ever.
+///
+/// # Errors
+/// [`Error::Store`] when the registry could not be read.
+fn branch_of(conn: &Connection, entry: &Trashed) -> Result<Option<String>> {
+    Ok(units::get(conn, entry.unit_id)?.map(|unit| unit.branch.to_string()))
+}
+
+fn holding(entry: &Trashed, project: Option<&Project>, branch: Option<&String>) -> Option<Holding> {
     if !entry.rested.re_asks() {
         return None;
     }
@@ -511,7 +524,7 @@ fn holding(entry: &Trashed, project: Option<&Project>) -> Option<Holding> {
             why: String::from("the registry holds no project it belonged to"),
         });
     };
-    match only_here(entry, project) {
+    match only_here(entry, project, branch) {
         Ok(None) => None,
         Ok(Some((count, sample))) => Some(Holding::OnlyHere { count, sample }),
         Err(why) => Some(Holding::Unread { why: why.to_string() }),
@@ -524,9 +537,8 @@ fn holding(entry: &Trashed, project: Option<&Project>) -> Option<Holding> {
 /// ([`crate::lifecycle::uniqueness`]). Two things differ, and each is a fact about a home
 /// nobody is working in.
 ///
-/// The work is read from the home's own refs and not from `HEAD`, because nothing is
-/// checked out in the trash and a forced reclaim wrote the working tree onto
-/// `refs/nodal/<unit>/wip`, which no branch reaches.
+/// The work is read from the refs the reclaim proved rather than from every ref the home
+/// holds ([`work_tips`]).
 ///
 /// The paths of the working tree decide nothing, because a reclaim already settled them:
 /// a home with none was the condition of an ordinary reclaim, and a forced one put what
@@ -536,9 +548,13 @@ fn holding(entry: &Trashed, project: Option<&Project>) -> Option<Holding> {
 /// # Errors
 /// [`Error::Git`] and [`Error::NotARepository`] when the trashed home could not be read.
 /// The caller turns either into a line and a directory that stays.
-fn only_here(entry: &Trashed, project: &Project) -> Result<Option<(usize, Vec<Oid>)>> {
+fn only_here(
+    entry: &Trashed,
+    project: &Project,
+    branch: Option<&String>,
+) -> Result<Option<(usize, Vec<Oid>)>> {
     let git = Git::open(&entry.path)?;
-    let tips = work_tips(&git, entry.unit_id)?;
+    let tips = work_tips(&git, entry, branch)?;
     let checkout = Checkout::read(&project.root);
     let siblings = crate::doctor::scan::siblings(&project.root);
     let input =
@@ -549,39 +565,55 @@ fn only_here(entry: &Trashed, project: &Project) -> Result<Option<(usize, Vec<Oi
     }))
 }
 
-/// The refs a trashed home's own work is on: its branches, the work-in-progress snapshot
-/// a forced reclaim wrote, and the branch a merge squashed.
+/// The refs a trashed home's own work is on: `HEAD`, the unit's own branch, and the
+/// work-in-progress snapshot a forced reclaim wrote.
 ///
-/// Three kinds and not every ref, because most of what a home holds is a copy of somebody
-/// else's. `refs/nodal/origin/*` and `refs/nodal/checkout/*` are readings Nodal fetched in
-/// from the person's own checkout, and `refs/nodal/<unit>/target` is a copy of the branch
-/// the unit was to merge into. Reading one of those as this home's work would keep the
-/// home over a branch the person deleted in their own checkout.
+/// Three names and not every ref, and the rule behind the list is one sentence: gc reads
+/// what the reclaim proved. A ref the reclaim never read cannot by itself keep a home,
+/// and a ref that exists only because Nodal wrote it is not the person's work.
 ///
-/// **A pre-operation record is not work either, and this is the one that has to be
-/// argued.** Every reclaim writes one before its first step ([`crate::git::snapshot`]),
-/// so every trashed home holds a commit no other store has — the record of the home as it
-/// was on the way to the trash. Reading it as work would keep every trashed home for
-/// ever, which is a leak and not a safety property.
+/// Everything left out is left out under that rule. `refs/nodal/origin/*` and
+/// `refs/nodal/checkout/*` are readings Nodal fetched in from the person's own checkout,
+/// and `refs/nodal/<unit>/target` is a copy of the branch the unit was to merge into;
+/// reading one of those as work would keep the home over a branch the person deleted in
+/// their own checkout.
 ///
-/// It also holds nothing the rest of this list does not. A record's tree is the home's
-/// working tree and its parent is the home's own branch. The homes read here are the ones
+/// **Every other `refs/heads/*` is left out for the same reason.** A home is a byte copy
+/// of a base, so it carries the base's `refs/heads/main` frozen at the moment the base
+/// was built. A rewrite of `main` past that commit in the person's checkout would leave
+/// the home holding the only copy of a commit the reclaim never looked at, and pin the
+/// directory for ever.
+///
+/// **A pre-operation record and a pre-merge record are left out as well**, and these are
+/// the two that have to be argued because both hold real commits.
+///
+/// Every reclaim writes a pre-operation record before its first step
+/// ([`crate::git::snapshot`]), so every trashed home holds one; and `nodal merge` writes
+/// `refs/nodal/<unit>/premerge` before it squashes, so every merged unit holds commits
+/// that by construction exist nowhere else. Reading either as work keeps that home for
+/// ever, which is a leak and not a safety property: the merge that wrote the premerge ref
+/// is the operation that put the work on the target branch, and the reclaim that wrote
+/// the record is the one being carried out.
+///
+/// Neither holds content the rest of this list does not. A record's tree is the home's
+/// working tree and its parent is the home's own branch; the homes read here are the ones
 /// whose reclaim found nothing only there, so their working trees held no uncommitted and
-/// no untracked work, and a record of such a tree adds no content to `HEAD`. Where a
-/// reclaim did find something, `--force` put it on `wip`, which is named above, and
-/// [`crate::model::Rested::re_asks`] keeps that home out of this reading altogether.
-fn work_tips(git: &Git, unit: UnitId) -> Result<Vec<Oid>> {
-    let unit = unit.to_string();
-    let (wip, premerge) = (refs::wip(&unit), refs::premerge(&unit));
-    let mut tips: Vec<Oid> = git.list_refs(refs::HEADS)?.into_iter().map(|one| one.oid).collect();
-    for one in git.list_refs(&format!("{}{unit}/", refs::NAMESPACE))? {
-        if one.name == wip || one.name == premerge {
-            tips.push(one.oid);
-        }
+/// no untracked work. Where a reclaim did find something, `--force` put it on `wip`,
+/// which is named above, and [`crate::model::Rested::re_asks`] keeps that home out of
+/// this reading altogether.
+///
+/// # Errors
+/// [`Error::Git`] when a revision could not be read.
+fn work_tips(git: &Git, entry: &Trashed, branch: Option<&String>) -> Result<Vec<Oid>> {
+    let named = branch
+        .map(|branch| format!("{}{branch}", refs::HEADS))
+        .into_iter()
+        .chain([String::from("HEAD"), refs::wip(&entry.unit_id.to_string())]);
+    let mut tips = Vec::new();
+    for name in named {
+        tips.extend(git.rev_parse_opt(&name)?);
     }
-    tips.sort_unstable();
-    tips.dedup();
-    Ok(tips)
+    Ok(union(&tips, &[]))
 }
 
 /// Stop what is still running for a unit whose home is not there any more.
