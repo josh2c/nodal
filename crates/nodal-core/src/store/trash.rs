@@ -154,6 +154,7 @@ fn stored(bytes: u64) -> i64 {
 /// Turn a row into an entry.
 fn decode(row: &Row<'_>) -> Result<Trashed> {
     let snapshot = row::plain::<Option<String>>(row, TABLE, "snapshot")?;
+    let rested = read(&row::plain::<String>(row, TABLE, "rested")?, snapshot.as_deref());
     Ok(Trashed {
         environment_id: row::scalar::<EnvId>(row, TABLE, "environment_id")?,
         unit_id: row::scalar::<UnitId>(row, TABLE, "unit_id")?,
@@ -161,9 +162,9 @@ fn decode(row: &Row<'_>) -> Result<Trashed> {
         slug: row::scalar::<Slug>(row, TABLE, "slug")?,
         home: row::path(row, TABLE, "home")?,
         path: row::path(row, TABLE, "path")?,
-        snapshot: snapshot.clone(),
+        snapshot,
         pruned_bytes: row::number::<u64>(row, TABLE, "pruned_bytes")?,
-        rested: read(&row::plain::<String>(row, TABLE, "rested")?, snapshot.as_deref()),
+        rested,
         trashed_at: row::stamp(row, TABLE, "trashed_at")?,
         expires_at: row::stamp(row, TABLE, "expires_at")?,
     })

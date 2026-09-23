@@ -1023,7 +1023,7 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
     let snapshot = snapshot(&placed, &unit, &examined.findings)?;
     let state_dir = home::directory()?;
     let kept = Kept { recipe: &recipe, snapshot, rested: examined.rested };
-    let entry = trashed((&project, &unit, &environment), &placed, &kept)?;
+    let entry = trashed((&project, &unit, &environment), &placed, kept)?;
     let runner = Runner {
         project: project.root.clone(),
         hooks: recipe.hooks.clone(),
@@ -1188,7 +1188,7 @@ struct Kept<'a> {
 fn trashed(
     subject: (&Project, &Unit, &Environment),
     placed: &Placement,
-    kept: &Kept<'_>,
+    kept: Kept<'_>,
 ) -> Result<Option<Trashed>> {
     let (project, unit, environment) = subject;
     let Placement::Managed(home) = placed else { return Ok(None) };
@@ -1200,9 +1200,9 @@ fn trashed(
         slug: unit.slug.clone(),
         home: home.clone(),
         path: home::trashed(&home::directory()?, &project.name, environment.id),
-        snapshot: kept.snapshot.clone(),
+        snapshot: kept.snapshot,
         pruned_bytes: 0,
-        rested: kept.rested.clone(),
+        rested: kept.rested,
         trashed_at: at,
         expires_at: expiry(at, kept.recipe.trash_retention_days()),
     }))

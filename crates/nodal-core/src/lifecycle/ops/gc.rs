@@ -206,10 +206,11 @@ pub fn collect(store: &mut Store, now: Timestamp, options: &Options) -> Result<S
 // ---------------------------------------------------------------------------
 
 /// One project and the window it keeps a home and a record for.
-#[derive(Debug, Clone)]
-struct Retention {
-    /// The project itself, which the reclaim of one of its units is given.
-    project: Project,
+#[derive(Debug, Clone, Copy)]
+struct Retention<'a> {
+    /// The project itself, which the reclaim of one of its units is given. Named rather
+    /// than copied: the rows the sweep reads this from outlive every step that uses one.
+    project: &'a Project,
     /// Days, from `reclaim.trash_retention`.
     days: u32,
 }
@@ -227,14 +228,13 @@ struct Retention {
 /// The projects arrive read, because the expiry step reads them too: a trashed home is
 /// read again against the checkout of the project it belonged to, and that project is
 /// one of these rows whether or not its recipe loads.
-fn retentions(registered: &[Project], leftovers: &mut Vec<Leftover>) -> Vec<Retention> {
+fn retentions<'a>(registered: &'a [Project], leftovers: &mut Vec<Leftover>) -> Vec<Retention<'a>> {
     let mut read = Vec::new();
     for project in registered {
         match crate::recipe::load(&project.root) {
-            Ok(effective) => read.push(Retention {
-                days: effective.recipe.trash_retention_days(),
-                project: project.clone(),
-            }),
+            Ok(effective) => {
+                read.push(Retention { days: effective.recipe.trash_retention_days(), project });
+            }
             Err(why) => {
                 leftovers.push(Leftover::new("project", format!("{}: {why}", project.name)));
             }
@@ -262,7 +262,7 @@ fn retire(
     store: &mut Store,
     now: Timestamp,
     hooks: bool,
-    retentions: &[Retention],
+    retentions: &[Retention<'_>],
     leftovers: &mut Vec<Leftover>,
 ) -> Result<Vec<Retired>> {
     let mut retired = Vec::new();
@@ -293,17 +293,17 @@ fn retire(
 /// The clock runs from the unit's own `updated_at`, which for a merged unit is the
 /// instant the merge was recorded ([`crate::lifecycle::states`]). A unit whose home has
 /// already gone is not one of these: there is nothing left to give back.
-fn due(
+fn due<'a>(
     conn: &Connection,
     now: Timestamp,
-    retentions: &[Retention],
-) -> Result<Vec<(Project, Unit)>> {
+    retentions: &[Retention<'a>],
+) -> Result<Vec<(&'a Project, Unit)>> {
     let mut found = Vec::new();
     for Retention { project, days } in retentions {
         for unit in units::list_by_status(conn, project.id, UnitStatus::Merged)? {
             let expires = retention::expiry(unit.updated_at, *days);
             if expires.unix_seconds() <= now.unix_seconds() && live_home(conn, &unit)?.is_some() {
-                found.push((project.clone(), unit));
+                found.push((*project, unit));
             }
         }
     }
@@ -343,7 +343,7 @@ fn refusal(unit: &Unit, why: &Error) -> Leftover {
 fn forget(
     conn: &Connection,
     now: Timestamp,
-    retentions: &[Retention],
+    retentions: &[Retention<'_>],
     leftovers: &mut Vec<Leftover>,
 ) -> Result<Vec<String>> {
     let mut removed = Vec::new();
@@ -548,10 +548,10 @@ impl<'a> Readings<'a> {
     /// `None` where the registry holds no such project, which the caller turns into a
     /// refusal to remove anything of it.
     fn of_project(&mut self, project: ProjectId) -> Option<&Reading> {
-        let root = self.registered.get(&project)?.root.clone();
+        let root = &self.registered.get(&project)?.root;
         Some(self.read.entry(project).or_insert_with(|| Reading {
-            checkout: Checkout::read(&root),
-            siblings: crate::doctor::scan::siblings(&root),
+            checkout: Checkout::read(root),
+            siblings: crate::doctor::scan::siblings(root),
         }))
     }
 }
