@@ -111,24 +111,33 @@ pub fn remove(conn: &Connection, environment_id: EnvId) -> Result<bool> {
 /// [`Rested::Unrecorded`] is written as the empty string, which is what every row
 /// before this column already holds, so a row Nodal writes and a row the migration made
 /// read back as the same fact.
+///
+/// # Errors
+/// [`crate::Error::StoreEncode`] when the value could not be written as JSON.
 fn written(rested: &Rested) -> Result<String> {
     if matches!(rested, Rested::Unrecorded) {
         return Ok(String::new());
     }
-    serde_json::to_string(rested).map_err(|why| crate::Error::InvalidValue {
-        kind: "what the reclaim's check rested on",
-        value: why.to_string(),
-    })
+    row::json_of(rested, "what the reclaim's check rested on")
 }
 
-/// The same, read back. Text that will not parse is read as [`Rested::Unrecorded`],
-/// which is the strict answer: `gc` then reads the home again and believes only what
-/// that reading shows it.
-fn read(text: &str) -> Rested {
+/// The same, read back, for a row that also carries `snapshot`.
+///
+/// A row this column never reached says nothing in it, and what it says instead is in
+/// the column beside it. A `--force` reclaim that had to preserve work committed that
+/// work to `refs/nodal/<unit>/wip` and wrote the ref here, so a snapshot on a row older
+/// than this column is a loss the person was shown and accepted. Reading it as
+/// [`Rested::Unrecorded`] would make `nodal gc` ask again, find the snapshot only in
+/// that home, and keep the directory for ever.
+///
+/// A row with neither is [`Rested::Unrecorded`], and so is text no version of this model
+/// wrote: `gc` reads the home again and believes only what that reading shows it.
+fn read(text: &str, snapshot: Option<&str>) -> Rested {
+    let unwritten = if snapshot.is_some() { Rested::Forced } else { Rested::Unrecorded };
     if text.is_empty() {
-        return Rested::Unrecorded;
+        return unwritten;
     }
-    serde_json::from_str(text).unwrap_or_default()
+    serde_json::from_str(text).unwrap_or(unwritten)
 }
 
 /// A byte count as SQLite holds whole numbers, which is a signed sixty-four bit
@@ -144,6 +153,7 @@ fn stored(bytes: u64) -> i64 {
 
 /// Turn a row into an entry.
 fn decode(row: &Row<'_>) -> Result<Trashed> {
+    let snapshot = row::plain::<Option<String>>(row, TABLE, "snapshot")?;
     Ok(Trashed {
         environment_id: row::scalar::<EnvId>(row, TABLE, "environment_id")?,
         unit_id: row::scalar::<UnitId>(row, TABLE, "unit_id")?,
@@ -151,9 +161,9 @@ fn decode(row: &Row<'_>) -> Result<Trashed> {
         slug: row::scalar::<Slug>(row, TABLE, "slug")?,
         home: row::path(row, TABLE, "home")?,
         path: row::path(row, TABLE, "path")?,
-        snapshot: row::plain::<Option<String>>(row, TABLE, "snapshot")?,
+        snapshot: snapshot.clone(),
         pruned_bytes: row::number::<u64>(row, TABLE, "pruned_bytes")?,
-        rested: read(&row::plain::<String>(row, TABLE, "rested")?),
+        rested: read(&row::plain::<String>(row, TABLE, "rested")?, snapshot.as_deref()),
         trashed_at: row::stamp(row, TABLE, "trashed_at")?,
         expires_at: row::stamp(row, TABLE, "expires_at")?,
     })
@@ -180,13 +190,13 @@ mod tests {
                 commits: 3,
             }],
         };
-        assert_eq!(read(&written(&rested).unwrap()), rested);
+        assert_eq!(read(&written(&rested).unwrap(), None), rested);
     }
 
     /// A forced reclaim named its loss before it moved anything, and the row says so.
     #[test]
     fn a_forced_reclaim_is_written_down_as_forced() {
-        assert_eq!(read(&written(&Rested::Forced).unwrap()), Rested::Forced);
+        assert_eq!(read(&written(&Rested::Forced).unwrap(), None), Rested::Forced);
     }
 
     /// The empty string is what the migration left in every row an older Nodal wrote,
@@ -195,13 +205,23 @@ mod tests {
     #[test]
     fn a_row_that_says_nothing_reads_as_unrecorded() {
         assert_eq!(written(&Rested::Unrecorded).unwrap(), "");
-        assert_eq!(read(""), Rested::Unrecorded);
+        assert_eq!(read("", None), Rested::Unrecorded);
+    }
+
+    /// A row an older Nodal wrote holds no text here, and the snapshot beside it says
+    /// what happened: a ref there is work a `--force` preserved after the person was
+    /// shown the loss. Reading that as unrecorded would make the sweep ask again and
+    /// keep the directory for ever.
+    #[test]
+    fn a_row_older_than_this_column_reads_its_snapshot_as_the_force_it_was() {
+        assert_eq!(read("", Some("refs/nodal/01J/wip")), Rested::Forced);
+        assert_eq!(read("", None), Rested::Unrecorded);
     }
 
     /// Text no version of this model wrote is not a reason to fail a sweep, and it is
     /// not evidence either. It reads as the answer that makes `gc` ask again.
     #[test]
     fn text_that_will_not_parse_reads_as_unrecorded() {
-        assert_eq!(read("{\"kind\":\"from a later nodal\"}"), Rested::Unrecorded);
+        assert_eq!(read("{\"kind\":\"from a later nodal\"}", None), Rested::Unrecorded);
     }
 }
