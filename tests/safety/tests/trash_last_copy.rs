@@ -22,6 +22,10 @@
 //! | a lost remote branch keeps it | `a_home_whose_remote_branch_went_survives_its_retention` |
 //! | a copy nothing named still keeps it | `a_home_the_checkout_alone_held_is_kept_and_says_what_it_knows` |
 //! | the ordinary home still goes | `a_home_whose_commits_are_in_the_checkout_is_removed_on_time` |
+//! | a merged unit's home still goes | `a_merged_units_home_is_removed_although_the_squash_left_its_commits_here` |
+//! | a detached head is read | `a_detached_head_whose_copy_went_keeps_its_home` |
+//! | a ref the reclaim never read holds nothing | `a_branch_the_reclaim_never_read_does_not_pin_the_home` |
+//! | an unreadable home is kept | `a_trashed_home_nothing_can_read_is_kept_and_the_report_says_why` |
 //! | a reclaim writes into no other home | `a_reclaim_of_one_unit_writes_into_no_other_home` |
 //!
 //! Both hosts read every signal these properties use, so each one asserts the same thing
@@ -32,6 +36,7 @@
 use std::path::{Path, PathBuf};
 
 use nodal_safety::InState as _;
+use nodal_safety::project::resolved;
 use nodal_safety::{Machine, Snapshot, git, json, stderr, stdout};
 
 /// The unit every property here reclaims. It is one of the fixture's own handles.
@@ -108,15 +113,14 @@ fn sibling_holding(machine: &Machine, from: &Path, tip: &str) -> PathBuf {
     path
 }
 
-/// A path as the filesystem spells it.
+/// A path as the filesystem spells it, for a report that resolves every path it prints.
 ///
-/// Every path Nodal reports is resolved, because one directory reached through a
-/// symbolic link and reached directly is one directory with two spellings
-/// ([`nodal_core::paths`]). A temporary directory under a linked `/tmp` is exactly that
-/// pair, so a test comparing the two spellings would pass on one runner and fail on the
-/// other.
-fn resolved(path: &Path) -> String {
-    std::fs::canonicalize(path).unwrap().to_str().unwrap().to_owned()
+/// One directory reached through a symbolic link and reached directly is one directory
+/// with two spellings, and the macOS runner reaches its temporary directories through
+/// one. A test that compared the unresolved spelling would pass on one host and fail on
+/// the other.
+fn named(path: &Path) -> String {
+    resolved(path).to_str().expect("a utf-8 path").to_owned()
 }
 
 /// Whether a repository reaches this commit from a ref of its own.
@@ -135,6 +139,10 @@ fn readable(trash: &Path, tip: &str) {
 /// A verdict of "second local copy" rests on a ref in another repository, and that ref
 /// can go while the home sits in the trash. When it does, the sweep keeps the home and
 /// names the copy the reclaim rested on.
+///
+/// Nothing here pushed this commit and nothing here read the remote after the home did,
+/// so the sweep cannot settle the remote question. It keeps the home over an open
+/// question and says which question it is, which is not the same claim as "only here".
 #[test]
 fn a_home_whose_sibling_copy_went_survives_its_retention() {
     let machine = machine();
@@ -152,10 +160,13 @@ fn a_home_whose_sibling_copy_went_survives_its_retention() {
     assert!(swept.status.success(), "{}", stderr(&swept));
     let report = stdout(&swept);
     assert!(report.contains(&format!("kept: {}", &tip[..8])), "{report}");
-    assert!(report.contains("is only here"), "{report}");
-    assert!(report.contains(&resolved(&sibling)), "the line does not name it: {report}");
+    assert!(report.contains(&named(&sibling)), "the line does not name it: {report}");
     assert!(report.contains(&format!("refs/heads/{COPY}")), "or the ref: {report}");
     assert!(report.contains("is gone"), "{report}");
+    // Nothing on this machine read the remote after the home did, so the sweep does not
+    // say "only here" over a question it could not settle. It says which one it is.
+    assert!(report.contains("could not be checked"), "{report}");
+    assert!(report.contains("nothing here read the remote"), "and why: {report}");
     readable(&trash, &tip);
     assert_eq!(machine.trashed(), vec![trash.clone()], "and the row was kept with it");
 
@@ -169,8 +180,9 @@ fn carries_the_same_in_json(machine: &Machine) {
     let carried = json(&machine.nodal(&["gc", "--json"]));
     let held = carried["held"].as_array().expect("the answer carries the homes it kept");
     assert_eq!(held.len(), 1, "{carried}");
-    assert_eq!(held[0]["holding"]["kind"], "only_here", "{carried}");
-    assert_eq!(held[0]["holding"]["count"], 1, "{carried}");
+    assert_eq!(held[0]["count"], 1, "{carried}");
+    assert_eq!(held[0]["witness"]["kind"], "unchecked", "{carried}");
+    assert_eq!(held[0]["gone"].as_array().map(Vec::len), Some(1), "{carried}");
     assert_eq!(held[0]["entry"]["rested"]["kind"], "safe", "{carried}");
 }
 
@@ -185,7 +197,7 @@ fn the_same_home_is_removed_once_the_copy_is_back() {
 
     git(&sibling, &["update-ref", "-d", &format!("refs/heads/{COPY}")]);
     git(&sibling, &["reflog", "expire", "--expire=now", "--all"]);
-    assert!(stdout(&machine.nodal(&["gc"])).contains("is only here"), "the sweep kept it");
+    assert!(stdout(&machine.nodal(&["gc"])).contains("could not be checked"), "the sweep kept it");
     assert!(trash.is_dir(), "the home is still there");
 
     // The person puts the copy back, out of the trashed home itself, which is what the
@@ -221,7 +233,7 @@ fn a_home_whose_remote_branch_went_survives_its_retention() {
     let report = stdout(&swept);
     assert!(report.contains(&format!("kept: {}", &tip[..8])), "{report}");
     assert!(report.contains("is only here"), "{report}");
-    assert!(report.contains(&resolved(&machine.source)), "{report}");
+    assert!(report.contains(&named(&machine.source)), "{report}");
     assert!(report.contains(&format!("refs/remotes/origin/{TOPIC}")), "{report}");
     readable(&trash, &tip);
 }
@@ -358,6 +370,40 @@ fn a_detached_head_whose_copy_went_keeps_its_home() {
     let report = stdout(&swept);
     assert!(report.contains(&format!("kept: {}", &tip[..8])), "{report}");
     readable(&trash, &tip);
+}
+
+/// Nothing is removed on a reading nobody could make. A home this account cannot open is
+/// not a home proved empty, and the report names the directory and what went wrong.
+///
+/// Both hosts refuse a directory with no permissions to the account that owns it, so the
+/// property is asserted on both. The permissions are given back at the end, so the
+/// temporary directory can be removed.
+#[test]
+fn a_trashed_home_nothing_can_read_is_kept_and_the_report_says_why() {
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    assert!(home.is_dir());
+    let trash = reclaimed(&machine, SLUG);
+    permissions(&trash, 0o000);
+
+    let swept = machine.nodal(&["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    let report = stdout(&swept);
+    permissions(&trash, 0o755);
+    assert!(trash.is_dir(), "a home nobody could read was removed: {report}");
+    assert!(report.contains("trashed home"), "the report does not name it: {report}");
+    // The line is the directory and then the reason. The reason is the host's own
+    // wording for a directory it would not open, so the property is that there is one.
+    let named = format!("{}: ", trash.display());
+    let (_, why) = report.split_once(&named).unwrap_or_else(|| panic!("no line for it: {report}"));
+    assert!(!why.trim().is_empty(), "the line does not say why: {report}");
+    assert_eq!(machine.trashed(), vec![trash], "and the row stayed with it");
+}
+
+/// Set the mode of one directory.
+fn permissions(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
 /// The identifier of the one unit this machine has, as its refs spell it.

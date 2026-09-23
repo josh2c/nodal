@@ -111,6 +111,7 @@
 //! a [`Note`] in the answer and never a failure, which is the contract every attribution
 //! signal already has, and it keeps "nothing was running" apart from "I could not look".
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -119,13 +120,13 @@ use crate::git::{Git, Oid, refs, snapshot, union};
 use crate::lifecycle::assess;
 use crate::lifecycle::idle;
 use crate::lifecycle::journal;
-use crate::lifecycle::uniqueness::Finding;
+use crate::lifecycle::uniqueness::{Finding, Witness};
 use crate::lifecycle::witness::Checkout;
 use crate::model::{
-    EnvState, OperationId, OperationState, Project, SessionId, Timestamp, Trashed, Unit, UnitId,
-    UnitStatus, trash as retention,
+    EnvState, OperationId, OperationState, Outside, Project, ProjectId, SessionId, Timestamp,
+    Trashed, Unit, UnitId, UnitStatus, trash as retention,
 };
-use crate::output::view::{HeldBack, Holding, Idle, Leftover, Retired, Swept};
+use crate::output::view::{HeldBack, Idle, Leftover, Retired, Swept};
 use crate::runtime::attribute::{Note, Source, Standing};
 use crate::runtime::processes::{Processes, Running};
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
@@ -472,14 +473,32 @@ struct Expiry {
 /// The reading comes first, and a home it keeps keeps its row as well. The row is still
 /// expired afterwards, so the next sweep reads the same home again: a copy somebody
 /// restores is all it takes for the directory to go then.
+///
+/// A project is read once, however many of its homes expired on one sweep. What a
+/// reading asks of the project is the same of every home of it — its checkout, and the
+/// repositories beside that checkout — and asking per row paid six `git` invocations
+/// and a directory walk to learn one answer over and over ([`Readings`]).
 fn sweep(store: &Store, expired: &[Trashed], registered: &[Project]) -> Result<Expiry> {
     let mut swept = Expiry::default();
+    let mut readings = Readings::of(registered);
     for entry in expired {
-        let project = registered.iter().find(|project| project.id == entry.project_id);
-        let branch = branch_of(store.conn(), entry)?;
-        if let Some(holding) = holding(entry, project, branch.as_ref()) {
-            swept.held.push(HeldBack { entry: entry.clone(), holding });
-            continue;
+        if read_again(entry) {
+            let Some(reading) = readings.of_project(entry.project_id) else {
+                swept.leftovers.push(unread(entry, "the registry holds no project it belonged to"));
+                continue;
+            };
+            let branch = branch_of(store.conn(), entry)?;
+            match held_back(entry, reading, branch.as_ref()) {
+                Err(why) => {
+                    swept.leftovers.push(unread(entry, &why.to_string()));
+                    continue;
+                }
+                Ok(Some(held)) => {
+                    swept.held.push(held);
+                    continue;
+                }
+                Ok(None) => {}
+            }
         }
         let size = size_of(&entry.path);
         match remove(&entry.path) {
@@ -494,15 +513,66 @@ fn sweep(store: &Store, expired: &[Trashed], registered: &[Project]) -> Result<E
     Ok(swept)
 }
 
-/// Why this expired home may not be removed, and nothing when it may.
+/// What every project of this sweep can say about where a commit also lives, read once.
 ///
-/// A reclaim that was forced past a finding is not asked again: the loss it accepted was
-/// named and printed before the home moved, and re-asking would keep every forced
-/// reclaim's home for ever.
+/// A [`Checkout`] is six `git` invocations and the sibling walk is a bounded directory
+/// walk, and both answer about the project rather than about the home. A sweep of one
+/// project's four expired homes therefore pays for them once.
 ///
-/// Everything else is read again. A project the registry has lost is a home with no
-/// checkout to ask, which is not a reading that found nothing — it is no reading at all,
-/// and nothing is removed on one.
+/// A project the registry no longer holds is not in here, and a home of one is refused
+/// the reading rather than given an empty one: nothing to ask is not the same fact as
+/// asked and found nothing.
+struct Readings<'a> {
+    /// The projects this sweep may read, by identifier.
+    registered: BTreeMap<ProjectId, &'a Project>,
+    /// What each of them answered, read on the first home that needed it.
+    read: BTreeMap<ProjectId, Reading>,
+}
+
+/// One project's checkout and the repositories beside it.
+struct Reading {
+    /// The project's own checkout, read once.
+    checkout: Checkout,
+    /// The other repositories on this machine that may hold a copy of a commit.
+    siblings: Vec<PathBuf>,
+}
+
+impl<'a> Readings<'a> {
+    /// The projects a sweep may ask, indexed so a home finds its own without a scan.
+    fn of(registered: &'a [Project]) -> Self {
+        let registered = registered.iter().map(|project| (project.id, project)).collect();
+        Self { registered, read: BTreeMap::new() }
+    }
+
+    /// This project's reading, taken now if this is the first home to ask for it.
+    ///
+    /// `None` where the registry holds no such project, which the caller turns into a
+    /// refusal to remove anything of it.
+    fn of_project(&mut self, project: ProjectId) -> Option<&Reading> {
+        let root = self.registered.get(&project)?.root.clone();
+        Some(self.read.entry(project).or_insert_with(|| Reading {
+            checkout: Checkout::read(&root),
+            siblings: crate::doctor::scan::siblings(&root),
+        }))
+    }
+}
+
+/// Whether this expired home is one the sweep reads again before it removes it.
+///
+/// Two homes are not. A reclaim that was forced past a finding named the loss, printed it
+/// and moved the home anyway, and re-asking would keep every forced reclaim's home for
+/// ever. A home that is not on the disk any more cannot lose anything, and the sweep
+/// before this one may have removed the tree and been killed before it wrote the row;
+/// removing the row is how that is finished.
+fn read_again(entry: &Trashed) -> bool {
+    entry.rested.re_asks() && entry.path.exists()
+}
+
+/// The line a home that could not be read leaves in the report.
+fn unread(entry: &Trashed, why: &str) -> Leftover {
+    Leftover::new("trashed home", format!("{}: {why}", entry.path.display()))
+}
+
 /// The branch the unit owned, for the one ref of the home that `HEAD` may not name.
 ///
 /// `None` where the registry no longer holds the unit. The reading then rests on `HEAD`,
@@ -515,26 +585,28 @@ fn branch_of(conn: &Connection, entry: &Trashed) -> Result<Option<String>> {
     Ok(units::get(conn, entry.unit_id)?.map(|unit| unit.branch.to_string()))
 }
 
-fn holding(entry: &Trashed, project: Option<&Project>, branch: Option<&String>) -> Option<Holding> {
-    if !entry.rested.re_asks() {
-        return None;
-    }
-    let Some(project) = project else {
-        return Some(Holding::Unread {
-            why: String::from("the registry holds no project it belonged to"),
-        });
+/// What keeps this expired home, and nothing when nothing does.
+///
+/// # Errors
+/// [`Error::Git`] and [`Error::NotARepository`] when the home could not be read. That is
+/// not a reading that found nothing, and nothing is removed on one.
+fn held_back(
+    entry: &Trashed,
+    reading: &Reading,
+    branch: Option<&String>,
+) -> Result<Option<HeldBack>> {
+    let Some((count, sample, witness)) = only_here(entry, reading, branch)? else {
+        return Ok(None);
     };
-    match only_here(entry, project, branch) {
-        Ok(None) => None,
-        Ok(Some((count, sample))) => Some(Holding::OnlyHere { count, sample }),
-        Err(why) => Some(Holding::Unread { why: why.to_string() }),
-    }
+    let gone = gone_copies(entry, &sample);
+    Ok(Some(HeldBack { entry: entry.clone(), count, sample, witness, gone }))
 }
 
-/// The commits of a trashed home that no ref outside the directory reaches.
+/// The commits of a trashed home that no ref outside the directory reaches, and what the
+/// reading could say about the remote.
 ///
 /// The reading a reclaim makes, and deliberately not a second one
-/// ([`crate::lifecycle::uniqueness`]). Two things differ, and each is a fact about a home
+/// ([`crate::lifecycle::assess`]). Two things differ, and each is a fact about a home
 /// nobody is working in.
 ///
 /// The work is read from the refs the reclaim proved rather than from every ref the home
@@ -547,22 +619,47 @@ fn holding(entry: &Trashed, project: Option<&Project>, branch: Option<&String>) 
 ///
 /// # Errors
 /// [`Error::Git`] and [`Error::NotARepository`] when the trashed home could not be read.
-/// The caller turns either into a line and a directory that stays.
 fn only_here(
     entry: &Trashed,
-    project: &Project,
+    reading: &Reading,
     branch: Option<&String>,
-) -> Result<Option<(usize, Vec<Oid>)>> {
+) -> Result<Option<(usize, Vec<Oid>, Witness)>> {
     let git = Git::open(&entry.path)?;
     let tips = work_tips(&git, entry, branch)?;
-    let checkout = Checkout::read(&project.root);
-    let siblings = crate::doctor::scan::siblings(&project.root);
-    let input =
-        assess::Input::refusal(&entry.path, assess::Work::Tips(&tips), Some(&checkout), &siblings);
+    let input = assess::Input::refusal(
+        &entry.path,
+        assess::Work::Tips(&tips),
+        Some(&reading.checkout),
+        &reading.siblings,
+    );
     Ok(assess::assess(&input)?.findings().into_iter().find_map(|finding| match finding {
-        Finding::Unpushed { count, sample, .. } => Some((count, sample)),
+        Finding::Unpushed { count, sample, witness, .. } => Some((count, sample, witness)),
         Finding::Uncommitted { .. } | Finding::Untracked { .. } => None,
     }))
+}
+
+/// The copies the reclaim rested on that no longer reach any of these commits.
+///
+/// The row names what made the removal safe; this says which of those names is the one
+/// that has since gone, so the line a person reads is about the copy that actually went
+/// rather than about every copy the reclaim ever counted. A repository that still holds
+/// one of these commits is not named, and neither is one that will not answer: a copy
+/// nobody could read was not found gone, and the line says only what this reading
+/// proved.
+///
+/// One `rev-list` per recorded copy, and only for a home this sweep is keeping.
+fn gone_copies(entry: &Trashed, sample: &[Oid]) -> Vec<Outside> {
+    entry
+        .rested
+        .copies()
+        .iter()
+        .filter(|copy| {
+            Git::open(&copy.repository)
+                .and_then(|git| git.held(sample))
+                .is_ok_and(|held| held.is_empty())
+        })
+        .cloned()
+        .collect()
 }
 
 /// The refs a trashed home's own work is on: `HEAD`, the unit's own branch, and the
@@ -601,9 +698,6 @@ fn only_here(
 /// no untracked work. Where a reclaim did find something, `--force` put it on `wip`,
 /// which is named above, and [`crate::model::Rested::re_asks`] keeps that home out of
 /// this reading altogether.
-///
-/// # Errors
-/// [`Error::Git`] when a revision could not be read.
 fn work_tips(git: &Git, entry: &Trashed, branch: Option<&String>) -> Result<Vec<Oid>> {
     let named = branch
         .map(|branch| format!("{}{branch}", refs::HEADS))

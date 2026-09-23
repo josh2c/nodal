@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::git::Oid;
 use crate::lifecycle::hooks::Ran;
 use crate::lifecycle::uniqueness::Finding;
+use crate::lifecycle::uniqueness::Witness;
 use crate::model::{Outside, Slug, Timestamp, Trashed};
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, JOIN, NONE, Table};
@@ -421,78 +422,93 @@ pub struct Idle {
     pub since: Timestamp,
 }
 
-/// One expired home `nodal gc` did not remove, and why it stayed.
+/// One expired home `nodal gc` did not remove.
 ///
 /// The row stays with the directory, so the entry is still in the trash, still expired,
 /// and read again by the next sweep. A copy somebody restores is therefore all it takes
 /// for the home to go on the sweep after that.
+///
+/// A home that could not be read at all is not one of these. That is a directory nobody
+/// could remove and nobody could ask about, which is what [`Leftover`] already carries,
+/// and a second list for it would be a second word for one fact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeldBack {
     /// The entry that stays.
     pub entry: Trashed,
-    /// Why it stays.
-    pub holding: Holding,
-}
-
-/// Why `nodal gc` kept an expired home.
-///
-/// Two answers and not one, because "this home holds the last copy of a commit" and "I
-/// could not read this home" are different facts, and a report that printed the second
-/// as the first would claim a reading it did not make.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Holding {
-    /// Commits in the home that no ref outside it reaches. Removing the directory would
-    /// take the last copy of each of them.
-    OnlyHere {
-        /// How many there are. Exact.
-        count: usize,
-        /// The first ten of them, newest first. A sample; the count is the fact.
-        sample: Vec<Oid>,
-    },
-    /// The home could not be read, so nothing about what it holds is proved. Nothing is
-    /// removed on a reading nobody could make.
-    Unread {
-        /// What could not be read, and why.
-        why: String,
-    },
+    /// How many commits in the home no ref outside it reaches. Exact.
+    pub count: usize,
+    /// The first ten of them, newest first. A sample; the count is the fact.
+    pub sample: Vec<Oid>,
+    /// What this machine could say about the remote while it read them.
+    ///
+    /// It decides the words. A reading nothing could check has not earned "only here",
+    /// and the line says what it could not do instead ([`Witness::because`]).
+    pub witness: Witness,
+    /// The copies the reclaim rested on that no longer reach these commits.
+    ///
+    /// Empty where the reclaim recorded none, and empty where every copy it recorded
+    /// still holds them, which is why the line names these rather than the whole row.
+    pub gone: Vec<Outside>,
 }
 
 impl HeldBack {
-    /// What the sweep says about this home, one line at a time.
+    /// What the sweep says about this home: one line per commit, then the reason the
+    /// remote question is open, where it is open.
     ///
-    /// Each line names one commit and the copy the reclaim rested on, because those two
-    /// together are what a person acts on: the commit says what would have gone, and the
-    /// repository and ref say where to look for what took its place.
+    /// Each commit line names the commit and the copy the reclaim rested on that has
+    /// since gone, because those two together are what a person acts on: the commit says
+    /// what would go, and the repository and ref say where to look for what held it. The
+    /// last line says what this machine could not read, and it is one line for the home
+    /// rather than one for each commit, because it is one fact about the home.
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
-        match &self.holding {
-            Holding::Unread { why } => {
-                vec![format!("kept: {} could not be read: {why}", self.entry.path.display())]
-            }
-            Holding::OnlyHere { count, sample } => {
-                let mut lines: Vec<String> =
-                    sample.iter().map(|oid| self.only_here_line(oid)).collect();
-                let more = count.saturating_sub(sample.len());
-                if more > 0 {
-                    lines.push(format!("kept: and {more} more commit(s) only in this home"));
-                }
-                lines
-            }
+        let clause = self.clause();
+        let mut lines: Vec<String> = self
+            .sample
+            .iter()
+            .map(|oid| {
+                format!("kept: {} {clause}", oid.as_str().chars().take(8).collect::<String>())
+            })
+            .collect();
+        let more = self.count.saturating_sub(self.sample.len());
+        if more > 0 {
+            lines.push(format!(
+                "kept: and {}",
+                plural(more, "more commit only in this home", "more commits only in this home")
+            ));
         }
+        lines.extend(self.witness.because().map(|why| format!("kept: {why}")));
+        lines
     }
 
-    /// The line about one commit, which names what the reclaim rested on.
-    fn only_here_line(&self, oid: &Oid) -> String {
-        let short: String = oid.as_str().chars().take(8).collect();
-        let copies = self.entry.rested.copies();
-        if copies.is_empty() {
-            return format!(
-                "kept: {short} is only here; this home's reclaim recorded no copy outside it"
-            );
+    /// The half of the line that is the same for every commit it names.
+    ///
+    /// The clause is two statements, and each says only what the reading earned.
+    ///
+    /// The first is what the reading proved about the commit. A home nothing here could
+    /// check about the remote may hold the only copy and may not, and calling that "only
+    /// here" would be a claim this machine did not make. That is the split
+    /// [`crate::lifecycle::assess`] itself draws between a commit only here and a commit
+    /// not checked, and the words follow it.
+    ///
+    /// The second is what became of the copies the reclaim rested on: none was recorded,
+    /// or a recorded one has gone. A row whose recorded copies this reading could neither
+    /// credit nor call gone gets nothing after the first statement, because there is
+    /// nothing after it that is true.
+    fn clause(&self) -> String {
+        let proved = if matches!(self.witness, Witness::Unchecked) {
+            "could not be checked"
+        } else {
+            "is only here"
+        };
+        if self.entry.rested.copies().is_empty() {
+            return format!("{proved}; this home's reclaim recorded no copy outside it");
         }
-        let gone: Vec<String> = copies.iter().map(Outside::describe).collect();
-        format!("kept: {short} is only here; the copy in {} is gone", gone.join(", "))
+        let gone: Vec<String> = self.gone.iter().map(Outside::describe).collect();
+        if gone.is_empty() {
+            return String::from(proved);
+        }
+        format!("{proved}; the copy in {} is gone", gone.join(", "))
     }
 }
 

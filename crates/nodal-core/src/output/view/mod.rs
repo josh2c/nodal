@@ -45,7 +45,7 @@ pub use crate::output::view::machine::MachineReport;
 pub use crate::output::view::merge::{Conflict, Merged, StageLine};
 pub use crate::output::view::ps::Ps;
 pub use crate::output::view::reclaim::{
-    HeldBack, Holding, Idle, Leftover, Pruned, Reclaimed, Retired, Swept,
+    HeldBack, Idle, Leftover, Pruned, Reclaimed, Retired, Swept,
 };
 pub use crate::output::view::setup::{Installed, Uninstall, Upgrade};
 pub use crate::output::view::status::{SharedResource, Status};
