@@ -152,9 +152,11 @@ pub struct Attribution<'a> {
 /// working tree onto `refs/nodal/<unit>/wip`, which no branch reaches: a reading from
 /// `HEAD` alone would call that snapshot no part of the home and let the directory
 /// holding it go.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum Work<'a> {
-    /// The branch the home is on.
+    /// The branch the home is on. The reading every caller but the sweep of the trash
+    /// makes, and therefore the default.
+    #[default]
     Checkout,
     /// The commits these tips reach, and nothing else. An empty list is a home with no
     /// work on any ref, which is a fact and not a failure.
@@ -241,6 +243,10 @@ impl<'a> Input<'a> {
     /// would not move. The refusal a reclaim raises is about the work in a home, and it
     /// is the same refusal for a home Nodal made and for a checkout adopted in place.
     ///
+    /// The work is read from the branch the home is on, which is every caller but the
+    /// sweep of the trash ([`Work`]). The one caller that reads named tips instead sets
+    /// the field over this: `Input { work: Work::Tips(&tips), ..Input::refusal(..) }`.
+    ///
     /// [`Input::fate`] is unread by this reading and is not a claim about the home.
     /// `state: false` is what makes that true: the two dispositions whose sentence
     /// depends on the fate are [`Held::LocalState`] and [`Held::Generated`], both of
@@ -250,7 +256,6 @@ impl<'a> Input<'a> {
     #[must_use]
     pub const fn refusal(
         home: &'a Path,
-        work: Work<'a>,
         checkout: Option<&'a Checkout>,
         siblings: &'a [PathBuf],
     ) -> Self {
@@ -258,7 +263,7 @@ impl<'a> Input<'a> {
             home,
             checkout,
             siblings,
-            work,
+            work: Work::Checkout,
             fate: Fate::Trashed,
             state: false,
             dispositions: false,

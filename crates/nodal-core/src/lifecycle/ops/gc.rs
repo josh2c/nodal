@@ -605,12 +605,10 @@ fn held_back(entry: &Trashed, reading: &Reading) -> Result<Option<HeldBack>> {
 fn only_here(entry: &Trashed, reading: &Reading) -> Result<Option<(usize, Vec<Oid>, Witness)>> {
     let git = Git::open(&entry.path)?;
     let tips = work_tips(&git, entry)?;
-    let input = assess::Input::refusal(
-        &entry.path,
-        assess::Work::Tips(&tips),
-        Some(&reading.checkout),
-        &reading.siblings,
-    );
+    let input = assess::Input {
+        work: assess::Work::Tips(&tips),
+        ..assess::Input::refusal(&entry.path, Some(&reading.checkout), &reading.siblings)
+    };
     Ok(assess::assess(&input)?.findings().into_iter().find_map(|finding| match finding {
         Finding::Unpushed { count, sample, witness, .. } => Some((count, sample, witness)),
         Finding::Uncommitted { .. } | Finding::Untracked { .. } => None,

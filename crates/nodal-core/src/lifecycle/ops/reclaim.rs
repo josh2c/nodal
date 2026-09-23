@@ -1125,7 +1125,7 @@ fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Resul
     let Some(home) = placed.path() else { return Ok(Examined::default()) };
     let checkout = Checkout::read(source);
     let siblings = crate::doctor::scan::siblings(source);
-    let refusal = assess::Input::refusal(home, assess::Work::Checkout, Some(&checkout), &siblings);
+    let refusal = assess::Input::refusal(home, Some(&checkout), &siblings);
     let assessment = assess::assess(&assess::Input { dispositions: true, ..refusal })?;
     let findings = assessment.findings();
     if findings.is_empty() {

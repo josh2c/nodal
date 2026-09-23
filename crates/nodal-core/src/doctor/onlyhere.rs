@@ -137,12 +137,7 @@ fn read(
     homes: &[PathBuf],
     unit: &Unit,
 ) -> Option<Finding> {
-    let assessed = match assess::assess(&assess::Input::refusal(
-        home,
-        assess::Work::Checkout,
-        Some(checkout),
-        siblings,
-    )) {
+    let assessed = match assess::assess(&assess::Input::refusal(home, Some(checkout), siblings)) {
         Ok(assessed) => assessed,
         Err(why) => return Some(unreadable(unit, home, &why.to_string())),
     };

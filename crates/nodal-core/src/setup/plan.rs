@@ -418,7 +418,7 @@ fn homes(state: &Path) -> Result<Vec<(PathBuf, Option<PathBuf>)>> {
 /// many homes there are, and `--state` still asks before it removes any of them.
 fn unique_work(home: &Path, project: Option<&Path>) -> Option<Uniqueness> {
     let checkout = project.map(Checkout::read);
-    let input = assess::Input::refusal(home, assess::Work::Checkout, checkout.as_ref(), &[]);
+    let input = assess::Input::refusal(home, checkout.as_ref(), &[]);
     let findings = assess::assess(&input).ok()?.findings();
     (!findings.is_empty()).then(|| Uniqueness { home: home.to_path_buf(), findings })
 }
