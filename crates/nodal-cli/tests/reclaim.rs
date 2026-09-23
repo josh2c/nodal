@@ -556,12 +556,21 @@ fn a_sibling_that_names_a_commit_without_holding_it_does_not_weaken_the_refusal(
             "the repository that only names it is offered as a copy: {group:#}"
         );
     }
+    // And the mirror was asked, which is what makes "it holds no copy" a reading rather
+    // than an omission. Matched by the tail of the path and not the whole of it: the
+    // acceptance script runs this tree under a second name, and the store the scan found
+    // is named by the path it walked to rather than the one this test wrote.
+    let tail = std::path::Path::new("siblings").join("mirror");
     let stores = read["evidence"]["stores"].as_array().unwrap();
-    let asked =
-        stores.iter().find(|store| store["path"] == mirror.to_str().unwrap()).unwrap_or_else(
-            || panic!("the evidence record does not say the mirror was asked: {read:#}"),
-        );
-    assert_eq!(asked["answered"], Value::from("yes"), "{asked:#}");
+    let asked = stores
+        .iter()
+        .find(|store| {
+            store["path"].as_str().is_some_and(|path| std::path::Path::new(path).ends_with(&tail))
+        })
+        .unwrap_or_else(|| {
+            panic!("the evidence record does not say the mirror was asked: {read:#}")
+        });
+    assert_eq!(asked["answered"], "yes", "{asked:#}");
 }
 
 #[test]

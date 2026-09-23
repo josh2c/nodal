@@ -193,6 +193,10 @@ fn a_writable_shared_mapping_is_read_as_a_hold() {
     let file = directory.path().join("mapped.db");
     std::fs::write(&file, vec![0_u8; 4096]).unwrap();
     let mapped = Mapping::of(&file);
+    // The kernel names a mapped file by the path it resolved to, and the acceptance script
+    // runs this tree under a second name, so the comparison is between resolved paths —
+    // the rule `assess::bystander` states for a home reached through a link.
+    let wanted = std::fs::canonicalize(&file).unwrap();
 
     let table = Processes::scan(&Live).unwrap();
     let ours = table
@@ -200,7 +204,7 @@ fn a_writable_shared_mapping_is_read_as_a_hold() {
         .find(|process| process.pid == std::process::id())
         .unwrap_or_else(|| panic!("this process is not in the table it is reading"));
     assert!(
-        ours.held.iter().any(|held| held.how == How::Mapping && held.path == file),
+        ours.held.iter().any(|held| held.how == How::Mapping && held.path == wanted),
         "the writable shared mapping was not read as a hold: {:?}",
         ours.held
     );

@@ -759,11 +759,24 @@ fn holding(file: &Path, redirection: &str) -> Owned {
 
 /// Whether this process holds `file` open, as the host publishes it.
 ///
-/// Linux only. macOS publishes no per-descriptor view a test may read without privilege,
-/// and the tests that need this say so and skip.
+/// **A host that does not publish it answers yes.** macOS has no per-descriptor view a
+/// test may read without privilege, so there is nothing here to wait for, and waiting
+/// anyway would spend the whole timeout and then fail a test over a reading the host was
+/// never going to make. The tests whose claim needs the descriptor to be *seen* name macOS
+/// and skip; this waits only where the answer means something.
+///
+/// **The comparison is between resolved paths.** The kernel names an open file by the path
+/// it resolved to, with every link on the way taken out, and the acceptance script runs
+/// this whole tree under a second name — so a test that compared the name it wrote would
+/// wait thirty seconds for a hold that was there all along. This is the same rule
+/// [`nodal_core::lifecycle::assess::bystander`] states for a home reached through a link.
 fn held_by(pid: u32, file: &Path) -> bool {
+    if !cfg!(target_os = "linux") {
+        return true;
+    }
+    let Ok(wanted) = std::fs::canonicalize(file) else { return false };
     let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) else { return false };
-    entries.flatten().any(|entry| std::fs::read_link(entry.path()).is_ok_and(|held| held == file))
+    entries.flatten().any(|entry| std::fs::read_link(entry.path()).is_ok_and(|held| held == wanted))
 }
 
 /// A sleeping process that merely stands in a home and carries no Nodal variable.
