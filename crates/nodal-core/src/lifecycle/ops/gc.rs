@@ -66,12 +66,12 @@
 //! copy of a commit, with no refusal and no line.
 //!
 //! So every expired home is read with the reading a reclaim makes
-//! ([`crate::lifecycle::assess`]), over the refs that home holds rather than over `HEAD`:
-//! nothing is checked out in the trash, and a forced reclaim wrote the working tree onto
-//! `refs/nodal/<unit>/wip`, which no branch reaches. A commit no ref outside the
-//! directory reaches keeps the home, keeps the row, and prints one line naming the commit
-//! and the copy the reclaim rested on ([`crate::model::Rested`]). The row stays expired,
-//! so the next sweep reads it again and a copy somebody restores is all it takes.
+//! ([`crate::lifecycle::assess`]), over the two refs that reclaim proved: `HEAD`, and the
+//! `refs/nodal/<unit>/wip` a forced reclaim wrote the working tree onto, which no branch
+//! reaches ([`work_tips`]). A commit no ref outside the directory reaches keeps the home,
+//! keeps the row, and prints one line naming the commit and the copy the reclaim rested
+//! on ([`crate::model::Rested`]). The row stays expired, so the next sweep reads it again
+//! and a copy somebody restores is all it takes.
 //!
 //! A home the reclaim forced past a finding is not read again. The loss was named,
 //! printed and accepted before the home was moved, and a sweep that refused to act on it
@@ -487,8 +487,7 @@ fn sweep(store: &Store, expired: &[Trashed], registered: &[Project]) -> Result<E
                 swept.leftovers.push(unread(entry, "the registry holds no project it belonged to"));
                 continue;
             };
-            let branch = branch_of(store.conn(), entry)?;
-            match held_back(entry, reading, branch.as_ref()) {
+            match held_back(entry, reading) {
                 Err(why) => {
                     swept.leftovers.push(unread(entry, &why.to_string()));
                     continue;
@@ -573,29 +572,13 @@ fn unread(entry: &Trashed, why: &str) -> Leftover {
     Leftover::new("trashed home", format!("{}: {why}", entry.path.display()))
 }
 
-/// The branch the unit owned, for the one ref of the home that `HEAD` may not name.
-///
-/// `None` where the registry no longer holds the unit. The reading then rests on `HEAD`,
-/// which in every home but a detached one names that same branch, and a row the registry
-/// has half lost is not a reason to keep a directory for ever.
-///
-/// # Errors
-/// [`Error::Store`] when the registry could not be read.
-fn branch_of(conn: &Connection, entry: &Trashed) -> Result<Option<String>> {
-    Ok(units::get(conn, entry.unit_id)?.map(|unit| unit.branch.to_string()))
-}
-
 /// What keeps this expired home, and nothing when nothing does.
 ///
 /// # Errors
 /// [`Error::Git`] and [`Error::NotARepository`] when the home could not be read. That is
 /// not a reading that found nothing, and nothing is removed on one.
-fn held_back(
-    entry: &Trashed,
-    reading: &Reading,
-    branch: Option<&String>,
-) -> Result<Option<HeldBack>> {
-    let Some((count, sample, witness)) = only_here(entry, reading, branch)? else {
+fn held_back(entry: &Trashed, reading: &Reading) -> Result<Option<HeldBack>> {
+    let Some((count, sample, witness)) = only_here(entry, reading)? else {
         return Ok(None);
     };
     let gone = gone_copies(entry, &sample);
@@ -619,13 +602,9 @@ fn held_back(
 ///
 /// # Errors
 /// [`Error::Git`] and [`Error::NotARepository`] when the trashed home could not be read.
-fn only_here(
-    entry: &Trashed,
-    reading: &Reading,
-    branch: Option<&String>,
-) -> Result<Option<(usize, Vec<Oid>, Witness)>> {
+fn only_here(entry: &Trashed, reading: &Reading) -> Result<Option<(usize, Vec<Oid>, Witness)>> {
     let git = Git::open(&entry.path)?;
-    let tips = work_tips(&git, entry, branch)?;
+    let tips = work_tips(&git, entry)?;
     let input = assess::Input::refusal(
         &entry.path,
         assess::Work::Tips(&tips),
@@ -662,12 +641,15 @@ fn gone_copies(entry: &Trashed, sample: &[Oid]) -> Vec<Outside> {
         .collect()
 }
 
-/// The refs a trashed home's own work is on: `HEAD`, the unit's own branch, and the
-/// work-in-progress snapshot a forced reclaim wrote.
+/// The refs a trashed home's own work is on: `HEAD`, and the work-in-progress snapshot a
+/// forced reclaim wrote.
 ///
-/// Three names and not every ref, and the rule behind the list is one sentence: gc reads
-/// what the reclaim proved. A ref the reclaim never read cannot by itself keep a home,
-/// and a ref that exists only because Nodal wrote it is not the person's work.
+/// Two names and not every ref, and the rule behind the pair is one sentence: gc reads
+/// exactly what the reclaim proved. A reclaim reads the working tree and `HEAD`
+/// ([`crate::lifecycle::assess::Work::Checkout`]), so a commit no other reading of this
+/// home ever looked at cannot by itself keep the directory; and a ref that exists only
+/// because Nodal wrote it is not the person's work. `wip` is the one exception both
+/// halves agree on: a forced reclaim put the work it found there itself.
 ///
 /// Everything left out is left out under that rule. `refs/nodal/origin/*` and
 /// `refs/nodal/checkout/*` are readings Nodal fetched in from the person's own checkout,
@@ -675,11 +657,15 @@ fn gone_copies(entry: &Trashed, sample: &[Oid]) -> Vec<Outside> {
 /// reading one of those as work would keep the home over a branch the person deleted in
 /// their own checkout.
 ///
-/// **Every other `refs/heads/*` is left out for the same reason.** A home is a byte copy
-/// of a base, so it carries the base's `refs/heads/main` frozen at the moment the base
-/// was built. A rewrite of `main` past that commit in the person's checkout would leave
-/// the home holding the only copy of a commit the reclaim never looked at, and pin the
-/// directory for ever.
+/// **Every `refs/heads/*` is left out, the unit's own branch among them.** A home is a
+/// byte copy of a base, so it carries the base's `refs/heads/main` frozen at the moment
+/// the base was built. A rewrite of `main` past that commit in the person's checkout
+/// would leave the home holding the only copy of a commit the reclaim never looked at,
+/// and pin the directory for ever. The unit's own branch is no different in a detached
+/// home: a commit on it that `HEAD` does not reach is a commit the reclaim was never
+/// refused over, and a sweep that read it would keep that home on every sweep from then
+/// on with nothing a person could do to release it. Reading the branch on both sides is
+/// the wider reading, and it is one change rather than two halves.
 ///
 /// **A pre-operation record and a pre-merge record are left out as well**, and these are
 /// the two that have to be argued because both hold real commits.
@@ -698,11 +684,8 @@ fn gone_copies(entry: &Trashed, sample: &[Oid]) -> Vec<Outside> {
 /// no untracked work. Where a reclaim did find something, `--force` put it on `wip`,
 /// which is named above, and [`crate::model::Rested::re_asks`] keeps that home out of
 /// this reading altogether.
-fn work_tips(git: &Git, entry: &Trashed, branch: Option<&String>) -> Result<Vec<Oid>> {
-    let named = branch
-        .map(|branch| format!("{}{branch}", refs::HEADS))
-        .into_iter()
-        .chain([String::from("HEAD"), refs::wip(&entry.unit_id.to_string())]);
+fn work_tips(git: &Git, entry: &Trashed) -> Result<Vec<Oid>> {
+    let named = [String::from("HEAD"), refs::wip(&entry.unit_id.to_string())];
     let mut tips = Vec::new();
     for name in named {
         tips.extend(git.rev_parse_opt(&name)?);

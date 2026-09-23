@@ -9,9 +9,6 @@ use crate::error::{Error, Result};
 /// Where a repository keeps the log of each ref, under its common git directory.
 const LOGS: &str = "logs";
 
-/// Where a repository keeps its own branches.
-pub const HEADS: &str = "refs/heads/";
-
 /// Where Nodal keeps its own refs inside a unit's repository.
 pub const NAMESPACE: &str = "refs/nodal/";
 

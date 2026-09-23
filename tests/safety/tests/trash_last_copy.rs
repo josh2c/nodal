@@ -24,7 +24,7 @@
 //! | the ordinary home still goes | `a_home_whose_commits_are_in_the_checkout_is_removed_on_time` |
 //! | a merged unit's home still goes | `a_merged_units_home_is_removed_although_the_squash_left_its_commits_here` |
 //! | a detached head is read | `a_detached_head_whose_copy_went_keeps_its_home` |
-//! | a ref the reclaim never read holds nothing | `a_branch_the_reclaim_never_read_does_not_pin_the_home` |
+//! | a branch the reclaim never read, the unit's own among them, holds nothing | `a_branch_the_reclaim_never_read_does_not_pin_the_home` |
 //! | an unreadable home is kept | `a_trashed_home_nothing_can_read_is_kept_and_the_report_says_why` |
 //! | a reclaim writes into no other home | `a_reclaim_of_one_unit_writes_into_no_other_home` |
 //!
@@ -419,13 +419,21 @@ fn unit_id(machine: &Machine) -> String {
         .to_string()
 }
 
-/// A home carries every branch the base it was copied from had, `refs/heads/main` among
-/// them, and the reclaim reads none of them: it reads the working tree and `HEAD`. A
-/// commit on one of those branches is therefore a commit the reclaim never looked at.
+/// A reclaim reads the working tree and `HEAD`, and no `refs/heads/*` at all. A commit
+/// only a branch reaches is therefore a commit the reclaim was never refused over, and a
+/// sweep that read one would find it only in this home and keep the directory on every
+/// sweep from then on, with nothing a person could do to release it. gc reads exactly
+/// what the reclaim proved, so the retention removes the home.
 ///
-/// A sweep that read every `refs/heads/*` would find such a commit only in this home and
-/// keep the directory on every sweep from then on, over a ref no reclaim ever proved. gc
-/// reads what the reclaim proved, so the retention removes the home.
+/// Both branches a home can strand such a commit on are here.
+///
+/// A home carries every branch the base it was copied from had, `refs/heads/main` among
+/// them, frozen at the moment the base was built. That is the first.
+///
+/// The unit's own branch is the second, and it is the one that looks safe. In a home
+/// whose `HEAD` is detached the branch can be ahead of `HEAD`, and the reclaim read
+/// `HEAD`: the commit the branch alone reaches went into the trash unexamined, exactly
+/// like the one on `main`.
 #[test]
 fn a_branch_the_reclaim_never_read_does_not_pin_the_home() {
     let machine = machine();
@@ -439,11 +447,25 @@ fn a_branch_the_reclaim_never_read_does_not_pin_the_home() {
     git(&home, &["checkout", "--quiet", &branch]);
     assert!(!reaches(&machine.source, &stranded), "the checkout already holds the commit");
 
+    // And the same on the unit's own branch, which `HEAD` is then moved off.
+    std::fs::write(home.join(ONLY), "on the unit's own branch\n").unwrap();
+    git(&home, &["add", "--all"]);
+    git(&home, &["commit", "--quiet", "--message", "work the detached head does not reach"]);
+    let ahead = git(&home, &["rev-parse", "HEAD"]);
+    git(&home, &["checkout", "--quiet", "--detach", "HEAD~1"]);
+    assert_eq!(git(&home, &["rev-parse", &branch]), ahead, "the branch is not ahead of HEAD");
+    assert!(!reaches(&machine.source, &ahead), "the checkout already holds the commit");
+
     let trash = reclaimed(&machine, SLUG);
     assert_eq!(
         git(&trash, &["rev-parse", "refs/heads/main"]),
         stranded,
-        "the branch this property is about is not in the trashed home"
+        "the copied branch this property is about is not in the trashed home"
+    );
+    assert_eq!(
+        git(&trash, &["rev-parse", &branch]),
+        ahead,
+        "the unit's own branch this property is about is not in the trashed home"
     );
 
     let swept = machine.nodal(&["gc"]);
