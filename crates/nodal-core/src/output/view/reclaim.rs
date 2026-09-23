@@ -17,8 +17,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::lifecycle::hooks::Ran;
-use crate::lifecycle::uniqueness::Finding;
-use crate::model::{Slug, Timestamp, Trashed};
+use crate::lifecycle::uniqueness::{Finding, Witness};
+use crate::model::{Outside, Slug, Timestamp, Trashed};
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, JOIN, NONE, Table};
 use crate::runtime::attribute::{Note, Source};
@@ -92,6 +92,17 @@ impl Leftover {
 fn named_paths(removals: &[prune::Removal]) -> Vec<String> {
     removals.iter().map(|removal| removal.path.display().to_string()).collect()
 }
+
+/// What a reclaim does not write, said in the report rather than left to be found.
+///
+/// The label is six characters, as every other label of this report is, so that adding
+/// the line moved no other line of it.
+///
+/// Every other command that touches a unit compiles the memory of every unit of the
+/// project. A reclaim does not, because a reclaim of one unit writes into that unit's
+/// home and into the registry, and into nothing else.
+const MEMORIES: &str = "this reclaim wrote into no other unit's home. The next nodal command that reads \
+     them writes their WORKUNIT.md again";
 
 /// What one reclaim did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +187,7 @@ impl Render for Reclaimed {
             fields.push(Field::new("remote", pruned.cell()));
         }
         fields.push(Field::new("verify", self.verify_cell()));
+        fields.push(Field::new("memory", MEMORIES));
         if let Some(path) = &self.worktree_remove {
             fields.push(Field::new("remove", crate::output::view::adopt::removal_command(path)));
         }
@@ -188,10 +200,18 @@ impl Render for Reclaimed {
 }
 
 impl Reclaimed {
-    /// What the uniqueness check said, and what a `--force` accepted losing.
+    /// What the uniqueness check said, what it rested on, and what a `--force` accepted
+    /// losing.
+    ///
+    /// A verdict of "nothing that is only here" is a statement about other repositories,
+    /// and the line names them. A person reading it can see what the removal depends on,
+    /// and so can the sweep that removes the directory later: the same names are on the
+    /// trash row, and `nodal gc` prints them again if the copy has gone by then.
     fn check_cell(&self) -> String {
         if self.findings.is_empty() {
-            return String::from("nothing that is only here");
+            let mut lines = vec![String::from("nothing that is only here")];
+            lines.extend(self.rested_lines());
+            return lines.join("\n");
         }
         let mut lines: Vec<String> = self
             .findings
@@ -202,6 +222,21 @@ impl Reclaimed {
             lines.push(format!("work committed to {reference}"));
         }
         lines.join("\n")
+    }
+
+    /// Where the commits this reclaim did not refuse over also live, one line each.
+    ///
+    /// Nothing at all for a home that held no commit of its own, because there is then
+    /// no second copy for the verdict to have rested on and a line saying so would be
+    /// about a question nobody asked.
+    fn rested_lines(&self) -> Vec<String> {
+        let entry = self.trashed.as_ref();
+        entry
+            .map(|entry| entry.rested.copies())
+            .unwrap_or_default()
+            .iter()
+            .map(|copy| format!("{} of them are also in {}", copy.commits, copy.describe()))
+            .collect()
     }
 
     /// The tethers, processes, containers and ports that were given up.
@@ -385,7 +420,104 @@ pub struct Idle {
     pub since: Timestamp,
 }
 
-/// What one `nodal gc` removed.
+/// One expired home `nodal gc` did not remove.
+///
+/// The row stays with the directory, so the entry is still in the trash, still expired,
+/// and read again by the next sweep. A copy somebody restores is therefore all it takes
+/// for the home to go on the sweep after that.
+///
+/// A home that could not be read at all is not one of these. That is a directory nobody
+/// could remove and nobody could ask about, which is what [`Leftover`] already carries,
+/// and a second list for it would be a second word for one fact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldBack {
+    /// The entry that stays.
+    pub entry: Trashed,
+    /// What the sweep read in the home: the commits no ref outside it reaches, how many
+    /// there are, and what this machine could say about the remote while it read them.
+    ///
+    /// The finding the sweep's own reading made, carried whole rather than taken apart
+    /// ([`crate::lifecycle::ops::gc`]). It decides the words, because a reading nothing
+    /// could check has not earned "only here" and the line says what it could not do
+    /// instead ([`Witness::because`]).
+    pub finding: Finding,
+    /// The copies the reclaim rested on that no longer reach these commits.
+    ///
+    /// Empty where the reclaim recorded none, and empty where every copy it recorded
+    /// still holds them, which is why the line names these rather than the whole row.
+    pub gone: Vec<Outside>,
+}
+
+impl HeldBack {
+    /// What the sweep says about this home: one line per commit, then the reason the
+    /// remote question is open, where it is open.
+    ///
+    /// Each commit line names the commit and the copy the reclaim rested on that has
+    /// since gone, because those two together are what a person acts on: the commit says
+    /// what would go, and the repository and ref say where to look for what held it. The
+    /// last line says what this machine could not read, and it is one line for the home
+    /// rather than one for each commit, because it is one fact about the home.
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        let clause = self.clause();
+        let sample = self.finding.commits();
+        let mut lines: Vec<String> = sample
+            .iter()
+            .map(|oid| {
+                format!("kept: {} {clause}", oid.as_str().chars().take(8).collect::<String>())
+            })
+            .collect();
+        let more = self.finding.count().saturating_sub(sample.len());
+        if more > 0 {
+            lines.push(format!(
+                "kept: and {}",
+                plural(more, "more commit only in this home", "more commits only in this home")
+            ));
+        }
+        lines.extend(self.witness().because().map(|why| format!("kept: {why}")));
+        lines
+    }
+
+    /// What the reading could say about the remote, and the strictest answer for a
+    /// finding that carries none.
+    ///
+    /// Every finding a sweep keeps a home over is [`Finding::Unpushed`], so the second
+    /// arm is unreachable rather than a case with words of its own; it reads as the
+    /// answer that claims the least.
+    fn witness(&self) -> &Witness {
+        self.finding.witness().unwrap_or(&Witness::Unchecked)
+    }
+
+    /// The half of the line that is the same for every commit it names.
+    ///
+    /// The clause is two statements, and each says only what the reading earned.
+    ///
+    /// The first is what the reading proved about the commit. A home nothing here could
+    /// check about the remote may hold the only copy and may not, and calling that "only
+    /// here" would be a claim this machine did not make. That is the split
+    /// [`crate::lifecycle::assess`] itself draws between a commit only here and a commit
+    /// not checked, and these words ask [`Witness::unchecked`] for it rather than keeping
+    /// a rule of their own.
+    ///
+    /// The second is what became of the copies the reclaim rested on: none was recorded,
+    /// or a recorded one has gone. A row whose recorded copies this reading could neither
+    /// credit nor call gone gets nothing after the first statement, because there is
+    /// nothing after it that is true.
+    fn clause(&self) -> String {
+        let proved =
+            if self.witness().unchecked() { "could not be checked" } else { "is only here" };
+        if self.entry.rested.copies().is_empty() {
+            return format!("{proved}; this home's reclaim recorded no copy outside it");
+        }
+        let gone: Vec<String> = self.gone.iter().map(Outside::describe).collect();
+        if gone.is_empty() {
+            return String::from(proved);
+        }
+        format!("{proved}; the copy in {} is gone", gone.join(", "))
+    }
+}
+
+/// What one `nodal gc` removed, and what it would not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Swept {
     /// The instant the answer was taken.
@@ -394,6 +526,10 @@ pub struct Swept {
     pub removed: Vec<Trashed>,
     /// The entries whose retention has not run out, and are therefore still there.
     pub kept: Vec<Trashed>,
+    /// The expired entries this sweep did not remove, because removing one would have
+    /// taken the last copy of a commit with it, or because the home could not be read.
+    #[serde(default)]
+    pub held: Vec<HeldBack>,
     /// What the removed directories occupied, when it was measured.
     pub freed_bytes: Option<u64>,
     /// Runtime that was stopped because it belonged to a home that is not there.
@@ -426,7 +562,7 @@ impl Render for Swept {
     fn doc(&self) -> Doc {
         let mut fields = vec![
             Field::new("freed", self.freed_cell()),
-            Field::new("kept", plural(self.kept.len(), "home in trash", "homes in trash")),
+            Field::new("kept", self.kept_cell()),
             Field::new("merged", self.retired_cell()),
             Field::new("runtime", self.runtime_cell()),
             Field::new(
@@ -441,6 +577,7 @@ impl Render for Swept {
         if !self.removed.is_empty() {
             blocks.push(Block::table(self.removed_table()));
         }
+        blocks.extend(self.held.iter().flat_map(HeldBack::lines).map(Block::line));
         if !self.idle.is_empty() {
             blocks.push(Block::table(self.idle_table()));
         }
@@ -453,6 +590,20 @@ impl Render for Swept {
 }
 
 impl Swept {
+    /// How many homes are still in the trash, and how many of them are past their
+    /// retention and stayed anyway.
+    ///
+    /// The second number is the one worth reading. A home past its retention that is
+    /// still there is one this sweep refused to remove, and the lines under the table
+    /// say about which commit.
+    fn kept_cell(&self) -> String {
+        let kept = plural(self.kept.len() + self.held.len(), "home in trash", "homes in trash");
+        if self.held.is_empty() {
+            return kept;
+        }
+        format!("{kept}{JOIN}{} past its retention and kept", self.held.len())
+    }
+
     /// How much went, and how many homes it was.
     fn freed_cell(&self) -> String {
         let homes = plural(self.removed.len(), "home", "homes");
@@ -535,8 +686,10 @@ fn plural(count: usize, one: &str, many: &str) -> String {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
+    use std::path::PathBuf;
+
     use super::{Leftover, Pruned, Reclaimed, plural};
-    use crate::model::Timestamp;
+    use crate::model::{Outside, Rested, Timestamp};
     use crate::output::Render;
 
     fn reclaimed() -> Reclaimed {
@@ -598,6 +751,59 @@ mod tests {
         let lines = report.doc().lines().join("\n");
         assert!(lines.contains("origin is unreachable"), "{lines}");
         assert!(lines.contains("nothing left by id"), "{lines}");
+    }
+
+    /// A reclaim that went ahead over a copy somewhere else says where that copy is.
+    /// The person reads what the removal depends on, and `nodal gc` prints the same
+    /// names again if the copy has gone by the time the retention runs out.
+    #[test]
+    fn a_verdict_that_rested_on_a_copy_names_the_repository_and_the_ref() {
+        let mut report = reclaimed();
+        report.trashed = Some(trashed(Rested::Safe {
+            copies: vec![Outside {
+                repository: PathBuf::from("/w/project"),
+                references: vec![String::from("refs/remotes/origin/topic")],
+                commits: 3,
+            }],
+        }));
+        let lines = report.doc().lines().join("\n");
+        assert!(lines.contains("nothing that is only here"), "{lines}");
+        assert!(
+            lines.contains("3 of them are also in /w/project (refs/remotes/origin/topic)"),
+            "{lines}"
+        );
+    }
+
+    /// A home that held no commit of its own rested on nothing, and a line saying so
+    /// would answer a question nobody asked.
+    #[test]
+    fn a_home_with_nothing_to_hold_prints_no_line_about_where_it_is_held() {
+        let mut report = reclaimed();
+        report.trashed = Some(trashed(Rested::Safe { copies: Vec::new() }));
+        let lines = report.doc().lines().join("\n");
+        assert!(lines.contains("nothing that is only here"), "{lines}");
+        assert!(!lines.contains("also in"), "{lines}");
+    }
+
+    /// A canonical identifier, for the row the properties below are about.
+    const ID: &str = "01J0000000000000000000000A";
+
+    /// One trash row, for the properties about what the check line says.
+    fn trashed(rested: Rested) -> crate::model::Trashed {
+        let at = Timestamp::parse("2026-09-07T09:00:00Z").unwrap();
+        crate::model::Trashed {
+            environment_id: crate::model::EnvId::parse(ID).unwrap(),
+            unit_id: crate::model::UnitId::parse(ID).unwrap(),
+            project_id: crate::model::ProjectId::parse(ID).unwrap(),
+            slug: crate::model::Slug::parse("worker-import").unwrap(),
+            home: PathBuf::from("/w/home"),
+            path: PathBuf::from("/w/trash/home"),
+            snapshot: None,
+            pruned_bytes: 0,
+            rested,
+            trashed_at: at,
+            expires_at: at,
+        }
     }
 
     #[test]

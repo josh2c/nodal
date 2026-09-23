@@ -30,7 +30,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::adapters::{claude_code, mcp, settings};
-use crate::lifecycle::uniqueness::{self, Uniqueness};
+use crate::lifecycle::assess;
+use crate::lifecycle::uniqueness::{Finding, Uniqueness};
 use crate::lifecycle::witness::Checkout;
 use crate::model::Timestamp;
 use crate::output::view::setup::{Installed, Item, Kind, Uninstall};
@@ -417,7 +418,9 @@ fn homes(state: &Path) -> Result<Vec<(PathBuf, Option<PathBuf>)>> {
 /// many homes there are, and `--state` still asks before it removes any of them.
 fn unique_work(home: &Path, project: Option<&Path>) -> Option<Uniqueness> {
     let checkout = project.map(Checkout::read);
-    uniqueness::check(home, checkout.as_ref(), &[]).ok().filter(|answer| !answer.is_clear())
+    let input = assess::Input::refusal(home, checkout.as_ref(), &[]);
+    let findings = assess::assess(&input).ok()?.findings();
+    (!findings.is_empty()).then(|| Uniqueness { home: home.to_path_buf(), findings })
 }
 
 /// The message a refused uninstall carries.
@@ -425,11 +428,7 @@ fn uniqueness_message(findings: &[Uniqueness]) -> String {
     let named: Vec<String> = findings
         .iter()
         .map(|answer| {
-            format!(
-                "{}: {}",
-                answer.home.display(),
-                uniqueness::Finding::summarise(&answer.findings)
-            )
+            format!("{}: {}", answer.home.display(), Finding::summarise(&answer.findings))
         })
         .collect();
     format!(

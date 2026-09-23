@@ -6,11 +6,91 @@
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
+    "Outside": {
+      "description": "One repository outside a home that held a copy of the home's commits.\n\nRead once, when the home is trashed, and never read again as evidence: `gc` proves a\ncopy by asking the repositories on this disk again, not by believing this row. What\nthis carries is the name of what the verdict rested on, so that a sweep which finds\nthe copy gone can say which copy that was.",
+      "properties": {
+        "commits": {
+          "description": "How many of the home's commits it covered. Exact.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "references": {
+          "description": "The refs there that reached those commits, as that repository spells them. A\nsample of at most ten, in the order Git listed them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "repository": {
+          "description": "Where the repository is.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "references",
+        "commits"
+      ],
+      "type": "object"
+    },
     "ProjectId": {
       "description": "Identifies a project: one Git repository Nodal manages units for.",
       "maxLength": 26,
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
+    },
+    "Rested": {
+      "description": "What a reclaim's uniqueness check decided about the home it trashed.\n\nThree answers and not two, because \"nothing was written down\" is a third fact and\nreading it as either of the others would be a claim this machine did not make.",
+      "oneOf": [
+        {
+          "description": "The row says nothing, which is what a row an older Nodal wrote says. `gc` reads\nthe home again and believes only what that reading shows it.",
+          "properties": {
+            "kind": {
+              "const": "unrecorded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The check found nothing that existed only in the home. `copies` names the\nrepositories and refs that held the commits it did not refuse over, and it is\nempty for a home that had no commit of its own to hold.",
+          "properties": {
+            "copies": {
+              "description": "What held them, one entry per repository.",
+              "items": {
+                "$ref": "#/$defs/Outside"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "safe",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "copies"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The check found work that existed only in the home and `--force` went on. The\nperson looked and said so, so the retention running out removes the directory\nas it always did.",
+          "properties": {
+            "kind": {
+              "const": "forced",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "Slug": {
       "description": "The CLI handle for a unit, derived from its branch.",
@@ -60,6 +140,13 @@
       "format": "uint64",
       "minimum": 0,
       "type": "integer"
+    },
+    "rested": {
+      "$ref": "#/$defs/Rested",
+      "default": {
+        "kind": "unrecorded"
+      },
+      "description": "What the uniqueness check decided, and what it rested on.\n\nDefaulted on the way in: a row written before this field says nothing, which is\n[`Rested::Unrecorded`] and not a claim that the home was safe."
     },
     "slug": {
       "$ref": "#/$defs/Slug",

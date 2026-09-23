@@ -32,6 +32,12 @@
 #     drop reconstructable, names the runtime a reclaim would stop apart from the
 #     bystander that would block it, and leaves the checkout, the home, the whole state
 #     directory and the registry's rows exactly as it found them;
+#   - the trash is never left as the only copy in silence: a reclaim that rested on a
+#     copy in another repository, or on a reading of a remote, records what it rested
+#     on; when that copy goes, `nodal gc` reads the home again, keeps it past its
+#     retention, and names the commit and the copy that is gone. A copy nothing recorded
+#     keeps the home too, and the line says so. The ordinary home still goes on time,
+#     and a reclaim of one unit leaves every other home byte for byte as it found it;
 #   - doctor: the checkout, a worktree of that checkout that lives beside it rather than
 #     inside it, and the whole state directory are the same bytes afterwards;
 #   - one reading per survey: doctor's only-here section reads the project's checkout

@@ -237,6 +237,30 @@ pub(super) fn all(repo: &Path) -> Result<Vec<Ref>> {
     for_each_ref(repo, None)
 }
 
+/// The names of the refs of this repository that reach any of `commits`.
+///
+/// A naming and never a proof. What makes a removal safe is a commit in a second object
+/// store, which [`super::outside::held`] answers; this says what that store calls it, so
+/// that a report can name the copy a verdict rested on and a later sweep can say which
+/// copy is the one that has gone.
+///
+/// One process, whatever the number of commits: `--contains` may be given more than once
+/// and a ref that reaches any of them is listed. At most `limit` names come back, and a
+/// reading that failed is no name at all, because a name that could not be read is not a
+/// reason to refuse anything.
+pub(super) fn reaching(repo: &Path, commits: &[Oid], limit: usize) -> Vec<String> {
+    if commits.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+    let contains: Vec<String> =
+        commits.iter().map(|oid| format!("--contains={}", oid.as_str())).collect();
+    let mut args = vec!["for-each-ref", "--sort=refname", "--format=%(refname)"];
+    args.extend(contains.iter().map(String::as_str));
+    let Ok(output) = cmd::run_ok(repo, &args) else { return Vec::new() };
+    let Ok(lines) = output.lines() else { return Vec::new() };
+    lines.iter().take(limit).map(|line| (*line).to_owned()).collect()
+}
+
 /// One `for-each-ref`, with a pattern or over everything.
 fn for_each_ref(repo: &Path, prefix: Option<&str>) -> Result<Vec<Ref>> {
     let mut args = vec!["for-each-ref", "--sort=refname", "--format=%(objectname) %(refname)"];

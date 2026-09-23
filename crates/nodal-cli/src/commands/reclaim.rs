@@ -19,8 +19,6 @@ use nodal_core::output::view::Reclaimed;
 use nodal_core::output::{self, Format};
 use nodal_core::store::Store;
 
-use crate::commands::context;
-
 /// Arguments of `nodal reclaim`.
 #[derive(Debug, Args)]
 #[allow(
@@ -83,6 +81,15 @@ pub struct Reclaim {
 impl Reclaim {
     /// Reclaim the unit and print what was done, including what was left.
     ///
+    /// Nothing is compiled afterwards, and that is a rule rather than an omission. Every
+    /// other command that touches a unit writes the memory of every unit of the project,
+    /// because a ledger is a statement about the others. A reclaim did the same, and what
+    /// it wrote was a file, a set of refs and a dangling tree object in every home it was
+    /// not about — under a report that said it had changed nothing of theirs. A reclaim
+    /// writes into the unit it names and into the registry, and into nothing else. The
+    /// report says so, and the next command that reads the other units writes their
+    /// memory.
+    ///
     /// The exit code says whether the verification found anything. A reclaim that left
     /// something behind is not a failure — it did what it could and reported the rest —
     /// but a script that reclaims a hundred units needs to know which of them to look
@@ -102,11 +109,7 @@ impl Reclaim {
         if self.units.len() > 1 {
             return Err(nodal_core::Error::ReclaimOneAtATime { named: self.units.len() });
         }
-        let project = context::project_of(store, self.only(), &request.cwd);
         let report = reclaim::reclaim(store, &request)?;
-        if let Some(project) = &project {
-            context::refresh(store, project);
-        }
         let left = !report.leftovers.is_empty();
         output::write(&report, Format::from_json_flag(self.json), &mut std::io::stdout())?;
         self.remove_if_agreed(&report)?;

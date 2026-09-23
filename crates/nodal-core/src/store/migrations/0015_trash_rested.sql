@@ -1,0 +1,21 @@
+-- 0015 trash rested: what the reclaim's uniqueness check decided, and what it rested on.
+--
+-- A reclaim goes ahead over commits that exist somewhere else. Where that somewhere else
+-- is another repository on this disk, or a reading of a remote taken in one, the verdict
+-- is only as true as that repository: the branch can be deleted, the clone can be
+-- removed, the remote can drop a merged branch. After the home is in the trash nothing
+-- reads it again, so when the retention ran out `gc` removed a directory that by then
+-- held the only copy of a commit, with no refusal and no line.
+--
+-- `gc` now reads each expired home again before it removes it. This column is what the
+-- reclaim wrote down, and it answers two questions the fresh reading cannot: whether the
+-- reclaim was forced past a finding, which is a loss the person already accepted; and
+-- which repository and ref the verdict rested on, so a sweep that keeps a home can name
+-- the copy that is gone.
+--
+-- Text and not a table, because nothing queries inside it: one row reads it, at the
+-- moment that row is acted on. The empty string is what every row written before this
+-- migration holds, and it is read as "unrecorded", which is the strict answer: `gc`
+-- re-asks and believes only what the reading shows it.
+
+ALTER TABLE trash ADD COLUMN rested TEXT NOT NULL DEFAULT '';
