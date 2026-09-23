@@ -1087,28 +1087,27 @@ impl Assessment {
 /// the report already prints. [`Outside::commits`] is the exact count, and the refs are
 /// the ones that reach at least one of the ten.
 ///
+/// The answer is in path order, which is the map's own. Nothing reads it in the order
+/// the dispositions were made, and one order a person can predict is worth more than
+/// the order a reading happened to take.
+///
 /// Empty for a home with no commit of its own, and for one whose commits are all
 /// refused: there is then nothing outside the home to name.
 #[must_use]
 pub fn outside_copies(assessment: &Assessment) -> Vec<Outside> {
-    let mut order: Vec<PathBuf> = Vec::new();
     let mut found: BTreeMap<PathBuf, (usize, Vec<Oid>)> = BTreeMap::new();
     for group in assessment.commits.iter().filter(|group| group.copies.survives()) {
         for repository in holders(&group.copies) {
-            let seen = found.entry(repository.clone()).or_insert_with(|| {
-                order.push(repository.clone());
-                (0, Vec::new())
-            });
+            let seen = found.entry(repository).or_insert((0, Vec::new()));
             seen.0 += group.count;
             seen.1.extend(group.sample.iter().cloned());
         }
     }
-    order
+    found
         .into_iter()
-        .filter_map(|repository| {
-            let (commits, sample) = found.remove(&repository)?;
+        .map(|(repository, (commits, sample))| {
             let references = Git::at(&repository).reaching(&sample, SAMPLE);
-            Some(Outside { repository, references, commits })
+            Outside { repository, references, commits }
         })
         .collect()
 }
