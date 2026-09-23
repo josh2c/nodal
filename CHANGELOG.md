@@ -38,6 +38,19 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   into nothing else. It no longer rewrites `WORKUNIT.md`, fetches refs or writes a tree
   object into every other open home. The report says so, and the next command that reads
   those units writes their memory again.
+- A reclaim of a managed home refuses over a process holding a path inside it, not only
+  over one standing in it: a descriptor opened for writing, a file mapped writably and
+  shared, or a root inside the home. The refusal names the process, its command and the
+  path. A descriptor opened for reading refuses nothing. Linux publishes the open flags
+  that separate the two; macOS does not, and occupancy there stays the working directory.
+- A process this account may not read is kept in the reading with what was refused said
+  out loud, where a Linux scan used to leave it out without a word. It refuses a managed
+  move when its parent, group or session reaches something already found in the home.
+- Every verdict carries an `evidence` record: the stores asked and what each said, the
+  refs walked and the refs not walked, how much of the process table was read and how many
+  entries were refused, what was not checked and why, and the instant of the reading.
+  `nodal reclaim --check` prints it and still writes nothing; an executed reclaim writes it
+  into the unit's log as a `verdict` event. Nothing in the record changes a verdict.
 
 ### Make
 

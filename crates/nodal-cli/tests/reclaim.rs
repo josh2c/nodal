@@ -557,12 +557,10 @@ fn a_sibling_that_names_a_commit_without_holding_it_does_not_weaken_the_refusal(
         );
     }
     let stores = read["evidence"]["stores"].as_array().unwrap();
-    let asked = stores
-        .iter()
-        .find(|store| store["path"] == Value::from(mirror.to_str().unwrap()))
-        .unwrap_or_else(|| {
-            panic!("the evidence record does not say the mirror was asked: {read:#}")
-        });
+    let asked =
+        stores.iter().find(|store| store["path"] == mirror.to_str().unwrap()).unwrap_or_else(
+            || panic!("the evidence record does not say the mirror was asked: {read:#}"),
+        );
     assert_eq!(asked["answered"], Value::from("yes"), "{asked:#}");
 }
 

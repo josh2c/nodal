@@ -1288,6 +1288,36 @@ history is on the remote, and reporting all of it would bury the few that are no
 | `not_checked` | nothing here read the remote, and nothing here holds it | unknown, so it is kept |
 | `only_here` | the reading was taken and it is still nowhere else | yes |
 
+**Occupying a home is more than standing in it.** A reclaim of a managed home renames the
+directory, so what refuses is not only a process whose working directory is inside it but anything
+that would go on writing into it afterwards: a descriptor opened for writing, a file mapped writably
+and shared, or a root inside the home. A descriptor opened for **reading** refuses nothing — an
+editor, a language server and a `tail` all hold those, and none of them writes through one. The
+refusal names the process, its command and the path it holds, because a process writing into a home
+from a directory elsewhere cannot be found by looking in the home. Linux publishes the open flags
+that make that split; macOS does not, and occupancy there is the working directory alone, which the
+evidence record states rather than leaves to be inferred.
+
+**A process this account may not read is counted, and refuses where its lineage reaches the home.**
+Another account's process on a shared host, and this account's own under a binary the kernel marks
+undumpable, show nothing of their variables, their directory or their open files. Such a process is
+kept in the reading with what was refused said out loud, never dropped. It refuses a managed move
+when the lineage the host still publishes — its parent, its group or its session — reaches something
+already found in the home, which is a command started from inside the home. Unreadability on its own
+does not refuse: hundreds of processes on an ordinary machine are unreadable from boot to shutdown,
+and a rule that refused over them would refuse every reclaim for ever. What the reading cannot close
+it counts, in the evidence record.
+
+**Every verdict says what it rests on.** Safe or refusing, a verdict carries an `evidence` record:
+which object stores were asked for a second copy and what each said, which refs of the home were
+walked and which were not, how much of the process table was read and how many entries the host
+refused, what was not checked and why, and the instant of the reading. Nothing in the record changes
+the verdict — that is read off the reasons, as it always was — and its whole purpose is that the
+verdict can now be disagreed with: a safe answer and an answer whose evidence fell outside the rule
+used to be identical. `--check` prints the record and writes nothing; an executed reclaim writes it
+into the unit's log as a `verdict` event, so what the last reclaim decided, and on what, has an
+answer afterwards.
+
 **More than one unit may be named, and only to `--check`.** `nodal reclaim --check <unit> <unit> ...`
 reads each unit exactly as it reads one — the per-unit verdict in the report is the verdict that unit
 would get alone — and adds the joint one. A copy that lives only in another home named on the same

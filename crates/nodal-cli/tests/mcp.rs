@@ -190,9 +190,19 @@ fn every_writing_tool_answers_with_the_command_lines_own_json() {
 
 /// The same answer with the fields that differ between two readings of one machine taken
 /// out: the instant it was taken, and the ages measured from it.
+/// What a second reading of one machine cannot be expected to repeat.
+///
+/// Two kinds, and both are readings rather than answers. The instants — when the answer
+/// was taken, and when a verdict's evidence was read — move by construction. So do the
+/// counts of the process table a verdict rests on: a machine starts and ends processes
+/// between two commands, and `seen`, `read` and `withheld` are how many there were at the
+/// moment each command looked. A comparison of those would be asserting that nothing
+/// happened on the host, which is not the claim.
+const VOLATILE: &[&str] = &["now", "read_at", "seen", "read", "withheld"];
+
 fn volatile(text: &str) -> Value {
     let mut value: Value = serde_json::from_str(text).expect("a tool answers with JSON");
-    strip(&mut value, &["now", "read_at"]);
+    strip(&mut value, VOLATILE);
     value
 }
 
@@ -200,11 +210,10 @@ fn volatile(text: &str) -> Value {
 /// lives and what it was given, none of which two units share.
 fn anonymous(text: &str) -> Value {
     let mut value: Value = serde_json::from_str(text).expect("a tool answers with JSON");
+    strip(&mut value, VOLATILE);
     strip(
         &mut value,
         &[
-            "now",
-            "read_at",
             "id",
             "slug",
             "unit",
