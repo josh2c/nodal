@@ -64,6 +64,7 @@ pub fn kind_label(kind: EventKind) -> &'static str {
         EventKind::Handoff => "handoff",
         EventKind::Sync => "sync",
         EventKind::Note => "note",
+        EventKind::Verdict => "verdict",
     }
 }
 

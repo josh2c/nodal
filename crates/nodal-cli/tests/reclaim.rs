@@ -40,6 +40,7 @@ use nodal_safety::project::Layout;
 use nodal_safety::project::resolved;
 use nodal_safety::text::{answer, stderr, stdout};
 use nodal_safety::{InState as _, Workspace};
+use serde_json::Value;
 
 /// How long a test waits for a killed run to reach the step it is being killed in.
 const REACH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -541,13 +542,28 @@ fn a_sibling_that_names_a_commit_without_holding_it_does_not_weaken_the_refusal(
     std::fs::create_dir_all(named.parent().unwrap()).unwrap();
     std::fs::write(&named, format!("{commit}\n")).unwrap();
 
-    let refused = workspace.nodal(&["reclaim", "worker-import", "--check"]);
+    let refused = workspace.nodal(&["reclaim", "worker-import", "--check", "--json"]);
     assert!(!refused.status.success(), "a name is not a second copy: {}", answer(&refused));
-    let told = answer(&refused);
-    assert!(
-        !told.contains(mirror.to_str().unwrap()),
-        "and the repository that only names it is not offered as a copy: {told}"
-    );
+    let read: Value = serde_json::from_str(&answer(&refused)).unwrap();
+    // The claim is about the disposition and not about the word appearing: the evidence
+    // record names every store that was *asked*, the mirror among them, and being asked
+    // is exactly not being counted.
+    for group in read["commits"].as_array().unwrap() {
+        assert_ne!(group["copies"]["kind"], "second_local_copy", "{group:#}");
+        let held = serde_json::to_string(&group["copies"]).unwrap();
+        assert!(
+            !held.contains(mirror.to_str().unwrap()),
+            "the repository that only names it is offered as a copy: {group:#}"
+        );
+    }
+    let stores = read["evidence"]["stores"].as_array().unwrap();
+    let asked = stores
+        .iter()
+        .find(|store| store["path"] == Value::from(mirror.to_str().unwrap()))
+        .unwrap_or_else(|| {
+            panic!("the evidence record does not say the mirror was asked: {read:#}")
+        });
+    assert_eq!(asked["answered"], Value::from("yes"), "{asked:#}");
 }
 
 #[test]

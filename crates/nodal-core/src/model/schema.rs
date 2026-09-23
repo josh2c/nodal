@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::model::{
     Base, DbTemplate, Environment, Event, Lease, Lock, Manifest, PortAllocation, PortBlock,
-    Project, Recipe, Session, Trashed, Unit,
+    Project, Reading, Recipe, Session, Trashed, Unit,
 };
 
 /// The version of the schema set. Bumped only for a breaking change.
@@ -77,6 +77,7 @@ pub fn catalog() -> Vec<SchemaDoc> {
         document::<Environment>("environment"),
         document::<Session>("session"),
         document::<Event>("event"),
+        document::<Reading>("reading"),
         document::<Lease>("lease"),
         document::<Lock>("lock"),
         document::<Manifest>("manifest"),

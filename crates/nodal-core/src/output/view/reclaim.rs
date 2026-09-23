@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lifecycle::hooks::Ran;
 use crate::lifecycle::uniqueness::{Finding, Witness};
+use crate::model::reading::Reading;
 use crate::model::{Outside, Slug, Timestamp, Trashed};
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, JOIN, NONE, Table};
@@ -135,6 +136,19 @@ pub struct Reclaimed {
     pub trimmed: prune::Report,
     /// What was deleted on the remote, when a remote was reached at all.
     pub pruned: Option<Pruned>,
+    /// What the verdict this reclaim acted on rested on ([`Reading`]).
+    ///
+    /// The same record `nodal reclaim --check` prints, written here as well because this
+    /// is the run that acted: an operation that removed a home owes an answer to "and on
+    /// what?" afterwards, and until now there was none — the verdict was computed,
+    /// rendered and dropped.
+    #[serde(default)]
+    pub reading: Reading,
+    /// The process table that reading judged, which is where its counts live
+    /// ([`crate::lifecycle::kernel::Evidence::runtime`]). `None` for a reclaim that asked
+    /// no occupancy question.
+    #[serde(default)]
+    pub runtime: Option<crate::lifecycle::assess::Runtime>,
     /// The directory that was left exactly as it is, when the unit was adopted in
     /// place. A root is unregistered, never trashed.
     pub root: Option<PathBuf>,
@@ -188,6 +202,7 @@ impl Render for Reclaimed {
         }
         fields.push(Field::new("verify", self.verify_cell()));
         fields.push(Field::new("memory", MEMORIES));
+        fields.push(Field::new("rests on", self.evidence_cell()));
         if let Some(path) = &self.worktree_remove {
             fields.push(Field::new("remove", crate::output::view::adopt::removal_command(path)));
         }
@@ -556,6 +571,13 @@ pub struct Swept {
     pub leftovers: Vec<Leftover>,
 }
 
+impl Reclaimed {
+    /// What the verdict this reclaim acted on rested on, in the preflight's own words.
+    fn evidence_cell(&self) -> String {
+        super::check::rests_on(&self.reading, self.runtime.as_ref())
+    }
+}
+
 impl Render for Swept {
     const KIND: &'static str = "garbage collection";
 
@@ -706,6 +728,8 @@ mod tests {
             trashed: None,
             trimmed: crate::workspace::prune::Report::default(),
             pruned: None,
+            reading: crate::model::Reading::default(),
+            runtime: None,
             root: None,
             hooks: Vec::new(),
             notes: Vec::new(),
@@ -722,8 +746,11 @@ mod tests {
         assert!(!report.doc().lines().join("\n").contains("record"), "no record, no line");
         report.record = Some(String::from("refs/nodal/01J/pre/01K"));
         let lines = report.doc().lines().join("\n");
+        // The label and the value, not the gap between them: the gap is the width of the
+        // widest label in the document and changes whenever a field is added.
+        assert!(lines.contains("record"), "{lines}");
         assert!(
-            lines.contains("record  the home before this reclaim is on refs/nodal/01J/pre/01K"),
+            lines.contains("the home before this reclaim is on refs/nodal/01J/pre/01K"),
             "{lines}"
         );
     }

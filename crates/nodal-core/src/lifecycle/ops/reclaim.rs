@@ -130,6 +130,7 @@ use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::uniqueness::Finding;
 use crate::lifecycle::witness::Checkout;
 use crate::lifecycle::{Done, Rebuild, marker, run};
+use crate::model::reading::Reading;
 use crate::model::{
     EnvId, EnvState, Environment, EventKind, Project, Recipe, Rested, Timestamp, Trashed, Unit,
     UnitId, UnitStatus, expiry,
@@ -193,6 +194,19 @@ pub struct Params {
     /// here and a replay must not remove what the first run was not asked to.
     #[serde(default)]
     pub prune: bool,
+    /// What the verdict this reclaim is acting on rested on ([`Evidence`]).
+    ///
+    /// Journalled with the rest of the plan, so that a reclaim resumed after an
+    /// interruption records the reading it was planned on rather than a fresh one taken
+    /// of a machine that has moved on. Defaulted on the way in, because a reclaim
+    /// journalled by an older Nodal has none and still has to be finished.
+    #[serde(default)]
+    pub reading: Reading,
+    /// The process table this operation read, which is the field the kernel is handed
+    /// ([`crate::lifecycle::kernel::Evidence::runtime`]) and the one place its counts
+    /// live. `None` for a reading that asked no occupancy question.
+    #[serde(default)]
+    pub runtime: Option<Runtime>,
     /// The process groups the unit's open recorded sessions hold — a tether, or a group
     /// a recipe hook left behind — read after `pre_reclaim` and before anything moves.
     /// These are the teardown's first and most certain targets.
@@ -510,6 +524,8 @@ fn occupancy(params: &Params, home: &Path) -> Occupancy {
 fn commit_of(params: &Params) -> Commit {
     let (unit, environment) = (params.unit.clone(), params.environment.clone());
     let entry = params.entry.clone();
+    let reading = params.reading.clone();
+    let runtime = params.runtime.clone();
     Box::new(move |tx: &Transaction<'_>, outputs: &Outputs| -> Result<Output> {
         let now = Timestamp::now();
         let given = ports::release(tx, environment.id)?;
@@ -536,6 +552,7 @@ fn commit_of(params: &Params) -> Commit {
             trash::insert(tx, entry)?;
         }
         record(tx, &unit, &environment, entry.as_ref(), &given)?;
+        verdict(tx, &unit, &environment, &reading, runtime.as_ref(), now)?;
         // The ports are the one thing in this operation's report that only the write
         // itself knows: they are given back inside this transaction, and what came back
         // is what it returned. It is not journalled, because a resumed reclaim's report
@@ -584,6 +601,71 @@ fn record(
         refs.extend(entry.snapshot.clone().map(|snapshot| ("snapshot", snapshot)));
     }
     events::note(tx, (unit.id, Some(environment.id)), EventKind::Note, body, &refs)
+}
+
+/// Write down what this reclaim decided on, so the question has an answer afterwards.
+///
+/// **The gap this closes.** A verdict used to be computed, rendered and dropped. Nothing
+/// in the registry said what the last reclaim of a unit decided, and nothing said what it
+/// decided on, so a home that turned out to be wanted could be argued about and never
+/// checked. The `event` table had no kind for it; now it does
+/// ([`EventKind::Verdict`]).
+///
+/// The event carries the summary and not the document. An event reference is one line of
+/// text by the model's own shape, and the whole record is what `nodal reclaim --check
+/// --json` prints; a record cut into 255-character pieces would be neither readable nor
+/// parseable. What is here is what a person searching the log needs to find the run and
+/// to know whether the reading behind it was complete.
+fn verdict(
+    tx: &Transaction<'_>,
+    unit: &Unit,
+    environment: &Environment,
+    reading: &Reading,
+    runtime: Option<&Runtime>,
+    read_at: Timestamp,
+) -> Result<()> {
+    let mut refs = vec![
+        ("stores_asked", reading.stores.len().to_string()),
+        (
+            "stores_answered",
+            reading
+                .stores
+                .iter()
+                .filter(|store| store.answered == crate::model::Answered::Yes)
+                .count()
+                .to_string(),
+        ),
+        ("refs_walked", reading.refs.walked.join(" ")),
+        ("commits_assessed", reading.refs.commits.to_string()),
+        ("read_at", read_at.to_string()),
+    ];
+    // The process half comes off the runtime, which is the value the kernel judged. A
+    // reading that asked no occupancy question says so rather than printing zeroes.
+    if let Some(runtime) = runtime {
+        refs.extend([
+            ("process_table", String::from(runtime.reach().label())),
+            ("processes_read", runtime.read.to_string()),
+            ("processes_withheld", runtime.withheld.to_string()),
+            ("occupancy", runtime.occupancy.join(" ")),
+        ]);
+    }
+    for gap in &reading.not_checked {
+        refs.push(("not_checked", clipped(&gap.what)));
+    }
+    let body = format!("reclaim went ahead; {}", reading.summary());
+    events::note(tx, (unit.id, Some(environment.id)), EventKind::Verdict, body, &refs)
+}
+
+/// How long one reference may be, which is the model's own shape for a line.
+const REFERENCE: usize = 255;
+
+/// One reference, cut to the length the model accepts.
+///
+/// A reference that did not fit would be refused on the way in and take the whole event
+/// with it, and an event that says most of what was not checked is worth more than a
+/// reclaim that fails to record anything because one reason was long.
+fn clipped(line: &str) -> String {
+    line.chars().take(REFERENCE).collect()
 }
 
 /// Finding an interrupted reclaim again, from what the journal kept.
@@ -1020,9 +1102,12 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
     let placed = placement(&environment)?;
     let recipe = recipe_of(&project.root);
     let examined = examine(&placed, &project.root, &unit, request.force)?;
-    if !request.force {
-        refuse_unread(&placed, &unit)?;
-    }
+    let reading = examined.reading;
+    // The reading above is about the work in the home and never asks the process table,
+    // so the record it carries says the table was not read. This reclaim does read it, a
+    // moment later and for its own reason, and the record must describe the reading the
+    // operation made rather than the one the check made.
+    let table = refuse_unread(&placed, &unit, request.force)?;
     let snapshot = snapshot(&placed, &unit, &examined.findings)?;
     let state_dir = home::directory()?;
     let kept = Kept { recipe: &recipe, snapshot, rested: examined.rested };
@@ -1039,6 +1124,8 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
         environment,
         entry,
         prune: request.prune,
+        reading,
+        runtime: table,
         tethers: Vec::new(),
         wrappers: Vec::new(),
         force: request.force,
@@ -1110,6 +1197,9 @@ struct Examined {
     findings: Vec<Finding>,
     /// What the verdict rested on, for the row the trash keeps.
     rested: Rested,
+    /// What the reading itself rested on ([`Reading`]), carried out with the findings
+    /// so that the operation which acts on this check can record what it acted on.
+    reading: Reading,
 }
 
 /// The uniqueness check, and the refusal that comes of it.
@@ -1135,15 +1225,19 @@ fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Resul
     let siblings = crate::doctor::scan::siblings(source);
     let refusal = assess::Input::refusal(home, Some(&checkout), &siblings);
     let assessment = assess::assess(&assess::Input { dispositions: true, ..refusal })?;
+    // The kernel decides, and the record rides along. `evidence` says what was read;
+    // nothing in it chooses an arm, and the arm below is the kernel's alone.
+    let reading = assessment.reading.clone();
     if let Some(proof) = assessment.verdict(Vec::new(), Timestamp::now()).proof() {
         return Ok(Examined {
             findings: Vec::new(),
             rested: Rested::Safe { copies: proof.record() },
+            reading,
         });
     }
     let findings = assessment.findings();
     if force {
-        return Ok(Examined { findings, rested: Rested::Forced });
+        return Ok(Examined { findings, rested: Rested::Forced, reading });
     }
     Err(Error::NotUnique { slug: unit.slug.clone(), findings })
 }
@@ -1159,15 +1253,13 @@ fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Resul
 ///
 /// # Errors
 /// [`Error::ProcessTableUnread`] with the reason the scan gave.
-fn refuse_unread(placed: &Placement, unit: &Unit) -> Result<()> {
-    let Placement::Managed(home) = placed else { return Ok(()) };
+fn refuse_unread(placed: &Placement, unit: &Unit, force: bool) -> Result<Option<Runtime>> {
+    let Placement::Managed(home) = placed else { return Ok(None) };
     let seen = assess::processes_of(Own::of(unit.id, &[]), std::slice::from_ref(home));
-    match assess::unmovable(&seen) {
-        Some(Unmovable::Unread(note)) => {
-            Err(Error::ProcessTableUnread { slug: unit.slug.clone(), why: note.why.clone() })
-        }
-        Some(Unmovable::Standing(_)) | None => Ok(()),
+    if !force && let Some(Unmovable::Unread(note)) = assess::unmovable(&seen) {
+        return Err(Error::ProcessTableUnread { slug: unit.slug.clone(), why: note.why.clone() });
     }
+    Ok(Some(seen))
 }
 
 /// The work-in-progress snapshot a forced reclaim takes before anything is removed.
@@ -1369,6 +1461,8 @@ fn report(
         now: Timestamp::now(),
         slug: params.unit.slug.to_string(),
         findings: prepared.findings.clone(),
+        reading: params.reading.clone(),
+        runtime: params.runtime.clone(),
         snapshot: params.entry.as_ref().and_then(|entry| entry.snapshot.clone()),
         record: done.record.clone(),
         stopped: torn.stopped,

@@ -55,6 +55,9 @@ pub enum EventKind {
     Sync,
     /// A free note.
     Note,
+    /// A destructive operation decided, and this is what it decided on. Written by an
+    /// executed reclaim and by nothing else: a `--check` is a reading and writes nothing.
+    Verdict,
 }
 
 /// How the event is known. V1 has two tiers and no more: Nodal watched it happen, or

@@ -104,6 +104,7 @@ use crate::git::{Git, Oid, union};
 use crate::lifecycle::kernel::{self, Evidence, LossSet, Verdict};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
 use crate::lifecycle::witness::{self, Checkout};
+use crate::model::reading::{self, Answered, Reach, Reading, Store, Unchecked};
 use crate::model::{Needs, Timestamp, UnitId};
 use crate::paths;
 use crate::runtime::attribute::{Note, Source, Standing};
@@ -647,6 +648,41 @@ pub struct Runtime {
     /// The signals that could not be read, and why. A note is the difference between
     /// "nothing is running" and "I could not look".
     pub notes: Vec<Note>,
+    /// How many processes the table held, as far as this account could list it.
+    #[serde(default)]
+    pub read: usize,
+    /// How many of those the host refused to show. Each is a process that could be
+    /// standing in this home, and the count is what makes that sentence checkable
+    /// rather than a slogan.
+    #[serde(default)]
+    pub withheld: usize,
+    /// Which readings of occupancy this host answered, as
+    /// [`processes::OCCUPANCY`] names them. Empty for a table that was not read at all,
+    /// because none of them was made.
+    ///
+    /// It is here rather than in the record beside it because this is the value the
+    /// kernel is handed ([`kernel::Evidence::runtime`]), and one fact belongs in one
+    /// place: a second copy in the report is a second thing to drift.
+    #[serde(default)]
+    pub occupancy: Vec<String>,
+}
+
+impl Runtime {
+    /// How far the process table was read.
+    ///
+    /// Derived and never stored, so it cannot disagree with the notes and the count it is
+    /// derived from. A table that would not answer at all is [`Reach::Unread`] whatever
+    /// else is in the value.
+    #[must_use]
+    pub fn reach(&self) -> Reach {
+        if self.notes.iter().any(|note| note.unread(Source::Environment)) {
+            Reach::Unread
+        } else if self.withheld > 0 {
+            Reach::Part
+        } else {
+            Reach::Full
+        }
+    }
 }
 
 /// Read both signals for one unit. Never fails, for the reason an
@@ -681,10 +717,14 @@ pub fn attributed(own: Own<'_>, homes: &[PathBuf]) -> Runtime {
 pub fn processes_of(own: Own<'_>, homes: &[PathBuf]) -> Runtime {
     let mut seen = Runtime::default();
     match scan(own, homes) {
-        Ok((processes, bystanders, withheld)) => {
-            seen.processes = processes;
-            seen.bystanders = bystanders;
-            seen.notes = withheld;
+        Ok(read) => {
+            seen.processes = read.certain;
+            seen.bystanders = read.standing;
+            seen.notes = read.notes;
+            seen.read = read.read;
+            seen.withheld = read.withheld;
+            seen.occupancy =
+                processes::OCCUPANCY.iter().map(|&reading| String::from(reading)).collect();
         }
         Err(error) => seen.notes.push(unread_table(&error)),
     }
@@ -748,20 +788,179 @@ fn labelled(containers: Vec<docker::Container>, unit: UnitId) -> Vec<String> {
 /// # Errors
 /// Whatever the process table reported, which on a host that has none is
 /// [`Error::ProcessScanUnsupported`].
-pub fn scan(own: Own<'_>, homes: &[PathBuf]) -> Result<(Vec<u32>, Vec<Standing>, Vec<Note>)> {
+pub fn scan(own: Own<'_>, homes: &[PathBuf]) -> Result<Seen> {
     let placed: Vec<PathBuf> = homes.iter().map(|home| paths::resolve(home)).collect();
     let spared = stop::spared();
+    let running = processes::Processes::scan(&processes::Live)?;
+    let (certain, mut standing) = sort(&running, own, &placed, &spared);
+    standing.retain(|row| !has_ended(row.pid));
+    Ok(Seen {
+        certain,
+        standing,
+        notes: crate::runtime::attribute::withheld(&running),
+        read: running.len(),
+        withheld: running.iter().filter(|process| process.withheld.is_some()).count(),
+    })
+}
+
+/// One reading of the process table, sorted.
+///
+/// A struct rather than a tuple because the reading grew two counts that are not about
+/// any one process: how many rows there were, and how many of them the host refused. Both
+/// are evidence, and a fourth and fifth element of a tuple would have been read wrong.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Seen {
+    /// The processes carrying this unit's identifier.
+    pub certain: Vec<u32>,
+    /// The processes standing in, or holding something inside, one of its homes.
+    pub standing: Vec<Standing>,
+    /// What the host refused to show, as notes.
+    pub notes: Vec<Note>,
+    /// How many processes were in the table.
+    pub read: usize,
+    /// How many of those were refused.
+    pub withheld: usize,
+}
+
+/// Sort one reading of the table into what a reclaim signals and what it refuses over.
+///
+/// Split out of [`scan`] so that the whole rule is a function of a table rather than of
+/// this machine. That is what lets a test state the one table no unprivileged test can
+/// make a machine hold — a process whose record this account may not read — and assert
+/// the arm that judges it.
+///
+/// Nothing here asks the machine anything, so nothing here drops a process that has
+/// ended since the reading. [`scan`] does that afterwards, over the short list rather
+/// than the whole table.
+#[must_use]
+pub fn sort(
+    running: &[processes::Running],
+    own: Own<'_>,
+    placed: &[PathBuf],
+    spared: &[u32],
+) -> (Vec<u32>, Vec<Standing>) {
     let mut certain = Vec::new();
     let mut standing = Vec::new();
-    let running = processes::Processes::scan(&processes::Live)?;
-    for process in &running {
+    for process in running {
         if owns(process, own) {
             certain.push(process.pid);
-        } else if bystander(process, own, &placed, &spared) && !has_ended(process.pid) {
-            standing.push(Standing::new(process.pid, process.command.clone()));
+            continue;
         }
+        if !bystander(process, own, placed, spared) {
+            continue;
+        }
+        let row = Standing::new(process.pid, process.command.clone());
+        standing.push(match holding(process, placed).first() {
+            Some(held) => row.holding(held.describe()),
+            None => row,
+        });
     }
-    Ok((certain, standing, crate::runtime::attribute::withheld(&running)))
+    standing.extend(withheld_in_a_home(running, &certain, &standing, spared));
+    (certain, standing)
+}
+
+/// How far a lineage is followed before a process is called unrelated to everything
+/// standing in the home.
+///
+/// A person's shell, the command they typed and what that started is two or three deep.
+/// The bound is here because a lineage is read from a table that was read one process at
+/// a time, so a parent that has been replaced can point back down at a child and make a
+/// cycle out of two honest readings.
+const LINEAGE: usize = 16;
+
+/// The processes this account could not read that a reading of the home cannot rule out.
+///
+/// **This is the arm FS-6 is about.** A process whose `/proc` entry this account may not
+/// read — another account's on a shared host, or this account's own running a binary the
+/// kernel marks undumpable, which is what a setuid program becomes — used to be left out
+/// of the table entirely: no row, no note, nothing for a verdict to rest on. It is now in
+/// the table ([`processes::Withheld`]), and this is what a reclaim does with it.
+///
+/// What it does **not** do is refuse over every one of them. On the machine this was
+/// written on, 36 processes are withheld at any moment and 3 of them belong to this
+/// account; a rule that refused over unreadability alone would refuse every reclaim on
+/// this host, permanently, with nothing a person could do to clear it. "Cannot see,
+/// therefore not safe" is a rule about *this home*, not about the machine.
+///
+/// So the refusal is over the one thing still readable about a process this account is
+/// refused: its lineage. `/proc/<pid>/stat` stays world-readable when `environ`, `cwd`,
+/// `fd` and `maps` do not, and macOS answers `proc_bsdshortinfo` and `getsid` across
+/// accounts. A withheld process whose parent, group or session reaches something already
+/// found in the home is a command that was started from inside the home, and a reclaim
+/// refuses to move the home out from under it. One whose lineage reaches nothing in the
+/// home is counted in the evidence record and refuses nothing — which is the residual
+/// this reading cannot close, stated rather than hidden.
+fn withheld_in_a_home(
+    running: &[processes::Running],
+    certain: &[u32],
+    standing: &[Standing],
+    spared: &[u32],
+) -> Vec<Standing> {
+    let inside: BTreeSet<u32> =
+        certain.iter().chain(standing.iter().map(|row| &row.pid)).copied().collect();
+    if inside.is_empty() {
+        return Vec::new();
+    }
+    let lineage: BTreeMap<u32, processes::Lineage> =
+        running.iter().map(|process| (process.pid, process.lineage)).collect();
+    running
+        .iter()
+        .filter(|process| process.withheld == Some(processes::Withheld::AnotherAccount))
+        .filter(|process| !spared.contains(&process.pid))
+        .filter(|process| descends_from(process, &inside, &lineage))
+        .map(|process| Standing::new(process.pid, process.command.clone()).holding(WITHHELD))
+        .collect()
+}
+
+/// What a refusal says about a process it can name and cannot read.
+pub const WITHHELD: &str = "started from inside the home; this account may not read it";
+
+/// Whether a process's lineage reaches anything already found inside the home.
+///
+/// Three relations, and each of them is a fact the kernel publishes about a process this
+/// account may not otherwise read: the process it came from, the group it is in, and the
+/// session it is in. A group or a session is matched outright, because both are numbers a
+/// process shares with the command that started it. A parent is followed, bounded by
+/// [`LINEAGE`] and by the pids already seen, so that two readings taken a moment apart
+/// cannot make a cycle that never ends.
+fn descends_from(
+    process: &processes::Running,
+    inside: &BTreeSet<u32>,
+    lineage: &BTreeMap<u32, processes::Lineage>,
+) -> bool {
+    let own = process.lineage;
+    if own.group.is_some_and(|group| inside.contains(&group))
+        || own.session.is_some_and(|session| inside.contains(&session))
+    {
+        return true;
+    }
+    let mut walked = BTreeSet::from([process.pid]);
+    let mut at = own.parent;
+    for _ in 0..LINEAGE {
+        let Some(pid) = at.filter(|pid| *pid > 1) else { return false };
+        if inside.contains(&pid) {
+            return true;
+        }
+        if !walked.insert(pid) {
+            return false;
+        }
+        at = lineage.get(&pid).and_then(|line| line.parent);
+    }
+    false
+}
+
+/// What a process holds inside one of these homes, beside standing in it.
+///
+/// The descriptors it has open for writing, the files it has mapped so that writes reach
+/// them, and the root it is held to. This is the half of occupancy a working directory
+/// never answered: a test runner started from a terminal that has since changed
+/// directory, writing its database into a home, stands nowhere near that home and is
+/// holding it open the whole time.
+///
+/// `placed` must already be resolved, for the reason [`bystander`] states.
+#[must_use]
+pub fn holding(process: &processes::Running, placed: &[PathBuf]) -> Vec<processes::Held> {
+    placed.iter().flat_map(|home| process.holds_inside(home)).collect()
 }
 
 /// Whether this process is something standing in one of `unit`'s homes that a reclaim of
@@ -794,7 +993,7 @@ pub fn bystander(
 ) -> bool {
     !owns(process, own)
         && !spared.contains(&process.pid)
-        && in_one_of(process, placed)
+        && (in_one_of(process, placed) || !holding(process, placed).is_empty())
         && !vouched_for_by_a_group(process, own)
 }
 
@@ -1008,6 +1207,17 @@ pub struct Assessment {
     /// a failure, and it is never silence either: a group missing because a listing
     /// failed must not read as a group that is empty.
     pub notes: Vec<String>,
+    /// What this verdict rests on: what was asked, what answered, and what was not
+    /// checked ([`Reading`]).
+    ///
+    /// **Nothing here changes the verdict.** [`Assessment::safe_to_reclaim`] reads the
+    /// reasons and only the reasons, and a reader that gated on a field of this record
+    /// would be taking a second opinion where there is one opinion. What it does is make
+    /// the first one falsifiable: a safe verdict and a verdict whose evidence fell
+    /// outside the predicate used to be byte-identical, and a contract nobody can check
+    /// is a slogan.
+    #[serde(default)]
+    pub reading: Reading,
 }
 
 impl Assessment {
@@ -1146,7 +1356,10 @@ pub fn assess(input: &Input<'_>) -> Result<Assessment> {
     if input.state {
         paths.extend(ignored(input.home, input.fate, &mut notes));
     }
-    let (commits, remotes, content) = history(&git, input, &mut notes)?;
+    let mut reading = Reading::default();
+    let (commits, remotes, content) = history(&git, input, &mut notes, &mut reading)?;
+    let runtime = input.runtime.map(|asked| running(asked, input.home));
+    unread(input, &mut reading);
     let mut assessment = Assessment {
         home: input.home.to_path_buf(),
         moves: input.runtime.is_some_and(|asked| asked.moves),
@@ -1154,12 +1367,62 @@ pub fn assess(input: &Input<'_>) -> Result<Assessment> {
         commits,
         content,
         paths,
-        runtime: input.runtime.map(|asked| running(asked, input.home)),
+        runtime,
         reasons: Vec::new(),
         notes,
+        reading,
     };
     assessment.ranked(Timestamp::now());
     Ok(assessment)
+}
+
+impl Work<'_> {
+    /// What this reading walks, and what it therefore does not, for the evidence record.
+    ///
+    /// The second half is the honest one. A commit on a branch, a tag or a stash that the
+    /// walk does not reach is work the verdict says nothing about, and until it is walked
+    /// the record has to say so rather than let an empty `commits` list read as an empty
+    /// home. It is read off the reading itself and never written down twice: a widened
+    /// walk that left this behind would print a warning about refs it had just covered.
+    fn refs(self) -> (Vec<String>, Vec<String>) {
+        match self {
+            Self::Checkout => (
+                vec![String::from("HEAD")],
+                ["refs/heads/* not reached by HEAD", "refs/tags/*", "refs/stash"]
+                    .iter()
+                    .map(|&name| String::from(name))
+                    .collect(),
+            ),
+            Self::Tips(tips) => (tips.iter().map(ToString::to_string).collect(), Vec::new()),
+        }
+    }
+}
+
+/// The readings this assessment was not asked to make, each with the reason it was not.
+///
+/// Three switches ([`Input`]), each off because the reading it buys costs processes and
+/// changes no verdict. That is a good trade and it is invisible in the output, which is
+/// the problem this closes: a person cannot tell a group that is empty from a group
+/// nobody asked for.
+fn unread(input: &Input<'_>, reading: &mut Reading) {
+    if !input.state {
+        reading.not_checked.push(Unchecked::new(
+            "ignored state",
+            "not asked for: it is what the trash keeps, and no verdict turns on it",
+        ));
+    }
+    if !input.dispositions {
+        reading.not_checked.push(Unchecked::new(
+            "where else each commit lives",
+            "not asked for: a refusal rests on what nothing proved a copy of, which one reading answers",
+        ));
+    }
+    if input.runtime.is_none() {
+        reading.not_checked.push(Unchecked::new(
+            "the process table",
+            "not asked for: this reading is about the work in the home, not about what is running",
+        ));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1285,16 +1548,20 @@ fn history(
     git: &Git,
     input: &Input<'_>,
     notes: &mut Vec<String>,
+    reading: &mut Reading,
 ) -> Result<(Vec<CommitGroup>, Vec<String>, Vec<SameContent>)> {
     let remotes = git.remotes()?;
     let found = witness::elsewhere(input.home, input.checkout);
     let checkout = input.checkout.map(Checkout::path);
+    (reading.refs.walked, reading.refs.not_walked) = input.work.refs();
     if !input.dispositions {
-        let refused = refusing(git, input, &found, &remotes)?;
+        let refused = refusing(git, input, &found, &remotes, reading)?;
         return Ok((refused, remotes, Vec::new()));
     }
     let ours = input.work.outside(git, &found.own)?;
+    reading.refs.commits = ours.len();
     if ours.is_empty() {
+        reading.stores = unasked(input, NOTHING_TO_LOOK_FOR);
         return Ok((Vec::new(), remotes, Vec::new()));
     }
     let witness = Witness::of(&remotes, &found);
@@ -1302,7 +1569,7 @@ fn history(
     let unproved = input.work.outside(git, &found.tips())?;
     let proved = difference(&ours, &off_remote);
     let second = difference(&off_remote, &unproved);
-    let (held, only) = local_copies(input.home, checkout, input.siblings, unproved);
+    let (held, only) = local_copies(input.home, checkout, input.siblings, unproved, reading);
     let content = same_content(git, &only, notes);
     let mut groups = Vec::new();
     groups.extend(commit_group(Copies::RemoteProved { witness: witness.clone() }, proved));
@@ -1393,13 +1660,16 @@ fn refusing(
     input: &Input<'_>,
     found: &witness::Elsewhere,
     remotes: &[String],
+    reading: &mut Reading,
 ) -> Result<Vec<CommitGroup>> {
     let unproved = input.work.outside(git, &found.tips())?;
+    reading.refs.commits = unproved.len();
     if unproved.is_empty() {
+        reading.stores = unasked(input, NOTHING_TO_LOOK_FOR);
         return Ok(Vec::new());
     }
     let checkout = input.checkout.map(Checkout::path);
-    let (held, only) = local_copies(input.home, checkout, input.siblings, unproved);
+    let (held, only) = local_copies(input.home, checkout, input.siblings, unproved, reading);
     let witness = Witness::of(remotes, found);
     let mut groups = held_groups(held);
     groups.extend(commit_group(unreached(&witness), only));
@@ -1439,18 +1709,25 @@ fn local_copies(
     checkout: Option<&Path>,
     siblings: &[PathBuf],
     unproved: Vec<Oid>,
+    reading: &mut Reading,
 ) -> (Vec<(PathBuf, Vec<Oid>)>, Vec<Oid>) {
     let itself = paths::resolve(home);
     let mut left = unproved;
     let mut found = Vec::new();
-    for store in checkout.into_iter().chain(siblings.iter().map(PathBuf::as_path)) {
+    for (store, role) in stores(checkout, siblings) {
         if left.is_empty() {
-            break;
-        }
-        if paths::resolve(store) == itself {
+            reading.stores.push(asked(store, role, Answered::NotAsked, ACCOUNTED_FOR));
             continue;
         }
-        let holds = holds_of(store, &left);
+        if paths::resolve(store) == itself {
+            reading.stores.push(asked(store, role, Answered::NotAsked, ITSELF));
+            continue;
+        }
+        let Some(holds) = holds_of(store, &left) else {
+            reading.stores.push(asked(store, role, Answered::No, UNREADABLE));
+            continue;
+        };
+        reading.stores.push(asked(store, role, Answered::Yes, ""));
         if holds.is_empty() {
             continue;
         }
@@ -1459,6 +1736,47 @@ fn local_copies(
         left = rest;
     }
     (found, left)
+}
+
+/// Why a store was not asked: every commit was already accounted for by the time its
+/// turn came, so opening it would have cost a process and changed nothing.
+const ACCOUNTED_FOR: &str = "every commit was already accounted for";
+
+/// Why a store was not asked: it is the home being read, which is never a second copy of
+/// itself.
+const ITSELF: &str = "this is the home being read";
+
+/// Why a store did not answer.
+const UNREADABLE: &str = "not a readable repository, or its own reading failed";
+
+/// Why no store was asked at all: the home holds no commit that needs a copy found.
+const NOTHING_TO_LOOK_FOR: &str = "the home holds no commit the project does not already reach";
+
+/// Every store a reading may ask, in the order it asks them, each with what it is.
+fn stores<'a>(
+    checkout: Option<&'a Path>,
+    siblings: &'a [PathBuf],
+) -> impl Iterator<Item = (&'a Path, reading::Role)> {
+    checkout
+        .into_iter()
+        .map(|path| (path, reading::Role::Checkout))
+        .chain(siblings.iter().map(|path| (path.as_path(), reading::Role::Sibling)))
+}
+
+/// One store's row of the evidence record.
+fn asked(path: &Path, role: reading::Role, answered: Answered, why: &str) -> Store {
+    let why = (!why.is_empty()).then(|| String::from(why));
+    Store { path: path.to_path_buf(), role, answered, why }
+}
+
+/// Every store, each recorded as not asked for one reason.
+///
+/// The reading that took no commits to any store still asked the question, and a record
+/// with an empty store list would read as a machine with no stores on it.
+fn unasked(input: &Input<'_>, why: &str) -> Vec<Store> {
+    stores(input.checkout.map(Checkout::path), input.siblings)
+        .map(|(path, role)| asked(path, role, Answered::NotAsked, why))
+        .collect()
 }
 
 /// Which of these commits one repository really holds.
@@ -1472,9 +1790,9 @@ fn local_copies(
 /// with nothing. That is the stricter reading and it is the safe direction: a store
 /// nobody could read has proved no second copy of anything, and the commit stays in the
 /// group a refusal is raised over.
-fn holds_of(store: &Path, commits: &[Oid]) -> BTreeSet<Oid> {
-    let Some(git) = Git::open(store).ok() else { return BTreeSet::new() };
-    git.held(commits).map(|held| held.into_iter().collect()).unwrap_or_default()
+fn holds_of(store: &Path, commits: &[Oid]) -> Option<BTreeSet<Oid>> {
+    let git = Git::open(store).ok()?;
+    git.held(commits).map(|held| held.into_iter().collect()).ok()
 }
 
 /// The members of `all` that `fewer` does not have, in the order `all` has them.

@@ -164,9 +164,12 @@ fn the_list_has_one_row_per_unit_and_says_what_merging_each_would_do() {
 
 /// What the process table withholds is said under the table, with the reason.
 ///
-/// This stays a host split. A Linux scan leaves out a process this account may not read,
-/// so the list has nothing to say. macOS refuses the processes of other accounts and the
-/// variables of a restricted binary, and a runner always has both, so the list says so.
+/// **This was a host split and it is not one any more.** A Linux scan used to leave out a
+/// process this account may not read, so the list had nothing to say about the one case
+/// the safety contract is written for. Both hosts now keep such a process and note the
+/// reason, so both say so here. A runner always has some: the process that started the
+/// machine is another account's, and on macOS a restricted binary's variables are refused
+/// as well.
 #[test]
 fn what_the_process_table_withholds_is_said_under_the_table() {
     let fixture = Fixture::new();
@@ -175,13 +178,9 @@ fn what_the_process_table_withholds_is_said_under_the_table() {
     let notes: Vec<&str> =
         answer["notes"].as_array().unwrap().iter().map(|note| note.as_str().unwrap()).collect();
 
-    if !cfg!(target_os = "macos") {
-        assert!(notes.is_empty(), "a Linux scan has nothing to report: {notes:?}");
-        return;
-    }
-    assert!(!notes.is_empty(), "macos withholds some processes, and the list says so");
+    assert!(!notes.is_empty(), "some processes are withheld on every host, and the list says so");
     for note in notes {
-        assert!(note.starts_with("who: ") && note.contains("macos"), "{note}");
+        assert!(note.starts_with("who: "), "{note}");
         assert!(text.contains(note), "the note is under the table:\n{text}");
     }
 }

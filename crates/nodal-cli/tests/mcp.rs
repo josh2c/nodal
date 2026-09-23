@@ -116,7 +116,9 @@ fn the_handshake_names_the_server_and_its_tools() {
 /// are never byte-identical; `volatile` removes those and the comparison is of
 /// everything else. The write verbs are compared the same way with the fields that name
 /// one unit removed as well, because two units are not one unit — what is asserted there
-/// is that the two routes produce the same document about the work they did.
+/// is that the two routes produce the same document about the work they did. `read_at` is
+/// one of those instants: a verdict's evidence record dates the reading it was made from,
+/// and two readings of one machine are taken at two instants by construction.
 #[test]
 fn every_reading_tool_answers_with_the_command_lines_own_json() {
     let workspace = workspace();
@@ -190,7 +192,7 @@ fn every_writing_tool_answers_with_the_command_lines_own_json() {
 /// out: the instant it was taken, and the ages measured from it.
 fn volatile(text: &str) -> Value {
     let mut value: Value = serde_json::from_str(text).expect("a tool answers with JSON");
-    strip(&mut value, &["now"]);
+    strip(&mut value, &["now", "read_at"]);
     value
 }
 
@@ -202,6 +204,7 @@ fn anonymous(text: &str) -> Value {
         &mut value,
         &[
             "now",
+            "read_at",
             "id",
             "slug",
             "unit",
