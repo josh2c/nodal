@@ -5,8 +5,8 @@
 //! convenient thing.
 //!
 //! **Nothing is removed until the uniqueness check has been made.**
-//! [`crate::lifecycle::uniqueness::check`] is the single answer to "does this home hold
-//! work that exists nowhere else", and a hit refuses the reclaim naming what it found.
+//! [`crate::lifecycle::assess`] is the single reading behind "does this home hold work
+//! that exists nowhere else", and a hit refuses the reclaim naming what it found.
 //! `--force` does not skip the check; it takes a work-in-progress snapshot of the whole
 //! home first ([`crate::git::snapshot`]) and then goes on, so a forced reclaim loses a
 //! directory rather than the work in it.
@@ -1123,16 +1123,10 @@ struct Examined {
 /// reported and never what is decided ([`assess::Input::dispositions`]).
 fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Result<Examined> {
     let Some(home) = placed.path() else { return Ok(Examined::default()) };
-    let assessment = assess::assess(&assess::Input {
-        home,
-        checkout: Some(&Checkout::read(source)),
-        siblings: &crate::doctor::scan::siblings(source),
-        work: assess::Work::Checkout,
-        fate: assess::Fate::Trashed,
-        state: false,
-        dispositions: true,
-        runtime: None,
-    })?;
+    let checkout = Checkout::read(source);
+    let siblings = crate::doctor::scan::siblings(source);
+    let refusal = assess::Input::refusal(home, assess::Work::Checkout, Some(&checkout), &siblings);
+    let assessment = assess::assess(&assess::Input { dispositions: true, ..refusal })?;
     let findings = assessment.findings();
     if findings.is_empty() {
         return Ok(Examined {

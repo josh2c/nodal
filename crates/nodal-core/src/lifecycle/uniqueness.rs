@@ -1,9 +1,13 @@
 //! The one uniqueness check: does this home hold work that exists nowhere else?
 //!
-//! Every destructive path calls [`check`] before it removes anything, and there is
-//! deliberately only one of them. A second implementation of "is this safe to delete"
-//! is a second answer to a question that has to have one, and the difference between
-//! the two is the day somebody loses a morning's work.
+//! Every destructive path reads [`crate::lifecycle::assess`] before it removes
+//! anything, and there is deliberately only one such reading. A second implementation of
+//! "is this safe to delete" is a second answer to a question that has to have one, and
+//! the difference between the two is the day somebody loses a morning's work.
+//!
+//! What lives here is the shape that answer is reported in: the [`Finding`]s a refusal
+//! names, and the [`Witness`] that says what the reading earned. The evaluator is over
+//! there; the words are here.
 //!
 //! Three things count as work that is only here, and each is a different kind of
 //! loss:
@@ -59,14 +63,12 @@
 //! The check reads and never writes. What is done about a finding — refuse, or take a
 //! snapshot and go on — belongs to the operation.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Result;
 use crate::git::Oid;
-use crate::lifecycle::assess;
-use crate::lifecycle::witness::{Checkout, Elsewhere};
+use crate::lifecycle::witness::Elsewhere;
 
 /// How many paths or commits one finding names before it says how many more there are.
 ///
@@ -284,32 +286,6 @@ impl Uniqueness {
     pub fn is_clear(&self) -> bool {
         self.findings.is_empty()
     }
-}
-
-/// Read `home` and report everything in it that exists nowhere else.
-///
-/// `elsewhere` is the project's own checkout, read once, when this machine still has
-/// one. Commits it already has are not unique to the home, whatever the remotes say. A
-/// checkout that is not there, or is no longer a repository, simply is not asked: the
-/// answer is then the stricter one, which is the safe direction to be wrong in.
-///
-/// This is a projection of [`crate::lifecycle::assess`], which is the one reading, and
-/// it asks for the part a refusal rests on and nothing else. The read-only preflight
-/// asks the same function for the whole of it and prints what this throws away, so a
-/// `nodal reclaim --check` that says safe and a `nodal reclaim` that refuses cannot both
-/// happen: there is one evaluator under both.
-///
-/// # Errors
-/// [`crate::Error::Git`] when the status or the revision could not be read, and
-/// [`crate::Error::NotARepository`] when `home` is not one.
-pub fn check(
-    home: &Path,
-    elsewhere: Option<&Checkout>,
-    siblings: &[PathBuf],
-) -> Result<Uniqueness> {
-    let input = assess::Input::refusal(home, assess::Work::Checkout, elsewhere, siblings);
-    let assessed = assess::assess(&input)?;
-    Ok(Uniqueness { home: home.to_path_buf(), findings: assessed.findings() })
 }
 
 /// Join what a finding lists, in the one form every message here uses.

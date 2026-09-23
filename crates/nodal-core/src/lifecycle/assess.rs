@@ -1133,6 +1133,15 @@ fn holders(copies: &Copies) -> Vec<PathBuf> {
 /// the ignored state, a scan for the runtime. Nothing is written, nothing is signalled,
 /// and no remote is reached.
 ///
+/// **One reading, one answer.** Every path that removes a home asks this function first,
+/// and there is deliberately only one such reading. A second implementation of "is this
+/// safe to delete" is a second answer to a question that has to have one, and the
+/// difference between the two is the day somebody loses a morning's work. A refusal asks
+/// for the part it rests on and nothing else ([`Input::refusal`]); the read-only
+/// preflight asks the same function for the whole of it and prints what a refusal throws
+/// away. A `nodal reclaim --check` that says safe and a `nodal reclaim` that refuses
+/// therefore cannot both happen: there is one evaluator under both.
+///
 /// # Errors
 /// [`crate::Error::Git`] when the status or a revision could not be read, and
 /// [`crate::Error::NotARepository`] when `home` is not one.
