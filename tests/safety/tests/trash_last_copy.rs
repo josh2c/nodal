@@ -180,8 +180,8 @@ fn carries_the_same_in_json(machine: &Machine) {
     let carried = json(&machine.nodal(&["gc", "--json"]));
     let held = carried["held"].as_array().expect("the answer carries the homes it kept");
     assert_eq!(held.len(), 1, "{carried}");
-    assert_eq!(held[0]["count"], 1, "{carried}");
-    assert_eq!(held[0]["witness"]["kind"], "unchecked", "{carried}");
+    assert_eq!(held[0]["finding"]["count"], 1, "{carried}");
+    assert_eq!(held[0]["finding"]["witness"]["kind"], "unchecked", "{carried}");
     assert_eq!(held[0]["gone"].as_array().map(Vec::len), Some(1), "{carried}");
     assert_eq!(held[0]["entry"]["rested"]["kind"], "safe", "{carried}");
 }

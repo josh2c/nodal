@@ -171,6 +171,24 @@ impl Witness {
         }
     }
 
+    /// Whether nothing on this machine read the remote at all, which is the strictest of
+    /// the four and the default.
+    ///
+    /// The line every report draws between a commit that is only here and a commit
+    /// nothing could check: [`crate::lifecycle::assess`] draws it to choose the
+    /// disposition, and the sweep of the trash draws it to choose the words of a line
+    /// over the same commits ([`crate::output::view::HeldBack`]). One question, asked
+    /// here, so the two cannot answer it differently.
+    ///
+    /// It is not [`Witness::settled`], which is the finer question of whether the
+    /// reading that was made proves anything: a clone read the remote and still only
+    /// says what it last saw, so a report that calls such a commit only here says on the
+    /// next line which reading that rests on ([`Witness::because`]).
+    #[must_use]
+    pub const fn unchecked(&self) -> bool {
+        matches!(self, Self::Unchecked)
+    }
+
     /// Whether this reading settled the remote question, rather than leaving it open.
     ///
     /// Settled means there is no remote to ask, or the remote is on this disk and was
@@ -238,6 +256,32 @@ impl Finding {
             Self::Uncommitted { count, .. }
             | Self::Untracked { count, .. }
             | Self::Unpushed { count, .. } => *count,
+        }
+    }
+
+    /// The commits this finding is about, newest first, and none for a finding that is
+    /// about paths.
+    ///
+    /// A sample and not the whole of them: [`Finding::count`] is the fact, and this is
+    /// the first [`SAMPLE`] a message names.
+    #[must_use]
+    pub fn commits(&self) -> &[Oid] {
+        match self {
+            Self::Unpushed { sample, .. } => sample,
+            Self::Uncommitted { .. } | Self::Untracked { .. } => &[],
+        }
+    }
+
+    /// What this machine could say about the remote while it read them, and nothing for
+    /// a finding the remote has no opinion on.
+    ///
+    /// A path that differs from `HEAD` is only ever here, so there is no remote question
+    /// to answer about one and no reading to report.
+    #[must_use]
+    pub const fn witness(&self) -> Option<&Witness> {
+        match self {
+            Self::Unpushed { witness, .. } => Some(witness),
+            Self::Uncommitted { .. } | Self::Untracked { .. } => None,
         }
     }
 

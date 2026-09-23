@@ -1422,10 +1422,10 @@ fn refusing(
 /// and the report says that instead. Calling the second the first would be a claim this
 /// machine did not earn.
 fn unreached(witness: &Witness) -> Copies {
-    match witness {
-        Witness::Unchecked => Copies::NotChecked { witness: witness.clone() },
-        settled => Copies::OnlyHere { witness: settled.clone() },
+    if witness.unchecked() {
+        return Copies::NotChecked { witness: witness.clone() };
     }
+    Copies::OnlyHere { witness: witness.clone() }
 }
 
 /// Split the commits no remote reading proved into the ones another object store holds

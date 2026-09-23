@@ -120,7 +120,7 @@ use crate::git::{Git, Oid, refs, snapshot, union};
 use crate::lifecycle::assess;
 use crate::lifecycle::idle;
 use crate::lifecycle::journal;
-use crate::lifecycle::uniqueness::{Finding, Witness};
+use crate::lifecycle::uniqueness::Finding;
 use crate::lifecycle::witness::Checkout;
 use crate::model::{
     EnvState, OperationId, OperationState, Outside, Project, ProjectId, SessionId, Timestamp,
@@ -578,11 +578,9 @@ fn unread(entry: &Trashed, why: &str) -> Leftover {
 /// [`Error::Git`] and [`Error::NotARepository`] when the home could not be read. That is
 /// not a reading that found nothing, and nothing is removed on one.
 fn held_back(entry: &Trashed, reading: &Reading) -> Result<Option<HeldBack>> {
-    let Some((count, sample, witness)) = only_here(entry, reading)? else {
-        return Ok(None);
-    };
-    let gone = gone_copies(entry, &sample);
-    Ok(Some(HeldBack { entry: entry.clone(), count, sample, witness, gone }))
+    let Some(finding) = only_here(entry, reading)? else { return Ok(None) };
+    let gone = gone_copies(entry, finding.commits());
+    Ok(Some(HeldBack { entry: entry.clone(), finding, gone }))
 }
 
 /// The commits of a trashed home that no ref outside the directory reaches, and what the
@@ -602,17 +600,17 @@ fn held_back(entry: &Trashed, reading: &Reading) -> Result<Option<HeldBack>> {
 ///
 /// # Errors
 /// [`Error::Git`] and [`Error::NotARepository`] when the trashed home could not be read.
-fn only_here(entry: &Trashed, reading: &Reading) -> Result<Option<(usize, Vec<Oid>, Witness)>> {
+fn only_here(entry: &Trashed, reading: &Reading) -> Result<Option<Finding>> {
     let git = Git::open(&entry.path)?;
     let tips = work_tips(&git, entry)?;
     let input = assess::Input {
         work: assess::Work::Tips(&tips),
         ..assess::Input::refusal(&entry.path, Some(&reading.checkout), &reading.siblings)
     };
-    Ok(assess::assess(&input)?.findings().into_iter().find_map(|finding| match finding {
-        Finding::Unpushed { count, sample, witness, .. } => Some((count, sample, witness)),
-        Finding::Uncommitted { .. } | Finding::Untracked { .. } => None,
-    }))
+    Ok(assess::assess(&input)?
+        .findings()
+        .into_iter()
+        .find(|finding| matches!(finding, Finding::Unpushed { .. })))
 }
 
 /// The copies the reclaim rested on that no longer reach any of these commits.

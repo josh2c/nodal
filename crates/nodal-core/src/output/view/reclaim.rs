@@ -16,10 +16,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::git::Oid;
 use crate::lifecycle::hooks::Ran;
-use crate::lifecycle::uniqueness::Finding;
-use crate::lifecycle::uniqueness::Witness;
+use crate::lifecycle::uniqueness::{Finding, Witness};
 use crate::model::{Outside, Slug, Timestamp, Trashed};
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, JOIN, NONE, Table};
@@ -435,15 +433,14 @@ pub struct Idle {
 pub struct HeldBack {
     /// The entry that stays.
     pub entry: Trashed,
-    /// How many commits in the home no ref outside it reaches. Exact.
-    pub count: usize,
-    /// The first ten of them, newest first. A sample; the count is the fact.
-    pub sample: Vec<Oid>,
-    /// What this machine could say about the remote while it read them.
+    /// What the sweep read in the home: the commits no ref outside it reaches, how many
+    /// there are, and what this machine could say about the remote while it read them.
     ///
-    /// It decides the words. A reading nothing could check has not earned "only here",
-    /// and the line says what it could not do instead ([`Witness::because`]).
-    pub witness: Witness,
+    /// The finding the sweep's own reading made, carried whole rather than taken apart
+    /// ([`crate::lifecycle::ops::gc`]). It decides the words, because a reading nothing
+    /// could check has not earned "only here" and the line says what it could not do
+    /// instead ([`Witness::because`]).
+    pub finding: Finding,
     /// The copies the reclaim rested on that no longer reach these commits.
     ///
     /// Empty where the reclaim recorded none, and empty where every copy it recorded
@@ -463,22 +460,32 @@ impl HeldBack {
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
         let clause = self.clause();
-        let mut lines: Vec<String> = self
-            .sample
+        let sample = self.finding.commits();
+        let mut lines: Vec<String> = sample
             .iter()
             .map(|oid| {
                 format!("kept: {} {clause}", oid.as_str().chars().take(8).collect::<String>())
             })
             .collect();
-        let more = self.count.saturating_sub(self.sample.len());
+        let more = self.finding.count().saturating_sub(sample.len());
         if more > 0 {
             lines.push(format!(
                 "kept: and {}",
                 plural(more, "more commit only in this home", "more commits only in this home")
             ));
         }
-        lines.extend(self.witness.because().map(|why| format!("kept: {why}")));
+        lines.extend(self.witness().because().map(|why| format!("kept: {why}")));
         lines
+    }
+
+    /// What the reading could say about the remote, and the strictest answer for a
+    /// finding that carries none.
+    ///
+    /// Every finding a sweep keeps a home over is [`Finding::Unpushed`], so the second
+    /// arm is unreachable rather than a case with words of its own; it reads as the
+    /// answer that claims the least.
+    fn witness(&self) -> &Witness {
+        self.finding.witness().unwrap_or(&Witness::Unchecked)
     }
 
     /// The half of the line that is the same for every commit it names.
@@ -489,18 +496,16 @@ impl HeldBack {
     /// check about the remote may hold the only copy and may not, and calling that "only
     /// here" would be a claim this machine did not make. That is the split
     /// [`crate::lifecycle::assess`] itself draws between a commit only here and a commit
-    /// not checked, and the words follow it.
+    /// not checked, and these words ask [`Witness::unchecked`] for it rather than keeping
+    /// a rule of their own.
     ///
     /// The second is what became of the copies the reclaim rested on: none was recorded,
     /// or a recorded one has gone. A row whose recorded copies this reading could neither
     /// credit nor call gone gets nothing after the first statement, because there is
     /// nothing after it that is true.
     fn clause(&self) -> String {
-        let proved = if matches!(self.witness, Witness::Unchecked) {
-            "could not be checked"
-        } else {
-            "is only here"
-        };
+        let proved =
+            if self.witness().unchecked() { "could not be checked" } else { "is only here" };
         if self.entry.rested.copies().is_empty() {
             return format!("{proved}; this home's reclaim recorded no copy outside it");
         }
