@@ -36,8 +36,8 @@
 //! | the list, the preflight and the reclaim agree | `the_list_the_preflight_and_the_reclaim_agree_about_one_table` |
 //!
 //! **Hosts.** The predicate is a function of the table
-//! ([`nodal_core::lifecycle::assess::sort`]), so the last test above states a table and
-//! runs on both runners. The *filling* of that table is `/proc`, and macOS publishes no
+//! ([`nodal_core::lifecycle::assess::Table::sort`]), so the last test above states a table
+//! and runs on both runners. The *filling* of that table is `/proc`, and macOS publishes no
 //! per-descriptor open flags for a vnode — the read/write split that makes the rule
 //! affordable is not available there — so the three live tests name macOS and skip it,
 //! and [`nodal_core::runtime::processes::OCCUPANCY`] says on every host which readings it
@@ -49,9 +49,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use nodal_core::lifecycle::assess::{Own, sort};
+use nodal_core::lifecycle::assess::Own;
 use nodal_core::model::UnitId;
 use nodal_core::runtime::processes::{Held, How, Live, Processes, Running};
+use nodal_safety::process::sorted;
 use nodal_safety::{InState as _, Machine, answer, platform, stderr};
 use serde_json::Value;
 
@@ -316,7 +317,7 @@ fn the_predicate_counts_writes_and_ignores_reads_on_every_host() {
             .holding(vec![Held::new(elsewhere.join("dist/dev.sqlite"), How::Descriptor)]),
     ];
 
-    let (certain, standing) = sort(&table, Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
+    let (certain, standing) = sorted(&table, Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
     assert!(certain.is_empty(), "nothing here carries the unit's identifier: {certain:?}");
     let blocked: Vec<u32> = standing.iter().map(|row| row.pid).collect();
     assert_eq!(blocked, [11, 13], "the rule is writes and mappings inside this home: {standing:?}");

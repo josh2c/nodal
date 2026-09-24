@@ -71,10 +71,13 @@
 //! the machine one question — is anything from that run still running — and so that the
 //! answer covers no process belonging to anybody else.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use nodal_core::lifecycle::assess::{Own, Table};
+use nodal_core::runtime::attribute::Standing;
+use nodal_core::runtime::processes::Running;
 use nodal_core::runtime::stop::{self, Live, Signal, Signals as _, Target};
 use tempfile::TempDir;
 
@@ -897,4 +900,21 @@ pub fn until<T>(what: &str, mut reading: impl FnMut() -> Option<T>) -> T {
         assert!(Instant::now() < deadline, "{what} did not happen within {TIMEOUT:?}");
         std::thread::sleep(POLL);
     }
+}
+
+/// Sort one stated process table the way a reclaim of one unit sorts the machine's.
+///
+/// [`nodal_core::lifecycle::assess::Table::sort`] is the product's one entry point, and
+/// it takes a reading of which processes have ended since the table was read. A test
+/// states its whole table, so nothing in it has ended, and writing that argument out at
+/// each assertion said nothing about the case being asserted. The kit carries the shape
+/// so that the product does not have to publish a seam only tests reach.
+#[must_use]
+pub fn sorted(
+    running: &[Running],
+    own: Own<'_>,
+    placed: &[PathBuf],
+    spared: &[u32],
+) -> (Vec<u32>, Vec<Standing>) {
+    Table::read(running).sort(own, placed, spared, &|_| false)
 }

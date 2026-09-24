@@ -69,12 +69,13 @@ use std::path::{Path, PathBuf};
 
 use std::collections::BTreeMap;
 
-use nodal_core::lifecycle::assess::{Own, sort};
+use nodal_core::lifecycle::assess::Own;
 use nodal_core::lifecycle::journal;
 use nodal_core::model::UnitId;
 use nodal_core::runtime::processes::{Held, How, Lineage, Running, Withheld};
 use nodal_core::store::{environments, projects, units};
 use nodal_safety::git::untouched;
+use nodal_safety::process::sorted;
 use nodal_safety::{InState as _, Machine, Snapshot, answer, git, stderr};
 use serde_json::Value;
 
@@ -758,7 +759,7 @@ fn an_unreadable_process_whose_lineage_reaches_the_home_blocks_the_move_at_the_s
         .withholding(Withheld::AnotherAccount);
 
     let (_, standing) =
-        sort(&[shell, hidden], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
+        sorted(&[shell, hidden], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
     let blocked: Vec<u32> = standing.iter().map(|row| row.pid).collect();
     assert_eq!(blocked, [21, 22], "the process nobody can read did not block: {standing:?}");
     let named = standing.iter().find(|row| row.pid == 22).unwrap();
@@ -792,7 +793,7 @@ fn an_unreadable_process_unrelated_to_the_home_is_counted_and_refuses_nothing_at
         .withholding(Withheld::AnotherAccount);
 
     let (_, standing) =
-        sort(&[shell, elsewhere], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
+        sorted(&[shell, elsewhere], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
     let blocked: Vec<u32> = standing.iter().map(|row| row.pid).collect();
     assert_eq!(blocked, [21], "an unrelated hidden process refused a reclaim: {standing:?}");
 }
@@ -828,7 +829,7 @@ fn an_unreadable_process_sharing_only_a_session_with_the_home_refuses_nothing_at
         .withholding(Withheld::AnotherAccount);
 
     let (_, standing) =
-        sort(&[shell, elsewhere], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
+        sorted(&[shell, elsewhere], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
     let blocked: Vec<u32> = standing.iter().map(|row| row.pid).collect();
     assert_eq!(
         blocked,
@@ -857,7 +858,7 @@ fn an_unreadable_process_whose_group_leader_stands_in_the_home_blocks_the_move_a
         .withholding(Withheld::AnotherAccount);
 
     let (_, standing) =
-        sort(&[leader, started], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
+        sorted(&[leader, started], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
     let blocked: Vec<u32> = standing.iter().map(|row| row.pid).collect();
     assert_eq!(blocked, [21, 22], "the job the shell started did not block: {standing:?}");
 }
@@ -885,7 +886,7 @@ fn an_unreadable_process_grouped_with_a_mere_file_holder_refuses_nothing_at_the_
         .withholding(Withheld::AnotherAccount);
 
     let (_, standing) =
-        sort(&[holder, grouped], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
+        sorted(&[holder, grouped], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
     let blocked: Vec<u32> = standing.iter().map(|row| row.pid).collect();
     assert_eq!(blocked, [21], "a file holder vouched for a process nobody can read: {standing:?}");
 }

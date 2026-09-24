@@ -857,31 +857,6 @@ pub struct Seen {
     pub withheld: usize,
 }
 
-/// Sort one reading of the table into what a reclaim signals and what it refuses over.
-///
-/// **The one entry point.** `nodal ls`, `nodal reclaim --check` and the move step of an
-/// executed reclaim all reach the answer here, over a table each of them read for itself,
-/// so none of them can print `clear` over a home another refuses on. Asking [`bystander`]
-/// directly answers only half of it: the half about a process this account can read.
-///
-/// Split out of [`scan`] so that the whole rule is a function of a table rather than of
-/// this machine. That is what lets a test state the one table no unprivileged test can
-/// make a machine hold — a process whose record this account may not read — and assert
-/// the arm that judges it.
-///
-/// Nothing here asks the machine anything, so nothing here knows which processes have
-/// ended since the reading. [`scan`] passes that reading in; a caller with only a table
-/// has none to give and gets the answer for the table as stated.
-#[must_use]
-pub fn sort(
-    running: &[processes::Running],
-    own: Own<'_>,
-    placed: &[PathBuf],
-    spared: &[u32],
-) -> (Vec<u32>, Vec<Standing>) {
-    Table::read(running).sort(own, placed, spared, &|_| false)
-}
-
 /// One reading of the process table, prepared once for however many homes are asked
 /// about.
 ///
@@ -918,6 +893,21 @@ impl<'a> Table<'a> {
 
     /// Sort this reading into what a reclaim of one unit signals and what it refuses
     /// over.
+    ///
+    /// **The one entry point.** `nodal ls`, `nodal reclaim --check` and the move step of
+    /// an executed reclaim all reach the answer here, over a table each of them read for
+    /// itself, so none of them can print `clear` over a home another refuses on. Asking
+    /// [`bystander`] directly answers only half of it: the half about a process this
+    /// account can read.
+    ///
+    /// Split out of [`scan`] so that the whole rule is a function of a table rather than
+    /// of this machine. That is what lets a test state the one table no unprivileged test
+    /// can make a machine hold — a process whose record this account may not read — and
+    /// assert the arm that judges it.
+    ///
+    /// Nothing here asks the machine anything, so nothing here knows which processes have
+    /// ended since the reading. [`scan`] passes that reading in; a caller with only a
+    /// table has none to give and answers `ended` for the table as stated.
     ///
     /// **The prune happens before the lineage pass, and that ordering is the rule.** A
     /// scan reads the whole table before any process in it is judged, and a short command

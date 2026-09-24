@@ -14,7 +14,7 @@
 //! | [`rows`] | the registry rows a test writes by hand |
 //! | [`activation`] | one activated home: the three files a shell reads |
 //! | [`checkout`] | a checkout Nodal holds nothing about, and the readings a verdict takes of one |
-//! | [`process`] | a process group a test owns, the shapes it starts one in, and bounded readings of the machine |
+//! | [`process`] | a process group a test owns, the shapes it starts one in, and bounded readings of the machine or of a stated table |
 //!
 //! Each of those was written out again in every file that wanted it. The binary runner
 //! stood in nineteen test files and the `git` runner in sixteen, so a fix to one of them
