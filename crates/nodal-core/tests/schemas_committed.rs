@@ -42,14 +42,12 @@ const EMBEDDED_TYPES: &[&str] = &[
     // One repository that held a copy of a trashed home's commits, published inside
     // `Trashed` as part of what the reclaim's verdict rested on.
     "Outside",
-    // The parts of an evidence record. A verdict rests on one document, so `Evidence` is
-    // the record and each part of it is published inside that.
+    // The parts of a reading. A verdict rests on one document, so `Reading` is the
+    // record and each part of it is published inside that. Only the records are named
+    // here: the scan below reads `pub struct` lines, so the enumerations beside them
+    // are never matched and a name for one would sit here saying nothing.
     "Store",
-    "Role",
-    "Answered",
     "Refs",
-    "ProcessTable",
-    "Reach",
     "Unchecked",
 ];
 
