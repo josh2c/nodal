@@ -178,17 +178,24 @@ SHIM
     # the same question of the checkout whichever home it is reading. The same fixture
     # with four homes read 13.2 per home before and 8.8 after. What is left per home is
     # the home's own status and history; batching those is the next ratchet.
-    gate "git processes per doctor home" "$per_home" 6.5 "per home" \
-        "baseline 6.5 at 10 units, from 11.9; ratchet to 5 when the home readings are batched"
+    #
+    # It was 6.5 until the branch audit asked for the tips this checkout has seen on a
+    # remote by name. That reading has one maker, `Git::seen_on_remotes`, and the audit
+    # asks it rather than fusing a second namespace into its own `for-each-ref`. The
+    # price is exactly one `for-each-ref` per doctor run — one process, not one per home,
+    # which is why the row moved by a tenth at ten units.
+    gate "git processes per doctor home" "$per_home" 6.6 "per home" \
+        "baseline 6.6 at 10 units, from 11.9; ratchet to 5 when the home readings are batched"
 
     # The other relation: the checkout is what `origin` names, so it is read as the
     # remote itself. Baseline 12.7 per home at 10 units, from 13.6 before the checkout's
     # own branches stopped being read once for every home. It is the dearer of the two
     # because the proof reads the home's own evidence as well and asks the checkout two
     # questions about that home — which are questions about the home, not facts about
-    # the checkout, so they are not the survey's to hoist. Ratchet with the row above.
-    gate "git processes per doctor home, no remote" "$solo_per_home" 12.7 "per home" \
-        "baseline 12.7 at 10 units, from 13.6; the two readings left are the home's own"
+    # the checkout, so they are not the survey's to hoist. It carries the same one
+    # `for-each-ref` the row above describes. Ratchet with that row.
+    gate "git processes per doctor home, no remote" "$solo_per_home" 12.8 "per home" \
+        "baseline 12.8 at 10 units, from 13.6; the two readings left are the home's own"
 fi
 echo
 
