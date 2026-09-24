@@ -413,8 +413,11 @@ pub fn loss_set(path: &Path, fate: Fate) -> crate::Result<LossSet> {
 }
 
 /// The words a commit group refuses under, which are the words the report prints over it.
+///
+/// Read off the group, which already holds every fact in the sentence
+/// ([`Copies::detail`]). Nothing here opens a repository to print a reason.
 fn counted(copies: &Copies, count: usize) -> String {
-    format!("{} ({count})", copies.label())
+    copies.detail(count)
 }
 
 /// The losses the set adds, and none of the ones the home already had.
@@ -572,7 +575,7 @@ mod tests {
         ));
         assert!(matches!(only, Verdict::Unsafe { .. }), "{only:?}");
         let checked = judged(&set(
-            vec![commits(Copies::NotChecked { witness: Witness::default() })],
+            vec![commits(Copies::not_checked(Witness::default()))],
             Vec::new(),
         ));
         assert!(matches!(checked, Verdict::Unknown(_)), "{checked:?}");
@@ -606,7 +609,7 @@ mod tests {
     #[test]
     fn a_loss_and_an_unread_reading_are_both_reported() {
         let verdict = judged(&set(
-            vec![commits(Copies::NotChecked { witness: Witness::default() })],
+            vec![commits(Copies::not_checked(Witness::default()))],
             vec![paths(Held::Untracked)],
         ));
         let Verdict::Unsafe { lost, unread } = &verdict else { panic!("{verdict:?}") };
@@ -637,7 +640,7 @@ mod tests {
         assert!(judged(&set(Vec::new(), vec![paths(Held::Untracked)])).proof().is_none());
         assert!(
             judged(&set(
-                vec![commits(Copies::NotChecked { witness: Witness::default() })],
+                vec![commits(Copies::not_checked(Witness::default()))],
                 Vec::new()
             ))
             .proof()

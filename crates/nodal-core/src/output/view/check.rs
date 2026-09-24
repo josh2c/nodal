@@ -684,7 +684,7 @@ mod tests {
             Copies::RemoteProved { witness: Witness::Checked { by: by.clone() } },
             Copies::SecondLocalCopy { held_by: PathBuf::from("/w/project") },
             Copies::OnlyHere { witness: Witness::NoRemote },
-            Copies::NotChecked { witness: Witness::Unchecked },
+            Copies::not_checked(Witness::Unchecked),
         ] {
             assessment.commits.push(CommitGroup {
                 copies,
@@ -723,7 +723,7 @@ mod tests {
         let only_here = line(Copies::OnlyHere { witness: Witness::Checked { by } });
         assert!(only_here.contains("does not reach them"), "{only_here}");
 
-        let not_checked = line(Copies::NotChecked { witness: Witness::Unchecked });
+        let not_checked = line(Copies::not_checked(Witness::Unchecked));
         assert!(
             not_checked.contains("nothing here read the remote to check them"),
             "{not_checked}"
@@ -737,7 +737,7 @@ mod tests {
     fn the_witness_clause_is_a_line_under_the_commits_row() {
         let mut assessment = clear();
         assessment.commits.push(CommitGroup {
-            copies: Copies::NotChecked { witness: Witness::Unchecked },
+            copies: Copies::not_checked(Witness::Unchecked),
             count: 1,
             sample: vec![crate::git::Oid::parse(&"ab".repeat(20)).unwrap()],
         });

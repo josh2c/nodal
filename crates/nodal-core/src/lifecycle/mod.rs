@@ -35,6 +35,7 @@
 //! cleaned up, not left to wonder.
 
 pub mod assess;
+pub mod complete;
 pub mod guard;
 pub mod hooks;
 pub mod identity;

@@ -489,6 +489,48 @@ impl Git {
         outside::held(&self.root, wanted)
     }
 
+    /// Which of `wanted` this repository reaches from a ref it keeps of its own accord.
+    ///
+    /// [`Git::held`] with `refs/remotes/*` left out, and that is the reading a second copy
+    /// rests on. Those refs are this repository's record of a fetch or a push, and one
+    /// `git fetch --prune` deletes one the moment the remote drops the branch. A commit
+    /// held only under one of them is a copy an ordinary command takes away
+    /// ([`outside::owned`]).
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `rev-list` failed.
+    pub fn owned(&self, wanted: &[Oid]) -> Result<Vec<Oid>> {
+        outside::owned(&self.root, wanted)
+    }
+
+    /// How many objects behind `commits` this repository has not got, walking only what
+    /// those commits add over `boundary`.
+    ///
+    /// A commit being here is not the work being here ([`outside::missing_objects`]).
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `rev-list` failed.
+    pub fn missing_objects(&self, commits: &[Oid], boundary: &[Oid]) -> Result<usize> {
+        outside::missing_objects(&self.root, commits, boundary)
+    }
+
+    /// The parents of `commits` that none of `commits` is, which bounds an object walk.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `rev-list` failed.
+    pub fn boundary_of(&self, commits: &[Oid]) -> Result<Vec<Oid>> {
+        outside::boundary_of(&self.root, commits)
+    }
+
+    /// Whether this repository fetches the objects it has not got rather than holding
+    /// them, which is what a partial clone does.
+    ///
+    /// # Errors
+    /// [`Error::GitSpawn`] when `git` could not be started.
+    pub fn partial(&self) -> Result<bool> {
+        outside::partial(&self.root)
+    }
+
     /// Which of `wanted` this repository's object store has, at no traversal cost.
     ///
     /// One process, and a weaker fact than [`Git::held`]. Ask this only where the caller
