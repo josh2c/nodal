@@ -701,6 +701,24 @@ impl Runtime {
             "read in full"
         }
     }
+
+    /// Say where this reading was taken, and drop the occupancy a table that was never
+    /// read has no business listing.
+    ///
+    /// A table that was not read answered none of the occupancy questions, so it lists
+    /// none as taken; printing them beside `unread` would read as readings made over
+    /// nothing.
+    ///
+    /// On the value itself, because a caller that has a reading and no [`Reading`] to
+    /// put beside it still has to stamp it: the step that refuses to move a home makes
+    /// exactly that reading, and building a record to throw away was the only way to
+    /// reach this rule ([`record_table`]).
+    pub fn taken(&mut self, at: &str) {
+        self.at = Some(String::from(at));
+        if self.unread() {
+            self.occupancy.clear();
+        }
+    }
 }
 
 /// Read both signals for one unit. Never fails, for the reason an
@@ -1560,12 +1578,8 @@ pub fn record_table(reading: &mut Reading, runtime: Option<&mut Runtime>, at: &s
         ));
         return;
     };
-    runtime.at = Some(String::from(at));
+    runtime.taken(at);
     if runtime.unread() {
-        // A table that was not read answered none of the occupancy questions, so it lists
-        // none as taken; printing them beside `unread` would read as readings made over
-        // nothing.
-        runtime.occupancy.clear();
         reading.not_checked.push(Unchecked::new(TABLE, unread_why(runtime)));
     }
 }

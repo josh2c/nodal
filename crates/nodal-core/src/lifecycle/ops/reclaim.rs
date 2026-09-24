@@ -867,11 +867,7 @@ impl Occupancy {
             return Ok(None);
         }
         let mut seen = self.refuse()?;
-        assess::record_table(
-            &mut Reading::default(),
-            Some(&mut seen),
-            assess::taken::BEFORE_THE_MOVE,
-        );
+        seen.taken(assess::taken::BEFORE_THE_MOVE);
         Ok(Some(seen))
     }
 }
