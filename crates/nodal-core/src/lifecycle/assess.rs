@@ -2395,7 +2395,7 @@ mod tests {
         let by = vec![checkout.clone()];
         for safe in [
             Copies::SecondLocalCopy { held_by: checkout },
-            Copies::RemoteProved { witness: Witness::Checked { by: by.clone() } },
+            Copies::RemoteProved { witness: Witness::checked(by.clone()) },
         ] {
             assert!(safe.survives(), "{safe:?}");
             assert!(goes_ahead(&assessed(vec![commits(safe)], Vec::new())));

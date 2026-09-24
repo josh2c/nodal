@@ -11,6 +11,7 @@
 pub mod branches;
 pub mod carry;
 pub mod cmd;
+pub mod fetched;
 pub mod history;
 pub mod host;
 pub mod ignored;

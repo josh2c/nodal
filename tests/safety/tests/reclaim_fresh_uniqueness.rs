@@ -269,11 +269,12 @@ fn a_ref_naming_a_commit_its_own_store_lost_vouches_for_nothing() {
     intact(&machine, &home, &tip);
 }
 
-/// Being the repository a person usually fetches in is not a reading of the remote.
+/// Being the repository a person usually fetches in is not a reading of the branch.
 ///
-/// The checkout read `origin` before the home pushed, so it has never seen the branch
-/// the home wrote. It may not be called the newest reading of that remote, and the
-/// refusal has to say that nothing here read it rather than name a reading it does have.
+/// The checkout read `origin` before the home pushed, so its last fetch wrote down every
+/// branch the remote had then and this branch was not one of them. The reading is a real
+/// reading and it is not a reading of this work, and the refusal names the branch rather
+/// than saying something vague about the repository.
 #[test]
 fn a_checkout_that_has_not_read_the_remote_since_the_push_is_not_a_witness() {
     let machine = machine();
@@ -284,8 +285,8 @@ fn a_checkout_that_has_not_read_the_remote_since_the_push_is_not_a_witness() {
     assert!(!refused.status.success(), "an older reading answered for the remote");
     let told = stderr(&refused);
     assert!(told.contains("commits no current reading proves a remote has (1)"), "{told}");
-    assert!(told.contains("nothing here read the remote to check them"), "{told}");
-    assert!(!told.contains("the newest reading of the remote here"), "{told}");
+    assert!(told.contains(TOPIC), "the refusal does not name the branch: {told}");
+    assert!(told.contains("that reading is the older one"), "{told}");
     intact(&machine, &home, &tip);
 }
 
@@ -327,10 +328,10 @@ fn merged_and_due(machine: &Machine, slug: &str) {
 /// over a branch the remote has not got. The old reading took that ref as the newest
 /// reading of the remote and called the only copy of the commit proved.
 ///
-/// The record Git writes tells the two apart. `FETCH_HEAD` lists every ref the last
-/// fetch saw, and a branch the remote dropped is not in it. So the reading is dated per
-/// branch and a branch the last fetch did not see is unproved, whatever the tracking ref
-/// still names. The row says which fetch to run.
+/// The record Git writes tells the two apart. `FETCH_HEAD` lists every ref the last fetch
+/// saw, and a branch the remote dropped is not in it. That is a reading and not a gap: the
+/// fetch asked the remote for its branches and this was not one of them. So the commit is
+/// only here, whatever the tracking ref still names.
 #[test]
 fn a_branch_the_last_fetch_did_not_see_is_not_proved_by_a_ref_it_left() {
     let machine = machine();
@@ -338,6 +339,7 @@ fn a_branch_the_last_fetch_did_not_see_is_not_proved_by_a_ref_it_left() {
     git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
     git(machine.origin(), &["update-ref", "-d", &format!("refs/heads/{TOPIC}")]);
     git(&machine.source, &["fetch", "--quiet", "origin"]);
+    nodal_safety::git::fetched_later(&machine.source);
     assert_eq!(
         git(&machine.source, &["rev-parse", &format!("refs/remotes/origin/{TOPIC}")]),
         tip,
@@ -348,7 +350,7 @@ fn a_branch_the_last_fetch_did_not_see_is_not_proved_by_a_ref_it_left() {
     assert!(!refused.status.success(), "a stale ref proved the remote: {}", stdout(&refused));
     let told = stderr(&refused);
     assert!(told.contains(&tip[..8]), "the refusal does not name the commit: {told}");
-    assert!(told.contains("--prune"), "the refusal does not say what to run: {told}");
+    assert!(told.contains("only here"), "the reading did not settle it: {told}");
     intact(&machine, &home, &tip);
 }
 
@@ -358,20 +360,28 @@ fn a_branch_the_last_fetch_did_not_see_is_not_proved_by_a_ref_it_left() {
 /// gc`, `git pack-refs` and `git maintenance` all rewrite `packed-refs` with no fetch.
 /// Git runs a collection after many ordinary commands, so a checkout whose last real
 /// fetch was a month ago became the newest reading of the remote over a command that
-/// reached nothing. `packed-refs` is out of the reading for that reason.
+/// reached nothing. `packed-refs` is out of the reading for that reason, and the verdict
+/// is the same on both sides of the collection.
 #[test]
 fn collecting_garbage_in_the_checkout_makes_no_witness() {
     let machine = machine();
     git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
     let (home, tip) = stranded(&machine, SLUG);
+
+    let before = check(&machine, SLUG);
     git(&machine.source, &["gc", "--quiet", "--prune=now"]);
     git(&machine.source, &["pack-refs", "--all"]);
+    let after = check(&machine, SLUG);
 
-    let refused = machine.nodal(&["reclaim", SLUG]);
-    assert!(!refused.status.success(), "a collection witnessed: {}", stdout(&refused));
-    let told = stderr(&refused);
-    assert!(told.contains("nothing here read the remote to check them"), "{told}");
+    assert_eq!(before["commits"], after["commits"], "the collection moved the reading");
+    assert_eq!(after["safe_to_reclaim"], serde_json::Value::Bool(false), "{after:#}");
     intact(&machine, &home, &tip);
+}
+
+/// The preflight for one unit, as the value a property that compares two readings uses.
+fn check(machine: &Machine, slug: &str) -> serde_json::Value {
+    let asked = machine.nodal(&["reclaim", slug, "--check", "--json"]);
+    serde_json::from_str(&nodal_safety::answer(&asked)).expect("--check --json is one document")
 }
 
 /// A store's own reading of a remote is no durable second copy of anything.

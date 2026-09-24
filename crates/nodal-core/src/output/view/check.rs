@@ -681,7 +681,7 @@ mod tests {
         let mut assessment = clear();
         let by = vec![PathBuf::from("/w/project")];
         for copies in [
-            Copies::RemoteProved { witness: Witness::Checked { by: by.clone() } },
+            Copies::RemoteProved { witness: Witness::checked(by.clone()) },
             Copies::SecondLocalCopy { held_by: PathBuf::from("/w/project") },
             Copies::OnlyHere { witness: Witness::NoRemote },
             Copies::not_checked(Witness::Unchecked),
@@ -716,11 +716,11 @@ mod tests {
             preflight(assessment).doc().lines().join("\n")
         };
 
-        let proved = line(Copies::RemoteProved { witness: Witness::Checked { by: by.clone() } });
+        let proved = line(Copies::RemoteProved { witness: Witness::checked(by.clone()) });
         assert!(proved.contains("proved on the remote"), "{proved}");
         assert!(!proved.contains("does not reach them"), "{proved}");
 
-        let only_here = line(Copies::OnlyHere { witness: Witness::Checked { by } });
+        let only_here = line(Copies::OnlyHere { witness: Witness::checked(by) });
         assert!(only_here.contains("does not reach them"), "{only_here}");
 
         let not_checked = line(Copies::not_checked(Witness::Unchecked));

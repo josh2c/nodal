@@ -225,6 +225,7 @@ fn a_home_whose_remote_branch_went_survives_its_retention() {
     // The host deletes the branch, and the person's next fetch drops their reading of it.
     git(machine.origin(), &["update-ref", "-d", &format!("refs/heads/{TOPIC}")]);
     git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+    nodal_safety::git::fetched_later(&machine.source);
     git(&machine.source, &["reflog", "expire", "--expire=now", "--all"]);
     assert!(!reaches(&machine.source, &tip), "the checkout still reaches the commit");
 

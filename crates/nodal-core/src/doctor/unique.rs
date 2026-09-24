@@ -397,14 +397,21 @@ fn witnessable(reading: &CloneReading) -> bool {
     !reading.shallow && reading.unreadable.is_none()
 }
 
-/// What Git writes when a clone hears from a remote, newest of the three is the reading.
-const HEARD: [&str; 3] = ["FETCH_HEAD", "packed-refs", "refs/remotes"];
+/// What Git writes when a clone hears from a remote, newest of the two is the reading.
+///
+/// `packed-refs` was the third and it is out, because it is not a record of hearing from
+/// anything. `git gc`, `git pack-refs` and `git maintenance` all rewrite it with no fetch,
+/// and Git runs a collection after many ordinary commands. A clone whose last real fetch
+/// was a month ago therefore became the newest reading of the remote over a command that
+/// reached nothing, and its stale refs were then believed. [`crate::git::refs::last_moved`]
+/// refuses `packed-refs` for the same reason and says so.
+const HEARD: [&str; 2] = ["FETCH_HEAD", "refs/remotes"];
 
 /// When this clone last heard from a remote.
 ///
-/// A clone that has never fetched still has `packed-refs` from the day it was made, and
-/// that day is exactly when it last heard. `None` where `.git` is not a directory of
-/// this clone's own, because then nothing here is this clone's reading.
+/// `None` where `.git` is not a directory of this clone's own, because then nothing here
+/// is this clone's reading, and `None` for a clone that has never fetched and whose refs
+/// have never moved.
 #[must_use]
 pub fn heard(path: &Path) -> Option<SystemTime> {
     let git_dir = path.join(".git");
