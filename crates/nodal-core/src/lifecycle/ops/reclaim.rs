@@ -562,7 +562,7 @@ fn commit_of(params: &Params) -> Commit {
             trash::insert(tx, entry)?;
         }
         record(tx, &unit, &environment, entry.as_ref(), &given)?;
-        verdict(tx, &unit, &environment, &reading, runtime.as_ref(), now)?;
+        verdict(tx, (&unit, &environment), (&reading, runtime.as_ref()), now)?;
         // The ports are the one thing in this operation's report that only the write
         // itself knows: they are given back inside this transaction, and what came back
         // is what it returned. It is not journalled, because a resumed reclaim's report
@@ -628,12 +628,12 @@ fn record(
 /// to know whether the reading behind it was complete.
 fn verdict(
     tx: &Transaction<'_>,
-    unit: &Unit,
-    environment: &Environment,
-    reading: &Reading,
-    runtime: Option<&Runtime>,
+    subject: (&Unit, &Environment),
+    rested: (&Reading, Option<&Runtime>),
     read_at: Timestamp,
 ) -> Result<()> {
+    let (unit, environment) = subject;
+    let (reading, runtime) = rested;
     let mut refs = vec![
         ("stores_asked", reading.stores.len().to_string()),
         (
@@ -1523,7 +1523,7 @@ fn report(
         slug: params.unit.slug.to_string(),
         findings: prepared.findings.clone(),
         reading: params.reading.clone(),
-        runtime: params.runtime.clone(),
+        runtime,
         snapshot: params.entry.as_ref().and_then(|entry| entry.snapshot.clone()),
         record: done.record.clone(),
         stopped: torn.stopped,

@@ -800,7 +800,7 @@ pub fn scan(own: Own<'_>, homes: &[PathBuf]) -> Result<Seen> {
     let placed: Vec<PathBuf> = homes.iter().map(|home| paths::resolve(home)).collect();
     let spared = stop::spared();
     let running = processes::Processes::scan(&processes::Live)?;
-    let (certain, standing) = sorted(&running, own, &placed, &spared, &has_ended);
+    let (certain, standing) = Table::read(&running).sort(own, &placed, &spared, &has_ended);
     Ok(Seen {
         certain,
         standing,
@@ -851,42 +851,84 @@ pub fn sort(
     placed: &[PathBuf],
     spared: &[u32],
 ) -> (Vec<u32>, Vec<Standing>) {
-    sorted(running, own, placed, spared, &|_| false)
+    Table::read(running).sort(own, placed, spared, &|_| false)
 }
 
-/// The same, told which processes have gone since the table was read.
+/// One reading of the process table, prepared once for however many homes are asked
+/// about.
 ///
-/// **The prune happens before the lineage pass, and that ordering is the rule.** A scan
-/// reads the whole table before any process in it is judged, and a short command can end
-/// in between; a process that has gone is not standing in the home, and it must not be
-/// left anchoring something else to it either. Pruning afterwards would let a shell that
-/// exited during the walk hold a withheld process in the refusal by a relation neither of
-/// them has any more.
-fn sorted(
-    running: &[processes::Running],
-    own: Own<'_>,
-    placed: &[PathBuf],
-    spared: &[u32],
-    ended: &dyn Fn(u32) -> bool,
-) -> (Vec<u32>, Vec<Standing>) {
-    let mut certain = Vec::new();
-    let mut standing = Vec::new();
-    for process in running {
-        if owns(process, own) {
-            certain.push(process.pid);
-            continue;
+/// **Why a type and not a function.** The rule that judges a process this account cannot
+/// read needs the whole table: it asks where that process came from, and the answer is a
+/// relation to other rows. Working that out from the raw table costs a map of every
+/// process's lineage and a pass over every row, and `nodal ls` asks about every home the
+/// registry holds. Doing it per home made a listing cost homes × processes twice over.
+/// The two things that do not depend on the home — the lineage map and which rows were
+/// withheld — are worked out here, once, and every home is answered from them.
+pub struct Table<'a> {
+    /// The rows themselves.
+    running: &'a [processes::Running],
+    /// Where each process came from, by identifier.
+    lineage: BTreeMap<u32, processes::Lineage>,
+    /// The rows this account could not read, which are the only candidates for the
+    /// lineage rule. On an ordinary machine this is a few dozen of several hundred.
+    withheld: Vec<&'a processes::Running>,
+}
+
+impl<'a> Table<'a> {
+    /// Prepare one reading. Nothing here asks the machine anything.
+    #[must_use]
+    pub fn read(running: &'a [processes::Running]) -> Self {
+        Self {
+            running,
+            lineage: running.iter().map(|process| (process.pid, process.lineage)).collect(),
+            withheld: running
+                .iter()
+                .filter(|process| process.withheld == Some(processes::Withheld::AnotherAccount))
+                .collect(),
         }
-        if !bystander(process, own, placed, spared) || ended(process.pid) {
-            continue;
-        }
-        let row = Standing::new(process.pid, process.command.clone());
-        standing.push(match holding(process, placed).first() {
-            Some(held) => row.holding(held.describe()),
-            None => row,
-        });
     }
-    standing.extend(withheld_in_a_home(running, &standing, spared, ended));
-    (certain, standing)
+
+    /// Sort this reading into what a reclaim of one unit signals and what it refuses
+    /// over.
+    ///
+    /// **The prune happens before the lineage pass, and that ordering is the rule.** A
+    /// scan reads the whole table before any process in it is judged, and a short command
+    /// can end in between; a process that has gone is not standing in the home, and it
+    /// must not be left anchoring something else to it either.
+    #[must_use]
+    pub fn sort(
+        &self,
+        own: Own<'_>,
+        placed: &[PathBuf],
+        spared: &[u32],
+        ended: &dyn Fn(u32) -> bool,
+    ) -> (Vec<u32>, Vec<Standing>) {
+        let mut certain = Vec::new();
+        let mut standing = Vec::new();
+        // The processes whose own working directory is in the home, kept apart from the
+        // rest of what is standing there. A group leader has to be one of *these* before
+        // it vouches for anything ([`descends_from`]).
+        let mut by_cwd = BTreeSet::new();
+        for process in self.running {
+            if owns(process, own) {
+                certain.push(process.pid);
+                continue;
+            }
+            if !bystander(process, own, placed, spared) || ended(process.pid) {
+                continue;
+            }
+            if in_one_of(process, placed) {
+                by_cwd.insert(process.pid);
+            }
+            let row = Standing::new(process.pid, process.command.clone());
+            standing.push(match holding(process, placed).first() {
+                Some(held) => row.holding(held.describe()),
+                None => row,
+            });
+        }
+        standing.extend(self.withheld_in(&standing, &by_cwd, spared, ended));
+        (certain, standing)
+    }
 }
 
 /// How far a lineage is followed before a process is called unrelated to everything
@@ -914,12 +956,8 @@ const LINEAGE: usize = 16;
 /// therefore not safe" is a rule about *this home*, not about the machine.
 ///
 /// So the refusal is over the one thing still readable about a process this account is
-/// refused: its lineage. `/proc/<pid>/stat` stays world-readable when `environ`, `cwd`,
-/// `fd` and `maps` do not, and macOS answers `proc_bsdshortinfo` and `getsid` across
-/// accounts. A withheld process whose parent, group or session reaches something already
-/// standing in the home is a command that was started from inside the home, and a reclaim
-/// refuses to move the home out from under it. One whose lineage reaches nothing there is
-/// counted in the evidence record and refuses nothing — which is the residual this
+/// refused: its lineage ([`descends_from`]). One whose lineage reaches nothing in the
+/// home is counted in the evidence record and refuses nothing — the residual this
 /// reading cannot close, stated rather than hidden.
 ///
 /// **The anchor is what is standing in the home, and never what the unit owns.** A
@@ -928,48 +966,62 @@ const LINEAGE: usize = 16;
 /// later: the preflight would say refuse and the reclaim would go ahead. A process the
 /// teardown reaches is reached through the group the registry recorded, which is the
 /// record that exists for exactly that.
-fn withheld_in_a_home(
-    running: &[processes::Running],
-    standing: &[Standing],
-    spared: &[u32],
-    ended: &dyn Fn(u32) -> bool,
-) -> Vec<Standing> {
-    let inside: BTreeSet<u32> = standing.iter().map(|row| row.pid).collect();
-    if inside.is_empty() {
-        return Vec::new();
+impl Table<'_> {
+    fn withheld_in(
+        &self,
+        standing: &[Standing],
+        by_cwd: &BTreeSet<u32>,
+        spared: &[u32],
+        ended: &dyn Fn(u32) -> bool,
+    ) -> Vec<Standing> {
+        let inside: BTreeSet<u32> = standing.iter().map(|row| row.pid).collect();
+        if inside.is_empty() {
+            return Vec::new();
+        }
+        self.withheld
+            .iter()
+            .filter(|process| !spared.contains(&process.pid))
+            .filter(|process| !ended(process.pid))
+            .filter(|process| descends_from(process, &inside, by_cwd, &self.lineage))
+            .map(|process| Standing::new(process.pid, process.command.clone()).holding(WITHHELD))
+            .collect()
     }
-    let lineage: BTreeMap<u32, processes::Lineage> =
-        running.iter().map(|process| (process.pid, process.lineage)).collect();
-    running
-        .iter()
-        .filter(|process| process.withheld == Some(processes::Withheld::AnotherAccount))
-        .filter(|process| !spared.contains(&process.pid))
-        .filter(|process| !ended(process.pid))
-        .filter(|process| descends_from(process, &inside, &lineage))
-        .map(|process| Standing::new(process.pid, process.command.clone()).holding(WITHHELD))
-        .collect()
 }
 
 /// What a refusal says about a process it can name and cannot read.
 pub const WITHHELD: &str = "started from inside the home; this account may not read it";
 
-/// Whether a process's lineage reaches anything already found inside the home.
+/// Whether a process's lineage says it was started from inside the home.
 ///
-/// Three relations, and each of them is a fact the kernel publishes about a process this
-/// account may not otherwise read: the process it came from, the group it is in, and the
-/// session it is in. A group or a session is matched outright, because both are numbers a
-/// process shares with the command that started it. A parent is followed, bounded by
-/// [`LINEAGE`] and by the pids already seen, so that two readings taken a moment apart
-/// cannot make a cycle that never ends.
+/// Two relations, and each is a fact the kernel publishes about a process this account
+/// may not otherwise read. It **descends from** something standing in the home: its
+/// parent chain reaches one, bounded by [`LINEAGE`] and by the pids already walked so
+/// that two readings taken a moment apart cannot make a cycle that never ends. Or its
+/// **group leader** is a process whose own working directory is in the home, which is the
+/// command a person typed there and the job it started.
+///
+/// **A shared session is not occupancy, and matching one was a false refusal.** A shell
+/// standing in the home is usually its own session leader, so its identifier is in the
+/// set; every other process in that terminal — a `sudo` run an hour ago from another
+/// pane, owned by root and standing nowhere near the home — shares the session number and
+/// nothing else. Refusing over that told a person their home was occupied by something
+/// they could not see and could not find, and the only way out of it is `--force`, which
+/// turns off every check in the operation. A rule that sends people to `--force` is worse
+/// than the hole it closes. The session is not read here, and
+/// [`processes::Lineage`] says so.
+///
+/// The group is read, and narrowly: the leader has to be standing in the home **by its
+/// own working directory**, not merely be something the home refuses over. A process that
+/// is in the list only because it holds a descriptor there vouches for nothing, because
+/// sharing a process group with it says nothing about where anything was started.
 fn descends_from(
     process: &processes::Running,
     inside: &BTreeSet<u32>,
+    by_cwd: &BTreeSet<u32>,
     lineage: &BTreeMap<u32, processes::Lineage>,
 ) -> bool {
     let own = process.lineage;
-    if own.group.is_some_and(|group| inside.contains(&group))
-        || own.session.is_some_and(|session| inside.contains(&session))
-    {
+    if own.group.is_some_and(|group| by_cwd.contains(&group)) {
         return true;
     }
     let mut walked = BTreeSet::from([process.pid]);
@@ -1467,12 +1519,10 @@ fn unread(input: &Input<'_>, reading: &mut Reading) {
             "not asked for: a refusal rests on what nothing proved a copy of, which one reading answers",
         ));
     }
-    if input.runtime.is_none() {
-        reading.not_checked.push(Unchecked::new(
-            TABLE,
-            "not asked for: this reading is about the work in the home, not about what is running",
-        ));
-    }
+    // The process table's own gap is not pushed here. [`record_table`] owns that line
+    // for every caller, because a reading that was asked for and did not answer leaves a
+    // gap too and the reason differs; two sites writing it meant one of them was always
+    // dead and the two reasons could drift apart.
 }
 
 /// What the record calls the process table, in the one place that names it.

@@ -561,7 +561,7 @@ fn a_sibling_that_names_a_commit_without_holding_it_does_not_weaken_the_refusal(
     // acceptance script runs this tree under a second name, and the store the scan found
     // is named by the path it walked to rather than the one this test wrote.
     let tail = std::path::Path::new("siblings").join("mirror");
-    let stores = read["evidence"]["stores"].as_array().unwrap();
+    let stores = read["reading"]["stores"].as_array().unwrap();
     let asked = stores
         .iter()
         .find(|store| {

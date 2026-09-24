@@ -88,14 +88,22 @@ pub struct Running {
     pub withheld: Option<Withheld>,
 }
 
-/// Where a process came from: what started it, and which group and session it is in.
+/// Where a process came from: what started it, and which group it is in.
 ///
 /// **Read for the process a scan cannot read.** On Linux `/proc/<pid>/stat` stays
 /// world-readable when `environ`, `cwd`, `fd` and `maps` do not — a setuid binary is
-/// marked undumpable, not invisible — and on macOS `proc_bsdinfo` answers across
+/// marked undumpable, not invisible — and on macOS `proc_bsdshortinfo` answers across
 /// accounts. So the one thing still knowable about a process this account is refused is
 /// where it came from, and [`crate::lifecycle::assess`] judges it on that rather than
-/// pretending it is not there.
+/// pretending it is not there. Both hosts answer both fields.
+///
+/// **The session is not here, and that is deliberate.** Both hosts publish one — Linux
+/// in `stat`, macOS through `getsid`, for any account — and reading it was a mistake: a
+/// shell standing in a home is usually its own session leader, so every unrelated command
+/// in that terminal shares the number and nothing else, and matching on it refused
+/// reclaims over processes that had never been near the home
+/// (`assess::descends_from` states the whole rule). A field nothing reads is a field a
+/// later change reads again, so it is gone rather than ignored.
 ///
 /// Every field is optional and every absence means the host did not say. Nothing here
 /// is ever read as a name to signal: it takes a process out of the unknown list or
@@ -106,8 +114,6 @@ pub struct Lineage {
     pub parent: Option<u32>,
     /// The process group it is in.
     pub group: Option<u32>,
-    /// The session it is in, on a host that publishes one per process. macOS does not.
-    pub session: Option<u32>,
 }
 
 /// One path a process holds, and the hold it has on it.
@@ -743,11 +749,7 @@ mod linux {
         let Ok(record) = std::fs::read_to_string(directory.join(STAT)) else {
             return Lineage::default();
         };
-        Lineage {
-            parent: stat_field(&record, PPID),
-            group: stat_field(&record, PGRP),
-            session: stat_field(&record, SESSION),
-        }
+        Lineage { parent: stat_field(&record, PPID), group: stat_field(&record, PGRP) }
     }
 
     /// How many fields into `stat`'s tail the session identifier is
@@ -1138,17 +1140,15 @@ mod macos {
 
     /// Where one process came from, for a process of any account.
     ///
-    /// The short record answers across accounts and so does `getsid`, which is what makes
-    /// this readable for exactly the process the rest of this module is refused: the one
-    /// [`Withheld::AnotherAccount`] is about.
+    /// The short record answers across accounts, which is what makes this readable for
+    /// exactly the process the rest of this module is refused: the one
+    /// [`Withheld::AnotherAccount`] is about. One call and no `getsid`: the session is
+    /// not part of [`Lineage`], for the reason that type states.
     fn lineage(pid: libc::pid_t) -> Lineage {
         let short = short_info(pid);
-        // SAFETY: `getsid` takes one integer and no pointer. A failure answers -1.
-        let session = unsafe { libc::getsid(pid) };
         Lineage {
             parent: short.map(|info| info.pbsi_ppid),
             group: short.map(|info| info.pbsi_pgid),
-            session: u32::try_from(session).ok(),
         }
     }
 

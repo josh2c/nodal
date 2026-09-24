@@ -71,7 +71,7 @@ fn check(machine: &Machine, slug: &str) -> Value {
 /// The evidence record of that preflight.
 fn record(machine: &Machine, slug: &str) -> Value {
     let read = check(machine, slug);
-    read["evidence"].clone()
+    read["reading"].clone()
 }
 
 /// A commit in the home that exists nowhere else, so every store is really asked.
@@ -96,7 +96,7 @@ fn a_safe_verdict_says_which_stores_it_asked_and_what_each_said() {
     let read = check(&machine, SLUG);
     assert_eq!(read["safe_to_reclaim"], Value::Bool(true), "{read:#}");
 
-    let stores = read["evidence"]["stores"].as_array().unwrap();
+    let stores = read["reading"]["stores"].as_array().unwrap();
     assert!(!stores.is_empty(), "a safe verdict named no store at all: {read:#}");
     for store in stores {
         assert!(store["path"].is_string(), "a store with no path: {store:#}");
@@ -191,7 +191,7 @@ fn a_reading_that_was_not_asked_for_is_named_with_the_reason() {
     let read: Value = serde_json::from_str(&printed)
         .unwrap_or_else(|_| panic!("a reclaim answers with one document: {printed}"));
 
-    let gaps = read["evidence"]["not_checked"].as_array().unwrap();
+    let gaps = read["reading"]["not_checked"].as_array().unwrap();
     assert!(!gaps.is_empty(), "the reclaim's own reading skipped nothing at all: {read:#}");
     for gap in gaps {
         assert!(gap["what"].as_str().is_some_and(|what| !what.is_empty()), "{gap:#}");
@@ -203,8 +203,8 @@ fn a_reading_that_was_not_asked_for_is_named_with_the_reason() {
     let named = serde_json::to_string(gaps).unwrap();
     assert!(!named.contains("the process table"), "the reclaim read the table: {named}");
     assert!(
-        read["evidence"]["processes"]["seen"].as_u64().is_some_and(|seen| seen > 0),
-        "and the record says so: {read:#}"
+        read["runtime"]["read"].as_u64().is_some_and(|seen| seen > 0),
+        "and the runtime the kernel judged says so: {read:#}"
     );
 }
 
@@ -221,22 +221,23 @@ fn a_reading_that_was_not_asked_for_is_named_with_the_reason() {
 #[test]
 fn the_processes_the_host_refused_are_counted_in_the_record() {
     let (machine, _home) = machine();
-    let record = record(&machine, SLUG);
-    let table = &record["processes"];
+    let read = check(&machine, SLUG);
+    let table = &read["runtime"];
 
-    assert!(table["seen"].as_u64().is_some_and(|seen| seen > 0), "no process was read: {table:#}");
+    assert!(table["read"].as_u64().is_some_and(|seen| seen > 0), "no process was read: {table:#}");
     assert!(table["withheld"].is_u64(), "the count of what was refused is missing: {table:#}");
-    let reach = table["reach"].as_str().unwrap();
-    assert!(["full", "part", "unread"].contains(&reach), "{reach} is not a reach");
-    if table["withheld"].as_u64().unwrap_or_default() > 0 {
-        assert_eq!(reach, "part", "processes were refused and the reach does not say so");
-    }
 
     // Which readings of occupancy this host answered, from the product's own list rather
-    // than from a list written twice.
+    // than from a list written twice. It is on the runtime and not in the record beside
+    // it, because the runtime is the value the kernel is handed and one fact belongs in
+    // one place.
     let occupancy: Vec<&str> =
         table["occupancy"].as_array().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
     assert_eq!(occupancy, OCCUPANCY, "the record disagrees with the host about what it read");
+    assert!(
+        table["at"].as_str().is_some_and(|at| !at.is_empty()),
+        "the reading does not say which of the operation's readings it is: {table:#}"
+    );
 }
 
 /// One record, two renderings, and the human one is not a summary of a different thing.
@@ -269,10 +270,10 @@ fn the_record_is_in_both_renderings_and_says_the_same_thing() {
 fn nothing_in_the_record_changes_the_verdict() {
     let (machine, home) = machine();
     let read = check(&machine, SLUG);
-    let record = &read["evidence"];
+    let record = &read["reading"];
 
     assert!(!record["stores"].as_array().unwrap().is_empty(), "the record is not empty");
-    assert!(record["processes"]["withheld"].is_u64(), "the record counts what was refused");
+    assert!(read["runtime"]["withheld"].is_u64(), "the reading counts what was refused");
     assert_eq!(read["safe_to_reclaim"], Value::Bool(true), "{read:#}");
     assert!(read["reasons"].as_array().unwrap().is_empty(), "{read:#}");
 
@@ -302,7 +303,7 @@ fn printing_the_record_writes_nothing() {
     let state = Snapshot::of_except(&machine.state, is_registry);
 
     let read = check(&machine, SLUG);
-    assert!(!read["evidence"]["stores"].as_array().unwrap().is_empty(), "there was a record");
+    assert!(!read["reading"]["stores"].as_array().unwrap().is_empty(), "there was a record");
 
     checkout
         .assert_unchanged(&untouched(&machine.source), "printing the record wrote in the checkout");
