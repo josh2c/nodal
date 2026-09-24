@@ -286,7 +286,7 @@ fn a_checkout_that_has_not_read_the_remote_since_the_push_is_not_a_witness() {
     let told = stderr(&refused);
     assert!(told.contains("commits no current reading proves a remote has (1)"), "{told}");
     assert!(told.contains(TOPIC), "the refusal does not name the branch: {told}");
-    assert!(told.contains("that reading is the older one"), "{told}");
+    assert!(told.contains("it is the older one"), "{told}");
     intact(&machine, &home, &tip);
 }
 

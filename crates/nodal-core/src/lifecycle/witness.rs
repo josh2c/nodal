@@ -113,7 +113,6 @@ use crate::Result;
 use crate::doctor::unique::{self, CloneReading, RemoteTip, Subject, Trusted, believed};
 use crate::doctor::{inspect, origin};
 use crate::git::{Git, Oid, fetched, refs, union};
-use crate::lifecycle::uniqueness::{Unobservable, Unobserved};
 use crate::model::Timestamp;
 
 /// The remote a home's uniqueness question is about.
@@ -169,8 +168,8 @@ pub struct Elsewhere {
     /// does not hold, the remote does not hold. Every other reading is a clone's, and a
     /// clone can only say what it last saw.
     pub direct: bool,
-    /// The branches the witness's last fetch could not answer for, each with the reason.
-    pub unobserved: Vec<Unobserved>,
+    /// The branches the witness's last fetch is older than, and so says nothing about.
+    pub unobserved: Vec<String>,
 }
 
 impl Elsewhere {
@@ -377,7 +376,7 @@ fn vouched(
     asked: &Asked<'_>,
     relation: Relation,
     reading: CloneReading,
-    unobserved: &mut Vec<Unobserved>,
+    unobserved: &mut Vec<String>,
 ) -> Trusted {
     let Some(witness) = witness(asked, relation, reading, unobserved) else {
         return Trusted::default();
@@ -401,7 +400,7 @@ fn witness(
     asked: &Asked<'_>,
     relation: Relation,
     mut reading: CloneReading,
-    unobserved: &mut Vec<Unobserved>,
+    unobserved: &mut Vec<String>,
 ) -> Option<Subject> {
     match relation {
         // Two clones of one remote. What the checkout may say is what its last fetch saw
@@ -454,7 +453,7 @@ fn witness(
 /// `None` is a checkout that has made no observation of this remote at all: it has never
 /// fetched, or its last fetch was of another remote and rewrote the record with that
 /// remote's refs. Neither is a repository that found the remote empty.
-fn observed(asked: &Asked<'_>, unobserved: &mut Vec<Unobserved>) -> Option<Vec<RemoteTip>> {
+fn observed(asked: &Asked<'_>, unobserved: &mut Vec<String>) -> Option<Vec<RemoteTip>> {
     let home = asked.subject.path.as_path();
     let url = asked.origin.as_deref()?;
     let observation =
@@ -473,7 +472,9 @@ fn observed(asked: &Asked<'_>, unobserved: &mut Vec<Unobserved>) -> Option<Vec<R
             // and this was not one of them. Nothing is vouched for and nothing is
             // reported, because the question was asked and the answer was no.
             None if strictly_later(observation.at, wrote) => {}
-            _ => unobserved.push(Unobserved { branch, why: Unobservable::BeforeThePush }),
+            // Either way the reading predates this home's own record of the branch, so
+            // it answers for a state of that branch from before the work.
+            _ => unobserved.push(branch),
         }
     }
     Some(seen)

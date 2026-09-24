@@ -132,17 +132,19 @@ pub enum Witness {
     Checked {
         /// The repositories whose reading was used.
         by: Vec<PathBuf>,
-        /// The branches that reading could not date, each with the reason.
+        /// The branches that reading is older than, and so says nothing about.
         ///
-        /// A reading can cover one branch of a remote and not another: the last fetch saw
-        /// `main` and did not see `topic`, because the remote had dropped it. The branch
-        /// it did not see is unobserved, and a person who is refused over it needs to be
-        /// told which branch and what to run.
+        /// A reading covers the branches of a remote as they were when the fetch was made.
+        /// A branch this home wrote its own record of after that fetch is outside it: a
+        /// branch absent from such a reading is one that did not exist yet, and a branch
+        /// present in it stands at a commit from before the work. Either way the reading
+        /// answers for the remote and not for this work, so the branch is named and the
+        /// person is told what to run.
         ///
         /// Defaulted on the way in, so that a finding written by an older Nodal reads as
         /// a reading with nothing to report rather than as a claim it never made.
         #[serde(default)]
-        unobserved: Vec<Unobserved>,
+        unobserved: Vec<String>,
     },
     /// The remote itself is on this machine and was read. A project with no remote of
     /// its own is cloned from the person's checkout, so the checkout is the remote, and
@@ -153,49 +155,6 @@ pub enum Witness {
     },
     /// The repository names no remote, so there is no remote question to answer.
     NoRemote,
-}
-
-/// One branch of a remote that the witness's last fetch cannot answer for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Unobserved {
-    /// The branch, as the remote spells it.
-    pub branch: String,
-    /// Why that reading was not an observation of it.
-    pub why: Unobservable,
-}
-
-impl Unobserved {
-    /// The clause a report adds about this branch.
-    #[must_use]
-    pub fn because(&self) -> String {
-        format!("{} {}", self.branch, self.why.because())
-    }
-}
-
-/// The ways a witness's reading fails to observe one branch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Unobservable {
-    /// The last fetch was made before this home's own record of the branch, so it says
-    /// nothing about what the remote has since.
-    ///
-    /// A branch absent from such a reading is one that did not exist yet, and a branch
-    /// present in it stands at a commit from before the work.
-    BeforeThePush,
-}
-
-impl Unobservable {
-    /// What a report says about a branch this is true of, after the branch is named.
-    #[must_use]
-    pub const fn because(&self) -> &'static str {
-        match self {
-            Self::BeforeThePush => {
-                "was last read in the checkout before this home wrote \
-                 its own record of it, so that reading is the older one; fetch in the \
-                 checkout and read again"
-            }
-        }
-    }
 }
 
 /// What a refusal adds when nothing on this machine could check the home's own refs.
@@ -225,7 +184,12 @@ impl Witness {
                 if unobserved.is_empty() {
                     return Some(read);
                 }
-                Some(format!("{read}; {}", names(unobserved.iter().map(Unobserved::because))))
+                Some(format!(
+                    "{read}; that reading was taken before this home wrote its own record of \
+                     {}, so for those branches it is the older one; fetch in the checkout and \
+                     read again",
+                    names(unobserved.iter().cloned())
+                ))
             }
             Self::Unchecked => Some(String::from(UNREAD)),
         }
