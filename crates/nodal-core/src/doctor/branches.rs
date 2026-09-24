@@ -57,9 +57,10 @@
 //!
 //! ## Report-only, like everything else here
 //!
-//! One `for-each-ref` for the branches, one for the merged set, and one `rev-list` per
-//! branch ([`crate::git::branches`]). Nothing is fetched, nothing is pruned and no ref
-//! is written. What to do about a branch is a person's decision.
+//! One `for-each-ref` for the branches, one for the merged set, one for the tips this
+//! checkout has seen on a remote, and one `rev-list` per branch
+//! ([`crate::git::branches`]). Nothing is fetched, nothing is pruned and no ref is
+//! written. What to do about a branch is a person's decision.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -94,14 +95,11 @@ pub fn find(root: &Path, now: Timestamp) -> Result<Branches> {
         Some(base) => git.merged_into(base)?,
         None => BTreeSet::new(),
     };
-    // Read once for the whole table. What one witness vouches for is a fact about the
-    // repository, not about each branch, and reading it per branch would multiply the
-    // sibling walk by three hundred.
-    // One `for-each-ref` answers for both: the branches to audit, and what this checkout has
-    // seen on a remote to count them against. The second is a fact about the checkout rather
-    // than about each branch, and asking for it per branch would multiply one invocation by
-    // three hundred.
-    let (locals, seen) = git.local_branches()?;
+    // Two readings, each named. What this checkout has seen on a remote is a fact about the
+    // checkout and not about each branch, so it is read once for the whole table: asking for
+    // it per branch would multiply one `for-each-ref` by three hundred.
+    let locals = git.local_branches()?;
+    let seen = git.seen_on_remotes()?;
     let mut rows = Vec::new();
     for local in locals {
         if held.contains(&local.name) {

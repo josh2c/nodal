@@ -291,11 +291,12 @@ const MANY: usize = 300;
 
 /// The cost this design accepts, measured.
 ///
-/// The audit is two `for-each-ref` calls for the whole repository and one `rev-list`
-/// per ref. The second is one process per branch and cannot be fewer, because
-/// `--not --remotes` is a question about one tip. A measured machine answered 317 refs
-/// in about twenty seconds, and this holds the shape: three hundred refs, three hundred
-/// and two processes, and the elapsed time printed for a person to read.
+/// The audit is three `for-each-ref` calls for the whole repository — the branches, the
+/// merged set, and the tips this checkout has seen on a remote — and one `rev-list` per
+/// ref. The last is one process per branch and cannot be fewer, because how much of one
+/// tip those tips do not reach is a question about that tip. A measured machine answered
+/// 317 refs in about twenty seconds, and this holds the shape: three hundred refs, three
+/// hundred and three processes, and the elapsed time printed for a person to read.
 #[test]
 fn three_hundred_refs_cost_one_rev_list_each() {
     let machine = plant();

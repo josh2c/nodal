@@ -320,17 +320,13 @@ impl Git {
     /// its tip was committed, what upstream it names, and whether that upstream is
     /// gone.
     ///
-    /// The tips this repository last saw on a remote come back beside them, because one
-    /// `for-each-ref` answers for both namespaces and the audit needs each. They are a reading
-    /// and never a proof ([`Git::seen_on_remotes`] says the same of the same refs).
-    ///
     /// One process for the whole repository. This is what the branch audit reads, where
     /// [`Git::branches`] would cost a second pass to date every ref.
     ///
     /// # Errors
     /// [`Error::Git`] when `git for-each-ref` failed, [`Error::GitParse`] on a record
     /// that could not be read.
-    pub fn local_branches(&self) -> Result<(Vec<branches::Local>, Vec<Oid>)> {
+    pub fn local_branches(&self) -> Result<Vec<branches::Local>> {
         branches::locals(&self.root)
     }
 
