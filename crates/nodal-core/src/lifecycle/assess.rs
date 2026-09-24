@@ -168,24 +168,33 @@ pub enum Work<'a> {
     Tips(&'a [Oid]),
 }
 
-/// What a person made, said as what it is not: everything under Nodal's own namespace.
+/// The namespaces a home carries that hold no work of its own.
 ///
-/// Every ref under `refs/nodal/` is one Nodal wrote, and none of them is work this home
-/// did. Two are copies of the person's own checkout that the create put there — its
-/// reading of the remote and its own branches ([`crate::git::refs::ORIGIN`],
-/// [`crate::git::refs::CHECKOUT`]) — and the commits behind those are in the checkout.
-/// The rest are records of runs: what one operation wrote before it ran, the branch a
-/// squash folded, and the snapshot of the working tree a `done` takes. A record's tree is
-/// the home's working tree and its parent is the home's own branch, so it holds no
-/// content this reading does not already have from the tree and from the branch.
+/// What is left when these go is the refs the home keeps of its own accord: its branches,
+/// its tags, its stash. That is the same line a second copy is counted over in every other
+/// repository on the machine ([`crate::git::outside::owned`]), and one rule for "what a
+/// repository has to say for itself" is better than two that can disagree.
 ///
-/// Counting them would keep every home that has ever run a command, for ever, which is a
-/// leak and not a safety property. `nodal gc` draws the same line over a home in the
-/// trash and states it there as well ([`crate::lifecycle::ops::gc`]), with one addition
-/// this reading does not need: nothing is checked out in the trash, so the sweep names
-/// the snapshot ref itself, because a forced reclaim put a working tree on it that no
-/// tree reading can reach any more.
-const NODALS_OWN: &str = crate::git::refs::NAMESPACE;
+/// `refs/remotes/` is a record of a fetch. The commits behind it came from the remote and
+/// are the project's history rather than this unit's work; the home's own
+/// `refs/remotes/origin/*` in particular is what its `nodal done` push wrote, and reading
+/// it as work would report the push back as a loss.
+///
+/// `refs/nodal/` is every ref Nodal wrote. Two are copies of the person's own checkout
+/// that the create put there — its reading of the remote and its own branches
+/// ([`crate::git::refs::ORIGIN`], [`crate::git::refs::CHECKOUT`]) — and the commits behind
+/// those are in the checkout. The rest are records of runs: what one operation wrote
+/// before it ran, the branch a squash folded, and the snapshot of the working tree a
+/// `done` takes. A record's tree is the home's working tree and its parent is the home's
+/// own branch, so it holds no content this reading does not already have from the tree and
+/// from the branch. Counting them would keep every home that has ever run a command, for
+/// ever, which is a leak and not a safety property.
+///
+/// `nodal gc` draws the same line over a home in the trash ([`crate::lifecycle::ops::gc`]),
+/// with one addition this reading does not need: nothing is checked out in the trash, so
+/// the sweep names the snapshot ref itself, because a forced reclaim put a working tree on
+/// it that no tree reading can reach any more.
+const NOT_ITS_OWN: [&str; 2] = ["refs/remotes/", crate::git::refs::NAMESPACE];
 
 /// What one reading walks, read once and used for every question it asks.
 ///
@@ -212,32 +221,38 @@ impl Work<'_> {
     /// `HEAD` nothing answers for is an unborn branch, which is a home with no commit of
     /// its own rather than a reading that failed.
     ///
-    /// # Errors
-    /// [`crate::Error::Git`] when the refs could not be listed.
-    fn resolve(self, git: &Git) -> Result<Scope> {
+    fn resolve(self, git: &Git, refs: &[crate::git::refs::Ref]) -> Scope {
         if let Self::Tips(tips) = self {
-            return Ok(Scope {
+            return Scope {
                 tips: tips.to_vec(),
                 walked: tips.iter().map(ToString::to_string).collect(),
                 not_walked: Vec::new(),
-            });
+            };
         }
-        let mut tips: Vec<Oid> = git
-            .all_refs()?
-            .into_iter()
-            .filter(|reference| !reference.name.starts_with(NODALS_OWN))
-            .map(|reference| reference.oid)
-            .collect();
-        tips.extend(git.rev_parse(HEAD).ok());
+        let mut named = Vec::new();
+        let mut tips = Vec::new();
+        for reference in refs {
+            if NOT_ITS_OWN.iter().any(|kind| reference.name.starts_with(kind)) {
+                continue;
+            }
+            tips.push(reference.oid.clone());
+            named.push(reference.name.clone());
+        }
+        if !checked_out(git.root(), &named) {
+            tips.extend(git.rev_parse(HEAD).ok());
+        }
         tips.sort_unstable();
         tips.dedup();
-        Ok(Scope {
+        Scope {
             tips,
             walked: WALKED.iter().map(|&name| String::from(name)).collect(),
-            not_walked: vec![format!(
-                "{NODALS_OWN}* (refs Nodal wrote, which hold no work of their own)"
-            )],
-        })
+            not_walked: NOT_ITS_OWN
+                .iter()
+                .map(|kind| {
+                    format!("{kind}* (a record of somewhere else, not this home's own work)")
+                })
+                .collect(),
+        }
     }
 }
 
@@ -250,6 +265,23 @@ const WALKED: [&str; 4] = ["HEAD", "refs/heads/*", "refs/tags/*", "refs/stash"];
 
 /// What a revision is called when it is the commit the home has checked out.
 const HEAD: &str = "HEAD";
+
+/// What `HEAD` holds when it names a branch rather than a commit.
+const SYMBOLIC: &str = "ref: ";
+
+/// Whether `HEAD` names one of the refs already read, which is the ordinary case.
+///
+/// `HEAD` is a file Git writes, and a repository checked out on a branch has one line in
+/// it naming that branch. So the ordinary home costs no process here: the commit is one
+/// this reading already has under the branch's own name. A detached `HEAD`, and a `HEAD`
+/// naming a ref this reading did not take, are asked of Git, because a checked-out commit
+/// no ref reaches is still a real copy and still this home's work.
+fn checked_out(repo: &Path, named: &[String]) -> bool {
+    let Some(git_dir) = crate::git::layout::dir(repo) else { return false };
+    let Ok(text) = std::fs::read_to_string(git_dir.join(HEAD)) else { return false };
+    let Some(reference) = text.trim().strip_prefix(SYMBOLIC) else { return false };
+    named.iter().any(|name| name == reference)
+}
 
 /// One home, and how much of it to read.
 ///
@@ -1786,13 +1818,18 @@ fn history(
     reading: &mut Reading,
 ) -> Result<(Vec<CommitGroup>, Vec<String>, Vec<SameContent>)> {
     let remotes = git.remotes()?;
-    let found = witness::elsewhere(input.home, input.checkout);
+    // One `for-each-ref` of the home, and two readings drawn off it. The assessed set is
+    // the refs this home keeps of its own accord, and the remote question is asked of the
+    // refs it names under `origin`; both are in one listing, and asking twice would cost a
+    // process per home to learn what the first answer held.
+    let refs = git.all_refs()?;
+    let found = witness::elsewhere(input.home, input.checkout, &refs);
     let checkout = input.checkout.map(Checkout::path);
-    let work = input.work.resolve(git)?;
+    let work = input.work.resolve(git, &refs);
     reading.refs.walked.clone_from(&work.walked);
     reading.refs.not_walked.clone_from(&work.not_walked);
-    let unproved = git.among_outside(&work.tips, &found.tips())?;
     if !input.dispositions {
+        let unproved = git.among_outside(&work.tips, &found.tips())?;
         reading.refs.commits = unproved.len();
         if unproved.is_empty() {
             reading.stores = unasked(input, NOTHING_TO_LOOK_FOR);
@@ -1809,15 +1846,16 @@ fn history(
     }
     let witness = Witness::of(&remotes, &found);
     let off_remote = git.among_outside(&work.tips, &union(&found.own, &found.remote))?;
+    let unproved = git.among_outside(&work.tips, &found.tips())?;
     let proved = difference(&ours, &off_remote);
     let second = difference(&off_remote, &unproved);
-    let found = local_copies(input.home, checkout, input.siblings, unproved, reading);
-    let content = same_content(git, &found.only, notes);
+    let copies = local_copies(input.home, checkout, input.siblings, unproved, reading);
+    let content = same_content(git, &copies.only, notes);
     let mut groups = Vec::new();
     groups.extend(commit_group(Copies::RemoteProved { witness: witness.clone() }, proved));
-    groups.extend(second_groups(checkout, second, found.held));
-    groups.extend(commit_group(unchecked(&witness, found.unread), found.unchecked));
-    groups.extend(commit_group(unreached(&witness), found.only));
+    groups.extend(second_groups(checkout, second, copies.held));
+    groups.extend(commit_group(unchecked(&witness, copies.unread), copies.unchecked));
+    groups.extend(commit_group(unreached(&witness), copies.only));
     Ok((groups, remotes, content))
 }
 

@@ -55,7 +55,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::doctor::inspect;
 use crate::git::{Git, Oid};
 
 /// One remote-tracking ref: which branch of which remote, and the commit it holds.
@@ -299,20 +298,68 @@ fn trusted(subjects: &[Subject], index: usize) -> Trusted {
 /// bookkeeping under a word that claims a remote.
 ///
 /// Nothing here reaches a network: a url that is not a path on this disk is not opened.
+/// Two `for-each-ref` and one `git remote get-url`, and nothing else. It is asked once per
+/// repository a report covers, so what it reads is what the answer needs: the branches the
+/// remote has, and the branches this checkout tracks of it. A full reading of the checkout
+/// would answer the same question and cost four more invocations per repository.
 #[must_use]
 pub fn read_directly(checkout: &Path) -> Option<Trusted> {
     let url = Git::at(checkout).remote_url(ORIGIN).ok()??;
     let remote = Path::new(url.trim());
-    if !remote.is_absolute() || Git::open(remote).is_err() {
+    if !remote.is_absolute() {
         return None;
     }
-    let subject = Subject { path: checkout.to_path_buf(), reading: inspect::reading(checkout) };
-    let witness = Subject {
-        path: remote.to_path_buf(),
-        reading: CloneReading { remotes: heads(remote), ..CloneReading::default() },
-    };
+    // A path Git will not read, and a remote with no branch at all, both answer nothing.
+    // Neither is a remote that was read and found empty, and reading either as one would
+    // put every branch of this checkout in the loudest bucket over a directory nobody
+    // could open.
+    let theirs = heads(remote);
+    if theirs.is_empty() {
+        return None;
+    }
+    let reading = |remotes| CloneReading { remotes, ..CloneReading::default() };
+    let subject = Subject { path: checkout.to_path_buf(), reading: reading(tracked(checkout)) };
+    let witness = Subject { path: remote.to_path_buf(), reading: reading(theirs) };
     Some(believed(&subject, &[&witness]))
 }
+
+/// What this repository last saw of `origin`, branch by branch. One `for-each-ref`.
+///
+/// The one field [`believed`] reads of the repository it judges, so it is the whole of
+/// what a caller has to read of one. A repository Git will not answer for names no branch,
+/// which is the strict direction: nothing is vouched for.
+///
+/// `refs/remotes/origin/HEAD` is dropped: it is a symbolic ref naming the default branch
+/// rather than a branch of its own, and the branch it names is in the list already.
+#[must_use]
+pub fn tracked(checkout: &Path) -> Vec<RemoteTip> {
+    let prefix = format!("{TRACKING}{ORIGIN}/");
+    named_of(ORIGIN, &Git::at(checkout).list_refs(&prefix).unwrap_or_default())
+}
+
+/// The same, read out of a listing somebody else already took.
+///
+/// A caller that has the refs in hand pays no process at all, which is what the reading of
+/// a unit home does ([`crate::lifecycle::witness`]).
+///
+/// `refs/remotes/<remote>/HEAD` is dropped: it is a symbolic ref naming the default branch
+/// rather than a branch of its own, and the branch it names is in the list already.
+#[must_use]
+pub fn named_of(remote: &str, refs: &[crate::git::refs::Ref]) -> Vec<RemoteTip> {
+    let prefix = format!("{TRACKING}{remote}/");
+    refs.iter()
+        .filter_map(|reference| {
+            let branch = reference.name.strip_prefix(&prefix)?.to_owned();
+            (branch != HEAD).then_some(RemoteTip { branch, oid: reference.oid.clone() })
+        })
+        .collect()
+}
+
+/// The ref under `refs/remotes/<remote>/` that names a default branch rather than one.
+const HEAD: &str = "HEAD";
+
+/// Where a repository keeps its reading of a remote.
+const TRACKING: &str = "refs/remotes/";
 
 /// The remote a checkout's branch audit is about, named as every clone of it names it.
 const ORIGIN: &str = "origin";

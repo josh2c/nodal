@@ -110,7 +110,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::Result;
-use crate::doctor::unique::{CloneReading, RemoteTip, Subject, Trusted, believed};
+use crate::doctor::unique::{self, CloneReading, RemoteTip, Subject, Trusted, believed};
 use crate::doctor::{inspect, origin};
 use crate::git::{Git, Oid, fetched, refs, union};
 use crate::lifecycle::uniqueness::{Unobservable, Unobserved};
@@ -309,7 +309,7 @@ impl Checkout {
 /// ordinary case, and reading that commit as the remote's would take the whole of the
 /// project's history out of the denominator and report it back as this unit's work.
 #[must_use]
-pub fn elsewhere(home: &Path, checkout: Option<&Checkout>) -> Elsewhere {
+pub fn elsewhere(home: &Path, checkout: Option<&Checkout>, refs: &[refs::Ref]) -> Elsewhere {
     let Some(checkout) = checkout else {
         return Elsewhere::default();
     };
@@ -317,9 +317,23 @@ pub fn elsewhere(home: &Path, checkout: Option<&Checkout>) -> Elsewhere {
     if reading.unreadable.is_some() || reading.shallow {
         return Elsewhere::default();
     }
-    let relation = relation(home, checkout);
+    let origin = named(home);
+    let relation = relation(origin.as_deref(), checkout);
+    // No reading of the home at all: the refs its caller already listed are all of it.
+    // What is asked of the home here is which branches of `origin` it names — [`believed`]
+    // reads that field and no other, and [`observed`] dates each of those branches from
+    // files Git wrote. A full reading cost four invocations per home for three fields
+    // nothing below looks at.
+    let subject = Subject {
+        path: home.to_path_buf(),
+        reading: CloneReading {
+            remotes: unique::named_of(ORIGIN, refs),
+            ..CloneReading::default()
+        },
+    };
+    let asked = Asked { checkout, origin, subject: &subject };
     let mut unobserved = Vec::new();
-    let trusted = vouched(home, checkout, relation, reading.clone(), &mut unobserved);
+    let trusted = vouched(&asked, relation, reading.clone(), &mut unobserved);
     let Ok(held) = holdings(checkout, &trusted.tips) else {
         return Elsewhere::default();
     };
@@ -360,25 +374,33 @@ fn holdings<'a>(checkout: &'a Checkout, trusted: &[Oid]) -> Result<Cow<'a, [Oid]
 
 /// What a witness will vouch for, and nothing at all when there is no witness.
 fn vouched(
-    home: &Path,
-    checkout: &Checkout,
+    asked: &Asked<'_>,
     relation: Relation,
     reading: CloneReading,
     unobserved: &mut Vec<Unobserved>,
 ) -> Trusted {
-    let subject = Subject { path: home.to_path_buf(), reading: inspect::reading(home) };
-    let Some(witness) = witness(checkout, relation, reading, &subject, unobserved) else {
+    let Some(witness) = witness(asked, relation, reading, unobserved) else {
         return Trusted::default();
     };
-    believed(&subject, &[&witness])
+    believed(asked.subject, &[&witness])
+}
+
+/// The pair a witness question is about: the repository that may answer, the remote the
+/// question is about, and the home it is asked for.
+struct Asked<'a> {
+    /// The repository that may answer.
+    checkout: &'a Checkout,
+    /// The grouping name of the home's `origin`, read once by [`relation`].
+    origin: Option<String>,
+    /// The home, and what was read of it.
+    subject: &'a Subject,
 }
 
 /// The checkout as a witness for this home's `origin`, in whichever relation it has to it.
 fn witness(
-    checkout: &Checkout,
+    asked: &Asked<'_>,
     relation: Relation,
     mut reading: CloneReading,
-    subject: &Subject,
     unobserved: &mut Vec<Unobserved>,
 ) -> Option<Subject> {
     match relation {
@@ -386,15 +408,15 @@ fn witness(
         // and wrote down, branch by branch, and the refspec has to cover every branch or
         // it cannot say that one is gone.
         Relation::SameRemote if reading.complete => {
-            reading.remotes = observed(checkout, subject, unobserved)?;
+            reading.remotes = observed(asked, unobserved)?;
         }
         // The checkout is what the base was cloned from, so its branches are not a
         // reading of the remote. They are the remote, and reading the authority needs
         // no comparison with anybody's copy of it.
-        Relation::IsTheRemote => reading.remotes = checkout.heads().to_vec(),
+        Relation::IsTheRemote => reading.remotes = asked.checkout.heads().to_vec(),
         _ => return None,
     }
-    Some(Subject { path: checkout.path.clone(), reading })
+    Some(Subject { path: asked.checkout.path.clone(), reading })
 }
 
 /// The branches of the remote the checkout's last fetch observed, dated against this
@@ -432,16 +454,13 @@ fn witness(
 /// `None` is a checkout that has made no observation of this remote at all: it has never
 /// fetched, or its last fetch was of another remote and rewrote the record with that
 /// remote's refs. Neither is a repository that found the remote empty.
-fn observed(
-    checkout: &Checkout,
-    subject: &Subject,
-    unobserved: &mut Vec<Unobserved>,
-) -> Option<Vec<RemoteTip>> {
-    let home = subject.path.as_path();
-    let url = named(home)?;
-    let observation = fetched::last(&checkout.path, &url).filter(|read| !read.seen.is_empty())?;
+fn observed(asked: &Asked<'_>, unobserved: &mut Vec<Unobserved>) -> Option<Vec<RemoteTip>> {
+    let home = asked.subject.path.as_path();
+    let url = asked.origin.as_deref()?;
+    let observation =
+        fetched::last(&asked.checkout.path, url).filter(|read| !read.seen.is_empty())?;
     let mut seen = Vec::new();
-    for tip in &subject.reading.remotes {
+    for tip in &asked.subject.reading.remotes {
         let branch = tip.branch.clone();
         let tracking = format!("{TRACKING}{ORIGIN}/{branch}");
         let wrote = refs::last_moved(home, &tracking);
@@ -604,11 +623,11 @@ enum Relation {
 }
 
 /// Which of the three this pair is.
-fn relation(home: &Path, checkout: &Checkout) -> Relation {
-    let Some(origin) = named(home) else {
+fn relation(origin: Option<&str>, checkout: &Checkout) -> Relation {
+    let Some(origin) = origin else {
         return Relation::Unrelated;
     };
-    if checkout.origin.as_ref().is_some_and(|theirs| *theirs == origin) {
+    if checkout.origin.as_deref().is_some_and(|theirs| theirs == origin) {
         return Relation::SameRemote;
     }
     if resolved(&checkout.path).is_some_and(|path| origin::normalize(&path) == origin) {
@@ -656,15 +675,16 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let absent = directory.path().join("gone");
         assert_eq!(named(&absent), None);
-        assert_eq!(relation(&absent, &Checkout::read(directory.path())), Relation::Unrelated);
-        assert!(elsewhere(&absent, Some(&Checkout::read(&absent))).witnesses.is_empty());
+        let none = relation(named(&absent).as_deref(), &Checkout::read(directory.path()));
+        assert_eq!(none, Relation::Unrelated);
+        assert!(elsewhere(&absent, Some(&Checkout::read(&absent)), &[]).witnesses.is_empty());
     }
 
     /// With no checkout to ask, nothing is believed and nobody vouched.
     #[test]
     fn a_home_with_no_checkout_to_ask_believes_nothing() {
         let directory = tempfile::tempdir().unwrap();
-        let read = elsewhere(directory.path(), None);
+        let read = elsewhere(directory.path(), None, &[]);
         assert!(read.tips().is_empty(), "{read:?}");
         assert!(read.witnesses.is_empty(), "{read:?}");
     }

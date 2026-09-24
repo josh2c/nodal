@@ -184,8 +184,17 @@ SHIM
     # asks it rather than fusing a second namespace into its own `for-each-ref`. The
     # price is exactly one `for-each-ref` per doctor run — one process, not one per home,
     # which is why the row moved by a tenth at ten units.
-    gate "git processes per doctor home" "$per_home" 6.6 "per home" \
-        "baseline 6.6 at 10 units, from 11.9; ratchet to 5 when the home readings are batched"
+    #
+    # It is 8.0 now, and the extra is what the verdict reads rather than what it costs to
+    # report. A reading of `HEAD` alone said nothing about a commit on a side branch, a
+    # stash or a tag, so the assessed set is every ref the home keeps of its own accord,
+    # and that is one `for-each-ref` per home. The remote question is drawn off the same
+    # listing rather than asking a second time, and the home's own reading is built from it
+    # too, which took the row from 12.0 to 8.0. The rest is the direct reading of a remote
+    # that is a directory on this machine: two ref listings and one `remote get-url` per
+    # doctor run, which is 0.4 at ten units and less at more.
+    gate "git processes per doctor home" "$per_home" 8.2 "per home" \
+        "baseline 8.0 at 10 units, from 6.6 when the reading walked HEAD alone; ratchet to 5 when the home readings are batched"
 
     # The other relation: the checkout is what `origin` names, so it is read as the
     # remote itself. Baseline 12.7 per home at 10 units, from 13.6 before the checkout's
@@ -193,9 +202,14 @@ SHIM
     # because the proof reads the home's own evidence as well and asks the checkout two
     # questions about that home — which are questions about the home, not facts about
     # the checkout, so they are not the survey's to hoist. It carries the same one
-    # `for-each-ref` the row above describes. Ratchet with that row.
-    gate "git processes per doctor home, no remote" "$solo_per_home" 12.8 "per home" \
-        "baseline 12.8 at 10 units, from 13.6; the two readings left are the home's own"
+    # `for-each-ref` the row above describes.
+    #
+    # It is 9.9 now, under what it was, and the widened reading is why. A home is read from
+    # its own refs, and the four invocations a full reading of one cost are gone: the two
+    # fields anything below looks at are drawn off the listing the assessed set already
+    # took. Ratchet with the row above.
+    gate "git processes per doctor home, no remote" "$solo_per_home" 10.1 "per home" \
+        "baseline 9.9 at 10 units, from 12.8; the two readings left are the home's own"
 fi
 echo
 
