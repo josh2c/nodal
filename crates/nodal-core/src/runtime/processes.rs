@@ -27,18 +27,24 @@
 //! variables, each ended by a zero byte. A buffer that does not have this shape gives no
 //! command and no variables, and never a guess.
 //!
-//! A scan keeps three things about a process, and each answers one question:
+//! A scan keeps four things about a process, and each answers one question:
 //!
 //! - the variables it was asked for — the `NODAL_*` set and the names that say who the
 //!   actor is — which name the unit a process is in outright;
 //! - its working directory, which says which home a process stands in when it carries
 //!   no variables at all, for example a terminal that was never activated;
-//! - a short form of its command, so a person reading `nodal ps` recognises the row.
+//! - a short form of its command, so a person reading `nodal ps` recognises the row;
+//! - what it **holds** ([`Held`]): the paths it has open for writing, mapped writably, or
+//!   is rooted at. A working directory alone answers where a process is standing and not
+//!   what it would keep writing into after the directory moved, and those are different
+//!   questions. A test runner started from a terminal that has since changed directory,
+//!   writing its database into a home, stands nowhere near that home and occupies it
+//!   completely.
 //!
-//! Everything else a process carries is read and dropped. A process this account cannot
-//! read contributes nothing to the three on either host. On Linux it is left out of the
-//! scan. On macOS it is kept with what was withheld, so that a reader can say how much
-//! it could not see.
+//! Everything else a process carries is read and dropped. **A process this account cannot
+//! read is kept on both hosts**, with what was withheld said out loud, so that a reader
+//! can say how much it could not see. It used to be dropped on Linux, which made the
+//! reading silent in exactly the case the safety contract is written for.
 //!
 //! The command is deliberately short, and not the command line. A command line can hold
 //! a credential — `psql postgres://user:password@host/db` — and Nodal writes no secret
@@ -68,18 +74,124 @@ pub struct Running {
     pub cwd: Option<PathBuf>,
     /// A short form of its command, when the table has one.
     pub command: Option<String>,
+    /// The paths it holds in a way that would survive the directory being renamed under
+    /// it: a descriptor opened for writing, a writable mapping, or the root it sees.
+    ///
+    /// Empty on a host that does not publish them ([`OCCUPANCY`]), which is not the same
+    /// fact as a process holding nothing, and is why the evidence record says which
+    /// readings the host answered.
+    pub held: Vec<Held>,
+    /// Where it came from, as far as the host will say. Readable for a process this
+    /// account may not otherwise read at all, which is the whole reason it is kept.
+    pub lineage: Lineage,
     /// What the host refused to show about it, `None` where nothing was refused.
     pub withheld: Option<Withheld>,
 }
 
-/// What the host refused to show about one process, and so what a reader cannot know.
+/// Where a process came from: what started it, and which group it is in.
 ///
-/// Only macOS sets this. A Linux scan leaves out a process whose `/proc` entry this
-/// account may not read.
+/// **Read for the process a scan cannot read.** On Linux `/proc/<pid>/stat` stays
+/// world-readable when `environ`, `cwd`, `fd` and `maps` do not — a setuid binary is
+/// marked undumpable, not invisible — and on macOS `proc_bsdshortinfo` answers across
+/// accounts. So the one thing still knowable about a process this account is refused is
+/// where it came from, and [`crate::lifecycle::assess`] judges it on that rather than
+/// pretending it is not there. Both hosts answer both fields.
+///
+/// **The session is not here, and that is deliberate.** Both hosts publish one — Linux
+/// in `stat`, macOS through `getsid`, for any account — and reading it was a mistake: a
+/// shell standing in a home is usually its own session leader, so every unrelated command
+/// in that terminal shares the number and nothing else, and matching on it refused
+/// reclaims over processes that had never been near the home
+/// (`assess::descends_from` states the whole rule). A field nothing reads is a field a
+/// later change reads again, so it is gone rather than ignored.
+///
+/// Every field is optional and every absence means the host did not say. Nothing here
+/// is ever read as a name to signal: it takes a process out of the unknown list or
+/// leaves it there, exactly as [`crate::lifecycle::assess::Own`]'s groups do.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Lineage {
+    /// The process that started it.
+    pub parent: Option<u32>,
+    /// The process group it is in.
+    pub group: Option<u32>,
+}
+
+/// One path a process holds, and the hold it has on it.
+///
+/// A working directory is not in here. That one is [`Running::cwd`], it has always been
+/// read, and the whole point of this list is the occupancy a working directory misses: a
+/// process whose directory is `/` and whose descriptor is writing a file two directories
+/// inside a home is occupying that home, and `lsof +D` and `fuser -m` have said so for
+/// thirty years.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held {
+    /// The path, exactly as the host named it.
+    pub path: PathBuf,
+    /// The hold.
+    pub how: How,
+}
+
+impl Held {
+    /// One hold on one path.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>, how: How) -> Self {
+        Self { path: path.into(), how }
+    }
+
+    /// The hold and the path, in the words a refusal prints.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!("{} {}", self.how.label(), self.path.display())
+    }
+}
+
+/// How a process holds a path.
+///
+/// Only holds that outlive a rename are here, and only the ones that lose a person work.
+/// A descriptor opened for **reading** is not one of them and is never kept: an editor, a
+/// language server, a `tail` and a `grep` all hold those, none of them writes through
+/// one, and a rule that refused over them would refuse every reclaim on a working
+/// machine. `/proc/<pid>/fdinfo/<n>` carries the open flags, so the two cases separate at
+/// the cost of one file read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum How {
+    /// A descriptor opened for writing. The process keeps writing into the inode after
+    /// the directory above it is renamed, and never learns that it moved.
+    Descriptor,
+    /// A shared mapping made writable: the same fact reached through memory rather than
+    /// through a descriptor, which is how a memory-mapped database holds its file.
+    Mapping,
+    /// The root directory the process sees. A process rooted inside the home cannot be
+    /// moved out from under at all.
+    Root,
+}
+
+impl How {
+    /// The word a refusal and a report use.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Descriptor => "writing",
+            Self::Mapping => "mapping",
+            Self::Root => "rooted at",
+        }
+    }
+}
+
+/// Which readings of occupancy this host publishes.
+///
+/// Named rather than inferred, because it is what the evidence record prints: a verdict
+/// taken where the descriptors could not be read is a different verdict from one taken
+/// where they were read and there were none, and the two must not print alike.
+pub const OCCUPANCY: &[&str] =
+    if cfg!(target_os = "linux") { &["cwd", "fd_write", "mmap_write", "root"] } else { &["cwd"] };
+
+/// What the host refused to show about one process, and so what a reader cannot know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Withheld {
-    /// The process belongs to another account. Its variables, its working directory and
-    /// its command are refused.
+    /// The process belongs to another account — or to this one and running a binary the
+    /// kernel marks undumpable, which is what a setuid program becomes. Its variables,
+    /// its working directory and what it holds are all refused.
     AnotherAccount,
     /// The process runs a restricted binary. Its working directory and its command are
     /// shown, and its variables are not.
@@ -90,7 +202,15 @@ impl Running {
     /// A process known by its variables alone, which is what a test supplies.
     #[must_use]
     pub fn new(pid: u32, vars: BTreeMap<String, String>) -> Self {
-        Self { pid, vars, cwd: None, command: None, withheld: None }
+        Self {
+            pid,
+            vars,
+            cwd: None,
+            command: None,
+            held: Vec::new(),
+            lineage: Lineage::default(),
+            withheld: None,
+        }
     }
 
     /// The same process, standing in `cwd`.
@@ -104,6 +224,21 @@ impl Running {
     #[must_use]
     pub fn running(mut self, command: impl Into<String>) -> Self {
         self.command = Some(command.into());
+        self
+    }
+
+    /// The same process, holding these paths, which is what a test supplies where a
+    /// machine would have supplied `/proc`.
+    #[must_use]
+    pub fn holding(mut self, held: Vec<Held>) -> Self {
+        self.held = held;
+        self
+    }
+
+    /// The same process, with where it came from.
+    #[must_use]
+    pub const fn from(mut self, lineage: Lineage) -> Self {
+        self.lineage = lineage;
         self
     }
 
@@ -322,7 +457,7 @@ mod linux {
     use std::collections::BTreeMap;
     use std::path::Path;
 
-    use super::{Presence, Running, Timestamp, command_of, kept};
+    use super::{Held, How, Lineage, Presence, Running, Timestamp, Withheld, command_of, kept};
     use crate::{Error, Result};
 
     /// Where the kernel publishes the process table.
@@ -355,21 +490,213 @@ mod linux {
         Ok(running)
     }
 
-    /// One process, or nothing when this account can see neither its variables nor the
-    /// directory it stands in.
+    /// One process, or nothing where there is no process left to describe.
     ///
-    /// A process this account may not read, and a process that ended between the listing
-    /// and the read, are both "not visible" and neither is a failure.
+    /// **A process this account may not read is kept, and says so.** It used to be
+    /// dropped, which made the one case the safety contract is written for — "cannot
+    /// see, therefore not safe" — the one case that produced no evidence at all: a
+    /// process standing in a home under a setuid binary, or under another account on a
+    /// shared host, left the scan with no row, no note and nothing for a verdict to rest
+    /// on. It is now a [`Withheld::AnotherAccount`] row: its identifier is known,
+    /// its lineage is readable in `stat`, and everything else is stated as refused.
+    ///
+    /// What is still dropped is what is not a process a person could be working in: an
+    /// entry that has gone between the listing and the read, and a kernel thread, which
+    /// has no command line, no environment and no working directory by construction and
+    /// can hold nothing in anybody's home. On this machine that is the difference
+    /// between 36 withheld rows and 429, and a count nobody can act on is not evidence.
     fn read(pid: u32, directory: &Path) -> Option<Running> {
         let vars =
             std::fs::read(directory.join(ENVIRON)).map(|blob| kept(&blob)).unwrap_or_default();
         let cwd = std::fs::read_link(directory.join(CWD)).ok();
+        let line = std::fs::read(directory.join(CMDLINE)).ok();
+        let command = line.as_deref().and_then(command_of);
         if vars.is_empty() && cwd.is_none() {
-            return None;
+            let real = line.is_some_and(|line| !line.is_empty());
+            if !real {
+                return None;
+            }
+            return Some(Running {
+                pid,
+                vars,
+                cwd,
+                command,
+                held: Vec::new(),
+                lineage: lineage(directory),
+                withheld: Some(Withheld::AnotherAccount),
+            });
         }
-        let command =
-            std::fs::read(directory.join(CMDLINE)).ok().and_then(|line| command_of(&line));
-        Some(Running { pid, vars, cwd, command, withheld: None })
+        let held = holds(directory);
+        Some(Running { pid, vars, cwd, command, held, lineage: lineage(directory), withheld: None })
+    }
+
+    /// The directory holding one link per open descriptor.
+    const FD: &str = "fd";
+
+    /// The directory holding one file per open descriptor, each carrying its open flags.
+    const FDINFO: &str = "fdinfo";
+
+    /// The file listing one memory mapping per line.
+    const MAPS: &str = "maps";
+
+    /// The link pointing at the root directory the process sees.
+    const ROOT: &str = "root";
+
+    /// The line of an `fdinfo` record that carries the flags the descriptor was opened
+    /// with, in octal.
+    const FLAGS: &str = "flags:";
+
+    /// The low two bits of those flags, which are the access mode.
+    const ACCMODE: u32 = 0o3;
+
+    /// The access mode of a descriptor opened for reading only.
+    const RDONLY: u32 = 0o0;
+
+    /// Everything one process holds that would outlive a rename of the directory above
+    /// it: descriptors opened for writing, writable mappings, and the root it sees.
+    ///
+    /// Read in the walk the scan already makes, so **every reader of the table pays it**
+    /// — the reclaim, its preflight, and `nodal ls`, `nodal ps`, `nodal show` and
+    /// `nodal run` alike. That is deliberate and not an oversight: occupancy is one
+    /// predicate, and a listing that read less than the preflight would print `clear`
+    /// over a home the preflight refuses on. Measured on one machine, the whole walk is
+    /// 12.6–18 ms over 132 processes against 2.5–3.6 ms without it. Nothing here opens a
+    /// file of another process: every read is of `/proc`, which is the kernel answering
+    /// about itself.
+    ///
+    /// Every failure is silence. A descriptor that closed between the listing and the
+    /// read, a mapping file that grew under the read, a process that ended: none of them
+    /// is a hold and none of them is an error. What that cannot do is hide a hold that
+    /// was there, because a hold the reading missed leaves the process judged on its
+    /// working directory alone, which is exactly the rule that stood before.
+    fn holds(directory: &Path) -> Vec<Held> {
+        let mut held = Vec::new();
+        held.extend(descriptors(directory));
+        held.extend(mappings(directory));
+        held.extend(rooted(directory));
+        held.sort_by(|left, right| (&left.path, left.how).cmp(&(&right.path, right.how)));
+        held.dedup();
+        held
+    }
+
+    /// The descriptors this process opened for writing, by the path each names.
+    ///
+    /// The link is read before the flags are, and that order is the whole of the cost
+    /// argument. Most descriptors on a machine are sockets, pipes and anonymous inodes,
+    /// whose links are not paths at all; they are dropped on the link alone and never
+    /// cost the second read. Only a descriptor naming a real absolute path is asked what
+    /// it was opened for.
+    ///
+    /// **A descriptor on a file that has been unlinked holds nothing a rename could take
+    /// from anybody.** The kernel marks that link `(deleted)`, and the ordinary shape is
+    /// a dev server writing to a log its own rotation has already replaced: refusing
+    /// there would refuse a reclaim over a path that no longer exists. [`mapped_path`]
+    /// drops them for the same reason, and both readings have to, or the two halves of
+    /// occupancy mean different things.
+    fn descriptors(directory: &Path) -> Vec<Held> {
+        let Ok(entries) = std::fs::read_dir(directory.join(FD)) else { return Vec::new() };
+        let mut held = Vec::new();
+        for entry in entries.flatten() {
+            let Ok(path) = std::fs::read_link(entry.path()) else { continue };
+            if !path.is_absolute() || unlinked(&path) {
+                continue;
+            }
+            let number = entry.file_name();
+            let Ok(record) = std::fs::read_to_string(directory.join(FDINFO).join(number)) else {
+                continue;
+            };
+            if writable(&record) {
+                held.push(Held::new(path, How::Descriptor));
+            }
+        }
+        held
+    }
+
+    /// Whether an `fdinfo` record says its descriptor was opened for writing.
+    ///
+    /// A record with no flags line, or a line that does not parse, is not read as
+    /// writable. That is the direction that under-counts occupancy rather than refusing
+    /// over a descriptor nobody can write through, and the process is still judged on
+    /// everything else this walk read about it.
+    fn writable(record: &str) -> bool {
+        record
+            .lines()
+            .find_map(|line| line.strip_prefix(FLAGS))
+            .and_then(|octal| u32::from_str_radix(octal.trim(), 8).ok())
+            .is_some_and(|flags| flags & ACCMODE != RDONLY)
+    }
+
+    /// The files this process has mapped in a way that writes through to them.
+    ///
+    /// **Writable and shared, not writable alone.** A `rw-p` mapping is copy-on-write:
+    /// the process may write all it likes and the file never changes, which is what every
+    /// loaded library's data segment is, on every process on the machine. Counting those
+    /// would make every home look occupied by everything. A `rw-s` mapping is the one
+    /// that writes through, and it is how a memory-mapped database holds its file — the
+    /// hold this lane exists to see.
+    ///
+    /// A mapping with no file behind it — the stack, the heap, an anonymous mapping —
+    /// has no path and is a hold on nothing. A mapping the kernel marks `(deleted)` is
+    /// not kept either: its file is already unlinked, so a rename of the directory above
+    /// it takes nothing from anybody.
+    fn mappings(directory: &Path) -> Vec<Held> {
+        let Ok(listing) = std::fs::read_to_string(directory.join(MAPS)) else { return Vec::new() };
+        let mut held = Vec::new();
+        for line in listing.lines() {
+            let Some(perms) = line.split_whitespace().nth(1) else { continue };
+            if !(perms.contains('w') && perms.contains('s')) {
+                continue;
+            }
+            let Some(path) = mapped_path(line) else { continue };
+            held.push(Held::new(path, How::Mapping));
+        }
+        held
+    }
+
+    /// What the kernel appends to the name of a file that has been unlinked.
+    const DELETED: &str = " (deleted)";
+
+    /// Whether this name is the kernel's name for a file that is no longer there.
+    ///
+    /// A real file may be called `x (deleted)`; the difference cannot be told from the
+    /// link alone, so the rare honest file is read as gone and refuses nothing. That is
+    /// the direction that under-counts occupancy, and the process is still judged on
+    /// everything else the walk read about it.
+    fn unlinked(path: &Path) -> bool {
+        path.to_str().is_some_and(|name| name.ends_with(DELETED))
+    }
+
+    /// How many fields of a `maps` line come before the path.
+    ///
+    /// The line is `address perms offset dev inode path`, so five.
+    const BEFORE_THE_PATH: usize = 5;
+
+    /// The file a `maps` line names, or nothing where it names none.
+    ///
+    /// The path is taken as the whole remainder of the line rather than as a field,
+    /// because a file name may hold spaces and splitting on whitespace would cut one in
+    /// half and then refuse over a path that does not exist.
+    fn mapped_path(line: &str) -> Option<&str> {
+        let mut rest = line.trim_start();
+        for _ in 0..BEFORE_THE_PATH {
+            let field = rest.find(char::is_whitespace)?;
+            rest = rest[field..].trim_start();
+        }
+        (rest.starts_with('/') && !rest.ends_with(DELETED)).then_some(rest)
+    }
+
+    /// The root directory this process sees, when it is not the machine's own.
+    ///
+    /// A process whose root is `/` is rooted at nothing in particular, and recording
+    /// that of every process on the machine would make every home look occupied. A
+    /// process rooted anywhere else — a container, a `chroot` — is held to that
+    /// directory and cannot be moved out of it.
+    fn rooted(directory: &Path) -> Vec<Held> {
+        std::fs::read_link(directory.join(ROOT))
+            .ok()
+            .filter(|root| root != Path::new("/"))
+            .map(|root| vec![Held::new(root, How::Root)])
+            .unwrap_or_default()
     }
 
     /// The file that holds one process's own statistics, including when it started.
@@ -394,6 +721,23 @@ mod linux {
         let record =
             std::fs::read_to_string(Path::new(PROC).join(pid.to_string()).join(STAT)).ok()?;
         stat_field(&record, PPID)
+    }
+
+    /// How many fields into `stat`'s tail the process group is ([`stat_field`]):
+    /// `state ppid pgrp ...`, so the third.
+    const PGRP: usize = 2;
+
+    /// Where one process came from, from the record that stays readable when the rest of
+    /// its directory does not.
+    ///
+    /// `stat` is world-readable for a process this account may not otherwise read, which
+    /// is what makes a withheld row worth keeping at all: its identifier, its parent, its
+    /// group and its session are facts, and everything else about it is a refusal.
+    fn lineage(directory: &Path) -> Lineage {
+        let Ok(record) = std::fs::read_to_string(directory.join(STAT)) else {
+            return Lineage::default();
+        };
+        Lineage { parent: stat_field(&record, PPID), group: stat_field(&record, PGRP) }
     }
 
     /// How many fields into `stat`'s tail the session identifier is
@@ -533,7 +877,7 @@ mod macos {
     use std::os::unix::ffi::OsStrExt as _;
     use std::path::PathBuf;
 
-    use super::{Presence, Running, Timestamp, Withheld, command_of, kept};
+    use super::{Lineage, Presence, Running, Timestamp, Withheld, command_of, kept};
     use crate::{Error, Result};
 
     unsafe extern "C" {
@@ -564,7 +908,7 @@ mod macos {
         let cwd = match directory(pid) {
             Ok(cwd) => cwd,
             Err(Unanswered::AnotherAccount) => {
-                let hidden = Running::new(pid_number, BTreeMap::new());
+                let hidden = Running::new(pid_number, BTreeMap::new()).from(lineage(pid));
                 return Some(hidden.withholding(Withheld::AnotherAccount));
             }
             Err(Unanswered::Gone) => return None,
@@ -580,6 +924,12 @@ mod macos {
             vars,
             cwd,
             command,
+            // macOS publishes no per-descriptor open flags for a vnode, so the read/write
+            // split that keeps an editor from refusing a reclaim cannot be made here.
+            // Occupancy on this host is the working directory, and [`OCCUPANCY`] says so
+            // rather than leaving a reader to infer it from an empty list.
+            held: Vec::new(),
+            lineage: lineage(pid),
             withheld: restricted.then_some(Withheld::Restricted),
         })
     }
@@ -754,7 +1104,11 @@ mod macos {
     ///
     /// The short record answers for every account, which the full record does not.
     pub(super) fn parent_of(pid: u32) -> Option<u32> {
-        let pid = libc::pid_t::try_from(pid).ok()?;
+        short_info(libc::pid_t::try_from(pid).ok()?).map(|info| info.pbsi_ppid)
+    }
+
+    /// The short record itself, which is what both readings of lineage are taken from.
+    fn short_info(pid: libc::pid_t) -> Option<libc::proc_bsdshortinfo> {
         // SAFETY: `proc_bsdshortinfo` is plain integers and byte arrays, so all zeroes is
         // a valid value of it.
         let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
@@ -769,7 +1123,21 @@ mod macos {
                 c_int::try_from(size).ok()?,
             )
         };
-        (usize::try_from(written).ok() == Some(size)).then_some(info.pbsi_ppid)
+        (usize::try_from(written).ok() == Some(size)).then_some(info)
+    }
+
+    /// Where one process came from, for a process of any account.
+    ///
+    /// The short record answers across accounts, which is what makes this readable for
+    /// exactly the process the rest of this module is refused: the one
+    /// [`Withheld::AnotherAccount`] is about. One call and no `getsid`: the session is
+    /// not part of [`Lineage`], for the reason that type states.
+    fn lineage(pid: libc::pid_t) -> Lineage {
+        let short = short_info(pid);
+        Lineage {
+            parent: short.map(|info| info.pbsi_ppid),
+            group: short.map(|info| info.pbsi_pgid),
+        }
     }
 
     /// Whether any process on this host is in the session `sid` names.

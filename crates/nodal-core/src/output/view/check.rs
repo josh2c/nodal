@@ -37,9 +37,92 @@ use crate::lifecycle::assess::{
 use crate::lifecycle::kernel::Verdict;
 use crate::lifecycle::uniqueness::Witness;
 use crate::model::Timestamp;
+use crate::model::reading::{Answered, Reading, Refs, Store};
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, JOIN, NONE};
 use crate::runtime::attribute::{Note, Source, Standing};
+
+/// What a verdict rests on, as the lines both the preflight and the reclaim print.
+///
+/// One renderer for one record, because `nodal reclaim --check` and `nodal reclaim` are
+/// the preflight and the operation it is a preflight for, and a person comparing the two
+/// must not have to work out whether two differently worded paragraphs are saying the
+/// same thing.
+pub(crate) fn rests_on(record: &Reading, runtime: Option<&Runtime>) -> String {
+    let mut lines = vec![stores_line(&record.stores), refs_line(&record.refs)];
+    lines.extend(runtime.map(table_line));
+    for gap in &record.not_checked {
+        lines.push(format!("not checked — {}: {}", gap.what, gap.why));
+    }
+    lines.join("\n")
+}
+
+/// Which object stores were asked for a second copy, and what each said.
+fn stores_line(stores: &[Store]) -> String {
+    if stores.is_empty() {
+        return String::from("stores: none on this machine to ask");
+    }
+    let answered = stores.iter().filter(|store| store.answered == Answered::Yes).count();
+    let shown: Vec<String> = stores
+        .iter()
+        .take(NAMED)
+        .map(|store| {
+            // The word is about the reading and never about the holding. A store that
+            // answered may well hold nothing, and this line says it was read, so that a
+            // reader does not take being named here for being offered as a copy.
+            let what = match store.answered {
+                Answered::Yes => String::from("read"),
+                Answered::No => {
+                    format!("would not answer ({})", store.why.as_deref().unwrap_or(""))
+                }
+                Answered::NotAsked => {
+                    format!("not asked ({})", store.why.as_deref().unwrap_or(""))
+                }
+            };
+            format!("{} {what}", store.path.display())
+        })
+        .collect();
+    format!(
+        "stores asked for a second copy: {answered} of {} read — {}",
+        stores.len(),
+        named(&shown, stores.len())
+    )
+}
+
+/// Which refs of the home the assessed commits were taken from, and which were not.
+fn refs_line(walked: &Refs) -> String {
+    format!(
+        "refs: walked {} ({} commit{}); not walked {}",
+        if walked.walked.is_empty() { String::from("none") } else { walked.walked.join(JOIN) },
+        walked.commits,
+        if walked.commits == 1 { "" } else { "s" },
+        if walked.not_walked.is_empty() {
+            String::from("nothing")
+        } else {
+            walked.not_walked.join(JOIN)
+        }
+    )
+}
+
+/// How much of the process table the reading got, and what occupancy meant on this host.
+///
+/// Off the runtime itself, which is the value the kernel judged
+/// ([`crate::lifecycle::kernel::Evidence::runtime`]), so the line and the answer cannot
+/// describe two different readings.
+fn table_line(runtime: &Runtime) -> String {
+    let occupancy = if runtime.occupancy.is_empty() {
+        String::from("nothing was read")
+    } else {
+        format!("occupancy is {}", runtime.occupancy.join(JOIN))
+    };
+    format!(
+        "process table: {}{} — {} read, {} withheld; {occupancy}",
+        runtime.how_far(),
+        runtime.at.as_deref().map(|at| format!(" {at}")).unwrap_or_default(),
+        runtime.read,
+        runtime.withheld,
+    )
+}
 
 /// How many names a line prints before it says how many more there are.
 const NAMED: usize = 6;
@@ -219,6 +302,7 @@ impl Render for Preflight {
             Field::new("runtime", self.runtime_cell()),
             Field::new("trash", self.trash_cell()),
             Field::new("with the rest", self.together_cell()),
+            Field::new("rests on", self.evidence_cell()),
         ];
         fields.retain(|field| !field.value.is_empty());
         let mut doc = Doc::from_iter([Block::fields(fields)]);
@@ -326,6 +410,19 @@ impl Preflight {
             ));
         }
         lines.join("\n")
+    }
+
+    /// What this verdict rests on: the positive record, printed whether it is safe or
+    /// not.
+    ///
+    /// **This is the half a refusal never needed and a safe verdict always did.** A
+    /// refusal names what it refused over, so it is its own evidence. A safe verdict used
+    /// to print the absence of objections and nothing else, so a home with nothing in it
+    /// and a home whose work fell outside what the predicate walks printed the same three
+    /// empty lists. Nothing here changes the verdict above it; it says what the verdict
+    /// was made of, so that a person or a test can disagree with it.
+    fn evidence_cell(&self) -> String {
+        rests_on(&self.assessment.reading, self.assessment.runtime.as_ref())
     }
 
     /// What a reclaim of the whole set would find about this unit, when one was asked.

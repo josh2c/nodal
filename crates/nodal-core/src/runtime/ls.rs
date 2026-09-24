@@ -521,11 +521,14 @@ impl<'a> Placed<'a> {
 /// because whether something stands in a home is a fact the list did not get, and the
 /// preflight refuses over the same unread table.
 ///
-/// What counts as standing in a home is [`assess::bystander`] and not a rule of this
-/// module's own. The list and the preflight print the same word over the same process,
-/// so they have to be reading the same predicate — including over a process that carries
+/// What counts as standing in a home is [`assess::Table::sort`] and not a rule of this
+/// module's own. The list and the preflight print the same word over the same process, so they
+/// have to be reading the same predicate — including over a process that carries
 /// **another** unit's identifier, which is Nodal's own and is still nothing this unit may
-/// signal or move a home out from under.
+/// signal or move a home out from under, and including over a process this account may
+/// not read at all, which the whole table has to be in hand to judge. Asking
+/// [`assess::bystander`] per process answered only the first of those, so a home the
+/// preflight refused on could be listed clear.
 fn scan(processes: &dyn Processes, homes: &[Placed<'_>], notices: &mut Vec<Notice>) -> Seen {
     let running = match processes.scan() {
         Ok(running) => running,
@@ -544,12 +547,16 @@ fn scan(processes: &dyn Processes, homes: &[Placed<'_>], notices: &mut Vec<Notic
     notices.extend(whys.into_iter().map(|why| Notice::general(format!("who: {why}"))));
     let mut seen = Seen { attached: attached(&running, notices), ..Seen::default() };
     let spared = stop::spared();
-    for process in &running {
-        for placed in homes {
-            let placement = std::slice::from_ref(&placed.resolved);
-            if assess::bystander(process, placed.own(), placement, &spared) {
-                seen.bystanders.insert(placed.home.clone());
-            }
+    // One reading, prepared once. The rule that judges a process this account cannot read
+    // needs the whole table, and a listing asks about every home the registry holds;
+    // working the table out per home made a listing cost homes × processes twice over
+    // ([`assess::Table`]).
+    let table = assess::Table::read(&running);
+    for placed in homes {
+        let placement = std::slice::from_ref(&placed.resolved);
+        let (_, standing) = table.sort(placed.own(), placement, &spared, &|_| false);
+        if !standing.is_empty() {
+            seen.bystanders.insert(placed.home.clone());
         }
     }
     seen

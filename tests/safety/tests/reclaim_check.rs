@@ -55,6 +55,9 @@
 //! | owned runtime is named and does not block | `owned_runtime_is_named_and_is_not_a_reason_to_refuse` |
 //! | a bystander blocks, and so it does for the reclaim | `a_bystander_blocks_the_move_and_the_reclaim_refuses_the_same_way` |
 //! | another unit's process blocks in the list too | `another_units_process_in_this_home_blocks_the_list_and_the_check_alike` |
+//! | a process this account cannot read, started from inside the home, blocks | `an_unreadable_process_whose_lineage_reaches_the_home_blocks_the_move_at_the_seam` |
+//! | and one whose lineage reaches nothing here is counted, not hidden | `an_unreadable_process_unrelated_to_the_home_is_counted_and_refuses_nothing_at_the_seam` |
+//! | sharing a terminal with a shell in the home is not occupancy | `an_unreadable_process_sharing_only_a_session_with_the_home_refuses_nothing_at_the_seam` |
 //! | it changes nothing | `the_check_changes_nothing_and_runs_no_hook` |
 //! | one value, two renderings | `the_human_form_and_the_json_are_one_value` |
 //! | it is not a way to force anything | `check_refuses_force_and_yes` |
@@ -64,9 +67,15 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
+use std::collections::BTreeMap;
+
+use nodal_core::lifecycle::assess::Own;
 use nodal_core::lifecycle::journal;
+use nodal_core::model::UnitId;
+use nodal_core::runtime::processes::{Held, How, Lineage, Running, Withheld};
 use nodal_core::store::{environments, projects, units};
 use nodal_safety::git::untouched;
+use nodal_safety::process::sorted;
 use nodal_safety::{InState as _, Machine, Snapshot, answer, git, stderr};
 use serde_json::Value;
 
@@ -718,6 +727,168 @@ fn another_units_process_in_this_home_blocks_the_list_and_the_check_alike() {
         "the process blocked the unit it belongs to, which it is standing nowhere near"
     );
     assert!(nodal_safety::process::alive(intruder.pid()), "a reading signalled the process");
+}
+
+/// A process this account cannot read, started from inside the home, blocks the move.
+///
+/// **Asserted at the `Processes` seam, and the name says so.** The shape is a process
+/// whose `/proc/<pid>` this account may not read — another account's on a shared host, or
+/// this account's own under a binary the kernel marks undumpable, which is what a setuid
+/// program becomes. Nothing unprivileged can make a machine hold one on demand: a test
+/// cannot become another account, and a setuid binary that blocks forever on a readable
+/// input is not a thing a suite may rely on existing. So the table is stated and the arm
+/// that judges it is what is pinned. `nodal-core/tests/attribution.rs` holds the other
+/// half — that the live scan really does keep such a process rather than drop it.
+///
+/// `linux::read` used to return `None` for exactly this process, so it left the
+/// table with no row, no note and nothing for a verdict to rest on, and a home with a
+/// stranger's command standing in it read as safe.
+///
+/// What refuses is the lineage. `/proc/<pid>/stat` stays world-readable when the rest of
+/// the directory does not, so a process whose parent, group or session reaches something
+/// already found in the home is a command started from inside the home, and the move
+/// refuses to go out from under it.
+#[test]
+fn an_unreadable_process_whose_lineage_reaches_the_home_blocks_the_move_at_the_seam() {
+    let home = PathBuf::from("/homes/one");
+    let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    let shell = Running::new(21, BTreeMap::new()).running("bash").in_directory(&home);
+    let hidden = Running::new(22, BTreeMap::new())
+        .running("passwd")
+        .from(Lineage { parent: Some(21), group: Some(21) })
+        .withholding(Withheld::AnotherAccount);
+
+    let (_, standing) =
+        sorted(&[shell, hidden], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
+    let blocked: Vec<u32> = standing.iter().map(|row| row.pid).collect();
+    assert_eq!(blocked, [21, 22], "the process nobody can read did not block: {standing:?}");
+    let named = standing.iter().find(|row| row.pid == 22).unwrap();
+    assert!(
+        named.holding.as_deref().is_some_and(|why| why.contains("may not read")),
+        "the refusal must say why it cannot say more: {named:?}"
+    );
+}
+
+/// And a process this account cannot read that has nothing to do with this home refuses
+/// nothing — it is counted instead.
+///
+/// The other half of the rule, and the reason the first half can ship. Unreadability alone
+/// is not a refusal: on the machine this was written on, 36 processes are withheld at any
+/// moment and 3 of them are this account's own, every one of them there from boot to
+/// shutdown. A rule that refused over unreadability would refuse every reclaim on this
+/// host for ever, with nothing a person could do to clear it, and a rule nobody can
+/// satisfy is a rule people turn off.
+///
+/// "Cannot see, therefore not safe" is a claim about *this home*. What the reading cannot
+/// close it counts, in the evidence record, where a person or a test can see the number
+/// and disagree with the verdict — which `evidence_record.rs` holds.
+#[test]
+fn an_unreadable_process_unrelated_to_the_home_is_counted_and_refuses_nothing_at_the_seam() {
+    let home = PathBuf::from("/homes/one");
+    let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    let shell = Running::new(21, BTreeMap::new()).running("bash").in_directory(&home);
+    let elsewhere = Running::new(99, BTreeMap::new())
+        .running("systemd")
+        .from(Lineage { parent: Some(1), group: Some(1) })
+        .withholding(Withheld::AnotherAccount);
+
+    let (_, standing) =
+        sorted(&[shell, elsewhere], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
+    let blocked: Vec<u32> = standing.iter().map(|row| row.pid).collect();
+    assert_eq!(blocked, [21], "an unrelated hidden process refused a reclaim: {standing:?}");
+}
+
+/// A process this account cannot read that shares only a **session** with a shell in the
+/// home refuses nothing.
+///
+/// The false refusal this rule used to make, and it is worth stating why a false refusal
+/// is worth a test. It loses nobody's work: the guarantee is about never saying safe when
+/// work would go, and refusing too much never does that. What it costs is the only thing
+/// a person can do about a refusal they cannot act on — a process they cannot see, cannot
+/// find and did not start — which is `--force`, and `--force` turns off every check in
+/// the operation. A rule that sends people to `--force` is worse than the hole it closes.
+///
+/// The shape is ordinary: a shell standing in the home is its own session leader, so its
+/// identifier is the session number, and everything else in that terminal shares it — a
+/// `sudo` run an hour ago from another pane, owned by root, standing nowhere near the
+/// home. Sharing a terminal is not occupancy.
+#[test]
+fn an_unreadable_process_sharing_only_a_session_with_the_home_refuses_nothing_at_the_seam() {
+    let home = PathBuf::from("/homes/one");
+    let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    // The shell: standing in the home, and the leader of its own session and group.
+    let shell = Running::new(21, BTreeMap::new())
+        .running("bash")
+        .in_directory(&home)
+        .from(Lineage { parent: Some(1), group: Some(21) });
+    // The stranger: the same terminal, another pane, another group, nothing to do with
+    // the home. Its session is 21 — and the session is not read.
+    let elsewhere = Running::new(22, BTreeMap::new())
+        .running("sudo")
+        .from(Lineage { parent: Some(30), group: Some(30) })
+        .withholding(Withheld::AnotherAccount);
+
+    let (_, standing) =
+        sorted(&[shell, elsewhere], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
+    let blocked: Vec<u32> = standing.iter().map(|row| row.pid).collect();
+    assert_eq!(
+        blocked,
+        [21],
+        "sharing a terminal with a shell in the home was read as being in the home: {standing:?}"
+    );
+}
+
+/// A process this account cannot read whose **group leader** stands in the home does
+/// refuse.
+///
+/// The other side of the line above. A group is the job a person started, and its leader
+/// is the command they typed; where that leader's own working directory is the home, what
+/// it started is in the home whether or not this account may read it.
+#[test]
+fn an_unreadable_process_whose_group_leader_stands_in_the_home_blocks_the_move_at_the_seam() {
+    let home = PathBuf::from("/homes/one");
+    let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    let leader = Running::new(21, BTreeMap::new())
+        .running("bash")
+        .in_directory(&home)
+        .from(Lineage { parent: Some(1), group: Some(21) });
+    let started = Running::new(22, BTreeMap::new())
+        .running("passwd")
+        .from(Lineage { parent: Some(21), group: Some(21) })
+        .withholding(Withheld::AnotherAccount);
+
+    let (_, standing) =
+        sorted(&[leader, started], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
+    let blocked: Vec<u32> = standing.iter().map(|row| row.pid).collect();
+    assert_eq!(blocked, [21, 22], "the job the shell started did not block: {standing:?}");
+}
+
+/// And a group whose leader is in the home only because it **holds** something there
+/// vouches for nothing.
+///
+/// The narrow half of the group rule. A process that turns up in the refusal because it
+/// has a descriptor open on a file in the home says nothing about where anything was
+/// started, so sharing its process group is not a reason to refuse over a process nobody
+/// can read.
+#[test]
+fn an_unreadable_process_grouped_with_a_mere_file_holder_refuses_nothing_at_the_seam() {
+    let home = PathBuf::from("/homes/one");
+    let unit = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    // In the refusal for holding a descriptor, and standing in `/`.
+    let holder = Running::new(21, BTreeMap::new())
+        .running("server")
+        .in_directory("/")
+        .holding(vec![Held::new(home.join("dist/dev.sqlite"), How::Descriptor)])
+        .from(Lineage { parent: Some(1), group: Some(21) });
+    let grouped = Running::new(22, BTreeMap::new())
+        .running("sudo")
+        .from(Lineage { parent: Some(30), group: Some(21) })
+        .withholding(Withheld::AnotherAccount);
+
+    let (_, standing) =
+        sorted(&[holder, grouped], Own::of(unit, &[]), std::slice::from_ref(&home), &[]);
+    let blocked: Vec<u32> = standing.iter().map(|row| row.pid).collect();
+    assert_eq!(blocked, [21], "a file holder vouched for a process nobody can read: {standing:?}");
 }
 
 /// What one row of `nodal ls` says it needs, and `absent` where it says nothing.

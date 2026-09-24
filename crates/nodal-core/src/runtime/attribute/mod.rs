@@ -197,20 +197,41 @@ pub struct Standing {
     pub pid: u32,
     /// A short form of its command, when the process table had one.
     pub command: Option<String>,
+    /// What it holds inside the home, when it holds something beside standing in it: the
+    /// hold and the path, as `writing /…/data/dev.sqlite`.
+    ///
+    /// `None` for the process that is simply standing in the home, which is the row this
+    /// type was named for and which reads exactly as it always has. A row that carries a
+    /// path is one a working directory would never have found, so the path is the whole
+    /// of the reason it is being named and a refusal that left it out would be telling a
+    /// person to go and look for a process in a directory it is not in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holding: Option<String>,
 }
 
 impl Standing {
     /// The process a scan saw, at the probable level.
     #[must_use]
     pub const fn new(pid: u32, command: Option<String>) -> Self {
-        Self { pid, command }
+        Self { pid, command, holding: None }
+    }
+
+    /// The same process, named by what it holds inside the home rather than by standing
+    /// in it.
+    #[must_use]
+    pub fn holding(mut self, what: impl Into<String>) -> Self {
+        self.holding = Some(what.into());
+        self
     }
 
     /// What it is and which process it is, which is all a person needs to find it.
     #[must_use]
     pub fn label(&self) -> String {
         let what = self.command.as_deref().unwrap_or("unnamed command");
-        format!("{what} (pid {})", self.pid)
+        match &self.holding {
+            Some(held) => format!("{what} (pid {}) {held}", self.pid),
+            None => format!("{what} (pid {})", self.pid),
+        }
     }
 
     /// The line a report prints: the process, and what was not done to it.
@@ -340,9 +361,19 @@ impl Note {
     }
 }
 
-/// What macOS refuses to show about a process of another account.
-pub const ANOTHER_ACCOUNT: &str =
-    "macos does not show the variables or the directory of a process of another account";
+/// What a host refuses to show about a process this account may not read.
+///
+/// Two hosts, one fact, two sentences, because the cause differs and a person reading the
+/// note is being told what to do about it. On macOS the kernel refuses a process of
+/// another account outright. On Linux the directory is there whichever account owns the
+/// process, and what is refused is its contents: another account's process, and this
+/// account's own process running a binary the kernel marks undumpable, which is what a
+/// setuid program becomes.
+pub const ANOTHER_ACCOUNT: &str = if cfg!(target_os = "macos") {
+    "macos does not show the variables or the directory of a process of another account"
+} else {
+    "this account may not read the variables, the directory or the open files of every process"
+};
 
 /// What macOS refuses to show about a process that runs a restricted binary.
 pub const RESTRICTED: &str =

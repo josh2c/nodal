@@ -130,6 +130,7 @@ use crate::lifecycle::step::{Commit, Output, Outputs, Plan, Step, nothing};
 use crate::lifecycle::uniqueness::Finding;
 use crate::lifecycle::witness::Checkout;
 use crate::lifecycle::{Done, Rebuild, marker, run};
+use crate::model::reading::{Reading, Unchecked};
 use crate::model::{
     EnvId, EnvState, Environment, EventKind, Project, Recipe, Rested, Timestamp, Trashed, Unit,
     UnitId, UnitStatus, expiry,
@@ -154,6 +155,9 @@ const TEARDOWN: &str = "runtime.stop";
 /// The key of the step that takes the build output out of the trashed copy. The
 /// registry write reads it: what the prune dropped is recorded on the trash row.
 const PRUNE: &str = "home.prune";
+
+/// The step that moves the home, whose output is the reading that let it go.
+const MOVE: &str = "home.trash";
 
 /// The message a forced reclaim's snapshot commit carries.
 const SNAPSHOT_MESSAGE: &str = "nodal: work in progress at reclaim";
@@ -193,6 +197,19 @@ pub struct Params {
     /// here and a replay must not remove what the first run was not asked to.
     #[serde(default)]
     pub prune: bool,
+    /// What the verdict this reclaim is acting on rested on ([`Evidence`]).
+    ///
+    /// Journalled with the rest of the plan, so that a reclaim resumed after an
+    /// interruption records the reading it was planned on rather than a fresh one taken
+    /// of a machine that has moved on. Defaulted on the way in, because a reclaim
+    /// journalled by an older Nodal has none and still has to be finished.
+    #[serde(default)]
+    pub reading: Reading,
+    /// The process table this operation read, which is the field the kernel is handed
+    /// ([`crate::lifecycle::kernel::Evidence::runtime`]) and the one place its counts
+    /// live. `None` for a reading that asked no occupancy question.
+    #[serde(default)]
+    pub runtime: Option<Runtime>,
     /// The process groups the unit's open recorded sessions hold — a tether, or a group
     /// a recipe hook left behind — read after `pre_reclaim` and before anything moves.
     /// These are the teardown's first and most certain targets.
@@ -510,6 +527,8 @@ fn occupancy(params: &Params, home: &Path) -> Occupancy {
 fn commit_of(params: &Params) -> Commit {
     let (unit, environment) = (params.unit.clone(), params.environment.clone());
     let entry = params.entry.clone();
+    let reading = params.reading.clone();
+    let runtime = params.runtime.clone();
     Box::new(move |tx: &Transaction<'_>, outputs: &Outputs| -> Result<Output> {
         let now = Timestamp::now();
         let given = ports::release(tx, environment.id)?;
@@ -531,11 +550,13 @@ fn commit_of(params: &Params) -> Commit {
         // nothing. Only this host's hold is given up: a claim another machine took is
         // that machine's to release.
         crate::runtime::lock::release(tx, unit.id)?;
+        let runtime = decided_on(runtime.as_ref(), outputs)?;
         let entry = entry.clone().map(|entry| Trashed { pruned_bytes: pruned.bytes, ..entry });
         if let Some(entry) = &entry {
             trash::insert(tx, entry)?;
         }
         record(tx, &unit, &environment, entry.as_ref(), &given)?;
+        verdict(tx, (&unit, &environment), (&reading, runtime.as_ref()), now)?;
         // The ports are the one thing in this operation's report that only the write
         // itself knows: they are given back inside this transaction, and what came back
         // is what it returned. It is not journalled, because a resumed reclaim's report
@@ -543,6 +564,25 @@ fn commit_of(params: &Params) -> Commit {
         serde_json::to_value(given)
             .map_err(|source| Error::Render { kind: "released ports", source })
     })
+}
+
+/// The reading a reclaim decided on, out of the two it takes.
+///
+/// The one carried in the plan was taken before the teardown, and the machine has
+/// changed since — the whole point of the teardown is that it changes it. The move step
+/// takes another, and that one is what gated the rename, so it is the one the event and
+/// the report both have to describe. `None` from the step is a move made without asking
+/// (`--force`), and then the planned reading is the only one there is.
+///
+/// One function and not one substitution at each site. The registry write and the report
+/// are two descriptions of one reclaim, and two copies of this rule are two chances for
+/// them to name different readings of the machine — which is the one thing a record of
+/// what a reclaim rested on exists to prevent.
+///
+/// # Errors
+/// As [`Outputs::read`], when the step's output is not a reading.
+fn decided_on(planned: Option<&Runtime>, outputs: &Outputs) -> Result<Option<Runtime>> {
+    Ok(outputs.read::<Option<Runtime>>(MOVE)?.flatten().or_else(|| planned.cloned()))
 }
 
 /// The process groups the teardown signalled and could not stop.
@@ -584,6 +624,66 @@ fn record(
         refs.extend(entry.snapshot.clone().map(|snapshot| ("snapshot", snapshot)));
     }
     events::note(tx, (unit.id, Some(environment.id)), EventKind::Note, body, &refs)
+}
+
+/// Write down what this reclaim decided on, so the question has an answer afterwards.
+///
+/// **The gap this closes.** A verdict used to be computed, rendered and dropped. Nothing
+/// in the registry said what the last reclaim of a unit decided, and nothing said what it
+/// decided on, so a home that turned out to be wanted could be argued about and never
+/// checked. The `event` table had no kind for it; now it does
+/// ([`EventKind::Verdict`]).
+///
+/// The event carries the summary and not the document. An event reference is one line of
+/// text by the model's own shape, and the whole record is what `nodal reclaim --check
+/// --json` prints; a document flattened into references would be neither readable nor
+/// parseable. What is here is what a person searching the log needs to find the run and
+/// to know whether the reading behind it was complete. Each reference it does carry is
+/// written whole: the model puts no length on a reference's value, and a `not_checked`
+/// cut short would be a record of what a reclaim could not check that itself stopped
+/// short of saying it.
+fn verdict(
+    tx: &Transaction<'_>,
+    subject: (&Unit, &Environment),
+    rested: (&Reading, Option<&Runtime>),
+    read_at: Timestamp,
+) -> Result<()> {
+    let (unit, environment) = subject;
+    let (reading, runtime) = rested;
+    let mut refs = vec![
+        ("stores_asked", reading.stores.len().to_string()),
+        (
+            "stores_answered",
+            reading
+                .stores
+                .iter()
+                .filter(|store| store.answered == crate::model::Answered::Yes)
+                .count()
+                .to_string(),
+        ),
+        ("refs_walked", reading.refs.walked.join(" ")),
+        ("commits_assessed", reading.refs.commits.to_string()),
+        ("read_at", read_at.to_string()),
+    ];
+    // The process half comes off the runtime, which is the value the kernel judged. A
+    // reading that asked no occupancy question says so rather than printing zeroes.
+    if let Some(runtime) = runtime {
+        refs.extend([
+            ("process_table", String::from(runtime.how_far())),
+            ("processes_read", runtime.read.to_string()),
+            ("processes_withheld", runtime.withheld.to_string()),
+            ("occupancy", runtime.occupancy.join(" ")),
+        ]);
+    }
+    // One reference and not one per gap: an event's references are a map, so two entries
+    // under one name would leave only the last of them and the record would quietly say
+    // less than the reading did.
+    if !reading.not_checked.is_empty() {
+        let gaps: Vec<&str> = reading.not_checked.iter().map(|gap| gap.what.as_str()).collect();
+        refs.push(("not_checked", gaps.join("; ")));
+    }
+    let body = format!("reclaim went ahead; {}", reading.summary());
+    events::note(tx, (unit.id, Some(environment.id)), EventKind::Verdict, body, &refs)
 }
 
 /// Finding an interrupted reclaim again, from what the journal kept.
@@ -733,16 +833,22 @@ impl Occupancy {
     /// The rule is [`assess::unmovable`], which is the rule `nodal reclaim --check`
     /// reports, so the preflight and the operation cannot disagree about it.
     ///
+    /// **It hands back the reading it made.** This is the scan that lets the home go, so
+    /// it is the scan the verdict event has to carry: the one taken before the teardown
+    /// describes a machine the operation has since changed. The caller writes it into the
+    /// step's output and the registry write reads it back
+    /// ([`assess::taken::BEFORE_THE_MOVE`]).
+    ///
     /// # Errors
     /// [`Error::HomeInUse`] naming what stands in the home, and
     /// [`Error::ProcessTableUnread`] with the reason the scan gave.
-    fn refuse(&self) -> Result<()> {
+    fn refuse(&self) -> Result<Runtime> {
         let seen = assess::processes_of(
             Own::of(self.unit, &self.groups).and_wrappers(&self.wrappers),
             std::slice::from_ref(&self.home),
         );
         match assess::unmovable(&seen) {
-            None => Ok(()),
+            None => Ok(seen.clone()),
             Some(Unmovable::Standing(standing)) => {
                 Err(Error::HomeInUse { slug: self.slug.clone(), standing: standing.to_vec() })
             }
@@ -750,6 +856,19 @@ impl Occupancy {
                 Err(Error::ProcessTableUnread { slug: self.slug.clone(), why: note.why.clone() })
             }
         }
+    }
+
+    /// The same reading, as the record a later step writes down.
+    ///
+    /// `None` where `--force` skipped the refusal, which is a move made without asking:
+    /// the record then keeps the reading the operation did make, and says which it is.
+    fn recorded(&self, force: bool) -> Result<Option<Runtime>> {
+        if force {
+            return Ok(None);
+        }
+        let mut seen = self.refuse()?;
+        seen.taken(assess::taken::BEFORE_THE_MOVE);
+        Ok(Some(seen))
     }
 }
 
@@ -766,7 +885,7 @@ struct TrashHome {
 
 impl Step for TrashHome {
     fn key(&self) -> String {
-        String::from("home.trash")
+        String::from(MOVE)
     }
 
     /// Repeatable in each of the three states a killed run can leave: the home where it
@@ -786,11 +905,9 @@ impl Step for TrashHome {
     /// unreadable since. The rule is [`assess::unmovable`], which is the rule
     /// `nodal reclaim --check` reports. `--force` moves the home over both refusals.
     fn apply(&self) -> Result<Output> {
-        if !self.force {
-            self.occupancy.refuse()?;
-        }
+        let read = self.occupancy.recorded(self.force)?;
         move_tree(&self.occupancy.home, &self.path)?;
-        Ok(nothing())
+        serde_json::to_value(read).map_err(|source| Error::Render { kind: "occupancy", source })
     }
 
     /// Move it back. This is why the trash is a move and not a delete: the operation's
@@ -894,7 +1011,7 @@ impl Step for HomePrune {
     /// [`Error::HomeInUse`] and [`Error::ProcessTableUnread`], from [`Occupancy`].
     fn apply(&self) -> Result<Output> {
         if !self.force {
-            self.occupancy.refuse()?;
+            drop(self.occupancy.refuse()?);
         }
         let report = prune::sweep(&self.occupancy.home);
         serde_json::to_value(report).map_err(|source| Error::Render { kind: "home prune", source })
@@ -1020,9 +1137,21 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
     let placed = placement(&environment)?;
     let recipe = recipe_of(&project.root);
     let examined = examine(&placed, &project.root, &unit, request.force)?;
-    if !request.force {
-        refuse_unread(&placed, &unit)?;
-    }
+    let mut reading = examined.reading;
+    // The reading above is about the work in the home and never asks the process table,
+    // so the record it carries says the table was not read. This reclaim does read it, a
+    // moment later and for its own reason, and the record must describe the reading the
+    // operation made rather than the one the check made.
+    //
+    // This is the reading *before the teardown*, and it is not the one that decides the
+    // rename: the move step reads the table again, after the groups have been stopped,
+    // and that second reading is what lets the home go. So this one is recorded as what
+    // it is, and the move step replaces it with its own ([`assess::taken`]). A reclaim
+    // that never reaches the move — a home that is not there, a checkout adopted in
+    // place — keeps this one, and the record says which it is.
+    let table = refuse_unread(&placed, &unit, request.force)?;
+    let mut table = table;
+    assess::record_table(&mut reading, table.as_mut(), assess::taken::BEFORE_THE_TEARDOWN);
     let snapshot = snapshot(&placed, &unit, &examined.findings)?;
     let state_dir = home::directory()?;
     let kept = Kept { recipe: &recipe, snapshot, rested: examined.rested };
@@ -1039,6 +1168,8 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
         environment,
         entry,
         prune: request.prune,
+        reading,
+        runtime: table,
         tethers: Vec::new(),
         wrappers: Vec::new(),
         force: request.force,
@@ -1110,6 +1241,9 @@ struct Examined {
     findings: Vec<Finding>,
     /// What the verdict rested on, for the row the trash keeps.
     rested: Rested,
+    /// What the reading itself rested on ([`Reading`]), carried out with the findings
+    /// so that the operation which acts on this check can record what it acted on.
+    reading: Reading,
 }
 
 /// The uniqueness check, and the refusal that comes of it.
@@ -1130,20 +1264,35 @@ struct Examined {
 /// that proof's own record — so nothing can write a row that says safe over a reading that
 /// did not.
 fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Result<Examined> {
-    let Some(home) = placed.path() else { return Ok(Examined::default()) };
+    let Some(home) = placed.path() else {
+        // Nothing was read, because there is nothing there to read. An empty record
+        // would say the same bytes as a reading that looked and found nothing, which is
+        // the one thing this record exists to stop.
+        let mut reading = Reading::default();
+        reading.not_checked.push(Unchecked::new(
+            "the home",
+            "not there: the registry holds a row for it and the directory has gone, so \
+             nothing could be read out of it",
+        ));
+        return Ok(Examined { reading, ..Examined::default() });
+    };
     let checkout = Checkout::read(source);
     let siblings = crate::doctor::scan::siblings(source);
     let refusal = assess::Input::refusal(home, Some(&checkout), &siblings);
     let assessment = assess::assess(&assess::Input { dispositions: true, ..refusal })?;
+    // The kernel decides, and the record rides along. `evidence` says what was read;
+    // nothing in it chooses an arm, and the arm below is the kernel's alone.
+    let reading = assessment.reading.clone();
     if let Some(proof) = assessment.verdict(Vec::new(), Timestamp::now()).proof() {
         return Ok(Examined {
             findings: Vec::new(),
             rested: Rested::Safe { copies: proof.record() },
+            reading,
         });
     }
     let findings = assessment.findings();
     if force {
-        return Ok(Examined { findings, rested: Rested::Forced });
+        return Ok(Examined { findings, rested: Rested::Forced, reading });
     }
     Err(Error::NotUnique { slug: unit.slug.clone(), findings })
 }
@@ -1159,15 +1308,13 @@ fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Resul
 ///
 /// # Errors
 /// [`Error::ProcessTableUnread`] with the reason the scan gave.
-fn refuse_unread(placed: &Placement, unit: &Unit) -> Result<()> {
-    let Placement::Managed(home) = placed else { return Ok(()) };
+fn refuse_unread(placed: &Placement, unit: &Unit, force: bool) -> Result<Option<Runtime>> {
+    let Placement::Managed(home) = placed else { return Ok(None) };
     let seen = assess::processes_of(Own::of(unit.id, &[]), std::slice::from_ref(home));
-    match assess::unmovable(&seen) {
-        Some(Unmovable::Unread(note)) => {
-            Err(Error::ProcessTableUnread { slug: unit.slug.clone(), why: note.why.clone() })
-        }
-        Some(Unmovable::Standing(_)) | None => Ok(()),
+    if !force && let Some(Unmovable::Unread(note)) = assess::unmovable(&seen) {
+        return Err(Error::ProcessTableUnread { slug: unit.slug.clone(), why: note.why.clone() });
     }
+    Ok(Some(seen))
 }
 
 /// The work-in-progress snapshot a forced reclaim takes before anything is removed.
@@ -1365,10 +1512,13 @@ fn report(
             notes.push(note);
         }
     }
+    let runtime = decided_on(params.runtime.as_ref(), &done.outputs)?;
     Ok(Reclaimed {
         now: Timestamp::now(),
         slug: params.unit.slug.to_string(),
         findings: prepared.findings.clone(),
+        reading: params.reading.clone(),
+        runtime,
         snapshot: params.entry.as_ref().and_then(|entry| entry.snapshot.clone()),
         record: done.record.clone(),
         stopped: torn.stopped,

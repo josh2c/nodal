@@ -521,6 +521,8 @@ impl World {
             unit: self.unit(),
             environment: self.environment(),
             entry: Some(self.trashed()),
+            reading: nodal_core::model::Reading::default(),
+            runtime: None,
             prune: false,
             tethers: Vec::new(),
             wrappers: Vec::new(),

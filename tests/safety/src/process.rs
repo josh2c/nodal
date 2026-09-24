@@ -71,10 +71,13 @@
 //! the machine one question — is anything from that run still running — and so that the
 //! answer covers no process belonging to anybody else.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use nodal_core::lifecycle::assess::{Own, Table};
+use nodal_core::runtime::attribute::Standing;
+use nodal_core::runtime::processes::Running;
 use nodal_core::runtime::stop::{self, Live, Signal, Signals as _, Target};
 use tempfile::TempDir;
 
@@ -694,6 +697,91 @@ pub fn of_another_unit(unit: &str, its_home: &Path, standing_in: &Path) -> Owned
     Owned::spawn(&mut command)
 }
 
+/// A process holding one file open **for writing**, standing nowhere near it.
+///
+/// This is the shape occupancy used to miss altogether: a test runner or
+/// a dev server started from a terminal that has since changed directory, writing its
+/// database into a git-ignored corner of a home. Its working directory is `/`, it carries
+/// no Nodal variable, and it would go on writing into the inode after the home was
+/// renamed out from under it, never learning that it moved.
+///
+/// The descriptor is opened by the shell and then `exec`'d through, so the process that
+/// survives is `sleep` holding a descriptor the shell opened. A shell redirection is not
+/// close-on-exec, which is what makes that work and is why no helper binary is needed.
+///
+/// # Panics
+///
+/// As [`Owned::spawn`], and when the file's directory cannot be made.
+#[must_use]
+pub fn writing_into(file: &Path) -> Owned {
+    holding(file, ">>")
+}
+
+/// The same process, holding the file open for **reading** only.
+///
+/// The control for [`writing_into`], and the whole reason the widened rule is affordable.
+/// An editor, a language server, a `tail` and a `grep` all hold descriptors like this one,
+/// and a rule that refused over them would refuse every reclaim on a working machine.
+/// `/proc/<pid>/fdinfo/<n>` carries the open flags, so the two are told apart at the cost
+/// of one file read.
+///
+/// # Panics
+///
+/// As [`writing_into`].
+#[must_use]
+pub fn reading_from(file: &Path) -> Owned {
+    holding(file, "<")
+}
+
+/// One process holding `file` open with `redirection`, from a working directory of `/`.
+fn holding(file: &Path, redirection: &str) -> Owned {
+    if let Some(above) = file.parent() {
+        std::fs::create_dir_all(above).expect("the directory the file goes in is made");
+    }
+    if !file.exists() {
+        std::fs::write(file, b"").expect("the file to hold open is made");
+    }
+    let sleep = readable_sleep();
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(format!("exec 9{redirection}\"$1\" && exec \"$2\" 30"))
+        .arg("holding")
+        .arg(file)
+        .arg(&sleep)
+        .current_dir("/")
+        .env_remove("NODAL_ID")
+        .env_remove("NODAL_ROOT");
+    let owned = Owned::spawn(&mut command);
+    // The descriptor is open once the shell has `exec`'d, and the caller's next act is to
+    // ask the machine what is holding the file. Waiting for the hold to be real is the
+    // difference between asserting the rule and asserting a race.
+    wait_for("the descriptor is open", || held_by(owned.pid(), file));
+    owned
+}
+
+/// Whether this process holds `file` open, as the host publishes it.
+///
+/// **A host that does not publish it answers yes.** macOS has no per-descriptor view a
+/// test may read without privilege, so there is nothing here to wait for, and waiting
+/// anyway would spend the whole timeout and then fail a test over a reading the host was
+/// never going to make. The tests whose claim needs the descriptor to be *seen* name macOS
+/// and skip; this waits only where the answer means something.
+///
+/// **The comparison is between resolved paths.** The kernel names an open file by the path
+/// it resolved to, with every link on the way taken out, and the acceptance script runs
+/// this whole tree under a second name — so a test that compared the name it wrote would
+/// wait thirty seconds for a hold that was there all along. This is the same rule
+/// [`nodal_core::lifecycle::assess::bystander`] states for a home reached through a link.
+fn held_by(pid: u32, file: &Path) -> bool {
+    if !cfg!(target_os = "linux") {
+        return true;
+    }
+    let Ok(wanted) = std::fs::canonicalize(file) else { return false };
+    let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) else { return false };
+    entries.flatten().any(|entry| std::fs::read_link(entry.path()).is_ok_and(|held| held == wanted))
+}
+
 /// A sleeping process that merely stands in a home and carries no Nodal variable.
 ///
 /// This is the signal attribution calls probable: a terminal with no integration and no
@@ -812,4 +900,21 @@ pub fn until<T>(what: &str, mut reading: impl FnMut() -> Option<T>) -> T {
         assert!(Instant::now() < deadline, "{what} did not happen within {TIMEOUT:?}");
         std::thread::sleep(POLL);
     }
+}
+
+/// Sort one stated process table the way a reclaim of one unit sorts the machine's.
+///
+/// [`nodal_core::lifecycle::assess::Table::sort`] is the product's one entry point, and
+/// it takes a reading of which processes have ended since the table was read. A test
+/// states its whole table, so nothing in it has ended, and writing that argument out at
+/// each assertion said nothing about the case being asserted. The kit carries the shape
+/// so that the product does not have to publish a seam only tests reach.
+#[must_use]
+pub fn sorted(
+    running: &[Running],
+    own: Own<'_>,
+    placed: &[PathBuf],
+    spared: &[u32],
+) -> (Vec<u32>, Vec<Standing>) {
+    Table::read(running).sort(own, placed, spared, &|_| false)
 }

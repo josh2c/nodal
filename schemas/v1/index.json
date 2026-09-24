@@ -44,6 +44,12 @@
       "type": "Event"
     },
     {
+      "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/reading.json",
+      "file": "reading.json",
+      "name": "reading",
+      "type": "Reading"
+    },
+    {
       "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/lease.json",
       "file": "lease.json",
       "name": "lease",

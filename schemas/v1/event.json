@@ -133,6 +133,11 @@
           "const": "note",
           "description": "A free note.",
           "type": "string"
+        },
+        {
+          "const": "verdict",
+          "description": "A destructive operation decided, and this is what it decided on. Written by an\nexecuted reclaim and by nothing else: a `--check` is a reading and writes nothing.",
+          "type": "string"
         }
       ]
     },

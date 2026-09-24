@@ -42,6 +42,13 @@ const EMBEDDED_TYPES: &[&str] = &[
     // One repository that held a copy of a trashed home's commits, published inside
     // `Trashed` as part of what the reclaim's verdict rested on.
     "Outside",
+    // The parts of a reading. A verdict rests on one document, so `Reading` is the
+    // record and each part of it is published inside that. Only the records are named
+    // here: the scan below reads `pub struct` lines, so the enumerations beside them
+    // are never matched and a name for one would sit here saying nothing.
+    "Store",
+    "Refs",
+    "Unchecked",
 ];
 
 fn model_dir() -> PathBuf {
@@ -127,4 +134,40 @@ fn no_stale_schema_files_are_left_behind() {
             "{name} is in schemas/ but not in the catalogue; delete it or add its type"
         );
     }
+}
+
+/// The contract's list of event kinds is the schema's list of event kinds.
+///
+/// Two places say what an event may be: the enum the schema is generated from, and the
+/// sentence in `docs/contracts.md` that a reader of the contract takes as the whole of
+/// it. A kind added to one and not the other leaves the document quietly wrong about the
+/// record it is describing — which is exactly what happened when `verdict` was added.
+/// Neither list is derived from the other, so this is what keeps them one list.
+#[test]
+fn the_contract_names_every_event_kind_the_schema_declares() {
+    let doc = std::fs::read_to_string(schemas_dir().join("..").join("docs").join("contracts.md"))
+        .expect("the contract is in the repository");
+    let sentence = doc
+        .split("Kinds: `")
+        .nth(1)
+        .and_then(|rest| rest.split('`').next())
+        .expect("the event schema section lists the kinds");
+    let named: Vec<String> =
+        sentence.split(',').map(|kind| kind.split_whitespace().collect()).collect();
+
+    let schema = schema::documents()
+        .into_iter()
+        .find(|doc| doc.name == "event")
+        .expect("the event schema is in the catalogue");
+    let declared: Vec<String> = schema.schema["$defs"]["EventKind"]["oneOf"]
+        .as_array()
+        .expect("EventKind is an enumeration of constants")
+        .iter()
+        .map(|one| one["const"].as_str().expect("each is a constant string").to_owned())
+        .collect();
+
+    assert_eq!(
+        named, declared,
+        "docs/contracts.md and the event schema disagree about what an event may be"
+    );
 }

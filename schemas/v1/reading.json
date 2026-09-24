@@ -1,0 +1,148 @@
+{
+  "$defs": {
+    "Answered": {
+      "description": "Whether a store answered the question it was asked.\n\nThree answers and not two, because \"it was not asked\" is not \"it said nothing\". A\nstore is skipped once every commit is accounted for, which is a reading that finished\nearly rather than a reading that failed, and a record that folded the two together\nwould report a healthy machine as a broken one.",
+      "oneOf": [
+        {
+          "const": "yes",
+          "description": "It was asked and it answered.",
+          "type": "string"
+        },
+        {
+          "const": "no",
+          "description": "It was asked and it did not answer: not a repository, unreadable, or its own\nreading failed. A store that does not answer holds nothing, which is the strict\ndirection.",
+          "type": "string"
+        },
+        {
+          "const": "not_asked",
+          "description": "It was not asked.",
+          "type": "string"
+        }
+      ]
+    },
+    "Refs": {
+      "description": "What was walked inside the home.",
+      "properties": {
+        "commits": {
+          "description": "How many commits that came to.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "not_walked": {
+          "description": "The refs that were not walked, named rather than left out, because a commit on one\nof them is work this verdict says nothing about.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "walked": {
+          "description": "The refs the assessed set of commits was taken from.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "walked",
+        "commits",
+        "not_walked"
+      ],
+      "type": "object"
+    },
+    "Role": {
+      "description": "What a store is to the home being read.",
+      "oneOf": [
+        {
+          "const": "checkout",
+          "description": "The project's own checkout.",
+          "type": "string"
+        },
+        {
+          "const": "sibling",
+          "description": "Another repository found on this disk beside it.",
+          "type": "string"
+        }
+      ]
+    },
+    "Store": {
+      "description": "One repository a copy of a commit was looked for in.",
+      "properties": {
+        "answered": {
+          "$ref": "#/$defs/Answered",
+          "description": "What it said."
+        },
+        "path": {
+          "description": "Where it is.",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/Role",
+          "description": "What it is to this home."
+        },
+        "why": {
+          "description": "Why, for an answer that needs one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "role",
+        "answered"
+      ],
+      "type": "object"
+    },
+    "Unchecked": {
+      "description": "One reading that was not made, and why.",
+      "properties": {
+        "what": {
+          "description": "What was not read.",
+          "type": "string"
+        },
+        "why": {
+          "description": "Why not, in one line a person can act on.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "what",
+        "why"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/reading.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Everything one verdict was taken from, beside the readings the kernel names itself.",
+  "properties": {
+    "not_checked": {
+      "description": "What was not read, and why. Never a failure; the reasons are as often \"nothing\nasked for it\" as \"it would not answer\".",
+      "items": {
+        "$ref": "#/$defs/Unchecked"
+      },
+      "type": "array"
+    },
+    "refs": {
+      "$ref": "#/$defs/Refs",
+      "description": "What was walked inside the home itself."
+    },
+    "stores": {
+      "description": "The object stores a copy of a commit was looked for in, and what each said.",
+      "items": {
+        "$ref": "#/$defs/Store"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "stores",
+    "refs",
+    "not_checked"
+  ],
+  "title": "Reading",
+  "type": "object"
+}

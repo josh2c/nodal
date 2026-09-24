@@ -196,13 +196,19 @@ fn a_restricted_binary_is_found_by_its_directory_and_its_variables_are_not_guess
     }
 }
 
-/// A process of another account is counted and never read.
+/// A process of another account is kept, counted and never read — on both hosts.
 ///
-/// This stays a host split. A Linux scan leaves out a process this account may not read.
-/// macOS lists it with what was withheld, and a note gives the count and the reason. The
-/// process that started the machine is another account's unless the test runs as root.
+/// **This was a host split and it is not one any more.** A Linux scan used to leave such
+/// a process out altogether: no row, no note, nothing. That made the one case the safety
+/// contract is written for — a process this account cannot see, standing in a home — the
+/// one case that produced no evidence at all. Both hosts now list it with what was
+/// withheld, so a reader can say how much it could not see.
+///
+/// The process that started the machine is another account's unless the test runs as
+/// root, and it is on every host this suite runs on, so it is the one row that can be
+/// asserted without making a machine hold anything.
 #[test]
-fn a_process_of_another_account_is_withheld_and_never_read() {
+fn a_process_of_another_account_is_kept_and_counted_and_never_read() {
     // SAFETY: `geteuid` takes no argument and cannot fail.
     if unsafe { libc::geteuid() } == 0
         && platform::skipped("another account's process is withheld", "the test runs as root")
@@ -210,14 +216,17 @@ fn a_process_of_another_account_is_withheld_and_never_read() {
         return;
     }
     let running = Live.scan().unwrap();
-    let first = running.iter().find(|process| process.pid == 1);
-    if !cfg!(target_os = "macos") {
-        assert!(first.is_none(), "a Linux scan left out what it could not read: {first:?}");
-        return;
-    }
-    let first = first.unwrap_or_else(|| panic!("macos lists the first process"));
+    let first = running
+        .iter()
+        .find(|process| process.pid == 1)
+        .unwrap_or_else(|| panic!("the first process is not in the table"));
     assert_eq!(first.withheld, Some(Withheld::AnotherAccount), "{first:?}");
-    assert!(first.vars.is_empty() && first.cwd.is_none() && first.command.is_none(), "{first:?}");
+    assert!(first.vars.is_empty() && first.cwd.is_none(), "{first:?}");
+    assert!(first.held.is_empty(), "what a withheld process holds is refused too: {first:?}");
+    assert!(
+        first.lineage.parent.is_some() || first.lineage.group.is_some(),
+        "the one thing still readable about it is where it came from: {first:?}"
+    );
     let notes = attribute::withheld(&running);
     let signals: Vec<Source> = notes
         .iter()
