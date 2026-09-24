@@ -9,11 +9,16 @@
 //! |---|---|---|
 //! | what branches are there, how old, what upstream | `git for-each-ref` | one, for all of them |
 //! | which of them the default branch already holds | `git for-each-ref --merged` | one, for all of them |
-//! | how many commits of one exist on no remote | `git rev-list --count` | one per branch |
 //!
-//! The third is one process per branch and cannot be fewer: `--not --remotes` is a
-//! question about one tip. A measured machine answered all three for 317 refs in about
-//! twenty seconds.
+//! It answered a third — how many commits of one branch exist on no remote — from
+//! `rev-list --count <rev> --not --remotes`, and that reading is gone. `--not --remotes` names
+//! a namespace rather than the refs it rested on, and `refs/remotes/` inside a repository is
+//! its record of its own pushes that nothing corrects, so the count was printed under a word
+//! that claimed the remote. The audit takes the count against what this
+//! checkout has seen on a remote instead, against the refs it names rather than a namespace
+//! ([`crate::git::Git::seen_on_remotes`]), and the report's own word says what that reading is
+//! worth. It is still one `rev-list` per branch ([`crate::git::Git::count_outside`]). A
+//! measured machine answered all three for 317 refs in about twenty seconds.
 //!
 //! Nothing here writes. `for-each-ref` and `rev-list` read refs and objects, and the
 //! facade runs every one of them with `GIT_OPTIONAL_LOCKS=0`, so not even the index is
@@ -23,11 +28,16 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use super::cmd;
+use super::oid::Oid;
 use crate::error::{Error, Result};
 
 /// What `git for-each-ref` is asked for, in the order the fields are read back.
-const FORMAT: &str =
-    "%(refname:short)%00%(committerdate:unix)%00%(upstream:short)%00%(upstream:track)";
+///
+/// The whole name comes first, because one call asks for two namespaces and the whole name is
+/// what tells a local branch from a reading of a remote. The identifier comes last, because
+/// only the remote-tracking half is read for it.
+const FORMAT: &str = "%(refname)%00%(refname:short)%00%(committerdate:unix)%00\
+     %(upstream:short)%00%(upstream:track)%00%(objectname)";
 
 /// What Git prints in `upstream:track` for a branch whose upstream is not there.
 const GONE: &str = "gone";
@@ -49,29 +59,64 @@ pub struct Local {
     pub upstream_gone: bool,
 }
 
-/// Every local branch, with the facts one `for-each-ref` can state about it.
+/// Where a repository keeps its own branches.
+const HEADS: &str = "refs/heads/";
+
+/// Where it keeps what it last saw of a remote.
+const TRACKING: &str = "refs/remotes/";
+
+/// Every local branch, and the tips this repository last saw on a remote.
+///
+/// **One process for both.** The branch audit needs each, and the second used to be a second
+/// `for-each-ref` over `refs/remotes/`: a whole extra invocation per repository to read
+/// something the first call could have answered for. `git for-each-ref` takes more than one
+/// pattern, and the whole name says which namespace a record came out of.
+///
+/// The tips are a reading and never a proof. They are written when this repository fetches or
+/// pushes and nothing corrects them ([`crate::git::Git::seen_on_remotes`] says the same of the
+/// same refs).
 ///
 /// # Errors
 /// [`Error::Git`] when `git for-each-ref` failed, [`Error::GitParse`] on a record with
 /// the wrong number of fields.
-pub(super) fn locals(repo: &Path) -> Result<Vec<Local>> {
+pub(super) fn locals(repo: &Path) -> Result<(Vec<Local>, Vec<Oid>)> {
     let format = format!("--format={FORMAT}");
-    let output = cmd::run_ok(repo, &["for-each-ref", "--sort=refname", &format, "refs/heads/"])?;
-    output.lines()?.iter().map(|line| one(&output.args, line)).collect()
+    let output = cmd::run_ok(repo, &["for-each-ref", "--sort=refname", &format, HEADS, TRACKING])?;
+    let mut locals = Vec::new();
+    let mut seen = Vec::new();
+    for line in output.lines()? {
+        match one(&output.args, line)? {
+            Record::Local(local) => locals.push(local),
+            Record::Seen(oid) => seen.push(oid),
+        }
+    }
+    Ok((locals, seen))
 }
 
-/// One record of [`FORMAT`] as a branch.
-fn one(args: &[String], line: &str) -> Result<Local> {
+/// One record of [`FORMAT`]: a local branch, or a tip this repository last saw on a remote.
+enum Record {
+    /// A `refs/heads/` ref, with the facts the audit prints about it.
+    Local(Local),
+    /// A `refs/remotes/` tip. The name is not kept: nothing counts against one ref rather
+    /// than another, and a name nobody reads is a field that can drift.
+    Seen(Oid),
+}
+
+/// One record of [`FORMAT`], sorted by the namespace its whole name names.
+fn one(args: &[String], line: &str) -> Result<Record> {
     let fields: Vec<&str> = line.split('\0').collect();
-    let [name, committed, upstream, track] = fields.as_slice() else {
+    let [reference, name, committed, upstream, track, oid] = fields.as_slice() else {
         return Err(Error::GitParse { args: args.to_vec(), record: line.to_owned() });
     };
-    Ok(Local {
+    if reference.starts_with(TRACKING) {
+        return Ok(Record::Seen(Oid::parse(oid)?));
+    }
+    Ok(Record::Local(Local {
         name: (*name).to_owned(),
         committed: committed.parse().unwrap_or_default(),
         upstream: (!upstream.is_empty()).then(|| (*upstream).to_owned()),
         upstream_gone: track.contains(GONE),
-    })
+    }))
 }
 
 /// The names of every local branch `base` already holds.
@@ -92,36 +137,40 @@ pub(super) fn merged_into(repo: &Path, base: &str) -> Result<BTreeSet<String>> {
     Ok(output.lines()?.iter().map(|name| (*name).to_owned()).collect())
 }
 
-/// How many commits of `rev` exist on no remote-tracking ref.
-///
-/// One `rev-list` and nothing else. [`super::remote::containment`] answers the same
-/// question with the commits themselves and one more process for the remote names,
-/// which is the right shape for one revision and the wrong one for three hundred.
-///
-/// # Errors
-/// [`Error::Git`] when the revision is unknown, [`Error::GitParse`] when the count
-/// could not be read.
-pub(super) fn unpushed_count(repo: &Path, rev: &str) -> Result<usize> {
-    let output = cmd::run_ok(repo, &["rev-list", "--count", rev, "--not", "--remotes"])?;
-    let text = output.text()?;
-    text.trim()
-        .parse()
-        .map_err(|_| Error::GitParse { args: output.args.clone(), record: text.to_owned() })
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 mod tests {
-    use super::one;
+    use super::{Oid, Record, one};
 
     fn args() -> Vec<String> {
         vec![String::from("for-each-ref")]
     }
 
+    /// A record as [`super::FORMAT`] prints one, from the namespace and the four fields the
+    /// tests vary. The identifier is the same in every one: nothing here is about its value.
+    fn record(namespace: &str, name: &str, committed: &str, upstream: &str, track: &str) -> String {
+        let whole = format!("{namespace}{name}");
+        let oid = "a".repeat(40);
+        [whole.as_str(), name, committed, upstream, track, oid.as_str()].join("\0")
+    }
+
+    /// One local branch, or a panic naming what came back instead.
+    fn local(line: &str) -> super::Local {
+        match one(&args(), line).unwrap() {
+            Record::Local(branch) => branch,
+            Record::Seen(oid) => panic!("a local branch was read as a remote tip: {oid:?}"),
+        }
+    }
+
     #[test]
     fn a_branch_states_its_name_its_age_and_its_upstream() {
-        let branch =
-            one(&args(), "importer/retry\u{0}1756900000\u{0}origin/importer/retry\u{0}").unwrap();
+        let branch = local(&record(
+            "refs/heads/",
+            "importer/retry",
+            "1756900000",
+            "origin/importer/retry",
+            "",
+        ));
         assert_eq!(branch.name, "importer/retry");
         assert_eq!(branch.committed, 1_756_900_000);
         assert_eq!(branch.upstream.as_deref(), Some("origin/importer/retry"));
@@ -130,16 +179,28 @@ mod tests {
 
     #[test]
     fn a_branch_that_follows_nothing_names_no_upstream() {
-        let branch = one(&args(), "local-only\u{0}1756900000\u{0}\u{0}").unwrap();
+        let branch = local(&record("refs/heads/", "local-only", "1756900000", "", ""));
         assert_eq!(branch.upstream, None);
         assert!(!branch.upstream_gone);
     }
 
     #[test]
     fn a_branch_whose_upstream_was_deleted_says_so() {
-        let branch = one(&args(), "old\u{0}1756900000\u{0}origin/old\u{0}[gone]").unwrap();
+        let branch = local(&record("refs/heads/", "old", "1756900000", "origin/old", "[gone]"));
         assert_eq!(branch.upstream.as_deref(), Some("origin/old"));
         assert!(branch.upstream_gone);
+    }
+
+    /// One call asks for two namespaces, and the whole name is what sorts the records. A
+    /// remote-tracking ref read as a local branch would put a reading of somewhere else in the
+    /// table of this repository's own work.
+    #[test]
+    fn a_remote_tracking_ref_is_a_tip_this_repository_has_seen_and_never_a_branch() {
+        let line = record("refs/remotes/", "origin/main", "1756900000", "", "");
+        let Record::Seen(oid) = one(&args(), &line).unwrap() else {
+            panic!("a remote-tracking ref was read as a local branch");
+        };
+        assert_eq!(oid, Oid::parse(&"a".repeat(40)).unwrap());
     }
 
     #[test]

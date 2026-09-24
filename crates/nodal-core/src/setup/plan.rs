@@ -413,14 +413,22 @@ fn homes(state: &Path) -> Result<Vec<(PathBuf, Option<PathBuf>)>> {
 /// What one home holds that exists nowhere else, or nothing when it holds nothing and
 /// nothing when it could not be read.
 ///
-/// A home Git cannot read is not a claim that it is safe. It is left out of the
-/// findings because there is nothing to report about it; the state item still names how
-/// many homes there are, and `--state` still asks before it removes any of them.
+/// The verdict is the kernel's, over exactly the reading a refusing `nodal reclaim` makes
+/// ([`crate::lifecycle::kernel::judge`]), so an uninstall refuses over what a reclaim
+/// refuses over. The findings are the words the refusal prints and never a second
+/// predicate: they are read only where the verdict already said no.
+///
+/// A home Git cannot read is not a claim that it is safe. It is left out of the findings
+/// because there is nothing to report about it; the state item still names how many homes
+/// there are, and `--state` still asks before it removes any of them.
 fn unique_work(home: &Path, project: Option<&Path>) -> Option<Uniqueness> {
     let checkout = project.map(Checkout::read);
     let input = assess::Input::refusal(home, checkout.as_ref(), &[]);
-    let findings = assess::assess(&input).ok()?.findings();
-    (!findings.is_empty()).then(|| Uniqueness { home: home.to_path_buf(), findings })
+    let assessment = assess::assess(&input).ok()?;
+    if assessment.verdict(Vec::new(), Timestamp::now()).safe() {
+        return None;
+    }
+    Some(Uniqueness { home: home.to_path_buf(), findings: assessment.findings() })
 }
 
 /// The message a refused uninstall carries.

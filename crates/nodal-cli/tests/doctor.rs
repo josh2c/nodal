@@ -217,7 +217,8 @@ fn the_checkout_is_unchanged_by_the_report() {
 ///
 /// The checkout here holds one branch a worktree has (`side`) and one nothing has
 /// (`left-behind`), and it names no remote. A branch with commits and no remote to hold
-/// them is unpushed, which is what `remote_containment` means and what the report says.
+/// them is unpushed: no remote-tracking ref of this checkout reaches its commits, because it
+/// has none.
 fn with_a_branch(root: &Path) -> PathBuf {
     let checkout = checkout(root);
     git(&checkout, &["branch", "left-behind"]);

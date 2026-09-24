@@ -58,6 +58,6 @@ pub use crate::model::recipe::{
 pub use crate::model::schema::{SCHEMA_VERSION, SchemaDoc};
 pub use crate::model::session::Session;
 pub use crate::model::timestamp::Timestamp;
-pub use crate::model::trash::{Outside, Rested, Trashed, expiry};
+pub use crate::model::trash::{Outside, Record, Rested, Trashed, expiry};
 pub use crate::model::unit::{BranchName, Objective, Slug, Unit, UnitStatus};
 pub use crate::model::version::Version;

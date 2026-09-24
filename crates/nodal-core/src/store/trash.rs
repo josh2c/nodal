@@ -177,7 +177,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{read, written};
-    use crate::model::{Outside, Rested};
+    use crate::model::{Outside, Record, Rested};
 
     /// A verdict that rested on a copy travels to the column and back unchanged. The
     /// sweep that decides whether a directory may go reads exactly what the reclaim
@@ -185,11 +185,11 @@ mod tests {
     #[test]
     fn what_a_verdict_rested_on_survives_the_column() {
         let rested = Rested::Safe {
-            copies: vec![Outside {
+            copies: Record::of(vec![Outside {
                 repository: PathBuf::from("/w/project"),
                 references: vec![String::from("refs/remotes/origin/topic")],
                 commits: 3,
-            }],
+            }]),
         };
         assert_eq!(read(&written(&rested).unwrap(), None), rested);
     }

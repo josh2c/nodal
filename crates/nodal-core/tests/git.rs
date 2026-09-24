@@ -395,38 +395,32 @@ fn refs_round_trip_in_the_nodal_namespace() {
     assert!(git.write_ref("refs/nodal/bad", &head, "reason").is_ok());
 }
 
-/// Remote containment: nothing is contained without a remote, everything is after a push.
+/// The facade counts what a witness vouches for, and says nothing about `refs/remotes/`.
+///
+/// This replaces `remote_containment_answers_whether_commits_exist_elsewhere`, which asserted
+/// that a push made a revision "contained". The reading behind that word was the repository's
+/// own remote-tracking refs, which nothing corrects when the remote drops a branch, so the
+/// facade no longer offers it: a count is taken against tips a caller hands in, and who
+/// vouched for those tips is the caller's to decide ([`nodal_core::doctor::unique::believed`]).
 #[test]
-fn remote_containment_answers_whether_commits_exist_elsewhere() {
+fn a_count_of_what_is_outside_is_taken_against_the_tips_the_caller_hands_in() {
     let repo = Repo::seeded();
     let git = repo.git_facade();
-    let alone = git.remote_containment("main").unwrap();
-    assert!(alone.remotes.is_empty());
-    assert!(!alone.is_contained());
-    assert_eq!(alone.unpushed.len(), 1);
 
-    let remote_dir = TempDir::new().unwrap();
-    let remote_path = remote_dir.path().join("origin.git");
-    assert!(
-        Command::new("git")
-            .args(["init", "--bare", remote_path.to_str().unwrap()])
-            .status()
-            .unwrap()
-            .success()
-    );
-    repo.git(&["remote", "add", "origin", remote_path.to_str().unwrap()]);
-    repo.git(&["push", "origin", "main"]);
-
-    let pushed = git.remote_containment("main").unwrap();
-    assert_eq!(pushed.remotes, ["origin"]);
-    assert!(pushed.is_contained());
+    // Nothing vouched for: every commit of the revision is outside.
+    assert_eq!(git.count_outside("main", &[]).unwrap(), 1);
 
     repo.write("local.txt", "only here\n");
     let local = repo.commit("local only");
-    let diverged = git.remote_containment("main").unwrap();
-    assert_eq!(diverged.unpushed, [local]);
-    assert!(!diverged.is_contained());
-    assert!(git.remote_containment("no-such-rev").is_err());
+    assert_eq!(git.count_outside("main", &[]).unwrap(), 2);
+    // The tip vouched for: nothing of the branch is outside it.
+    assert_eq!(git.count_outside("main", std::slice::from_ref(&local)).unwrap(), 0);
+
+    // An unknown revision is nothing to count and not a failure. `git/outside.rs` passes
+    // `--ignore-missing` on purpose, because a caller naming a ref another command has since
+    // deleted must get an answer about the refs that are there. The deleted
+    // `remote_containment` raised on it, and no caller acted on that.
+    assert_eq!(git.count_outside("no-such-rev", &[]).unwrap(), 0);
 }
 
 /// Preflight is clear on a quiet repository and names every state it finds.

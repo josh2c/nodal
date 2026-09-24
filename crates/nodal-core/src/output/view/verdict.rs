@@ -147,8 +147,18 @@ pub struct WorktreeRow {
     pub intent: Option<String>,
     /// What merging it into the checkout's default branch would do.
     pub done: Integration,
-    /// Commits of it that exist on no remote.
-    pub unpushed: u32,
+    /// Commits of it that no witnessed reading of the remote reaches, and `None` where
+    /// nothing on this machine could check this repository's own remote-tracking refs.
+    ///
+    /// Three answers and not a number, because "no commit is at risk" and "nobody could
+    /// look" are different facts and a zero would print the first where the second is true.
+    /// A row Nodal could not check holds work as far as this table is concerned
+    /// ([`WorktreeRow::holds_unique_work`]), which is the safe direction.
+    ///
+    /// Defaulted on the way in, so a document an older Nodal wrote reads as the stricter of
+    /// the two rather than as a claim it never made.
+    #[serde(default)]
+    pub unpushed: Option<u32>,
     /// Paths in it that carry work no commit holds.
     pub uncommitted: u32,
     /// How far the base has moved under it, `None` when nothing could say.
@@ -177,7 +187,7 @@ impl WorktreeRow {
     /// done, small and old is still one a person must not lose, if this is true of it.
     #[must_use]
     pub const fn holds_unique_work(&self) -> bool {
-        self.unpushed > 0 || self.uncommitted > 0
+        !matches!(self.unpushed, Some(0)) || self.uncommitted > 0
     }
 
     /// Whether removing this worktree would cost nothing: its work is on the base and
@@ -197,13 +207,15 @@ impl WorktreeRow {
         }
     }
 
-    /// What the row holds that exists nowhere else: `^3` commits no remote has, `*2`
-    /// paths no commit holds.
+    /// What the row holds that exists nowhere else: `^3` commits no witnessed reading of
+    /// the remote reaches, `^?` a reading nobody could take, `*2` paths no commit holds.
     #[must_use]
     pub fn only_here(&self) -> String {
         let mut marks = Vec::new();
-        if self.unpushed > 0 {
-            marks.push(format!("^{}", self.unpushed));
+        match self.unpushed {
+            Some(0) => {}
+            Some(kept) => marks.push(format!("^{kept}")),
+            None => marks.push(String::from("^?")),
         }
         if self.uncommitted > 0 {
             marks.push(format!("*{}", self.uncommitted));
@@ -408,7 +420,7 @@ mod tests {
     use crate::git::integration::{Integration, Reason};
     use crate::model::Timestamp;
 
-    fn row(name: &str, done: Integration, unpushed: u32, uncommitted: u32) -> WorktreeRow {
+    fn row(name: &str, done: Integration, unpushed: Option<u32>, uncommitted: u32) -> WorktreeRow {
         WorktreeRow {
             kind: RowKind::Worktree,
             name: String::from(name),
@@ -447,11 +459,11 @@ mod tests {
     fn the_closing_line_counts_only_worktrees_that_hold_nothing_of_their_own() {
         let done = Integration::Integrated(Reason::Absorbed);
         let rows = vec![
-            row("clean-one", done, 0, 0),
-            row("clean-two", done, 0, 0),
-            row("done-but-dirty", done, 0, 4),
-            row("done-but-unpushed", done, 2, 0),
-            row("still-open", Integration::Open, 0, 0),
+            row("clean-one", done, Some(0), 0),
+            row("clean-two", done, Some(0), 0),
+            row("done-but-dirty", done, Some(0), 4),
+            row("done-but-unpushed", done, Some(2), 0),
+            row("still-open", Integration::Open, Some(0), 0),
         ];
         let line = verdict(rows).closing();
         assert!(line.starts_with("2 worktrees are done and hold nothing unique: 2.0 GB"), "{line}");
@@ -461,19 +473,20 @@ mod tests {
     #[test]
     fn one_removable_worktree_is_said_in_the_singular() {
         let line =
-            verdict(vec![row("only", Integration::Integrated(Reason::Ancestor), 0, 0)]).closing();
+            verdict(vec![row("only", Integration::Integrated(Reason::Ancestor), Some(0), 0)])
+                .closing();
         assert!(line.starts_with("1 worktree is done and holds nothing unique: 1.0 GB"), "{line}");
     }
 
     #[test]
     fn nothing_removable_is_said_and_the_promise_is_still_made() {
-        let line = verdict(vec![row("busy", Integration::Open, 3, 0)]).closing();
+        let line = verdict(vec![row("busy", Integration::Open, Some(3), 0)]).closing();
         assert_eq!(line, "no worktree here is done and empty. nodal removed nothing.");
     }
 
     #[test]
     fn a_unit_row_is_never_counted_as_a_worktree() {
-        let mut unit = row("verdict-1", Integration::Integrated(Reason::Ancestor), 0, 0);
+        let mut unit = row("verdict-1", Integration::Integrated(Reason::Ancestor), Some(0), 0);
         unit.kind = RowKind::Unit;
         let line = verdict(vec![unit]).closing();
         assert_eq!(line, "no worktree here is done and empty. nodal removed nothing.");
@@ -484,7 +497,7 @@ mod tests {
     /// to skip the line the stale case needs them to read.
     #[test]
     fn a_behind_reading_from_a_checkout_fetched_today_says_nothing_about_its_age() {
-        let mut seen = verdict(vec![row("busy", Integration::Open, 1, 0)]);
+        let mut seen = verdict(vec![row("busy", Integration::Open, Some(1), 0)]);
         seen.base_moved_at = Some(hours_before(seen.now, 5));
         assert_eq!(seen.staleness(), None);
         assert_eq!(seen.closing(), "no worktree here is done and empty. nodal removed nothing.");
@@ -495,7 +508,7 @@ mod tests {
     /// data is three weeks old, and this sentence is the only thing that says so.
     #[test]
     fn a_behind_reading_older_than_a_week_is_given_the_day_it_was_taken() {
-        let mut seen = verdict(vec![row("busy", Integration::Open, 1, 0)]);
+        let mut seen = verdict(vec![row("busy", Integration::Open, Some(1), 0)]);
         seen.base = Some(String::from("origin/main"));
         seen.now = Timestamp::parse("2026-09-12T07:00:00Z").unwrap();
         seen.base_moved_at = Some(Timestamp::parse("2026-08-20T06:55:26Z").unwrap());
@@ -509,7 +522,7 @@ mod tests {
     /// Between a day and a week the length is what a person still holds in their head.
     #[test]
     fn a_behind_reading_of_a_few_days_is_given_as_a_length() {
-        let mut seen = verdict(vec![row("busy", Integration::Open, 1, 0)]);
+        let mut seen = verdict(vec![row("busy", Integration::Open, Some(1), 0)]);
         seen.base_moved_at = Some(hours_before(seen.now, 72));
         assert_eq!(
             seen.staleness().unwrap(),
@@ -523,7 +536,7 @@ mod tests {
     /// alternative is a claim nothing supports.
     #[test]
     fn a_reference_nothing_could_date_is_not_called_fresh_or_stale() {
-        let seen = verdict(vec![row("busy", Integration::Open, 1, 0)]);
+        let seen = verdict(vec![row("busy", Integration::Open, Some(1), 0)]);
         assert_eq!(seen.base_moved_at, None);
         assert_eq!(seen.staleness(), None);
     }
@@ -531,7 +544,7 @@ mod tests {
     /// A checkout with no default branch has nothing to be behind and nothing to date.
     #[test]
     fn a_checkout_with_no_default_branch_says_nothing_about_an_age() {
-        let mut seen = verdict(vec![row("busy", Integration::Open, 1, 0)]);
+        let mut seen = verdict(vec![row("busy", Integration::Open, Some(1), 0)]);
         seen.base = None;
         seen.base_moved_at = Some(hours_before(seen.now, 500));
         assert_eq!(seen.staleness(), None);
@@ -539,12 +552,12 @@ mod tests {
 
     #[test]
     fn a_worktree_with_no_upstream_and_no_base_says_unknown_rather_than_zero() {
-        assert_eq!(row("x", Integration::Open, 0, 0).behind_cell(), "unknown");
+        assert_eq!(row("x", Integration::Open, Some(0), 0).behind_cell(), "unknown");
     }
 
     #[test]
     fn a_behind_count_carries_the_revision_it_was_measured_against() {
-        let mut measured = row("x", Integration::Open, 0, 0);
+        let mut measured = row("x", Integration::Open, Some(0), 0);
         measured.behind =
             Some(Behind { commits: 12, reference: String::from("origin/main"), upstream: true });
         assert_eq!(measured.behind_cell(), "-12 (origin/main)");
@@ -552,16 +565,16 @@ mod tests {
 
     #[test]
     fn a_note_is_printed_instead_of_a_verdict_that_was_never_asked_for() {
-        let mut held = row("x", Integration::Unknown, 0, 0);
+        let mut held = row("x", Integration::Unknown, Some(0), 0);
         held.note = Some(String::from("locked"));
         assert_eq!(held.done_cell(), "locked");
     }
 
     #[test]
     fn only_here_names_both_kinds_of_work_and_says_nothing_when_there_is_none() {
-        assert_eq!(row("x", Integration::Open, 3, 2).only_here(), "^3 *2");
-        assert_eq!(row("x", Integration::Open, 0, 2).only_here(), "*2");
-        assert_eq!(row("x", Integration::Open, 0, 0).only_here(), "—");
+        assert_eq!(row("x", Integration::Open, Some(3), 2).only_here(), "^3 *2");
+        assert_eq!(row("x", Integration::Open, Some(0), 2).only_here(), "*2");
+        assert_eq!(row("x", Integration::Open, Some(0), 0).only_here(), "—");
     }
 
     #[test]

@@ -53,7 +53,7 @@
 use std::path::Path;
 
 use crate::doctor::{Section, intent, size};
-use crate::git::Git;
+use crate::git::{Git, Oid};
 use crate::output::view::doctor::{Finding, Kind};
 use crate::paths;
 use crate::{Result, git};
@@ -82,14 +82,29 @@ pub fn find(root: &Path, sessions: Option<&Path>, section: Section) -> Result<Ve
         return Ok(Vec::new());
     };
     let root = paths::resolve(root);
-    let mut findings = Vec::new();
-    for mut registered in git.worktrees()? {
-        registered.path = paths::resolve(&registered.path);
-        if registered.path == root {
-            continue;
-        }
-        findings.push(one(&root, &registered, sessions, section));
+    let mut registered: Vec<git::worktree::Registered> = git
+        .worktrees()?
+        .into_iter()
+        .map(|mut one| {
+            one.path = paths::resolve(&one.path);
+            one
+        })
+        .filter(|one| one.path != root)
+        .collect();
+    if registered.is_empty() {
+        // A checkout with no worktree of its own asks nothing further. The reading below is one
+        // invocation, and a survey of a machine's repositories pays it once per repository, so
+        // it is not taken where there is no row for it to be about.
+        return Ok(Vec::new());
     }
+    // Read once for every worktree of this checkout. A worktree shares the object store and
+    // the remote-tracking refs of the repository it belongs to, so what this checkout has seen
+    // on a remote is one fact about the repository rather than one per worktree.
+    let seen = git.seen_on_remotes().unwrap_or_default();
+    let findings = registered
+        .drain(..)
+        .map(|one_of| one(&root, &one_of, sessions, (section, &seen)))
+        .collect();
     Ok(findings)
 }
 
@@ -99,12 +114,17 @@ pub fn find(root: &Path, sessions: Option<&Path>, section: Section) -> Result<Ve
 /// The whole path is what makes a worktree beside the checkout findable. A relative
 /// name for one would be a walk back out of the checkout, and a bare directory name
 /// would not say where to look at all.
+/// `read` pairs the section this worktree belongs to with what the checkout has seen on a
+/// remote, which [`find`] read once for the whole repository. They travel together because
+/// they are asked together: a worktree of another project is not read at all, and one of this
+/// project is counted against exactly those tips.
 fn one(
     root: &Path,
     registered: &git::worktree::Registered,
     sessions: Option<&Path>,
-    section: Section,
+    read: (Section, &[Oid]),
 ) -> Finding {
+    let (section, seen) = read;
     let name = registered.path.strip_prefix(root).unwrap_or(&registered.path);
     let finding = Finding::new(Kind::Worktree, name.display().to_string());
     if let Some(reason) = &registered.locked {
@@ -118,7 +138,7 @@ fn one(
     if section == Section::Elsewhere {
         return finding;
     }
-    let finding = state(finding, &registered.path, registered.branch.as_deref());
+    let finding = state(finding, &registered.path, registered.branch.as_deref(), seen);
     match sessions.and_then(|config| intent::recover(config, &registered.path)) {
         Some(prompt) => Finding { intent: Some(prompt), ..finding },
         None => finding,
@@ -155,7 +175,19 @@ fn prunable(finding: Finding, reason: &str) -> Finding {
 /// A read that fails leaves its fact off the row rather than failing the report. Doctor
 /// runs on a machine that is in a mess, and one broken checkout must not stop the answer
 /// about the other eleven.
-fn state(finding: Finding, path: &Path, branch: Option<&str>) -> Finding {
+///
+/// The word for the work used to be "pushed", read off `rev-list HEAD --not --remotes`. Two
+/// things were wrong with it. The construction asks for a namespace rather than naming the
+/// refs it rested on ([`crate::git::outside`]); and the word is a claim about a server, which
+/// the reading behind it cannot make — those refs are the checkout's own record of its own
+/// pushes, and nothing corrects them when the remote drops a branch. Reproduced on the
+/// binary: after a push, a merge and a remote branch deletion without a prune, this row said
+/// "pushed" about work the remote no longer held.
+///
+/// The refs are named now ([`crate::git::Git::seen_on_remotes`]), and the word says what the
+/// reading is worth: **seen on a remote**. A reading that failed says so rather than saying
+/// nothing. Two processes either way: one for the remotes it names, one for the count.
+fn state(finding: Finding, path: &Path, branch: Option<&str>, seen: &[Oid]) -> Finding {
     let Ok(git) = Git::open(path) else {
         return finding.says("not a checkout");
     };
@@ -163,15 +195,17 @@ fn state(finding: Finding, path: &Path, branch: Option<&str>) -> Finding {
         Some(branch) => finding.says(branch.to_owned()),
         None => finding.says("detached"),
     };
-    if let Ok(containment) = git.remote_containment("HEAD") {
-        finding = if containment.remotes.is_empty() {
-            // Nothing to be contained by, and the only fact here is that this
+    if let Ok(remotes) = git.remotes() {
+        finding = if remotes.is_empty() {
+            // Nowhere it could have pushed to, and the only fact here is that this
             // repository has no remote.
             finding.says("no remote")
-        } else if containment.unpushed.is_empty() {
-            finding.says("pushed")
         } else {
-            finding.says(format!("unpushed {}", containment.unpushed.len()))
+            match git.count_outside("HEAD", seen) {
+                Ok(0) => finding.says("seen on a remote"),
+                Ok(kept) => finding.says(format!("unpushed {kept}")),
+                Err(_) => finding.says("not read"),
+            }
         };
     }
     if let Ok(status) = git.status() {

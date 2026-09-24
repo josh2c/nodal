@@ -65,8 +65,8 @@ use std::path::{Path, PathBuf};
 
 use crate::Result;
 use crate::doctor::{branches, intent, size};
-use crate::git::Git;
 use crate::git::integration::Integration;
+use crate::git::{Git, Oid};
 use crate::model::{ProjectName, Timestamp};
 use crate::output::view::verdict::{Behind, RowKind, Verdict, WorktreeRow};
 use crate::{Error, git};
@@ -104,13 +104,18 @@ pub fn read(
     // and Nodal makes no network call of its own, so the age is what the closing line says
     // instead of a freshness it cannot honestly claim.
     let base_moved_at = base.as_deref().and_then(|name| git::refs::last_moved(&resolved, name));
+    // Read once for every worktree. A worktree shares the object store and the
+    // remote-tracking refs of the repository it belongs to, so what this checkout has seen on
+    // a remote is one fact about the repository rather than one per row.
+    let seen = git.seen_on_remotes().unwrap_or_default();
+    let against = (base.as_deref(), seen.as_slice());
     let mut rows = Vec::new();
     let mut notes = Vec::new();
     for registered in git.worktrees()? {
         if registered.path == resolved {
             continue;
         }
-        rows.push(row(&resolved, &registered, base.as_deref(), sessions, &mut notes));
+        rows.push(row(&resolved, &registered, against, sessions, &mut notes));
     }
     order(&mut rows);
     Ok(Verdict { checkout: resolved, project, now, base, base_moved_at, rows, notes })
@@ -146,7 +151,7 @@ pub fn order(rows: &mut [WorktreeRow]) {
 fn row(
     root: &Path,
     registered: &git::worktree::Registered,
-    base: Option<&str>,
+    against: (Option<&str>, &[Oid]),
     sessions: Option<&Path>,
     notes: &mut Vec<String>,
 ) -> WorktreeRow {
@@ -170,7 +175,7 @@ fn row(
         return row;
     }
     match Git::open(&registered.path) {
-        Ok(open) => state(&mut row, &open, base, notes),
+        Ok(open) => state(&mut row, &open, against, notes),
         Err(error) => {
             row.note = Some(String::from("not a checkout"));
             notes.push(format!("{}: {error}", row.name));
@@ -210,7 +215,7 @@ fn blank(name: String, registered: &git::worktree::Registered) -> WorktreeRow {
         branch: registered.branch.clone(),
         intent: None,
         done: Integration::Unknown,
-        unpushed: 0,
+        unpushed: None,
         uncommitted: 0,
         behind: None,
         bytes: None,
@@ -239,17 +244,23 @@ fn prunable_note(reason: &str) -> String {
 
 /// Fill in what the four Git reads say about one worktree.
 ///
-/// Each read that fails leaves its own column off and says why in a note. None of them
-/// ends the row: a person with a broken checkout among eleven good ones is owed the
-/// eleven.
-fn state(row: &mut WorktreeRow, git: &Git, base: Option<&str>, notes: &mut Vec<String>) {
-    match git.remote_containment("HEAD") {
-        // A repository with no remote contains nothing anywhere else, so every commit
-        // of it is work that exists only here. That is what `remote_containment` means
-        // and nothing here softens it.
-        Ok(containment) => {
-            row.unpushed = u32::try_from(containment.unpushed.len()).unwrap_or(u32::MAX);
-        }
+/// Each read that fails leaves its own column off and says why in a note. None of them ends
+/// the row: a person with a broken checkout among eleven good ones is owed the eleven.
+fn state(
+    row: &mut WorktreeRow,
+    git: &Git,
+    against: (Option<&str>, &[Oid]),
+    notes: &mut Vec<String>,
+) {
+    let (base, seen) = against;
+    // The commits of this worktree that none of the tips the checkout has seen on a remote
+    // reaches. The tips are named rather than asked for as the `--remotes` namespace, which is
+    // the construction `git/outside.rs` exists to refuse, and the column says what it counts:
+    // work this checkout has not seen out there. A reading that failed leaves the column
+    // `None`, which the table prints as `^?` and counts as work, because a number nobody could
+    // read must not print as a zero.
+    match git.count_outside("HEAD", seen) {
+        Ok(kept) => row.unpushed = Some(u32::try_from(kept).unwrap_or(u32::MAX)),
         Err(error) => notes.push(format!("{}: {error}", row.name)),
     }
     match git.status() {
@@ -320,7 +331,7 @@ mod tests {
     use crate::git::integration::{Integration, Reason};
     use crate::output::view::verdict::{Behind, RowKind, WorktreeRow};
 
-    fn row(name: &str, done: Integration, unpushed: u32, behind: u32) -> WorktreeRow {
+    fn row(name: &str, done: Integration, unpushed: Option<u32>, behind: u32) -> WorktreeRow {
         WorktreeRow {
             kind: RowKind::Worktree,
             name: String::from(name),
@@ -349,8 +360,8 @@ mod tests {
     #[test]
     fn a_worktree_holding_work_nothing_else_has_is_first_even_when_it_is_done() {
         let mut rows = vec![
-            row("far-behind", Integration::Open, 0, 90),
-            row("holds-work", Integration::Integrated(Reason::Absorbed), 1, 0),
+            row("far-behind", Integration::Open, Some(0), 90),
+            row("holds-work", Integration::Integrated(Reason::Absorbed), Some(1), 0),
         ];
         order(&mut rows);
         assert_eq!(names(&rows), ["holds-work", "far-behind"]);
@@ -360,9 +371,9 @@ mod tests {
     fn done_and_empty_worktrees_sink_to_the_bottom() {
         let done = Integration::Integrated(Reason::Ancestor);
         let mut rows = vec![
-            row("finished", done, 0, 0),
-            row("open-a-little", Integration::Open, 0, 1),
-            row("also-finished", done, 0, 40),
+            row("finished", done, Some(0), 0),
+            row("open-a-little", Integration::Open, Some(0), 1),
+            row("also-finished", done, Some(0), 40),
         ];
         order(&mut rows);
         assert_eq!(names(&rows), ["open-a-little", "also-finished", "finished"]);
@@ -371,9 +382,9 @@ mod tests {
     #[test]
     fn among_the_unfinished_the_one_the_base_has_moved_furthest_under_is_first() {
         let mut rows = vec![
-            row("near", Integration::Open, 0, 2),
-            row("far", Integration::Open, 0, 40),
-            row("middle", Integration::Open, 0, 9),
+            row("near", Integration::Open, Some(0), 2),
+            row("far", Integration::Open, Some(0), 40),
+            row("middle", Integration::Open, Some(0), 9),
         ];
         order(&mut rows);
         assert_eq!(names(&rows), ["far", "middle", "near"]);
@@ -381,10 +392,14 @@ mod tests {
 
     #[test]
     fn two_readings_of_one_checkout_print_one_list() {
-        let mut first =
-            vec![row("beta", Integration::Open, 0, 3), row("alpha", Integration::Open, 0, 3)];
-        let mut second =
-            vec![row("alpha", Integration::Open, 0, 3), row("beta", Integration::Open, 0, 3)];
+        let mut first = vec![
+            row("beta", Integration::Open, Some(0), 3),
+            row("alpha", Integration::Open, Some(0), 3),
+        ];
+        let mut second = vec![
+            row("alpha", Integration::Open, Some(0), 3),
+            row("beta", Integration::Open, Some(0), 3),
+        ];
         order(&mut first);
         order(&mut second);
         assert_eq!(names(&first), names(&second));

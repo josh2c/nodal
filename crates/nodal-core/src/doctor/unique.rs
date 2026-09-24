@@ -9,7 +9,7 @@
 //! live in that one directory. The reassurance was a record of an old push, not a
 //! reading of anything.
 //!
-//! So the proof is built here, on every run, from two kinds of evidence and no network:
+//! So the answer is built here, on every run, from two kinds of evidence and no network:
 //!
 //! | evidence | what it proves | how it can fail |
 //! |---|---|---|
@@ -67,15 +67,19 @@ pub struct RemoteTip {
 }
 
 /// What one clone can say, read once while the clone is inspected.
+///
+/// Named for what it is: one clone's reading. It is not the kernel's
+/// [`crate::lifecycle::kernel::Evidence`], which is what a verdict about one unit home rests
+/// on, and the two carried one word between them until this type was renamed.
 #[derive(Debug, Clone, Default)]
-pub struct Evidence {
+pub struct CloneReading {
     /// The commit HEAD names, `None` when the clone has no commit.
     pub head: Option<Oid>,
     /// Every ref tip. Each one is a commit this object store holds.
     pub tips: Vec<Oid>,
     /// The tips of the refs this clone holds of its own accord: a branch, a tag, a stash.
     ///
-    /// A subset of [`Evidence::tips`], with everything under `refs/remotes/` left out,
+    /// A subset of [`CloneReading::tips`], with everything under `refs/remotes/` left out,
     /// because a remote-tracking ref is a reading of somewhere else rather than something
     /// this clone has to say.
     ///
@@ -95,9 +99,15 @@ pub struct Evidence {
     pub unreadable: Option<String>,
 }
 
-/// What this run proved about one clone.
+/// What this run proved about one clone: how much of it is nowhere else, and why it could
+/// not be checked when it could not.
+///
+/// It is not a [`crate::lifecycle::kernel::Proof`], and the name says so. A `Proof` is
+/// permission to remove one unit home and only [`crate::lifecycle::kernel::judge`] makes
+/// one; this is a count of commits that a report prints in a column, about a clone Nodal
+/// does not manage and will not remove.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Proof {
+pub struct Proved {
     /// Commits of HEAD that no remote-tracking ref this run trusts already holds.
     ///
     /// `None` where no clone of this remote on this machine could vouch for this one's
@@ -115,7 +125,7 @@ pub struct Proof {
 const UNWITNESSED: &str = "no clone of this remote here heard from it more recently, so this clone's own \
      remote-tracking refs could not be checked";
 
-impl Proof {
+impl Proved {
     /// A clone the run could not examine.
     fn unchecked(why: impl Into<String>) -> Self {
         Self {
@@ -138,14 +148,14 @@ pub struct Subject {
     /// The working tree.
     pub path: PathBuf,
     /// What was read from it.
-    pub evidence: Evidence,
+    pub reading: CloneReading,
 }
 
 /// Prove, for each clone of one group, what it is the only copy of.
 ///
 /// The clones are of one remote, so any of them can be a witness for any other.
 #[must_use]
-pub fn prove(subjects: &[Subject]) -> Vec<Proof> {
+pub fn prove(subjects: &[Subject]) -> Vec<Proved> {
     let elsewhere = held_by_others(subjects);
     subjects
         .iter()
@@ -176,13 +186,13 @@ pub fn prove(subjects: &[Subject]) -> Vec<Proof> {
 /// A witness that cannot answer vouches for nothing, which leaves the clone reported as
 /// holding more than it may. That is the direction this survey errs in.
 fn confirmed(subject: &Subject, witnesses: &[&Subject]) -> Vec<Oid> {
-    let mine: Vec<Oid> = subject.evidence.remotes.iter().map(|tip| tip.oid.clone()).collect();
+    let mine: Vec<Oid> = subject.reading.remotes.iter().map(|tip| tip.oid.clone()).collect();
     if mine.is_empty() {
         return Vec::new();
     }
     for witness in witnesses {
         let git = Git::at(&witness.path);
-        let theirs: Vec<Oid> = witness.evidence.remotes.iter().map(|tip| tip.oid.clone()).collect();
+        let theirs: Vec<Oid> = witness.reading.remotes.iter().map(|tip| tip.oid.clone()).collect();
         let Ok(stored) = git.stores(&mine) else {
             continue;
         };
@@ -196,35 +206,35 @@ fn confirmed(subject: &Subject, witnesses: &[&Subject]) -> Vec<Oid> {
 }
 
 /// The proof for one clone: two `rev-list` runs at worst, one when it is contained.
-fn one(subject: &Subject, trusted: &Trusted, elsewhere: &[Oid]) -> Proof {
-    if let Some(why) = &subject.evidence.unreadable {
-        return Proof::unchecked(why.clone());
+fn one(subject: &Subject, trusted: &Trusted, elsewhere: &[Oid]) -> Proved {
+    if let Some(why) = &subject.reading.unreadable {
+        return Proved::unchecked(why.clone());
     }
-    let Some(head) = &subject.evidence.head else {
-        return Proof::empty();
+    let Some(head) = &subject.reading.head else {
+        return Proved::empty();
     };
     let git = Git::at(&subject.path);
-    if trusted.witnesses.is_empty() && !subject.evidence.remotes.is_empty() {
+    if trusted.witnesses.is_empty() && !subject.reading.remotes.is_empty() {
         return unwitnessed(&git, head, elsewhere);
     }
     let off_remote = match git.count_outside(head.as_str(), &trusted.tips) {
         Ok(count) => count,
-        Err(error) => return Proof::unchecked(error.to_string()),
+        Err(error) => return Proved::unchecked(error.to_string()),
     };
     let witnesses = trusted.witnesses.clone();
     if off_remote == 0 {
-        return Proof { off_remote: Some(0), only_copy: Some(0), unchecked: None, witnesses };
+        return Proved { off_remote: Some(0), only_copy: Some(0), unchecked: None, witnesses };
     }
     let mut anywhere: Vec<Oid> = trusted.tips.clone();
     anywhere.extend_from_slice(elsewhere);
     match git.count_outside(head.as_str(), &anywhere) {
-        Ok(only_copy) => Proof {
+        Ok(only_copy) => Proved {
             off_remote: Some(off_remote),
             only_copy: Some(only_copy),
             unchecked: None,
             witnesses,
         },
-        Err(error) => Proof::unchecked(error.to_string()),
+        Err(error) => Proved::unchecked(error.to_string()),
     }
 }
 
@@ -238,13 +248,13 @@ fn one(subject: &Subject, trusted: &Trusted, elsewhere: &[Oid]) -> Proof {
 ///
 /// Either way the remote question goes unanswered, so `off_remote` is `None` rather than
 /// a zero somebody could read as "this reached the remote".
-fn unwitnessed(git: &Git, head: &Oid, elsewhere: &[Oid]) -> Proof {
+fn unwitnessed(git: &Git, head: &Oid, elsewhere: &[Oid]) -> Proved {
     match git.count_outside(head.as_str(), elsewhere) {
         Ok(0) => {
-            Proof { off_remote: None, only_copy: Some(0), unchecked: None, witnesses: Vec::new() }
+            Proved { off_remote: None, only_copy: Some(0), unchecked: None, witnesses: Vec::new() }
         }
-        Ok(_) => Proof::unchecked(UNWITNESSED),
-        Err(error) => Proof::unchecked(error.to_string()),
+        Ok(_) => Proved::unchecked(UNWITNESSED),
+        Err(error) => Proved::unchecked(error.to_string()),
     }
 }
 
@@ -296,7 +306,7 @@ pub fn believed(subject: &Subject, witnesses: &[&Subject]) -> Trusted {
         return Trusted::default();
     }
     let mut tips: Vec<Oid> = subject
-        .evidence
+        .reading
         .remotes
         .iter()
         .filter_map(|tip| witnessed(witnesses, &tip.branch))
@@ -311,7 +321,7 @@ pub fn believed(subject: &Subject, witnesses: &[&Subject]) -> Trusted {
 fn witnessed(witnesses: &[&Subject], branch: &str) -> Option<Oid> {
     witnesses
         .iter()
-        .flat_map(|witness| witness.evidence.remotes.iter())
+        .flat_map(|witness| witness.reading.remotes.iter())
         .find(|tip| tip.branch == branch)
         .map(|tip| tip.oid.clone())
 }
@@ -323,23 +333,23 @@ fn freshest(subjects: &[Subject], index: usize) -> Vec<&Subject> {
     let candidates: Vec<&Subject> = subjects
         .iter()
         .enumerate()
-        .filter(|(other, candidate)| *other != index && fresher(&candidate.evidence, subject))
+        .filter(|(other, candidate)| *other != index && fresher(&candidate.reading, subject))
         .map(|(_, candidate)| candidate)
         .collect();
-    let latest = candidates.iter().filter_map(|candidate| candidate.evidence.heard).max();
+    let latest = candidates.iter().filter_map(|candidate| candidate.reading.heard).max();
     let Some(latest) = latest else {
         return Vec::new();
     };
-    candidates.into_iter().filter(|candidate| candidate.evidence.heard == Some(latest)).collect()
+    candidates.into_iter().filter(|candidate| candidate.reading.heard == Some(latest)).collect()
 }
 
 /// Whether `candidate` heard from the remote after `subject` did, and fetches every
 /// branch, which is what it takes to say that a branch is not there any more.
-fn fresher(candidate: &Evidence, subject: &Subject) -> bool {
+fn fresher(candidate: &CloneReading, subject: &Subject) -> bool {
     if !candidate.complete || candidate.unreadable.is_some() {
         return false;
     }
-    match (candidate.heard, subject.evidence.heard) {
+    match (candidate.heard, subject.reading.heard) {
         (Some(later), Some(earlier)) => later > earlier,
         _ => false,
     }
@@ -359,8 +369,8 @@ fn held_by_others(subjects: &[Subject]) -> Vec<Vec<Oid>> {
     let mine: Vec<BTreeSet<&Oid>> = subjects
         .iter()
         .map(|subject| {
-            if witnessable(&subject.evidence) {
-                subject.evidence.tips.iter().collect()
+            if witnessable(&subject.reading) {
+                subject.reading.tips.iter().collect()
             } else {
                 BTreeSet::new()
             }
@@ -383,8 +393,8 @@ fn held_by_others(subjects: &[Subject]) -> Vec<Vec<Oid>> {
 }
 
 /// Whether this clone's object store may stand as a copy for another clone.
-fn witnessable(evidence: &Evidence) -> bool {
-    !evidence.shallow && evidence.unreadable.is_none()
+fn witnessable(reading: &CloneReading) -> bool {
+    !reading.shallow && reading.unreadable.is_none()
 }
 
 /// What Git writes when a clone hears from a remote, newest of the three is the reading.
@@ -419,19 +429,19 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
 
-    use super::{Evidence, RemoteTip, Subject, complete, fresher, held_by_others, trusted};
+    use super::{CloneReading, RemoteTip, Subject, complete, fresher, held_by_others, trusted};
     use crate::git::Oid;
 
     fn oid(seed: u8) -> Oid {
         Oid::parse(&format!("{seed:02x}").repeat(20)).expect("a well formed id")
     }
 
-    fn subject(name: &str, evidence: Evidence) -> Subject {
-        Subject { path: name.into(), evidence }
+    fn subject(name: &str, reading: CloneReading) -> Subject {
+        Subject { path: name.into(), reading }
     }
 
-    fn clone_of(branch: &str, seed: u8, seconds: u64) -> Evidence {
-        Evidence {
+    fn clone_of(branch: &str, seed: u8, seconds: u64) -> CloneReading {
+        CloneReading {
             head: Some(oid(seed)),
             tips: vec![oid(seed)],
             own: vec![oid(seed)],
@@ -518,9 +528,12 @@ mod tests {
     #[test]
     fn a_tip_two_clones_share_is_held_elsewhere_for_both_of_them() {
         let shared = oid(7);
-        let left = subject("left", Evidence { tips: vec![shared.clone()], ..Evidence::default() });
-        let right =
-            subject("right", Evidence { tips: vec![shared.clone()], ..Evidence::default() });
+        let left =
+            subject("left", CloneReading { tips: vec![shared.clone()], ..CloneReading::default() });
+        let right = subject(
+            "right",
+            CloneReading { tips: vec![shared.clone()], ..CloneReading::default() },
+        );
         let held = held_by_others(&[left, right]);
         assert_eq!(held[0], vec![shared.clone()]);
         assert_eq!(held[1], vec![shared]);
@@ -529,8 +542,9 @@ mod tests {
     /// A tip only this clone holds is not proof of anything about this clone.
     #[test]
     fn a_tip_only_one_clone_holds_is_held_nowhere_else() {
-        let lone = subject("lone", Evidence { tips: vec![oid(7)], ..Evidence::default() });
-        let other = subject("other", Evidence { tips: vec![oid(8)], ..Evidence::default() });
+        let lone = subject("lone", CloneReading { tips: vec![oid(7)], ..CloneReading::default() });
+        let other =
+            subject("other", CloneReading { tips: vec![oid(8)], ..CloneReading::default() });
         assert_eq!(held_by_others(&[lone, other])[0], vec![oid(8)]);
     }
 
@@ -538,10 +552,10 @@ mod tests {
     /// that the history behind the tip is there too.
     #[test]
     fn a_shallow_clone_stands_for_nothing() {
-        let deep = subject("deep", Evidence { tips: vec![oid(7)], ..Evidence::default() });
+        let deep = subject("deep", CloneReading { tips: vec![oid(7)], ..CloneReading::default() });
         let shallow = subject(
             "shallow",
-            Evidence { tips: vec![oid(7)], shallow: true, ..Evidence::default() },
+            CloneReading { tips: vec![oid(7)], shallow: true, ..CloneReading::default() },
         );
         assert!(held_by_others(&[deep, shallow])[0].is_empty());
     }

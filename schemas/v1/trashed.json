@@ -40,6 +40,13 @@
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string"
     },
+    "Record": {
+      "description": "What a safe verdict rested on, as a row keeps it.\n\nA record and never permission, and the difference is the whole reason it is a second type.\nA [`Proof`] is what this machine proved a moment ago; this is what it wrote down. The copy\ncan go after the home is in the trash — somebody deletes a branch in a clone, a remote\ndrops a merged branch — so `nodal gc` asks [`judge`] again before it removes the directory\nand compares its own fresh proof with this. Nothing turns this back into a proof.\n\nIt lives here, beside the row, and not in the kernel. A row is the model's, and a model\nthat had to import the lifecycle to name its own column would be the dependency running\nbackwards.\n\nIt is transparent over the list it holds, so the row and the schema are exactly what they\nwere before the type existed: the discipline is in the Rust type and none of it reaches\nthe document.\n\n[`Proof`]: crate::lifecycle::kernel::Proof\n[`judge`]: crate::lifecycle::kernel::judge",
+      "items": {
+        "$ref": "#/$defs/Outside"
+      },
+      "type": "array"
+    },
     "Rested": {
       "description": "What a reclaim's uniqueness check decided about the home it trashed.\n\nThree answers and not two, because \"nothing was written down\" is a third fact and\nreading it as either of the others would be a claim this machine did not make.",
       "oneOf": [
@@ -57,14 +64,11 @@
           "type": "object"
         },
         {
-          "description": "The check found nothing that existed only in the home. `copies` names the\nrepositories and refs that held the commits it did not refuse over, and it is\nempty for a home that had no commit of its own to hold.",
+          "description": "The check found nothing that existed only in the home. `copies` names the\nrepositories and refs that held the commits it did not refuse over, and it is\nempty for a home that had no commit of its own to hold.\n\nThe row carries a [`Record`] and not a [`crate::lifecycle::kernel::Proof`], and that is\nthe point of the two types. A proof is what one reading proved, and only\n[`crate::lifecycle::kernel::judge`] makes one; this is what was written down, and `gc`\nasks the kernel again rather than reading this as permission. Nothing turns it back\ninto a proof. A `Record` is transparent over the list, so the row and its schema are\nexactly what they were before the type existed.",
           "properties": {
             "copies": {
-              "description": "What held them, one entry per repository.",
-              "items": {
-                "$ref": "#/$defs/Outside"
-              },
-              "type": "array"
+              "$ref": "#/$defs/Record",
+              "description": "What held them, one entry per repository."
             },
             "kind": {
               "const": "safe",

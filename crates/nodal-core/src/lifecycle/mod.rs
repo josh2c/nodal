@@ -40,6 +40,7 @@ pub mod hooks;
 pub mod identity;
 pub mod idle;
 pub mod journal;
+pub mod kernel;
 pub mod marker;
 pub mod ops;
 pub mod owner;

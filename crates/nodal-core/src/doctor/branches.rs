@@ -15,8 +15,8 @@
 //!
 //! | bucket | what it means | how it prints |
 //! |---|---|---|
-//! | unpushed | commits exist on no remote-tracking ref | one row each, with the count, the age and the upstream |
-//! | on a remote | not merged, but every commit is on a remote | one summary line |
+//! | unpushed | this checkout has not seen its commits on any remote | one row each, with the count, the age and the upstream |
+//! | seen on a remote | not merged, and this checkout has seen every commit of it out there | one summary line |
 //! | merged | the default branch already holds it | one summary line |
 //!
 //! `--all` prints the two quiet buckets row by row. It is a rendering choice and not a
@@ -28,15 +28,32 @@
 //!
 //! ## Which bucket a branch goes in
 //!
-//! The unpushed count is read first and it wins. A branch with commits on no remote is
-//! in the loud bucket whatever else is true of it, including a branch the default
-//! branch holds — because a default branch that has not been pushed either does not
-//! make its commits safe. The order is the conservative one: a branch is only ever
-//! quiet when the reading that says it is safe is the reading that was taken.
+//! The unpushed count is read first and it wins. A branch with commits nothing proves a
+//! remote has is in the loud bucket whatever else is true of it, including a branch the
+//! default branch holds — because a default branch that has not been pushed either does not
+//! make its commits safe. The order is the conservative one: a branch is only ever quiet
+//! when the reading that says it is safe is the reading that was taken.
 //!
-//! A repository that names no remote has nothing to contain its commits, so every
-//! branch of it that the default branch does not hold is unpushed. That is what
-//! `remote_containment` means and this module does not soften it.
+//! ## Which reading that is
+//!
+//! It is not `refs/remotes/` inside this repository. A repository writes those refs when it
+//! fetches or pushes and never corrects them, so one that pushed a branch once reported the
+//! branch as pushed for the rest of its life — after the branch was deleted on the remote
+//! and its commits lived in one directory. Reproduced on the binary: after a push, a merge
+//! and a remote branch deletion without a prune, this table called the branch pushed.
+//!
+//! So the count names the refs it rested on ([`crate::git::Git::seen_on_remotes`]) rather
+//! than asking for the `--remotes` namespace, and **every word this table prints says what
+//! that reading is worth.** A branch is "seen on a remote" and never "on a remote": this
+//! checkout saw those commits out there at a fetch or a push it made, which is a fact about
+//! this checkout and not a claim about any server.
+//!
+//! The reading that earns the stronger word is what a witness vouches for — the clone beside
+//! this one that heard from the same remote more recently
+//! ([`crate::doctor::unique::believed`]) — and the destructive paths ask that one. A branch
+//! audit cannot: a person's machine usually holds one clone of a remote, so a witness would
+//! vouch for nothing and every branch of every repository would read "not checked". A report
+//! that says one thing about every row has told a person nothing.
 //!
 //! ## Report-only, like everything else here
 //!
@@ -47,7 +64,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::git::Git;
+use crate::git::{Git, Oid};
 use crate::model::Timestamp;
 use crate::output::view::doctor::{BranchRow, Branches, Standing};
 use crate::{Result, git};
@@ -77,31 +94,46 @@ pub fn find(root: &Path, now: Timestamp) -> Result<Branches> {
         Some(base) => git.merged_into(base)?,
         None => BTreeSet::new(),
     };
+    // Read once for the whole table. What one witness vouches for is a fact about the
+    // repository, not about each branch, and reading it per branch would multiply the
+    // sibling walk by three hundred.
+    // One `for-each-ref` answers for both: the branches to audit, and what this checkout has
+    // seen on a remote to count them against. The second is a fact about the checkout rather
+    // than about each branch, and asking for it per branch would multiply one invocation by
+    // three hundred.
+    let (locals, seen) = git.local_branches()?;
     let mut rows = Vec::new();
-    for local in git.local_branches()? {
+    for local in locals {
         if held.contains(&local.name) {
             continue;
         }
-        rows.push(row(&git, &local, &merged, now)?);
+        rows.push(row(&git, &local, &merged, &seen, now)?);
     }
     loudest_first(&mut rows);
     Ok(Branches { base, rows, expand: false })
 }
 
 /// One branch as a row: the bucket it is in, and the facts that bucket prints.
+///
+/// `seen` is what this checkout last saw on a remote, read once for the whole repository.
+///
+/// The commits of the branch that none of those tips reaches are the unpushed count. The refs
+/// are named rather than asked for as a namespace, which is the whole of the difference
+/// between this and the reading it replaced ([`crate::git::outside`]).
 fn row(
     git: &Git,
     local: &git::branches::Local,
     merged: &BTreeSet<String>,
+    seen: &[Oid],
     now: Timestamp,
 ) -> Result<BranchRow> {
-    let unpushed = git.unpushed_count(&format!("refs/heads/{}", local.name))?;
+    let unpushed = git.count_outside(&format!("refs/heads/{}", local.name), seen)?;
     let standing = if unpushed > 0 {
         Standing::Unpushed
     } else if merged.contains(&local.name) {
         Standing::Merged
     } else {
-        Standing::OnRemote
+        Standing::SeenOnRemote
     };
     Ok(BranchRow {
         name: local.name.clone(),
@@ -174,7 +206,7 @@ mod tests {
     fn row(name: &str, unpushed: usize, committed: i64) -> BranchRow {
         BranchRow {
             name: String::from(name),
-            standing: if unpushed > 0 { Standing::Unpushed } else { Standing::OnRemote },
+            standing: if unpushed > 0 { Standing::Unpushed } else { Standing::SeenOnRemote },
             unpushed,
             upstream: None,
             committed: Timestamp::from_unix_seconds(committed).unwrap(),

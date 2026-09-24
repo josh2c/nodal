@@ -2,7 +2,8 @@
 //!
 //! This reads one clone and states what it found. It does not conclude that a clone is
 //! safe to delete; that conclusion needs the other clones on the machine, so it is drawn
-//! in [`super::unique`] once the group is known. What is read here is the evidence:
+//! in [`super::unique`] once the group is known. What is read here is one clone's
+//! reading ([`CloneReading`]):
 //! every ref tip, the remote-tracking refs, when the clone last heard from a remote, and
 //! whether it fetches every branch.
 //!
@@ -15,7 +16,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
-use crate::doctor::unique::{Evidence, RemoteTip};
+use crate::doctor::unique::{CloneReading, RemoteTip};
 use crate::git::{Git, Oid};
 use crate::model::Timestamp;
 use crate::output::view::machine::{CloneRow, IgnoredDir};
@@ -55,7 +56,7 @@ pub struct Inspected {
     /// The row.
     pub row: CloneRow,
     /// What the clone can say about what else holds its commits.
-    pub evidence: Evidence,
+    pub reading: CloneReading,
     /// Directory entries the size walk looked at.
     pub entries: u64,
 }
@@ -69,7 +70,7 @@ pub fn one(path: &Path, links: &mut Links) -> Result<Inspected> {
     let git = Git::open(path)?;
     let branch = git.current_branch()?;
     let origin = git.remote_url("origin").ok().flatten();
-    let evidence = evidence_of(&git, path, branch.as_deref());
+    let reading = reading_of(&git, path, branch.as_deref());
     let dirty = dirty_of(&git)?;
     let ignored = git.ignored_directories().unwrap_or_default();
     let measured = measure(path, &ignored, links);
@@ -90,50 +91,51 @@ pub fn one(path: &Path, links: &mut Links) -> Result<Inspected> {
             ignored: top_ignored(&ignored, &measured.buckets, &measured.shared),
             committed,
         },
-        evidence,
+        reading,
         entries: measured.entries,
     })
 }
 
 /// Everything one repository at `path` can say about where its commits also live.
 ///
-/// The same reading [`one`] takes, for a caller that wants the evidence and none of the
+/// The same reading [`one`] takes, for a caller that wants the clone's reading and none
+/// of the
 /// rest of a row. A destructive check reads a home and the checkout it belongs to this
 /// way, so that the survey and the check read a repository with one pair of eyes.
 ///
-/// A path Git will not read is not evidence and is not clean either: `unreadable` says
+/// A path Git will not read is no evidence and is not clean either: `unreadable` says
 /// so, and every proof reports it as not checked.
 #[must_use]
-pub fn evidence(path: &Path) -> Evidence {
+pub fn reading(path: &Path) -> CloneReading {
     let git = match Git::open(path) {
         Ok(git) => git,
         Err(error) => {
-            return Evidence { unreadable: Some(error.to_string()), ..Evidence::default() };
+            return CloneReading { unreadable: Some(error.to_string()), ..CloneReading::default() };
         }
     };
     let branch = git.current_branch().unwrap_or_default();
-    evidence_of(&git, path, branch.as_deref())
+    reading_of(&git, path, branch.as_deref())
 }
 
 /// Everything this clone can say about where its commits also live.
 ///
-/// A clone Git will not read is not evidence and is not clean either: `unreadable` says
+/// A clone Git will not read is no evidence and is not clean either: `unreadable` says
 /// so, and the proof reports it as not checked.
-fn evidence_of(git: &Git, path: &Path, branch: Option<&str>) -> Evidence {
+fn reading_of(git: &Git, path: &Path, branch: Option<&str>) -> CloneReading {
     let tips = match git.all_refs() {
         Ok(refs) => refs,
         Err(error) => {
-            return Evidence { unreadable: Some(error.to_string()), ..Evidence::default() };
+            return CloneReading { unreadable: Some(error.to_string()), ..CloneReading::default() };
         }
     };
     let head = match head_of(git, branch, &tips) {
         Ok(head) => head,
         Err(error) => {
-            return Evidence { unreadable: Some(error.to_string()), ..Evidence::default() };
+            return CloneReading { unreadable: Some(error.to_string()), ..CloneReading::default() };
         }
     };
     let refspecs = git.fetch_refspecs("origin").unwrap_or_default();
-    Evidence {
+    CloneReading {
         head,
         remotes: remote_tips(&tips),
         own: own_tips(&tips),
@@ -348,7 +350,7 @@ mod tests {
         assert!(remote_tips(&tips).is_empty());
     }
 
-    /// A local branch is not evidence about a remote.
+    /// A local branch is no evidence about a remote.
     #[test]
     fn a_local_branch_is_not_a_remote_tip() {
         let tips = [reference("refs/heads/main", 1)];

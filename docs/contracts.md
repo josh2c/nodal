@@ -600,9 +600,13 @@ another project's".
 A third section reports the local branches of the checkout that no worktree has checked out. Every other
 source is anchored to a directory and a branch is not. A report of directories can therefore be all-clear
 over work that exists on no remote. Each branch is in one of three buckets: merged into the default branch;
-unmerged, with every commit on a remote; or unpushed, meaning commits that exist on no remote-tracking ref
-(the `remote_containment` predicate). The unpushed bucket prints one row per branch. A row carries the branch, the count of
-commits no remote has, the age of the last commit, and whether its upstream is gone. The other two print one
+unmerged, with every commit seen on a remote; or unpushed, meaning this checkout has not seen its commits on
+any remote. The reading is the tips of the checkout's own remote-tracking refs, named rather than asked for as
+the `--remotes` namespace, and the word "seen" is what it is worth: those refs are written when the checkout
+fetches or pushes and nothing corrects them, so a branch the remote has since dropped is still in the quiet
+bucket. The reading that earns a stronger word is what a witness vouches for, and the destructive paths ask
+that one. The unpushed bucket prints one row per branch. A row carries the branch, the count of
+commits it has not seen on a remote, the age of the last commit, and whether its upstream is gone. The other two print one
 line each with a count. `--all` opens them. `--json` carries every row either way: the flag decides how much
 is shown, never what was found. The audit is two `for-each-ref` calls and one `rev-list` per ref, and it
 reads only. What to do about a branch is a person's decision.

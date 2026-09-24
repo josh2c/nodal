@@ -15,15 +15,37 @@
 //!   branch. This is the list's own verdict ([`crate::git::Integration`]), read from
 //!   trees, so a squash merge and a rebase both count — which is the whole point, since
 //!   neither leaves a commit of the unit on the base;
-//! - the branch is **contained**: every commit of it is on a remote
-//!   ([`crate::git::remote::Containment`]).
+//! - the branch is **on a remote**: a witnessed reading of the remote reaches every commit
+//!   of it ([`OnRemote`]).
 //!
-//! None alone is enough, and the failure each one prevents is a different one.
-//! Integration alone would call a unit merged the moment somebody rebased the base
-//! under it locally, before anything left the machine. Containment alone would call a
-//! unit merged as soon as it was pushed, which is the state before review, not after
-//! it. Together they say what a person means by merged: the work is on the base, and it
-//! got there somewhere other people can see.
+//! The third signal is a reading of **this home's own** remote-tracking refs, and the type
+//! says so ([`OnRemote::seen_on_remote`]). It used to be `rev-list <branch> --not --remotes`
+//! through a shared `git::remote::containment`, which every other surface could reach for as
+//! well; that function is gone, and the reading is stated here, once, for the one question it
+//! is good enough for.
+//!
+//! Good enough, and not proof. A home writes those refs when it fetches or pushes and nothing
+//! corrects them, so after the branch is deleted on the remote and a plain `git pull` leaves
+//! the tracking ref behind, the reading still says the remote has the work. Two things make
+//! it the right reading for this flip and the wrong one for a removal:
+//!
+//! - the flip is **not permission to remove anything**. It records a state and starts a
+//!   retention. `nodal gc` asks the kernel again, over its own fresh reading of the home,
+//!   before it removes the directory ([`crate::lifecycle::kernel::judge`]) — so a remote that
+//!   dropped the branch keeps the home;
+//! - the flip needs the home's *own* answer. A person fetches in the home they are working
+//!   in, and the doctrine every destructive path asks
+//!   ([`crate::lifecycle::witness::elsewhere`]) believes a home's refs only where another
+//!   repository read the remote **later** than the home did. The freshest reader of the remote
+//!   here is usually the home itself, so that doctrine answers "nothing can check this" for
+//!   exactly the unit a person has just pushed and merged, and no unit would ever be recorded
+//!   as merged.
+//!
+//! What closes the gap is a **dated** observation rather than a fresher clone: the home's
+//! `FETCH_HEAD` dates its last fetch, and a ref absent from the latest `FETCH_HEAD` of its
+//! remote was not seen at that observation. Reading it is the next task on this lane
+//! (`docs/research/boundary-2026-09-22/safety-contract-draft.md` §3), and it lands with the
+//! record a verdict carries.
 //!
 //! ## Why the first signal is needed, and why it is `ahead > 0`
 //!
@@ -70,12 +92,34 @@
 
 use rusqlite::Connection;
 
+use std::path::Path;
+
 use crate::Result;
-use crate::git::remote::Containment;
-use crate::git::{Divergence, Git, Integration};
+use crate::git::{Divergence, Git, Integration, Oid};
 use crate::model::{Timestamp, UnitStatus};
 use crate::output::view::UnitRow;
 use crate::store::units;
+
+/// Where a repository keeps what it last saw of a remote.
+const TRACKING: &str = "refs/remotes/";
+
+/// What this home's own record of its own pushes says about one branch.
+///
+/// Two fields and not a count, because "there is nowhere it could have gone" and "a
+/// remote-tracking ref here does not reach it" are different facts, and a report that merged
+/// them would say one for the other.
+///
+/// The name of the second field is the honest one. It is what this home last saw, not what
+/// any server holds now, and the module doc says why that is the right reading for this flip
+/// and the wrong one for a removal.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OnRemote {
+    /// The remotes the home names. Empty means there is nowhere it could have pushed to, so
+    /// nothing about the work is out where other people can see it.
+    pub remotes: Vec<String>,
+    /// Whether a remote-tracking ref in this home reaches every commit of the branch.
+    pub seen_on_remote: bool,
+}
 
 /// Whether the branch has work of its own that the base has taken.
 ///
@@ -96,25 +140,25 @@ pub fn is_merged(
     status: UnitStatus,
     integration: Integration,
     divergence: Divergence,
-    contained: &Containment,
+    out_there: &OnRemote,
 ) -> bool {
     matches!(status, UnitStatus::Open | UnitStatus::Review)
         && has_landed(integration, divergence)
-        && !contained.remotes.is_empty()
-        && contained.is_contained()
+        && !out_there.remotes.is_empty()
+        && out_there.seen_on_remote
 }
 
 /// Record every row whose work has landed as merged, and show it so.
 ///
-/// This is the command layer's half of a list: the rows are what the reading answered
-/// with, and this settles the one state the reading is allowed to have learned.
+/// This is the command layer's half of a list: the rows are what the reading answered with,
+/// and this settles the one state the reading is allowed to have learned.
 ///
-/// The remote signal costs one `git rev-list`, so it is asked for only of a unit that
-/// has commits of its own and has had them taken by the base ([`has_landed`]) — which a
-/// unit nobody has begun has not. A failure to read it, or to write the row, is
-/// returned as a note rather than raised: a list that refuses to print because one
-/// unit's remote could not be read is worth less than a list that prints every row and
-/// says which unit it could not settle.
+/// The remote signal costs two `git` invocations, so it is asked for only of a unit that has
+/// commits of its own and has had them taken by the base ([`has_landed`]) — which a unit
+/// nobody has begun has not. A failure to read it, or to write the row, is returned as a note
+/// rather than raised: a list that refuses to print because one unit's remote could not be
+/// read is worth less than a list that prints every row and says which unit it could not
+/// settle.
 pub fn settle(conn: &Connection, rows: &mut [UnitRow], now: Timestamp) -> Vec<String> {
     let mut notes = Vec::new();
     for row in rows {
@@ -127,8 +171,8 @@ pub fn settle(conn: &Connection, rows: &mut [UnitRow], now: Timestamp) -> Vec<St
     notes
 }
 
-/// Ask the remote signal of one row and write the flip down, answering whether it
-/// happened. A row that cannot have landed anything is not asked.
+/// Ask the remote signal of one row and write the flip down, answering whether it happened. A
+/// row that cannot have landed anything is not asked.
 fn flip(conn: &Connection, row: &UnitRow, now: Timestamp) -> Result<bool> {
     let Some(work) = row.work.as_ref().filter(|work| has_landed(work.integration, work.main))
     else {
@@ -137,28 +181,47 @@ fn flip(conn: &Connection, row: &UnitRow, now: Timestamp) -> Result<bool> {
     let Some(home) = row.environment.as_ref().map(|environment| &environment.home) else {
         return Ok(false);
     };
-    let contained = Git::at(home).remote_containment(row.branch.as_str())?;
-    if !is_merged(row.status, work.integration, work.main, &contained) {
+    let out_there = out_there(home, row.branch.as_str())?;
+    if !is_merged(row.status, work.integration, work.main, &out_there) {
         return Ok(false);
     }
     units::update_status(conn, row.id, UnitStatus::Merged, now)
+}
+
+/// What this home's own remote-tracking refs say about its branch.
+///
+/// One `git remote` for the names, one `for-each-ref` for the tips it last saw, and one
+/// `rev-list` for the count. The tips are named rather than taken from `--remotes`, so the
+/// reading states which refs it rested on instead of naming a namespace
+/// ([`crate::git::outside`]).
+///
+/// # Errors
+/// [`crate::Error::Git`] when the remotes, the refs or the revision could not be read.
+fn out_there(home: &Path, branch: &str) -> Result<OnRemote> {
+    let git = Git::at(home);
+    let remotes = git.remotes()?;
+    if remotes.is_empty() {
+        return Ok(OnRemote { remotes, seen_on_remote: false });
+    }
+    let seen: Vec<Oid> = git.list_refs(TRACKING)?.into_iter().map(|one| one.oid).collect();
+    Ok(OnRemote { remotes, seen_on_remote: git.count_outside(branch, &seen)? == 0 })
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, reason = "tests fail by panicking")]
 
-    use super::is_merged;
+    use super::{OnRemote, is_merged};
     use crate::git::integration::Reason;
-    use crate::git::remote::Containment;
-    use crate::git::{Divergence, Integration, Oid};
+    use crate::git::{Divergence, Integration};
     use crate::model::UnitStatus;
 
-    fn containment(remotes: &[&str], unpushed: usize) -> Containment {
-        let oid = Oid::parse(&"a".repeat(40)).expect("forty hex characters are an object id");
-        Containment {
+    /// What a witnessed reading said about the branch: which remotes the home names, and
+    /// whether that reading reached every commit of it.
+    fn out_there(remotes: &[&str], seen_on_remote: bool) -> OnRemote {
+        OnRemote {
             remotes: remotes.iter().map(|name| (*name).to_owned()).collect(),
-            unpushed: std::iter::repeat_n(oid, unpushed).collect(),
+            seen_on_remote,
         }
     }
 
@@ -173,7 +236,7 @@ mod tests {
             UnitStatus::Review,
             Integration::Integrated(Reason::Absorbed),
             ahead(1),
-            &containment(&["origin"], 0)
+            &out_there(&["origin"], true)
         ));
     }
 
@@ -186,7 +249,7 @@ mod tests {
             UnitStatus::Review,
             Integration::Integrated(Reason::Absorbed),
             ahead(3),
-            &containment(&["origin"], 0)
+            &out_there(&["origin"], true)
         ));
     }
 
@@ -206,7 +269,7 @@ mod tests {
                 UnitStatus::Open,
                 Integration::Integrated(Reason::Ancestor),
                 divergence,
-                &containment(&["origin"], 0)
+                &out_there(&["origin"], true)
             ));
         }
     }
@@ -214,14 +277,14 @@ mod tests {
     #[test]
     fn work_nobody_else_has_is_not_merged_however_integrated_it_looks() {
         let integrated = Integration::Integrated(Reason::Absorbed);
-        assert!(!is_merged(UnitStatus::Open, integrated, ahead(1), &containment(&["origin"], 2)));
-        assert!(!is_merged(UnitStatus::Open, integrated, ahead(1), &containment(&[], 0)));
+        assert!(!is_merged(UnitStatus::Open, integrated, ahead(1), &out_there(&["origin"], false)));
+        assert!(!is_merged(UnitStatus::Open, integrated, ahead(1), &out_there(&[], true)));
     }
 
     #[test]
     fn a_branch_the_base_does_not_carry_is_not_merged_however_pushed_it_is() {
         for verdict in [Integration::Open, Integration::Conflict, Integration::Unknown] {
-            assert!(!is_merged(UnitStatus::Open, verdict, ahead(1), &containment(&["origin"], 0)));
+            assert!(!is_merged(UnitStatus::Open, verdict, ahead(1), &out_there(&["origin"], true)));
         }
     }
 
@@ -229,7 +292,7 @@ mod tests {
     fn a_unit_that_is_already_past_this_is_not_flipped_again() {
         let integrated = Integration::Integrated(Reason::Absorbed);
         for status in [UnitStatus::Merged, UnitStatus::Archived] {
-            assert!(!is_merged(status, integrated, ahead(1), &containment(&["origin"], 0)));
+            assert!(!is_merged(status, integrated, ahead(1), &out_there(&["origin"], true)));
         }
     }
 }

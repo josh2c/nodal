@@ -689,8 +689,11 @@ fn worktree_cells(found: &WorktreeRow, now: Timestamp) -> Vec<String> {
     let branch = found.branch.clone().unwrap_or_else(|| String::from("detached"));
     let dirty =
         if found.uncommitted > 0 { format!(" *{}", found.uncommitted) } else { String::new() };
-    let unpushed =
-        if found.unpushed > 0 { format!("^{}", found.unpushed) } else { String::from(NONE) };
+    let unpushed = match found.unpushed {
+        Some(0) => String::from(NONE),
+        Some(kept) => format!("^{kept}"),
+        None => String::from("^?"),
+    };
     vec![
         RowKind::Worktree.label().to_owned(),
         found.name.clone(),
