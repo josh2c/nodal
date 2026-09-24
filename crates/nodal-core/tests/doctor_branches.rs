@@ -114,8 +114,8 @@ fn every_branch_is_in_the_bucket_its_commits_put_it_in() {
     let audit = machine.audit();
 
     assert_eq!(one(&audit, "shipped").standing, Standing::Merged);
-    assert_eq!(one(&audit, "review/api").standing, Standing::SeenOnRemote);
-    assert_eq!(one(&audit, "importer/retry").standing, Standing::Unpushed);
+    assert_eq!(one(&audit, "review/api").standing, Standing::OnRemote);
+    assert_eq!(one(&audit, "importer/retry").standing, Standing::OnlyHere);
     assert_eq!(one(&audit, "importer/retry").unpushed, 3);
     assert_eq!(audit.base.as_deref(), Some("origin/main"), "{audit:#?}");
 }
@@ -129,7 +129,7 @@ fn a_branch_whose_upstream_was_deleted_says_so_and_is_loud() {
     let orphan = one(&orphan, "orphan");
 
     assert!(orphan.upstream_gone, "{orphan:?}");
-    assert_eq!(orphan.standing, Standing::Unpushed, "its commit is on no remote: {orphan:?}");
+    assert_eq!(orphan.standing, Standing::OnlyHere, "its commit is on no remote: {orphan:?}");
     assert_eq!(orphan.unpushed, 1);
 }
 
@@ -164,7 +164,7 @@ fn the_default_rendering_is_loud_about_one_bucket_and_counts_the_other_two() {
     assert!(text.contains("orphan"), "{text}");
     assert!(text.contains("gone"), "the upstream that is not there: {text}");
     assert!(text.contains("branches merged into origin/main: 1"), "{text}");
-    assert!(text.contains("branches unmerged, every commit seen on a remote: 1"), "{text}");
+    assert!(text.contains("branches unmerged, every commit on the remote: 1"), "{text}");
     assert!(!text.contains("shipped"), "a safe branch is a count, not a row: {text}");
     assert!(!text.contains("review/api"), "{text}");
 }
@@ -174,31 +174,31 @@ fn the_default_rendering_is_loud_about_one_bucket_and_counts_the_other_two() {
 /// remote holds every commit of and the default branch has not taken. Removing the two
 /// directories kept the two branches.
 ///
-/// The report then printed one table row saying `UNPUSHED 1` for the first, and under it
-/// `1 unmerged, every commit seen on a remote`. Both lines are true and they are about
-/// different branches, and nothing in the block said so.
+/// The report then printed one table row saying `1` for the first, and under it `1
+/// unmerged, every commit on the remote`. Both lines are true and they are about different
+/// branches, and nothing in the block said so.
 #[test]
 fn a_bucket_count_cannot_be_read_as_a_second_claim_about_the_row_above_it() {
     let machine = plant_a_cleaned_up_checkout();
     let audit = machine.audit();
 
-    assert_eq!(one(&audit, "import/retry").standing, Standing::Unpushed);
+    assert_eq!(one(&audit, "import/retry").standing, Standing::OnlyHere);
     assert_eq!(one(&audit, "import/retry").unpushed, 1);
-    assert_eq!(one(&audit, "review/rates").standing, Standing::SeenOnRemote);
+    assert_eq!(one(&audit, "review/rates").standing, Standing::OnRemote);
 
     let text = report(audit, false);
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
     let row = lines.iter().position(|line| line.starts_with("import/retry")).expect("the row");
     let counted = lines
         .iter()
-        .position(|line| line.contains("unmerged, every commit seen on a remote"))
+        .position(|line| line.contains("unmerged, every commit on the remote"))
         .expect("the bucket line");
     assert!(counted > row, "the bucket line still follows the row it is not about");
 
     // The line names what it counts before it says how many, so the `1` beside
     // `import/retry` in the UNPUSHED column cannot be read as the same `1`.
     assert_eq!(
-        lines[counted], "branches unmerged, every commit seen on a remote: 1",
+        lines[counted], "branches unmerged, every commit on the remote: 1",
         "the whole line, in {text}"
     );
     assert!(!text.contains("1 unmerged"), "the reading that contradicted itself: {text}");

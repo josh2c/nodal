@@ -55,6 +55,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::doctor::inspect;
 use crate::git::{Git, Oid};
 
 /// One remote-tracking ref: which branch of which remote, and the commit it holds.
@@ -279,6 +280,57 @@ pub struct Trusted {
 /// exactly the reading that cannot be checked, and [`unwitnessed`] takes it from here.
 fn trusted(subjects: &[Subject], index: usize) -> Trusted {
     believed(&subjects[index], &freshest(subjects, index))
+}
+
+/// What a reading of the remote proves for one checkout, when the remote is on this disk.
+///
+/// The survey compares every clone of a group and picks the one that heard from the remote
+/// last ([`freshest`]). A report about one checkout has no group to compare, and most
+/// machines hold one clone of a repository anyway, so that route answers nothing there.
+///
+/// One route is still open, and it is the strongest of all: a remote that is a directory
+/// on this machine. A bare repository two people share, a mirror, and the checkout a
+/// project with no remote of its own is cloned from are all of them read directly, and
+/// what such a remote does not hold, the remote does not hold. `refs/heads/*` of that
+/// directory is not a reading of the remote; it is the remote.
+///
+/// `None` where `origin` names a server, or names a directory Git will not read. The
+/// caller then has no proof and says so rather than falling back to the checkout's own
+/// bookkeeping under a word that claims a remote.
+///
+/// Nothing here reaches a network: a url that is not a path on this disk is not opened.
+#[must_use]
+pub fn read_directly(checkout: &Path) -> Option<Trusted> {
+    let url = Git::at(checkout).remote_url(ORIGIN).ok()??;
+    let remote = Path::new(url.trim());
+    if !remote.is_absolute() || Git::open(remote).is_err() {
+        return None;
+    }
+    let subject = Subject { path: checkout.to_path_buf(), reading: inspect::reading(checkout) };
+    let witness = Subject {
+        path: remote.to_path_buf(),
+        reading: CloneReading { remotes: heads(remote), ..CloneReading::default() },
+    };
+    Some(believed(&subject, &[&witness]))
+}
+
+/// The remote a checkout's branch audit is about, named as every clone of it names it.
+const ORIGIN: &str = "origin";
+
+/// Where a repository keeps its own branches.
+const HEADS: &str = "refs/heads/";
+
+/// A repository's own branches, read as the tips a clone of it would fetch.
+fn heads(repo: &Path) -> Vec<RemoteTip> {
+    Git::at(repo)
+        .list_refs(HEADS)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|reference| {
+            let branch = reference.name.strip_prefix(HEADS)?.to_owned();
+            Some(RemoteTip { branch, oid: reference.oid })
+        })
+        .collect()
 }
 
 /// The doctrine itself: what one repository's own remote-tracking refs are worth once
