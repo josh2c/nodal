@@ -15,6 +15,7 @@
 //! | the refusal names a way out | a person is stopped with no way to carry on |
 //! | the lock is advisory | Nodal stops an editor, a `git` call or a process it did not start |
 //! | `--take` is deliberate and recorded | a hold moves with nothing written down |
+//! | a recorded move is a real move | the log says a hold changed hands when it came back to the holder it had |
 //! | an idle hold lapses, and says so | a home nobody has entered for a day stays locked, or changes hands with no record of why |
 //!
 //! ## The second actor, without a second account
@@ -222,6 +223,46 @@ fn an_idle_hold_lapses_and_the_next_actor_takes_it() {
     assert!(
         !body.contains("proven gone"),
         "a clock that ran out was recorded as a reading of the table: {body}"
+    );
+}
+
+/// The holder's own re-entry after a lapse takes the hold back and records no move.
+///
+/// The clock released the row, so the next entry goes down the same branch a stranger's
+/// would; and the next entry is the holder itself, entering its own home from the shell
+/// it has been working in all along. Nothing changed hands. A `handoff` line there reads
+/// "write lock taken from ada by ada", which is a move a person would go looking for and
+/// never find — and the ground this PR added the line for, an expired lease, is exactly
+/// the one that reaches here.
+///
+/// The idle window is zero, so every entry after the first meets a lapsed row. That is
+/// the same seam the test above uses, pointed at the holder instead of the next actor.
+#[test]
+fn the_holder_re_entering_after_a_lapse_records_no_hand_off() {
+    let workspace =
+        Workspace::with_recipe(binary(), "[lock]\nidle_hours = 0\n").with_env("NODAL_ACTOR", FIRST);
+    let home = workspace.unit("worker-import");
+    let unit = workspace.one_unit().id;
+
+    let again = workspace.nodal_in(&home, &["run", "--", "true"]);
+    assert!(again.status.success(), "the holder was refused its own home: {}", stderr(&again));
+
+    let store = workspace.store();
+    let held = locks::get(store.conn(), unit).unwrap().unwrap();
+    assert_eq!(
+        held.actor.unwrap().name.as_str(),
+        FIRST,
+        "the holder's own re-entry moved the hold"
+    );
+    let moves: Vec<_> = workspace
+        .events()
+        .into_iter()
+        .filter(|event| event.kind == EventKind::Handoff)
+        .map(|event| event.body)
+        .collect();
+    assert!(
+        moves.is_empty(),
+        "a hold that changed nobody's hands was recorded as moving: {moves:?}"
     );
 }
 

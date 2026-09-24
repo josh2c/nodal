@@ -37,7 +37,12 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   (`crates/nodal-core/src/runtime/lock.rs`, `tests/safety/tests/lock_liveness.rs`).
 - A hold moves on three grounds and each writes its own `handoff` line on the unit's log:
   a reading proved the holder gone, the lease expired on the clock, or a person asked with
-  `--take`. A lapsed hold used to move with nothing written down.
+  `--take`. A lapsed hold used to move with nothing written down. A hold that came back to
+  the holder it already had writes no line: the same actor re-entering its own home after
+  the idle window is not a hand-off, and the log no longer says "taken from ada by ada".
+- A holder's process is read as the one the row pinned when the two instants are within a
+  second. The instant is derived from the boot instant, which some kernels recompute, so
+  exact equality reported a running holder gone on a second of arithmetic.
 - This build reads registry schema 17. `lock.pid_started_at` holds the instant, null for every
   row written before it.
 

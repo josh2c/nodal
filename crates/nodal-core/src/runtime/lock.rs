@@ -88,9 +88,7 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-use crate::model::{
-    Actor, EventKind, Holding, HostName, Lock, Project, Recipe, Timestamp, Unit, UnitId,
-};
+use crate::model::{Actor, EventKind, HostName, Lock, Project, Recipe, Timestamp, Unit, UnitId};
 use crate::output::view::{HolderState, Unknowable};
 use crate::runtime::processes::{Presence, Processes};
 use crate::store::{events, locks};
@@ -140,15 +138,16 @@ pub fn enter(
     let entry = Entry {
         actor: crate::runtime::actor::current()?,
         host: HostName::current(),
-        process: crate::runtime::processes::current_process(),
         session: crate::runtime::processes::current_session(),
         take,
         now,
         idle_hours: idle_hours(&project.root),
     };
     let held = locks::get(conn, unit.id)?;
-    let holder = held.clone().filter(|held| held.holds_anyone(now, entry.idle_hours));
-    let Some(holder) = holder else {
+    // Borrowed, not copied. The row is read once and used twice — to decide whether
+    // anybody still holds it, and to name who the clock released it from — and a hold
+    // is on the path every write verb takes.
+    let Some(holder) = held.as_ref().filter(|held| held.holds_anyone(now, entry.idle_hours)) else {
         // Free, or lapsed. The statement takes it over in one write, so two processes
         // racing for a lapsed hold make one holder rather than two. The lineage is part
         // of that statement's match, so two processes of one actor race like strangers.
@@ -158,8 +157,12 @@ pub fn enter(
             // that moved with nothing written down is a hold a person cannot account
             // for. The note says the lease ran out, which is the other ground a hold
             // moves on and reads nothing like the one a reading establishes.
-            if let Some(lapsed) = held.filter(|held| held.actor.is_some()) {
-                record_hand_off(conn, unit.id, &lapsed, &entry, Moved::LeaseExpired)?;
+            //
+            // A hold that came back to the holder it already had moved nowhere, and
+            // [`record_hand_off`] writes nothing for it. The lapse is real — the row was
+            // anybody's for the asking — but "taken from ada by ada" is not.
+            if let Some(lapsed) = held.as_ref().filter(|held| held.actor.is_some()) {
+                record_hand_off(conn, unit.id, lapsed, &entry, Moved::LeaseExpired)?;
             }
             return Ok(Entered::Took);
         }
@@ -170,22 +173,27 @@ pub fn enter(
         };
         return settle(conn, unit, &won, &entry);
     };
-    settle(conn, unit, &holder, &entry)
+    settle(conn, unit, holder, &entry)
 }
 
 /// Who is entering a home, and how: one reading of this process, taken once.
 ///
-/// It is a value rather than six arguments because every one of them is read from this
+/// It is a value rather than five arguments because every one of them is read from this
 /// process at the same instant and they are only ever used together. [`Entry::claim`] is
 /// the lock this entry would write, which is the one place the fields are spelled out.
+///
+/// The pinned process is not among them. It is the one field that costs a reading of the
+/// process table, and the only thing that wants it is a row being written, so
+/// [`Entry::claim`] reads it and nothing else does. Most entries write no row: a refusal
+/// reads the table for nobody, and `nodal env --export` — which the prompt hook runs on
+/// every entry into a home — is a refresh that the lineage may already have. Reading it
+/// later is the same answer, because a process's identifier and the instant it started
+/// do not change while it is running.
 struct Entry {
     /// Who is entering.
     actor: Actor,
     /// The host they are entering from.
     host: HostName,
-    /// This process, pinned to the instant it started. The identity a later reading of
-    /// the table is asked to resolve.
-    process: Holding,
     /// The POSIX session this process is in, `None` where the host will not say.
     session: Option<u32>,
     /// Whether `--take` was given.
@@ -198,12 +206,15 @@ struct Entry {
 
 impl Entry {
     /// The hold this entry would write on `unit`.
+    ///
+    /// The process is pinned here rather than in the entry, because this is the one
+    /// place a pin is wanted: it is written into a row or it is not read at all.
     fn claim(&self, unit: UnitId) -> Lock {
         Lock {
             unit_id: unit,
             host: self.host.clone(),
             actor: Some(self.actor.clone()),
-            process: Some(self.process.clone()),
+            process: Some(crate::runtime::processes::current_process()),
             session: self.session,
             taken_at: self.now,
             refreshed_at: self.now,
@@ -512,7 +523,9 @@ pub fn liveness(lock: &Lock, here: &HostName, seen: &Seen) -> HolderState {
         Some(Presence::Gone) => HolderState::Gone,
         Some(Presence::Running { started_at }) => match (started_at, held.started_at) {
             // The process wearing the number now is the one the hold was taken by.
-            (Some(found), Some(recorded)) if found == recorded => HolderState::Live,
+            (Some(found), Some(recorded)) if is_the_same_start(found, recorded) => {
+                HolderState::Live
+            }
             // An identifier that came round again: a process began at this number at an
             // instant the hold does not name, so it is not the process that took it.
             // Reporting it as the holder would put a stranger's shell in the WHO column.
@@ -523,6 +536,27 @@ pub fn liveness(lock: &Lock, here: &HostName, seen: &Seen) -> HolderState {
             (None, _) | (_, None) => HolderState::Unknown { why: Unknowable::Undated },
         },
     }
+}
+
+/// How far apart two readings of one process's start may be and still be that process.
+///
+/// A start instant is derived and not stated. Linux publishes the boot instant and the
+/// process's age in the kernel's own ticks, and the instant is the sum; macOS states the
+/// instant itself. The sum is where the slack comes from: a kernel that recomputes the
+/// boot instant as now minus uptime answers a value that can differ by a second between
+/// two reads, so one unchanged process read twice gives two instants a second apart.
+///
+/// A second, and no wider. What the slack could let through is an identifier reused by a
+/// process that started within a second of the hold being taken, which needs the whole
+/// identifier space to come round inside that second; and the direction it errs in is
+/// the hold standing, which is the direction this module errs in everywhere. Comparing
+/// for exact equality erred the other way — it reported a running holder gone on a
+/// second of arithmetic — which is the fault the pin was added to remove.
+const PIN_SLACK_SECONDS: i64 = 1;
+
+/// Whether two readings of a start instant are readings of one process.
+fn is_the_same_start(found: Timestamp, recorded: Timestamp) -> bool {
+    found.unix_seconds().saturating_sub(recorded.unix_seconds()).abs() <= PIN_SLACK_SECONDS
 }
 
 /// What one reading of the process table said about the identifiers a caller asked for.
@@ -626,12 +660,41 @@ fn hold_line(held: &Lock, entry: &Entry) -> String {
     }
 }
 
+/// Whether this entry takes the hold from somebody else, rather than being the holder
+/// it already had entering again.
+///
+/// A holder is an actor, on a host, from a lineage. All three have to be the same for
+/// this to be the same worker: the rule this module is built on is that a name is not a
+/// writer, so one actor entering from a second session is a second holder and taking the
+/// hold from itself is a real move.
+///
+/// **An unstated lineage moves nothing.** A row written before holds carried one, and a
+/// host that will not say which session this process is in, state nothing about which of
+/// the two this is. A hand-off written on that is a move nobody can show happened, and
+/// the log is the record a person accounts for their home with.
+fn moves_the_hold(from: &Lock, entry: &Entry) -> bool {
+    if !from.is_held_by(&entry.actor, &entry.host) {
+        return true;
+    }
+    matches!((from.session, entry.session), (Some(recorded), Some(here)) if recorded != here)
+}
+
 /// Write the hand-off on the unit's log, so that the move is in the record a person
 /// reads rather than only in the row it changed.
 ///
 /// Only a hold somebody had reaches here, so the name is always there. A row that holds
 /// no actor names a host rather than a writer, and every caller filters it out before it
 /// gets this far: there is nobody for a hand-off to be from.
+///
+/// **A recorded move is a real move.** A hold that came back to the holder it already
+/// had is not a hand-off on any of the three grounds, and the one that can reach here
+/// that way is an expired lease: the clock released the row, its own holder asked next,
+/// and nothing changed hands. A line saying "taken from ada by ada" is a move a person
+/// would go looking for and never find, which is what a log is for not doing. The other
+/// two grounds cannot reach here without a move — a proven-dead lineage is a lineage
+/// that differs, and `--take` is refused to the holder's own lineage before this — and
+/// the guard is written once for all three rather than at each call, because a ground
+/// added later must meet it too.
 fn record_hand_off(
     conn: &Connection,
     unit: UnitId,
@@ -639,6 +702,9 @@ fn record_hand_off(
     entry: &Entry,
     why: Moved,
 ) -> Result<()> {
+    if !moves_the_hold(from, entry) {
+        return Ok(());
+    }
     let was = from.actor.as_ref().map_or_else(String::new, |actor| actor.name.to_string());
     let to = &entry.actor;
     // Why it moved, because the three grounds read the same in the log and are not the

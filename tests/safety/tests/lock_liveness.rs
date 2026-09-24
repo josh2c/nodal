@@ -257,6 +257,40 @@ fn the_process_the_hold_pinned_is_read_as_live() {
     assert_eq!(state(&lock, &Dated(vec![HELD_BY], began())), HolderState::Live);
 }
 
+/// A pin read a second away from the one the row carries is the same process.
+///
+/// The instant is derived, not stated: Linux adds the boot instant to the kernel's tick
+/// count, and a kernel that recomputes the boot instant as now minus uptime answers a
+/// value that can move by a second between two reads. So one unchanged process read
+/// twice can give two instants a second apart, and comparing them for exact equality
+/// reported a running holder gone on nothing but that arithmetic — the very fault the
+/// pin was added to remove, in a narrower window.
+///
+/// The slack is a second and stops there: two seconds is a stranger, and the direction
+/// the slack errs in is the hold standing.
+#[test]
+fn a_pin_a_second_from_the_reading_is_the_same_process_and_two_seconds_is_not() {
+    let lock = held(Some(Holding { pid: HELD_BY, started_at: Some(began()) }));
+    let away = |seconds: i64| {
+        Timestamp::from_unix_seconds(began().unix_seconds() + seconds).expect("a stated instant")
+    };
+
+    for drift in [-1, 0, 1] {
+        assert_eq!(
+            state(&lock, &Dated(vec![HELD_BY], away(drift))),
+            HolderState::Live,
+            "a reading {drift} second(s) from the pin read a running holder as gone"
+        );
+    }
+    for apart in [-2, 2] {
+        assert_eq!(
+            state(&lock, &Dated(vec![HELD_BY], away(apart))),
+            HolderState::Gone,
+            "a process {apart} seconds from the pin was read as the holder"
+        );
+    }
+}
+
 /// The defect, at the reading that had it: a hold refreshed by a later process of its
 /// own lineage is still held by that process.
 ///
@@ -424,4 +458,45 @@ fn a_table_read_all_the_way_through_answers_for_the_session_it_holds() {
 #[test]
 fn a_table_read_all_the_way_through_answers_for_the_session_it_holds() {
     assert!(nodal_safety::platform::skipped(STATED_TABLE, "this host publishes no /proc"));
+}
+
+// ---------------------------------------------------------------------------
+// What the two readings do not yet agree on.
+// ---------------------------------------------------------------------------
+
+/// The grant and the report answer about different things, and can therefore disagree
+/// about one hold. This test pins that, so a change to it is a deliberate one.
+///
+/// The grant reads the **lineage**: a second actor is refused while the recorded session
+/// holds any process. The report reads the **process**: the identifier the row pinned.
+/// The ordinary way of working separates them at once — every write verb runs in a new
+/// process that exits at the end of its command, while the shell that started it does
+/// not — so a held home in steady use reads `gone` in `nodal show` while `nodal cd`
+/// refuses a stranger because the holder's lineage is right there.
+///
+/// Neither reading is wrong about its own question and the safe direction holds: the
+/// grant is the one that refuses, and it refuses on the lineage. What is wrong is that
+/// one fact is reported two ways, which this project does not accept. Making the report
+/// agree means keying the word on the lineage and demoting the pin to a
+/// within-session freshness detail — a change to the published `state` field, to the
+/// `orphan` reading built on it, to four paragraphs of `docs/contracts.md` that argue
+/// the split, and to a batched session reading `nodal ls` can take once for a whole
+/// project rather than walking the table per unit. That is its own lane; this test holds
+/// the line until it lands.
+#[test]
+fn the_grant_reads_the_lineage_and_the_report_reads_the_process_and_they_can_disagree() {
+    // A hold whose recorded process has ended, taken from a lineage that is still there:
+    // an engineer whose `nodal cd` exited a second after it ran, in the shell that ran it.
+    let lock = held(Some(Holding { pid: HELD_BY, started_at: Some(began()) }));
+
+    assert_eq!(
+        state(&lock, &Dated(Vec::new(), began())),
+        HolderState::Gone,
+        "the report no longer reads the recorded process"
+    );
+    assert_eq!(
+        lock::lineage(&lock, Some(LINEAGE + 1), Some(true)),
+        Lineage::Second,
+        "the grant no longer refuses a second lineage while the holder's session is there"
+    );
 }

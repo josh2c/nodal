@@ -875,6 +875,12 @@ gone, the lease expired on the clock, or a person asked with `--take`. Each writ
 the unit's log, because a hold that moved with no reason recorded is a hold a person cannot account
 for afterwards, and the two that happen without anybody asking are exactly the ones worth reading.
 
+A recorded move is a real move. A hold that came back to the holder it already had — the same actor,
+on the same host, from the same lineage — changed nobody's hands, and nothing is written. The lapse
+is still real: the row was anybody's for the asking, and the next person to ask happened to be its
+own holder. An unstated lineage on either side writes nothing either, because nothing there can show
+the hold moved.
+
 `--take` moves a hold that has not lapsed. It writes a `handoff` event on the unit naming who it came
 from and who it went to. Nothing else moves a live hold.
 
@@ -934,6 +940,13 @@ pinned is still on this host.
 table that the pinned identity is not in it: no process carries the identifier, or one does and began
 at another instant. Every reading that stops short of that is `unknown`, and `unknown` never takes a
 home away from anybody.
+
+Two readings of one start instant may differ by a second and still be one process. The instant is
+derived rather than stated — Linux publishes the boot instant and the process's age in ticks, and the
+sum moves when a kernel recomputes the boot instant as now minus uptime — so exact equality reported
+a running holder gone on nothing but that arithmetic. A second of slack is the width of it. What the
+slack could admit is an identifier reused within a second of the hold being taken, which needs the
+whole identifier space to come round inside that second, and it errs towards the hold standing.
 
 The instant compared against is the row's own pin, and never the instant the hold began. A refresh
 keeps `taken_at`, because the hold began when it began, and writes the refreshing process's own
