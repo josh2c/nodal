@@ -146,18 +146,20 @@ pub struct Attribution<'a> {
 
 /// Where one home's work is read from.
 ///
-/// A live home is read from `HEAD`, because a person works on the branch they are
-/// checked out on and every commit of theirs is behind it.
+/// A live home is read from every ref it holds, and not from the branch it is on. A
+/// person works on that branch most of the time, and most of the time is not a promise a
+/// removal may rest on. `git switch -c`, `git stash` and `git tag` each write a ref, and
+/// a commit under one of those is work this home holds and nothing else has. A reading
+/// of `HEAD` alone reported no commits at all over such a home, called it safe, and the
+/// directory went to the trash whole and out of it on a timer.
 ///
-/// A trashed home is read from the tips its caller names instead, and the difference is
-/// not a preference. Nothing is checked out in the trash, and a forced reclaim wrote the
-/// working tree onto `refs/nodal/<unit>/wip`, which no branch reaches: a reading from
-/// `HEAD` alone would call that snapshot no part of the home and let the directory
-/// holding it go.
+/// A trashed home is read from the tips its caller names instead. Nothing is checked out
+/// in the trash, so there is no `HEAD` to start from, and the caller has the tips already
+/// from the record the reclaim left.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum Work<'a> {
-    /// The branch the home is on. The reading every caller but the sweep of the trash
-    /// makes, and therefore the default.
+    /// Every ref the home holds, plus `HEAD`. The reading every caller but the sweep of
+    /// the trash makes, and therefore the default.
     #[default]
     Checkout,
     /// The commits these tips reach, and nothing else. An empty list is a home with no
@@ -165,17 +167,86 @@ pub enum Work<'a> {
     Tips(&'a [Oid]),
 }
 
+/// What a person made, said as what it is not: everything under Nodal's own namespace.
+///
+/// Every ref under `refs/nodal/` is one Nodal wrote, and none of them is work this home
+/// did. Two are copies of the person's own checkout that the create put there — its
+/// reading of the remote and its own branches ([`crate::git::refs::ORIGIN`],
+/// [`crate::git::refs::CHECKOUT`]) — and the commits behind those are in the checkout.
+/// The rest are records of runs: what one operation wrote before it ran, the branch a
+/// squash folded, and the snapshot of the working tree a `done` takes. A record's tree is
+/// the home's working tree and its parent is the home's own branch, so it holds no
+/// content this reading does not already have from the tree and from the branch.
+///
+/// Counting them would keep every home that has ever run a command, for ever, which is a
+/// leak and not a safety property. `nodal gc` draws the same line over a home in the
+/// trash and states it there as well ([`crate::lifecycle::ops::gc`]), with one addition
+/// this reading does not need: nothing is checked out in the trash, so the sweep names
+/// the snapshot ref itself, because a forced reclaim put a working tree on it that no
+/// tree reading can reach any more.
+const NODALS_OWN: &str = crate::git::refs::NAMESPACE;
+
+/// What one reading walks, read once and used for every question it asks.
+///
+/// Three `rev-list` runs at worst ask about the same set of tips, and the tips are one
+/// reading of the home's refs. Taking them three times would cost two processes to learn
+/// what the first answer held.
+struct Walked {
+    /// The tips the reading starts from.
+    tips: Vec<Oid>,
+    /// What the record says was walked.
+    walked: Vec<String>,
+    /// What the record says was not, and each of those is a reason rather than a gap.
+    not_walked: Vec<String>,
+}
+
 impl Work<'_> {
-    /// The commits of this home that none of `held` reaches, newest first.
+    /// Read what this home's work hangs off, for the evidence record and for the walk.
     ///
-    /// One `rev-list` either way.
-    fn outside(self, git: &Git, held: &[Oid]) -> Result<Vec<Oid>> {
-        match self {
-            Self::Checkout => git.commits_outside("HEAD", held),
-            Self::Tips(tips) => git.among_outside(tips, held),
+    /// One `for-each-ref` and one `rev-parse` for a live home, and no process at all for
+    /// a home whose tips the caller already holds.
+    ///
+    /// `HEAD` is asked for separately because `for-each-ref` does not list it, and a home
+    /// left on a detached `HEAD` has a commit checked out that no ref of it names. A
+    /// `HEAD` nothing answers for is an unborn branch, which is a home with no commit of
+    /// its own rather than a reading that failed.
+    ///
+    /// # Errors
+    /// [`crate::Error::Git`] when the refs could not be listed.
+    fn resolve(self, git: &Git) -> Result<Walked> {
+        if let Self::Tips(tips) = self {
+            return Ok(Walked {
+                tips: tips.to_vec(),
+                walked: tips.iter().map(ToString::to_string).collect(),
+                not_walked: Vec::new(),
+            });
         }
+        let mut tips: Vec<Oid> = git
+            .all_refs()?
+            .into_iter()
+            .filter(|reference| !reference.name.starts_with(NODALS_OWN))
+            .map(|reference| reference.oid)
+            .collect();
+        tips.extend(git.rev_parse(HEAD).ok());
+        tips.sort_unstable();
+        tips.dedup();
+        Ok(Walked {
+            tips,
+            walked: WALKED.iter().map(|&name| String::from(name)).collect(),
+            not_walked: vec![format!("{NODALS_OWN}* (refs Nodal wrote, which hold no work of their own)")],
+        })
     }
 }
+
+/// What the record says a reading of a live home walked.
+///
+/// The namespaces rather than the names. A home holds one branch of its own and a copy of
+/// every branch the checkout has, so the names would be a list of the checkout's work
+/// under a heading about this home.
+const WALKED: [&str; 4] = ["HEAD", "refs/heads/*", "refs/tags/*", "refs/stash"];
+
+/// What a revision is called when it is the commit the home has checked out.
+const HEAD: &str = "HEAD";
 
 /// One home, and how much of it to read.
 ///
@@ -1467,28 +1538,6 @@ pub fn assess(input: &Input<'_>) -> Result<Assessment> {
     Ok(assessment)
 }
 
-impl Work<'_> {
-    /// What this reading walks, and what it therefore does not, for the evidence record.
-    ///
-    /// The second half is the honest one. A commit on a branch, a tag or a stash that the
-    /// walk does not reach is work the verdict says nothing about, and until it is walked
-    /// the record has to say so rather than let an empty `commits` list read as an empty
-    /// home. It is read off the reading itself and never written down twice: a widened
-    /// walk that left this behind would print a warning about refs it had just covered.
-    fn refs(self) -> (Vec<String>, Vec<String>) {
-        match self {
-            Self::Checkout => (
-                vec![String::from("HEAD")],
-                ["refs/heads/* not reached by HEAD", "refs/tags/*", "refs/stash"]
-                    .iter()
-                    .map(|&name| String::from(name))
-                    .collect(),
-            ),
-            Self::Tips(tips) => (tips.iter().map(ToString::to_string).collect(), Vec::new()),
-        }
-    }
-}
-
 /// The readings this assessment was not asked to make, each with the reason it was not.
 ///
 /// Three switches ([`Input`]), each off because the reading it buys costs processes and
@@ -1696,20 +1745,22 @@ fn history(
     let remotes = git.remotes()?;
     let found = witness::elsewhere(input.home, input.checkout);
     let checkout = input.checkout.map(Checkout::path);
-    (reading.refs.walked, reading.refs.not_walked) = input.work.refs();
+    let work = input.work.resolve(git)?;
+    reading.refs.walked = work.walked.clone();
+    reading.refs.not_walked = work.not_walked.clone();
     if !input.dispositions {
-        let refused = refusing(git, input, &found, &remotes, reading)?;
+        let refused = refusing(git, input, &work, &found, &remotes, reading)?;
         return Ok((refused, remotes, Vec::new()));
     }
-    let ours = input.work.outside(git, &found.own)?;
+    let ours = git.among_outside(&work.tips, &found.own)?;
     reading.refs.commits = ours.len();
     if ours.is_empty() {
         reading.stores = unasked(input, NOTHING_TO_LOOK_FOR);
         return Ok((Vec::new(), remotes, Vec::new()));
     }
     let witness = Witness::of(&remotes, &found);
-    let off_remote = input.work.outside(git, &union(&found.own, &found.remote))?;
-    let unproved = input.work.outside(git, &found.tips())?;
+    let off_remote = git.among_outside(&work.tips, &union(&found.own, &found.remote))?;
+    let unproved = git.among_outside(&work.tips, &found.tips())?;
     let proved = difference(&ours, &off_remote);
     let second = difference(&off_remote, &unproved);
     let (held, only) = local_copies(input.home, checkout, input.siblings, unproved, reading);
@@ -1801,11 +1852,12 @@ fn rewritten(git: &Git, kept: &[Oid]) -> Result<Vec<SameContent>> {
 fn refusing(
     git: &Git,
     input: &Input<'_>,
+    work: &Walked,
     found: &witness::Elsewhere,
     remotes: &[String],
     reading: &mut Reading,
 ) -> Result<Vec<CommitGroup>> {
-    let unproved = input.work.outside(git, &found.tips())?;
+    let unproved = git.among_outside(&work.tips, &found.tips())?;
     reading.refs.commits = unproved.len();
     if unproved.is_empty() {
         reading.stores = unasked(input, NOTHING_TO_LOOK_FOR);

@@ -120,24 +120,23 @@ fn a_safe_verdict_says_which_stores_it_asked_and_what_each_said() {
 
 /// A verdict names the refs it walked and, in the same breath, the refs it did not.
 ///
-/// The second list is the honest half. A reading of `HEAD` alone does not reach a branch,
-/// a tag or a stash made inside the home, so a commit on one of those is work the verdict
-/// says nothing about, and closing that is another lane's. Until it is walked, an empty
-/// `commits` list must not be allowed to read as an empty home, and this is what stops it.
+/// The second list is the honest half. The reading walks every ref a person can put work
+/// on, and it leaves out the refs Nodal itself wrote, whose commits hold the tree the
+/// working tree holds and the history the home's own branch reaches. A record that named
+/// neither list would let an empty `commits` list read as an empty home.
 #[test]
 fn a_safe_verdict_says_which_refs_it_walked_and_which_it_did_not() {
     let (machine, _home) = machine();
     let record = record(&machine, SLUG);
 
-    let walked: Vec<&str> =
-        record["refs"]["walked"].as_array().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
-    assert_eq!(walked, ["HEAD"], "the reading walks HEAD, and the record says only what it did");
+    let walked = serde_json::to_string(record["refs"]["walked"].as_array().unwrap()).unwrap();
+    for name in ["HEAD", "refs/heads/", "refs/tags/", "refs/stash"] {
+        assert!(walked.contains(name), "{name} is not named as walked: {walked}");
+    }
     let not_walked = record["refs"]["not_walked"].as_array().unwrap();
     assert!(!not_walked.is_empty(), "what was not walked is not stated: {record:#}");
     let listed = serde_json::to_string(not_walked).unwrap();
-    for name in ["refs/tags/", "refs/stash", "refs/heads/"] {
-        assert!(listed.contains(name), "{name} is not named as unwalked: {listed}");
-    }
+    assert!(listed.contains("refs/nodal/"), "the refs Nodal wrote are not named: {listed}");
     assert!(record["refs"]["commits"].is_u64(), "how many commits were assessed: {record:#}");
 }
 

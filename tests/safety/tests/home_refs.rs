@@ -11,9 +11,11 @@
 //! namespaces are left out of it, and both are copies of the person's own checkout that
 //! the create wrote in: `refs/nodal/origin/` is the checkout's reading of the remote and
 //! `refs/nodal/checkout/` is the checkout's own branches. Neither is work this home did.
-//! Nodal's own records — the snapshot a forced reclaim writes, the record before an
-//! operation, the branch a squash folded — are work, because a commit under one of them
-//! is a commit nobody else has.
+//! Nodal's own namespace is left out with them, and for the same reason. Every ref under
+//! `refs/nodal/` is one Nodal wrote: two are those copies, and the rest are records of
+//! runs whose trees and whose parents this reading already has from the working tree and
+//! from the home's own branch. The sweep of the trash draws the same line and adds the
+//! snapshot ref to its own reading, because nothing is checked out in the trash.
 //!
 //! Every property here runs on a machine whose project has no remote, so the checkout is
 //! what `origin` names and the remote question is settled by reading it. A commit the
@@ -25,7 +27,7 @@
 //! | a side branch is work | `a_commit_on_a_branch_the_head_does_not_reach_is_only_here` |
 //! | a stash is work | `a_stash_is_work_the_home_holds` |
 //! | a tag is work | `a_tag_that_is_the_one_ref_on_a_commit_is_work` |
-//! | a snapshot Nodal wrote is work | `a_snapshot_ref_is_work_the_home_holds` |
+//! | the records Nodal writes are not work | `the_records_nodal_writes_are_not_the_homes_own_work` |
 //! | the copied-in refs are not work | `the_refs_the_create_copied_in_are_not_the_homes_own_work` |
 //! | a side branch a second copy holds is safe | `a_side_branch_a_second_copy_holds_is_safe` |
 
@@ -178,29 +180,38 @@ fn a_tag_that_is_the_one_ref_on_a_commit_is_work() {
     intact(&machine, &home, &tip);
 }
 
-/// The refs Nodal writes for itself are work as well.
+/// The refs Nodal writes for itself are not the home's work, and the reading says so.
 ///
-/// A forced reclaim writes the working tree onto `refs/nodal/<unit>/wip`, and that
-/// snapshot is the one copy of a tree the person never committed. A record written
-/// before an operation is the same kind of thing. Neither is reachable from `HEAD`, so
-/// both were outside the reading.
+/// Every ref under `refs/nodal/` is one Nodal put there. Two are copies of the person's
+/// own checkout. The rest are records of runs: what an operation wrote before it ran, the
+/// branch a squash folded, and the snapshot of the working tree a `done` takes. A record
+/// holds the tree the working tree held and the commits the home's own branch reaches, so
+/// this reading has its content already. Counting them would keep every home that has
+/// ever run a command, for ever, and `nodal done` writes one every time.
+///
+/// The sweep of the trash draws the same line and adds one ref to it
+/// (`nodal_core::lifecycle::ops::gc`): nothing is checked out in the trash, so a forced
+/// reclaim's snapshot is named there, because it holds a working tree no tree reading can
+/// reach any more.
 #[test]
-fn a_snapshot_ref_is_work_the_home_holds() {
+fn the_records_nodal_writes_are_not_the_homes_own_work() {
     let machine = machine();
     let home = machine.unit(SLUG);
     let tip = on_a_side_branch(&home);
     let unit = std::fs::read_to_string(home.join(MARKER)).unwrap();
-    let wip = format!("refs/nodal/{}/wip", unit.trim());
-    git(&home, &["update-ref", &wip, &tip]);
+    for name in ["wip", "premerge", "pre/01JRUN"] {
+        git(&home, &["update-ref", &format!("refs/nodal/{}/{name}", unit.trim()), &tip]);
+    }
     git(&home, &["branch", "--quiet", "--delete", "--force", "side-work"]);
 
     let answer = check(&machine, SLUG);
-    assert_eq!(answer["safe_to_reclaim"], Value::Bool(false), "{answer:#}");
-    assert_eq!(count(commits(&answer, "only_here")), 1, "{answer:#}");
-    assert_eq!(commits(&answer, "only_here").unwrap()["sample"][0], Value::from(tip.as_str()));
-
-    reclaim_also_refuses(&machine, SLUG, "commits on no remote (1)");
-    intact(&machine, &home, &tip);
+    assert_eq!(answer["safe_to_reclaim"], Value::Bool(true), "{answer:#}");
+    assert_eq!(count(commits(&answer, "only_here")), 0, "{answer:#}");
+    let record = &answer["reading"]["refs"]["not_walked"];
+    assert!(
+        record.to_string().contains("refs/nodal/"),
+        "the record does not say what was left out: {record}"
+    );
 }
 
 /// The control that keeps the widening honest. A create copies the person's own checkout

@@ -24,7 +24,7 @@
 //! | the ordinary home still goes | `a_home_whose_commits_are_in_the_checkout_is_removed_on_time` |
 //! | a merged unit's home still goes | `a_merged_units_home_is_removed_although_the_squash_left_its_commits_here` |
 //! | a detached head is read | `a_detached_head_whose_copy_went_keeps_its_home` |
-//! | a branch the reclaim never read, the unit's own among them, holds nothing | `a_branch_the_reclaim_never_read_does_not_pin_the_home` |
+//! | a branch neither reading misses is refused at the reclaim | `a_branch_the_reclaim_never_read_is_refused_at_the_reclaim` |
 //! | an unreadable home is kept | `a_trashed_home_nothing_can_read_is_kept_and_the_report_says_why` |
 //! | a reclaim writes into no other home | `a_reclaim_of_one_unit_writes_into_no_other_home` |
 //!
@@ -419,23 +419,25 @@ fn unit_id(machine: &Machine) -> String {
         .to_string()
 }
 
-/// A reclaim reads the working tree and `HEAD`, and no `refs/heads/*` at all. A commit
-/// only a branch reaches is therefore a commit the reclaim was never refused over, and a
-/// sweep that read one would find it only in this home and keep the directory on every
-/// sweep from then on, with nothing a person could do to release it. gc reads exactly
-/// what the reclaim proved, so the retention removes the home.
+/// A reclaim and a sweep read the same refs, so neither can hold the other to a ref it
+/// never saw.
 ///
-/// Both branches a home can strand such a commit on are here.
+/// The reclaim read the working tree and `HEAD` and no `refs/heads/*` at all, and the
+/// sweep read every ref the home holds. A commit only a branch reached therefore went
+/// into the trash unexamined and was found on the first sweep, and the home was kept from
+/// then on with nothing a person could do to release it.
+///
+/// Both readings are one reading now (`nodal_core::lifecycle::assess::Work`), so the
+/// commit is refused at the reclaim, where the person still has the home and can act on
+/// it. Both branches a home can strand such a commit on are here.
 ///
 /// A home carries every branch the base it was copied from had, `refs/heads/main` among
 /// them, frozen at the moment the base was built. That is the first.
 ///
-/// The unit's own branch is the second, and it is the one that looks safe. In a home
-/// whose `HEAD` is detached the branch can be ahead of `HEAD`, and the reclaim read
-/// `HEAD`: the commit the branch alone reaches went into the trash unexamined, exactly
-/// like the one on `main`.
+/// The unit's own branch is the second, and it is the one that looked safe. In a home
+/// whose `HEAD` is detached the branch can be ahead of `HEAD`.
 #[test]
-fn a_branch_the_reclaim_never_read_does_not_pin_the_home() {
+fn a_branch_the_reclaim_never_read_is_refused_at_the_reclaim() {
     let machine = machine();
     let home = machine.unit(SLUG);
     let branch = git(&home, &["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -456,20 +458,18 @@ fn a_branch_the_reclaim_never_read_does_not_pin_the_home() {
     assert_eq!(git(&home, &["rev-parse", &branch]), ahead, "the branch is not ahead of HEAD");
     assert!(!reaches(&machine.source, &ahead), "the checkout already holds the commit");
 
-    let trash = reclaimed(&machine, SLUG);
-    assert_eq!(
-        git(&trash, &["rev-parse", "refs/heads/main"]),
-        stranded,
-        "the copied branch this property is about is not in the trashed home"
-    );
-    assert_eq!(
-        git(&trash, &["rev-parse", &branch]),
-        ahead,
-        "the unit's own branch this property is about is not in the trashed home"
-    );
+    let refused = machine.nodal(&["reclaim", SLUG]);
+    assert!(!refused.status.success(), "a branch nothing else has went: {}", stdout(&refused));
+    assert!(home.is_dir(), "the refusal moved the home");
+    assert!(machine.trashed().is_empty(), "the refusal put something in the trash");
 
+    // The person puts both commits somewhere else, and the home goes on time.
+    let beside = sibling_holding(&machine, &home, &stranded);
+    let kept = format!("{ahead}:refs/heads/kept");
+    git(&beside, &["fetch", "--quiet", home.to_str().unwrap(), &kept]);
+    let trash = reclaimed(&machine, SLUG);
     let swept = machine.nodal(&["gc"]);
     assert!(swept.status.success(), "{}", stderr(&swept));
-    assert!(!trash.exists(), "a branch the reclaim never read kept the home: {}", stdout(&swept));
+    assert!(!trash.exists(), "a branch both readings proved kept the home: {}", stdout(&swept));
     assert!(machine.trashed().is_empty(), "and the row went with the directory");
 }
