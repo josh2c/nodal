@@ -623,9 +623,12 @@ fn record(
 ///
 /// The event carries the summary and not the document. An event reference is one line of
 /// text by the model's own shape, and the whole record is what `nodal reclaim --check
-/// --json` prints; a record cut into 255-character pieces would be neither readable nor
+/// --json` prints; a document flattened into references would be neither readable nor
 /// parseable. What is here is what a person searching the log needs to find the run and
-/// to know whether the reading behind it was complete.
+/// to know whether the reading behind it was complete. Each reference it does carry is
+/// written whole: the model puts no length on a reference's value, and a `not_checked`
+/// cut short would be a record of what a reclaim could not check that itself stopped
+/// short of saying it.
 fn verdict(
     tx: &Transaction<'_>,
     subject: (&Unit, &Environment),
@@ -664,22 +667,10 @@ fn verdict(
     // less than the reading did.
     if !reading.not_checked.is_empty() {
         let gaps: Vec<&str> = reading.not_checked.iter().map(|gap| gap.what.as_str()).collect();
-        refs.push(("not_checked", clipped(&gaps.join("; "))));
+        refs.push(("not_checked", gaps.join("; ")));
     }
     let body = format!("reclaim went ahead; {}", reading.summary());
     events::note(tx, (unit.id, Some(environment.id)), EventKind::Verdict, body, &refs)
-}
-
-/// How long one reference may be, which is the model's own shape for a line.
-const REFERENCE: usize = 255;
-
-/// One reference, cut to the length the model accepts.
-///
-/// A reference that did not fit would be refused on the way in and take the whole event
-/// with it, and an event that says most of what was not checked is worth more than a
-/// reclaim that fails to record anything because one reason was long.
-fn clipped(line: &str) -> String {
-    line.chars().take(REFERENCE).collect()
 }
 
 /// Finding an interrupted reclaim again, from what the journal kept.
