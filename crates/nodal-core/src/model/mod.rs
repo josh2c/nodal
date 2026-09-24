@@ -51,7 +51,7 @@ pub use crate::model::operation::State as OperationState;
 pub use crate::model::port::{PortAllocation, PortBlock};
 pub use crate::model::project::{Project, ProjectName, RemoteUrl};
 pub use crate::model::readiness::{Part, Readiness, State as ReadinessState};
-pub use crate::model::reading::{Answered, Reach, Reading, Refs, Role, Store, Unchecked};
+pub use crate::model::reading::{Answered, Reading, Refs, Role, Store, Unchecked};
 pub use crate::model::recipe::{
     Backend, BaseSpec, CommandLine, Commands, DEFAULT_TRASH_RETENTION_DAYS, Db, DbKind, Env,
     EnvName, Hooks, LockPolicy, MigrationTool, PackageManager, Phase, Recipe, Reclaim, ServiceName,

@@ -127,36 +127,6 @@ pub struct Refs {
     pub not_walked: Vec<String>,
 }
 
-/// How far the process table was read.
-///
-/// The word [`crate::lifecycle::assess::Runtime::reach`] answers with. It lives here
-/// because it is vocabulary a report prints, and it is derived from the runtime rather
-/// than stored beside it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Reach {
-    /// It was not read at all: nothing asked for it, or it could not be listed. Which of
-    /// those is in [`Reading::not_checked`].
-    #[default]
-    Unread,
-    /// It was read, and the host refused part of what it holds.
-    Part,
-    /// It was read, and the host refused nothing.
-    Full,
-}
-
-impl Reach {
-    /// The word a report prints.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Unread => "unread",
-            Self::Part => "read in part",
-            Self::Full => "read in full",
-        }
-    }
-}
-
 /// One reading that was not made, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Unchecked {

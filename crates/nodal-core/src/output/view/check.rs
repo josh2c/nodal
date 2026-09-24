@@ -117,7 +117,7 @@ fn table_line(runtime: &Runtime) -> String {
     };
     format!(
         "process table: {}{} — {} read, {} withheld; {occupancy}",
-        runtime.reach().label(),
+        runtime.how_far(),
         runtime.at.as_deref().map(|at| format!(" {at}")).unwrap_or_default(),
         runtime.read,
         runtime.withheld,

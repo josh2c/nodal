@@ -104,7 +104,7 @@ use crate::git::{Git, Oid, union};
 use crate::lifecycle::kernel::{self, Evidence, LossSet, Verdict};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
 use crate::lifecycle::witness::{self, Checkout};
-use crate::model::reading::{self, Answered, Reach, Reading, Store, Unchecked};
+use crate::model::reading::{self, Answered, Reading, Store, Unchecked};
 use crate::model::{Needs, Timestamp, UnitId};
 use crate::paths;
 use crate::runtime::attribute::{Note, Source, Standing};
@@ -676,19 +676,29 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    /// How far the process table was read.
+    /// Whether the process table was not read at all: nothing asked for it, or it could
+    /// not be listed. Which of those is in [`Reading::not_checked`].
     ///
-    /// Derived and never stored, so it cannot disagree with the notes and the count it is
-    /// derived from. A table that would not answer at all is [`Reach::Unread`] whatever
-    /// else is in the value.
+    /// Derived and never stored, so it cannot disagree with the notes it is derived from.
     #[must_use]
-    pub fn reach(&self) -> Reach {
-        if self.notes.iter().any(|note| note.unread(Source::Environment)) {
-            Reach::Unread
+    pub fn unread(&self) -> bool {
+        self.notes.iter().any(|note| note.unread(Source::Environment))
+    }
+
+    /// How far the process table was read, in the word a report prints.
+    ///
+    /// Derived, like [`Runtime::unread`], from the notes and the withheld count. A word
+    /// and not a third enumeration of the same three cases: nothing branches on the two
+    /// that are not `unread`, and the only reader of the distinction is the line a report
+    /// prints.
+    #[must_use]
+    pub fn how_far(&self) -> &'static str {
+        if self.unread() {
+            "unread"
         } else if self.withheld > 0 {
-            Reach::Part
+            "read in part"
         } else {
-            Reach::Full
+            "read in full"
         }
     }
 }
@@ -1551,7 +1561,7 @@ pub fn record_table(reading: &mut Reading, runtime: Option<&mut Runtime>, at: &s
         return;
     };
     runtime.at = Some(String::from(at));
-    if runtime.reach() == Reach::Unread {
+    if runtime.unread() {
         // A table that was not read answered none of the occupancy questions, so it lists
         // none as taken; printing them beside `unread` would read as readings made over
         // nothing.

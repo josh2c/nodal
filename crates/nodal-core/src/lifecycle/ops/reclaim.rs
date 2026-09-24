@@ -669,7 +669,7 @@ fn verdict(
     // reading that asked no occupancy question says so rather than printing zeroes.
     if let Some(runtime) = runtime {
         refs.extend([
-            ("process_table", String::from(runtime.reach().label())),
+            ("process_table", String::from(runtime.how_far())),
             ("processes_read", runtime.read.to_string()),
             ("processes_withheld", runtime.withheld.to_string()),
             ("occupancy", runtime.occupancy.join(" ")),
