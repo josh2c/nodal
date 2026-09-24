@@ -56,50 +56,6 @@ impl Outside {
     }
 }
 
-/// What a safe verdict rested on, as a row keeps it.
-///
-/// A record and never permission, and the difference is the whole reason it is a second type.
-/// A [`Proof`] is what this machine proved a moment ago; this is what it wrote down. The copy
-/// can go after the home is in the trash — somebody deletes a branch in a clone, a remote
-/// drops a merged branch — so `nodal gc` asks [`judge`] again before it removes the directory
-/// and compares its own fresh proof with this. Nothing turns this back into a proof.
-///
-/// It lives here, beside the row, and not in the kernel. A row is the model's, and a model
-/// that had to import the lifecycle to name its own column would be the dependency running
-/// backwards.
-///
-/// It is transparent over the list it holds, so the row and the schema are exactly what they
-/// were before the type existed: the discipline is in the Rust type and none of it reaches
-/// the document.
-///
-/// [`Proof`]: crate::lifecycle::kernel::Proof
-/// [`judge`]: crate::lifecycle::kernel::judge
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(transparent)]
-#[schemars(transparent)]
-pub struct Record(Vec<Outside>);
-
-impl Record {
-    /// The record of these copies.
-    ///
-    /// [`crate::lifecycle::kernel::Proof::record`] is what makes the one a reclaim writes.
-    /// This is public beside it, for a row read back out of JSON and for a property about the
-    /// words, and that is not a hole in the guarantee: a record is not permission. Nothing
-    /// here makes a proof, `nodal gc` asks the kernel again before it removes anything, and a
-    /// row somebody wrote by hand is read exactly as a row Nodal wrote. What a removal rests
-    /// on is always the reading it just took.
-    #[must_use]
-    pub fn of(copies: Vec<Outside>) -> Self {
-        Self(copies)
-    }
-
-    /// What the verdict rested on.
-    #[must_use]
-    pub fn copies(&self) -> &[Outside] {
-        &self.0
-    }
-}
-
 /// What a reclaim's uniqueness check decided about the home it trashed.
 ///
 /// Three answers and not two, because "nothing was written down" is a third fact and
@@ -115,15 +71,13 @@ pub enum Rested {
     /// repositories and refs that held the commits it did not refuse over, and it is
     /// empty for a home that had no commit of its own to hold.
     ///
-    /// The row carries a [`Record`] and not a [`crate::lifecycle::kernel::Proof`], and that is
-    /// the point of the two types. A proof is what one reading proved, and only
-    /// [`crate::lifecycle::kernel::judge`] makes one; this is what was written down, and `gc`
-    /// asks the kernel again rather than reading this as permission. Nothing turns it back
-    /// into a proof. A `Record` is transparent over the list, so the row and its schema are
-    /// exactly what they were before the type existed.
+    /// It is a record and never permission. A [`crate::lifecycle::kernel::Proof`] is what one
+    /// reading proved and only [`crate::lifecycle::kernel::judge`] makes one; this is what
+    /// was written down, and `nodal gc` asks the kernel again rather than reading this as
+    /// permission. Nothing turns a row back into a proof.
     Safe {
         /// What held them, one entry per repository.
-        copies: Record,
+        copies: Vec<Outside>,
     },
     /// The check found work that existed only in the home and `--force` went on. The
     /// person looked and said so, so the retention running out removes the directory
@@ -146,7 +100,7 @@ impl Rested {
     #[must_use]
     pub fn copies(&self) -> &[Outside] {
         match self {
-            Self::Safe { copies } => copies.copies(),
+            Self::Safe { copies } => copies,
             Self::Unrecorded | Self::Forced => &[],
         }
     }
@@ -218,7 +172,7 @@ mod tests {
 
     use std::path::PathBuf;
 
-    use super::{Outside, Record, Rested, expiry};
+    use super::{Outside, Rested, expiry};
     use crate::model::Timestamp;
 
     /// One repository, for the properties about the words.
@@ -253,13 +207,13 @@ mod tests {
     fn only_a_forced_reclaim_is_taken_without_asking_again() {
         assert!(!Rested::Forced.re_asks());
         assert!(Rested::Unrecorded.re_asks());
-        assert!(Rested::Safe { copies: Record::of(Vec::new()) }.re_asks());
+        assert!(Rested::Safe { copies: Vec::new() }.re_asks());
     }
 
     /// The other two answers rested on nothing this machine wrote down.
     #[test]
     fn only_a_safe_verdict_names_what_it_rested_on() {
-        assert_eq!(Rested::Safe { copies: Record::of(vec![held(&[])]) }.copies(), &[held(&[])]);
+        assert_eq!(Rested::Safe { copies: vec![held(&[])] }.copies(), &[held(&[])]);
         assert!(Rested::Forced.copies().is_empty());
         assert!(Rested::Unrecorded.copies().is_empty());
     }

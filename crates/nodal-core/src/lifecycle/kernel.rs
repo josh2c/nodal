@@ -53,7 +53,7 @@ use crate::lifecycle::assess::{
     self, CommitGroup, Copies, Fate, PathGroup, Reason, Runtime, Unmovable,
 };
 use crate::lifecycle::uniqueness::SAMPLE;
-use crate::model::{Needs, Outside, Record, Timestamp};
+use crate::model::{Needs, Outside, Timestamp};
 use crate::paths;
 use crate::runtime::attribute::Standing;
 
@@ -245,7 +245,8 @@ fn unknown(unread: &Unread) -> Reason {
 /// **Only [`judge`] makes one.** The fields are private, there is no `Default`, no public
 /// constructor, and no `Deserialize` — a JSON reader that could build one would be a second
 /// constructor, and the whole value of the type is that there is one. It is not serialised
-/// at all: what a row keeps is a [`Record`], which is a record and never permission.
+/// at all: what a row keeps is a [`Vec<Outside>`] ([`crate::model::Rested::Safe`]), which is
+/// a record and never permission.
 ///
 /// A caller outside this module cannot write the literal:
 ///
@@ -309,17 +310,15 @@ impl Proof {
     /// It is a reading, so it is here and not in [`judge`]. Only the path that writes a row
     /// pays for it, which is what that path paid before this module existed.
     #[must_use]
-    pub fn record(&self) -> Record {
-        Record::of(
-            self.rests_on
-                .iter()
-                .map(|rest| Outside {
-                    repository: rest.repository.clone(),
-                    references: Git::at(&rest.repository).reaching(&rest.sample, SAMPLE),
-                    commits: rest.commits,
-                })
-                .collect(),
-        )
+    pub fn record(&self) -> Vec<Outside> {
+        self.rests_on
+            .iter()
+            .map(|rest| Outside {
+                repository: rest.repository.clone(),
+                references: Git::at(&rest.repository).reaching(&rest.sample, SAMPLE),
+                commits: rest.commits,
+            })
+            .collect()
     }
 }
 
@@ -591,7 +590,7 @@ mod tests {
         let proof = verdict.proof().unwrap();
         assert!(proof.rests_on().is_empty());
         assert_eq!(proof.observed_at(), at());
-        assert!(proof.record().copies().is_empty());
+        assert!(proof.record().is_empty());
     }
 
     /// The two path groups a removal would lose refuse; the two the trash keeps do not.

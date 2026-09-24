@@ -689,7 +689,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{Leftover, Pruned, Reclaimed, plural};
-    use crate::model::{Outside, Record, Rested, Timestamp};
+    use crate::model::{Outside, Rested, Timestamp};
     use crate::output::Render;
 
     fn reclaimed() -> Reclaimed {
@@ -760,11 +760,11 @@ mod tests {
     fn a_verdict_that_rested_on_a_copy_names_the_repository_and_the_ref() {
         let mut report = reclaimed();
         report.trashed = Some(trashed(Rested::Safe {
-            copies: Record::of(vec![Outside {
+            copies: vec![Outside {
                 repository: PathBuf::from("/w/project"),
                 references: vec![String::from("refs/remotes/origin/topic")],
                 commits: 3,
-            }]),
+            }],
         }));
         let lines = report.doc().lines().join("\n");
         assert!(lines.contains("nothing that is only here"), "{lines}");
@@ -779,7 +779,7 @@ mod tests {
     #[test]
     fn a_home_with_nothing_to_hold_prints_no_line_about_where_it_is_held() {
         let mut report = reclaimed();
-        report.trashed = Some(trashed(Rested::Safe { copies: Record::of(Vec::new()) }));
+        report.trashed = Some(trashed(Rested::Safe { copies: Vec::new() }));
         let lines = report.doc().lines().join("\n");
         assert!(lines.contains("nothing that is only here"), "{lines}");
         assert!(!lines.contains("also in"), "{lines}");
