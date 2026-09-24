@@ -189,9 +189,11 @@ impl Unobservable {
     #[must_use]
     pub const fn because(&self) -> &'static str {
         match self {
-            Self::BeforeThePush => "was last read in the checkout before this home wrote \
+            Self::BeforeThePush => {
+                "was last read in the checkout before this home wrote \
                  its own record of it, so that reading is the older one; fetch in the \
-                 checkout and read again",
+                 checkout and read again"
+            }
         }
     }
 }

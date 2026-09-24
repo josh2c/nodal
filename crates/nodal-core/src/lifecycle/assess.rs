@@ -192,7 +192,7 @@ const NODALS_OWN: &str = crate::git::refs::NAMESPACE;
 /// Three `rev-list` runs at worst ask about the same set of tips, and the tips are one
 /// reading of the home's refs. Taking them three times would cost two processes to learn
 /// what the first answer held.
-struct Walked {
+struct Scope {
     /// The tips the reading starts from.
     tips: Vec<Oid>,
     /// What the record says was walked.
@@ -214,9 +214,9 @@ impl Work<'_> {
     ///
     /// # Errors
     /// [`crate::Error::Git`] when the refs could not be listed.
-    fn resolve(self, git: &Git) -> Result<Walked> {
+    fn resolve(self, git: &Git) -> Result<Scope> {
         if let Self::Tips(tips) = self {
-            return Ok(Walked {
+            return Ok(Scope {
                 tips: tips.to_vec(),
                 walked: tips.iter().map(ToString::to_string).collect(),
                 not_walked: Vec::new(),
@@ -231,10 +231,12 @@ impl Work<'_> {
         tips.extend(git.rev_parse(HEAD).ok());
         tips.sort_unstable();
         tips.dedup();
-        Ok(Walked {
+        Ok(Scope {
             tips,
             walked: WALKED.iter().map(|&name| String::from(name)).collect(),
-            not_walked: vec![format!("{NODALS_OWN}* (refs Nodal wrote, which hold no work of their own)")],
+            not_walked: vec![format!(
+                "{NODALS_OWN}* (refs Nodal wrote, which hold no work of their own)"
+            )],
         })
     }
 }
@@ -1787,10 +1789,16 @@ fn history(
     let found = witness::elsewhere(input.home, input.checkout);
     let checkout = input.checkout.map(Checkout::path);
     let work = input.work.resolve(git)?;
-    reading.refs.walked = work.walked.clone();
-    reading.refs.not_walked = work.not_walked.clone();
+    reading.refs.walked.clone_from(&work.walked);
+    reading.refs.not_walked.clone_from(&work.not_walked);
+    let unproved = git.among_outside(&work.tips, &found.tips())?;
     if !input.dispositions {
-        let refused = refusing(git, input, &work, &found, &remotes, reading)?;
+        reading.refs.commits = unproved.len();
+        if unproved.is_empty() {
+            reading.stores = unasked(input, NOTHING_TO_LOOK_FOR);
+            return Ok((Vec::new(), remotes, Vec::new()));
+        }
+        let refused = refusing(input, unproved, &found, &remotes, reading);
         return Ok((refused, remotes, Vec::new()));
     }
     let ours = git.among_outside(&work.tips, &found.own)?;
@@ -1801,7 +1809,6 @@ fn history(
     }
     let witness = Witness::of(&remotes, &found);
     let off_remote = git.among_outside(&work.tips, &union(&found.own, &found.remote))?;
-    let unproved = git.among_outside(&work.tips, &found.tips())?;
     let proved = difference(&ours, &off_remote);
     let second = difference(&off_remote, &unproved);
     let found = local_copies(input.home, checkout, input.siblings, unproved, reading);
@@ -1892,26 +1899,19 @@ fn rewritten(git: &Git, kept: &[Oid]) -> Result<Vec<SameContent>> {
 /// what a joint question needs and the one thing a reading that discarded them could not
 /// supply.
 fn refusing(
-    git: &Git,
     input: &Input<'_>,
-    work: &Walked,
+    unproved: Vec<Oid>,
     found: &witness::Elsewhere,
     remotes: &[String],
     reading: &mut Reading,
-) -> Result<Vec<CommitGroup>> {
-    let unproved = git.among_outside(&work.tips, &found.tips())?;
-    reading.refs.commits = unproved.len();
-    if unproved.is_empty() {
-        reading.stores = unasked(input, NOTHING_TO_LOOK_FOR);
-        return Ok(Vec::new());
-    }
+) -> Vec<CommitGroup> {
     let checkout = input.checkout.map(Checkout::path);
     let read = local_copies(input.home, checkout, input.siblings, unproved, reading);
     let witness = Witness::of(remotes, found);
     let mut groups = held_groups(read.held);
     groups.extend(commit_group(unchecked(&witness, read.unread), read.unchecked));
     groups.extend(commit_group(unreached(&witness), read.only));
-    Ok(groups)
+    groups
 }
 
 /// How the commits nothing proved are reported: as only here, or as not checked.
@@ -2000,8 +2000,7 @@ fn local_copies(
         .filter(|(_, commits)| left.iter().any(|oid| commits.contains(oid)))
         .map(|(store, _)| store.clone())
         .collect();
-    let doubted: BTreeSet<&Oid> =
-        doubtful.iter().flat_map(|(_, commits)| commits.iter()).collect();
+    let doubted: BTreeSet<&Oid> = doubtful.iter().flat_map(|(_, commits)| commits.iter()).collect();
     let (unchecked, only): (Vec<Oid>, Vec<Oid>) =
         left.into_iter().partition(|oid| doubted.contains(oid));
     Found { held, unread, unchecked, only }
@@ -2037,9 +2036,8 @@ fn doubted(
     role: reading::Role,
 ) -> Option<(Incomplete, BTreeSet<Oid>)> {
     let incomplete = Incomplete { store: store.to_path_buf(), lacking };
-    reading.stores.push(asked(store, role, Answered::No, &incomplete.lacking.because()));
-    let has: BTreeSet<Oid> =
-        Git::at(store).stores(left).unwrap_or_default().into_iter().collect();
+    reading.stores.push(asked(store, role, Answered::No, incomplete.lacking.because()));
+    let has: BTreeSet<Oid> = Git::at(store).stores(left).unwrap_or_default().into_iter().collect();
     (!has.is_empty()).then_some((incomplete, has))
 }
 

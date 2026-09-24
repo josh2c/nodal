@@ -99,7 +99,6 @@ fn allow_filters(repo: &Path) {
     git(repo, &["config", "uploadpack.allowFilter", "true"]);
 }
 
-
 /// Whether a store really has an object, without letting Git fetch it on demand.
 ///
 /// A promisor store fills a missing object from its remote the moment anything asks for

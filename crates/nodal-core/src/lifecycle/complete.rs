@@ -138,7 +138,8 @@ impl Incomplete {
 #[must_use]
 pub fn admits(store: &Path, home: &Path) -> Option<Lacking> {
     let common = layout::common_dir(store)?;
-    if layout::common_dir(home).is_some_and(|theirs| paths::resolve(&common) == paths::resolve(&theirs))
+    if layout::common_dir(home)
+        .is_some_and(|theirs| paths::resolve(&common) == paths::resolve(&theirs))
     {
         return Some(Lacking::SameRepository);
     }

@@ -21,11 +21,8 @@ use crate::error::{Error, Result};
 /// reading it takes of somebody else's repository is the last place that rule may leak.
 /// A store that would have to fetch answers that it has not got the object, which is the
 /// true answer about the disk and the one every reading here wants.
-const ENV: &[(&str, &str)] = &[
-    ("GIT_TERMINAL_PROMPT", "0"),
-    ("GIT_OPTIONAL_LOCKS", "0"),
-    ("GIT_NO_LAZY_FETCH", "1"),
-];
+const ENV: &[(&str, &str)] =
+    &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_OPTIONAL_LOCKS", "0"), ("GIT_NO_LAZY_FETCH", "1")];
 
 /// What one `git` invocation produced.
 #[derive(Debug, Clone)]

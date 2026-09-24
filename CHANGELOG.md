@@ -7,6 +7,12 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
 
 ### Read
 
+- `nodal doctor` reads the remote itself where `origin` is a directory on this machine, and
+  the branch and worktree rows then say "only here" and "on the remote". Where `origin` names
+  a server nothing here can read it, and the rows keep the weaker words, "unpushed" and "seen
+  on a remote". The line a table with nothing to report prints says which reading it made. It
+  called a branch seen on a remote after a push, a merge and a remote branch deletion without
+  a prune.
 - `nodal ls` prints one note for a unit whose home is not on this disk. It runs no `git` in
   the missing directory, and no longer prints what each `git` said about it.
 - `nodal ls` prints `unknown` in `NEEDS` for every home when the process table could not be
@@ -48,6 +54,26 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
 
 ### Reclaim
 
+- `nodal reclaim` reads every ref the home holds, and not the branch it is on alone. A commit
+  on a side branch, a stash or a tag is work the home holds, and the verdict said nothing
+  about it. Nodal's own `refs/nodal/*` are left out: two are copies of the person's checkout,
+  and the rest are records of runs whose trees the working tree holds.
+- A repository supplies a second copy only where it holds the work behind the commits. A
+  partial clone, a clone that borrows its objects, a shallow clone and a worktree of the home
+  hold every commit and cannot produce the content; each is read before it may vouch, and a
+  store that passes is walked for the objects those commits add. A store that fails leaves the
+  commits `not_checked` and the row names the directory and the property that failed.
+- A reading of a remote is dated per branch, from `FETCH_HEAD`, which Git rewrites on every
+  fetch with one line per ref the fetch saw. A branch the last fetch did not see is a branch
+  the remote had not got, whatever the tracking ref still names, and a reading older than the
+  home's own record of a branch proves nothing about it. `packed-refs` no longer dates a
+  reading: rewriting it is not hearing from anything.
+- A commit a store holds only under its own `refs/remotes/*` is no longer a second copy. One
+  `git fetch --prune` there deletes such a ref, exactly as `git gc` deletes an object under no
+  ref.
+- Every `git` Nodal runs is held to the disk it reads. A partial clone fetches a missing object
+  the moment anything asks for one, and a reading of somebody else's repository was the last
+  place the no-network rule could leak.
 - `nodal reclaim` prints a `record` line naming the ref the home was committed to before
   the first step, `refs/nodal/<unit>/pre/<operation>`, for every reclaim that took one.
 - `nodal reclaim` names on its `check` line where the commits it did not refuse over

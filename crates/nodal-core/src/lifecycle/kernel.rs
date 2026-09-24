@@ -574,10 +574,8 @@ mod tests {
             Vec::new(),
         ));
         assert!(matches!(only, Verdict::Unsafe { .. }), "{only:?}");
-        let checked = judged(&set(
-            vec![commits(Copies::not_checked(Witness::default()))],
-            Vec::new(),
-        ));
+        let checked =
+            judged(&set(vec![commits(Copies::not_checked(Witness::default()))], Vec::new()));
         assert!(matches!(checked, Verdict::Unknown(_)), "{checked:?}");
     }
 
@@ -639,12 +637,9 @@ mod tests {
         assert!(judged(&set(Vec::new(), Vec::new())).proof().is_some());
         assert!(judged(&set(Vec::new(), vec![paths(Held::Untracked)])).proof().is_none());
         assert!(
-            judged(&set(
-                vec![commits(Copies::not_checked(Witness::default()))],
-                Vec::new()
-            ))
-            .proof()
-            .is_none()
+            judged(&set(vec![commits(Copies::not_checked(Witness::default()))], Vec::new()))
+                .proof()
+                .is_none()
         );
     }
 }

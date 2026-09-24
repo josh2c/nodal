@@ -367,7 +367,7 @@ fn vouched(
     unobserved: &mut Vec<Unobserved>,
 ) -> Trusted {
     let subject = Subject { path: home.to_path_buf(), reading: inspect::reading(home) };
-    let Some(witness) = witness(home, checkout, relation, reading, &subject, unobserved) else {
+    let Some(witness) = witness(checkout, relation, reading, &subject, unobserved) else {
         return Trusted::default();
     };
     believed(&subject, &[&witness])
@@ -375,7 +375,6 @@ fn vouched(
 
 /// The checkout as a witness for this home's `origin`, in whichever relation it has to it.
 fn witness(
-    home: &Path,
     checkout: &Checkout,
     relation: Relation,
     mut reading: CloneReading,
@@ -387,7 +386,7 @@ fn witness(
         // and wrote down, branch by branch, and the refspec has to cover every branch or
         // it cannot say that one is gone.
         Relation::SameRemote if reading.complete => {
-            reading.remotes = observed(checkout, home, subject, unobserved)?;
+            reading.remotes = observed(checkout, subject, unobserved)?;
         }
         // The checkout is what the base was cloned from, so its branches are not a
         // reading of the remote. They are the remote, and reading the authority needs
@@ -435,10 +434,10 @@ fn witness(
 /// remote's refs. Neither is a repository that found the remote empty.
 fn observed(
     checkout: &Checkout,
-    home: &Path,
     subject: &Subject,
     unobserved: &mut Vec<Unobserved>,
 ) -> Option<Vec<RemoteTip>> {
+    let home = subject.path.as_path();
     let url = named(home)?;
     let observation = fetched::last(&checkout.path, &url).filter(|read| !read.seen.is_empty())?;
     let mut seen = Vec::new();

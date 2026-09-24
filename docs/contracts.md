@@ -599,15 +599,16 @@ another project's".
 
 A third section reports the local branches of the checkout that no worktree has checked out. Every other
 source is anchored to a directory and a branch is not. A report of directories can therefore be all-clear
-over work that exists on no remote. Each branch is in one of three buckets: merged into the default branch;
-unmerged, with every commit seen on a remote; or unpushed, meaning this checkout has not seen its commits on
-any remote. The reading is the tips of the checkout's own remote-tracking refs, named rather than asked for as
-the `--remotes` namespace, and the word "seen" is what it is worth: those refs are written when the checkout
-fetches or pushes and nothing corrects them, so a branch the remote has since dropped is still in the quiet
-bucket. The reading that earns a stronger word is what a witness vouches for, and the destructive paths ask
-that one. The unpushed bucket prints one row per branch. A row carries the branch, the count of
-commits it has not seen on a remote, the age of the last commit, and whether its upstream is gone. The other two print one
-line each with a count. `--all` opens them. `--json` carries every row either way: the flag decides how much
+over work that exists on no remote. Each branch is in one of five buckets, and which words the
+table may use turns on which reading stood behind it. Where `origin` is a directory on this machine it is
+read directly, and what it has not got it has not got: a branch is then "only here" or "on the remote".
+Where `origin` names a server nothing here can read it, and the table states what this checkout has seen
+instead: "unpushed" or "seen on a remote", over the tips of the checkout's own remote-tracking refs. Those
+refs are written when the checkout fetches or pushes and nothing corrects them, so a branch the remote has
+since dropped can sit in the quiet bucket under the weaker word, and the line a table with nothing to
+report prints says which of the two readings it made. The fifth bucket is merged into the default branch. The loud bucket prints one row per branch. A row carries the branch, the word
+and the count of commits, the age of the last commit, and whether its upstream is gone. The quiet buckets
+print one line each with a count. `--all` opens them. `--json` carries every row either way: the flag decides how much
 is shown, never what was found. The audit is two `for-each-ref` calls and one `rev-list` per ref, and it
 reads only. What to do about a branch is a person's decision.
 
@@ -1432,12 +1433,37 @@ An object under no ref never counts either. Three shapes reach an object store w
 `git gc` in that repository removes all three. A reading that counted them called a home safe over a
 copy one ordinary command takes away.
 
-The refs that count are every ref under `refs/`. That is branches, tags, the stash and Nodal's own
-`refs/nodal/*` records. A detached `HEAD` counts too, because a checked-out commit is a real copy. A
-repository's own remote-tracking refs count for this and for nothing else. They prove that the
-repository holds the commit. They never prove that the remote still holds it.
+The refs that count are the refs a repository keeps of its own accord: branches, tags, the stash and
+Nodal's own `refs/nodal/*` records. A detached `HEAD` counts too, because a checked-out commit is a
+real copy. A repository's own `refs/remotes/*` does not count. Those refs are that store's record of
+a fetch or a push, and one `git fetch --prune` deletes one the moment the remote drops the branch,
+exactly as `git gc` deletes an object under no ref. Whether the remote has the work is a different
+question, and the reading of the remote below is what answers it.
+
+**A second copy holds the work and not only the commit.** A ref reaching a commit says the commit
+object is there. It does not say the store holds the commit's tree or its blobs, and the work is in
+the trees and the blobs. Four shapes hold every commit and cannot produce the content: a partial
+clone, which fetches objects on demand; a clone that borrows its objects through
+`objects/info/alternates`; a shallow clone; and a worktree of the home itself, whose objects are the
+home's. Each says so in its own configuration and files, and each is read before it may vouch. A
+store that passes all four is then walked for the objects the home's own commits add, bounded to
+what those commits introduce. A store that fails any reading holds the commits and proves nothing:
+the commits are `not_checked`, and the row names the directory and the property that failed.
 
 A store that cannot be opened or read proves nothing, which leaves the stricter answer standing.
+
+**A witness is a dated reading of one branch, and never a ref.** A remote-tracking ref says what a
+repository once saw; it never says when, and nothing corrects it. `FETCH_HEAD` is the record that
+does: Git rewrites it on every fetch with one line per ref the fetch saw, and its modification time
+dates that fetch. So the reading is per branch and it answers in both directions. A branch on a line
+is a branch the remote had at that instant, at the commit on the line, and that commit is what is
+believed. A branch absent from the listing is a branch the remote had not got, which is what closes
+the ordinary shape after a pull request merges: the host drops the branch, the person pulls, the
+tracking ref stays over a branch the remote has not got, and only the record of the fetch says so.
+Either reading counts only where it is not older than this home's own record of that branch, and a
+branch whose reading is older is reported with the reason. Nodal never establishes that a remote is
+correct now, and no report says so: what it establishes is that at a named instant the remote
+reported a state, and the row prints that instant.
 
 `not_checked` is not zero and it is not safe. A home's own `refs/remotes/origin/*` is the record of a
 push it made, so the remote is proved only where a witness confirms it, and a ref name with no object
