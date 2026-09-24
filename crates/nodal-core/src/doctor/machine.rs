@@ -11,7 +11,7 @@ use std::time::Instant;
 use crate::Result;
 use crate::doctor::origin::normalize;
 use crate::doctor::scan::{self, Avoid};
-use crate::doctor::unique::{Evidence, Subject};
+use crate::doctor::unique::{CloneReading, Subject};
 use crate::doctor::{Registry, inspect, unique};
 use crate::model::Timestamp;
 use crate::output::view::doctor::Note;
@@ -54,7 +54,7 @@ pub fn survey(
         match inspect::one(&repository.path, &mut links) {
             Ok(inspected) => {
                 entries += inspected.entries;
-                rows.push((inspected.row, inspected.evidence));
+                rows.push((inspected.row, inspected.reading));
             }
             Err(error) => skipped.push(Skip::new(&repository.path, unread(&repository, &error))),
         }
@@ -106,8 +106,8 @@ fn note_as_skip(note: Note) -> Skip {
 }
 
 /// Group clones by normalised origin URL. A clone with no remote is its own group.
-fn groups(rows: Vec<(CloneRow, Evidence)>) -> Vec<Group> {
-    let mut grouped: BTreeMap<String, Vec<(CloneRow, Evidence)>> = BTreeMap::new();
+fn groups(rows: Vec<(CloneRow, CloneReading)>) -> Vec<Group> {
+    let mut grouped: BTreeMap<String, Vec<(CloneRow, CloneReading)>> = BTreeMap::new();
     for row in rows {
         grouped.entry(key_of(&row.0)).or_default().push(row);
     }
@@ -130,13 +130,13 @@ fn key_of(row: &CloneRow) -> String {
 /// clone's commits are safe when another clone of the same remote holds them, and
 /// whether a remote-tracking ref still means anything is decided by the freshest clone
 /// of that remote on this machine. See [`unique`].
-fn group(name: String, mut entries: Vec<(CloneRow, Evidence)>) -> Group {
+fn group(name: String, mut entries: Vec<(CloneRow, CloneReading)>) -> Group {
     entries.sort_by(|left, right| {
         right.0.bytes.cmp(&left.0.bytes).then_with(|| left.0.path.cmp(&right.0.path))
     });
     let subjects: Vec<Subject> = entries
         .iter()
-        .map(|(row, evidence)| Subject { path: row.path.clone(), evidence: evidence.clone() })
+        .map(|(row, reading)| Subject { path: row.path.clone(), reading: reading.clone() })
         .collect();
     for ((row, _), proof) in entries.iter_mut().zip(unique::prove(&subjects)) {
         row.unpushed = proof.off_remote;

@@ -25,10 +25,11 @@ pub const CHECKOUT: &str = "refs/nodal/checkout/";
 ///
 /// Not `refs/remotes/origin/`, and the distinction is the whole of this constant. A
 /// home has an `origin` of its own, it pushes to it, and `refs/remotes/origin/*` is its
-/// own record of what it has sent — which is what decides whether a unit's work exists
-/// anywhere but this machine ([`super::remote::containment`]). Writing the checkout's
-/// reading over that would answer a question about the remote with a reading taken
-/// somewhere else, in a namespace whose meaning several other operations depend on.
+/// own record of what it has sent. Several readings rest on that namespace meaning exactly
+/// that — what this home last saw ([`crate::git::Git::seen_on_remotes`]), and what a witness
+/// is asked to vouch for ([`crate::doctor::unique::believed`]) — so writing the checkout's
+/// reading over it would answer a question about one repository with a reading taken in
+/// another.
 ///
 /// So the copy lives beside it, under a name that says whose reading it is.
 pub const ORIGIN: &str = "refs/nodal/origin/";

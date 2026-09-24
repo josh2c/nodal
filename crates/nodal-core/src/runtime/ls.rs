@@ -28,7 +28,7 @@
 //!
 //! **NEEDS is decided from what has already been read.** The column says why a unit
 //! wants a person, ranked, in the words `nodal reclaim --check` uses
-//! ([`crate::lifecycle::assess::Needs`]), so that one word means one thing in both
+//! ([`crate::model::Needs`]), so that one word means one thing in both
 //! places. What it must not do is start a survey of its own: the list is the command a
 //! person types most and it is held to a git-process budget per row (`ci/measure.sh`).
 //!
@@ -350,6 +350,25 @@ enum Standing {
 /// The order of [`Needs`] is the ranking and the first match wins, so a unit with
 /// uncommitted work and a conflict is reported as the first of the two. Every branch
 /// here is decided from a reading the list already took.
+///
+/// # This is a ranking and not a verdict
+///
+/// It says which unit to open next. It never says a home is safe to remove, and nothing
+/// reads it that way: the verdict is [`crate::lifecycle::kernel::judge`], over a reading of
+/// the home that costs between five and fourteen processes, and this column costs none of
+/// its own.
+///
+/// What the two share is [`Needs`] and [`Needs::refuses`] — one enum, one rule for which
+/// readings refuse — so the word in this column and the word in `nodal reclaim --check`
+/// mean one thing. What they do not share is the reading: three of the six answers here are
+/// about a branch and a base rather than about loss, and the kernel would answer `Nothing`
+/// for all three because a removal loses nothing over them. A list that asked the kernel
+/// would therefore either say less than it knows, or pay for the uniqueness proof on every
+/// row of the most-run command in the product.
+///
+/// So the column is decided here, and the sentence that keeps it honest is the one above: it
+/// may omit, and it must never assert something it did not check. A reading it could not
+/// take answers [`Needs::UnknownEvidence`], never [`Needs::Nothing`].
 fn needs(work: Option<&Work>, standing: Standing, remote: Remote) -> Option<Needs> {
     // A home Git could not answer for has no ranking, and `Nothing` would be the wrong
     // answer rather than a cautious one. The top of the ranking is the working tree, so

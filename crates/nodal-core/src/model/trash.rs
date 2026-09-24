@@ -70,6 +70,11 @@ pub enum Rested {
     /// The check found nothing that existed only in the home. `copies` names the
     /// repositories and refs that held the commits it did not refuse over, and it is
     /// empty for a home that had no commit of its own to hold.
+    ///
+    /// It is a record and never permission. A [`crate::lifecycle::kernel::Proof`] is what one
+    /// reading proved and only [`crate::lifecycle::kernel::judge`] makes one; this is what
+    /// was written down, and `nodal gc` asks the kernel again rather than reading this as
+    /// permission. Nothing turns a row back into a proof.
     Safe {
         /// What held them, one entry per repository.
         copies: Vec<Outside>,

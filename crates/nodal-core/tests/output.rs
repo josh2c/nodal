@@ -459,7 +459,7 @@ fn found() -> Vec<WorktreeRow> {
                 "Add oauth login to the account page and keep the old form working for the                  accounts that already use it",
             )),
             done: Integration::Open,
-            unpushed: 3,
+            unpushed: Some(3),
             uncommitted: 2,
             behind: Some(Behind {
                 commits: 12,
@@ -478,7 +478,7 @@ fn found() -> Vec<WorktreeRow> {
             branch: Some(String::from("finished")),
             intent: None,
             done: Integration::Integrated(Reason::Absorbed),
-            unpushed: 0,
+            unpushed: Some(0),
             uncommitted: 0,
             behind: Some(Behind {
                 commits: 40,
@@ -497,7 +497,7 @@ fn found() -> Vec<WorktreeRow> {
             branch: None,
             intent: None,
             done: Integration::Unknown,
-            unpushed: 0,
+            unpushed: Some(0),
             uncommitted: 0,
             behind: None,
             bytes: None,

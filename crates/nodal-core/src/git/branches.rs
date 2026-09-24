@@ -9,11 +9,16 @@
 //! |---|---|---|
 //! | what branches are there, how old, what upstream | `git for-each-ref` | one, for all of them |
 //! | which of them the default branch already holds | `git for-each-ref --merged` | one, for all of them |
-//! | how many commits of one exist on no remote | `git rev-list --count` | one per branch |
 //!
-//! The third is one process per branch and cannot be fewer: `--not --remotes` is a
-//! question about one tip. A measured machine answered all three for 317 refs in about
-//! twenty seconds.
+//! It answered a third — how many commits of one branch exist on no remote — from
+//! `rev-list --count <rev> --not --remotes`, and that reading is gone. `--not --remotes` names
+//! a namespace rather than the refs it rested on, and `refs/remotes/` inside a repository is
+//! its record of its own pushes that nothing corrects, so the count was printed under a word
+//! that claimed the remote. The audit takes the count against what this
+//! checkout has seen on a remote instead, against the refs it names rather than a namespace
+//! ([`crate::git::Git::seen_on_remotes`]), and the report's own word says what that reading is
+//! worth. It is still one `rev-list` per branch ([`crate::git::Git::count_outside`]). A
+//! measured machine answered all three for 317 refs in about twenty seconds.
 //!
 //! Nothing here writes. `for-each-ref` and `rev-list` read refs and objects, and the
 //! facade runs every one of them with `GIT_OPTIONAL_LOCKS=0`, so not even the index is
@@ -90,23 +95,6 @@ pub(super) fn merged_into(repo: &Path, base: &str) -> Result<BTreeSet<String>> {
         return Ok(BTreeSet::new());
     }
     Ok(output.lines()?.iter().map(|name| (*name).to_owned()).collect())
-}
-
-/// How many commits of `rev` exist on no remote-tracking ref.
-///
-/// One `rev-list` and nothing else. [`super::remote::containment`] answers the same
-/// question with the commits themselves and one more process for the remote names,
-/// which is the right shape for one revision and the wrong one for three hundred.
-///
-/// # Errors
-/// [`Error::Git`] when the revision is unknown, [`Error::GitParse`] when the count
-/// could not be read.
-pub(super) fn unpushed_count(repo: &Path, rev: &str) -> Result<usize> {
-    let output = cmd::run_ok(repo, &["rev-list", "--count", rev, "--not", "--remotes"])?;
-    let text = output.text()?;
-    text.trim()
-        .parse()
-        .map_err(|_| Error::GitParse { args: output.args.clone(), record: text.to_owned() })
 }
 
 #[cfg(test)]

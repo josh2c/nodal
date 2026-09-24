@@ -3,7 +3,7 @@
 //! Removing a home is safe exactly where every commit in it exists somewhere else. Nodal
 //! makes no network call, so "somewhere else" is answered from this disk, in two parts:
 //!
-//! | evidence | what it proves | how it can fail |
+//! | reading | what it proves | how it can fail |
 //! |---|---|---|
 //! | the project's checkout holds the commit | the commit survives this home | nothing: it is a second copy |
 //! | a remote-tracking ref holds the commit | the commit reached the remote once | the branch may be deleted or rewritten since |
@@ -80,9 +80,9 @@
 //! # The mirror vouches for nothing
 //!
 //! A home also carries `refs/nodal/origin/*`, the copy Nodal took of the checkout's
-//! reading of `origin` ([`crate::git::refs::ORIGIN`]). It is evidence that a home's own
+//! reading of `origin` ([`crate::git::refs::ORIGIN`]). It is reading that a home's own
 //! refs are stale — it is refreshed from the checkout and it drops what the checkout
-//! dropped — and it is not evidence that the remote holds anything.
+//! dropped — and it is not reading that the remote holds anything.
 //!
 //! Two reasons, and either is enough. It is a copy of a reading, so this run can read
 //! neither when that reading was taken nor whether it covered every branch. And it lives
@@ -99,7 +99,7 @@
 //!
 //! So [`Checkout::read`] takes that reading once and [`elsewhere`] is given it
 //! ([`Checkout`]). A survey reads one; a command about one home reads one and uses it
-//! once. The evidence is the same evidence either way, so no verdict moves.
+//! once. The reading is the same reading either way, so no verdict moves.
 //!
 //! Nothing here writes, and nothing here reaches a network.
 
@@ -110,7 +110,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::Result;
-use crate::doctor::unique::{Evidence, RemoteTip, Subject, Trusted, believed};
+use crate::doctor::unique::{CloneReading, RemoteTip, Subject, Trusted, believed};
 use crate::doctor::{inspect, origin};
 use crate::git::{Git, Oid, union};
 
@@ -177,7 +177,7 @@ impl Elsewhere {
     }
 
     /// Every tip, for the caller that only asks whether a commit is somewhere else at
-    /// all and does not care which evidence says so.
+    /// all and does not care which reading says so.
     #[must_use]
     pub fn tips(&self) -> Vec<Oid> {
         union(&self.local(), &self.remote)
@@ -191,7 +191,7 @@ impl Elsewhere {
 /// each of them.
 ///
 /// A checkout that Git will not read, and a shallow one, witness nothing: [`elsewhere`]
-/// stops at the evidence and asks them nothing further. So nothing further is read of
+/// stops at the reading and asks them nothing further. So nothing further is read of
 /// them here either, and the fields below are empty rather than unknown.
 ///
 /// # One call stack, so a cell needs no lock
@@ -210,7 +210,7 @@ impl Elsewhere {
 /// was once one home's is now every home's. An empty `held` would say "the checkout
 /// holds none of the commits it names", which is a claim, and a `rev-list` that did not
 /// run has not earned it. So a failure is written into
-/// [`Evidence::unreadable`], which is the field that already means "this repository
+/// [`CloneReading::unreadable`], which is the field that already means "this repository
 /// could not be read", and [`elsewhere`] treats it exactly as it treats a checkout Git
 /// would not open: nothing is believed, and every commit of the home is reported as not
 /// checked. That is a refusal, which is what the failure earned before.
@@ -219,13 +219,13 @@ pub struct Checkout {
     /// Where it is.
     path: PathBuf,
     /// What it can say about where its commits also live, or why it could not be read.
-    evidence: Evidence,
+    reading: CloneReading,
     /// The grouping name of its `origin`, `None` when it has none to read.
     origin: Option<String>,
     /// The commits of its own tips that its object store really holds ([`stored`]).
     ///
     /// Empty is a fact about the store and never a reading that failed: a failure is in
-    /// `evidence.unreadable` instead.
+    /// `reading.unreadable` instead.
     held: Vec<Oid>,
     /// Its own branches, read the first time a home needs them ([`Checkout::heads`]).
     ///
@@ -238,25 +238,25 @@ pub struct Checkout {
 impl Checkout {
     /// Read the checkout at `path`.
     ///
-    /// Four `git` invocations for the evidence, one for the name of `origin`, and one
+    /// Four `git` invocations for the reading, one for the name of `origin`, and one
     /// that looks for every tip it names in its own object store. A caller that reads
     /// one home pays what it always paid; a caller that reads many pays it once.
     ///
     /// A checkout that could not be read is read no further, and says why.
     #[must_use]
     pub fn read(path: &Path) -> Self {
-        let mut evidence = inspect::evidence(path);
+        let mut reading = inspect::reading(path);
         let path = path.to_path_buf();
         let mut origin = None;
         let mut held = Vec::new();
-        if evidence.unreadable.is_none() && !evidence.shallow {
+        if reading.unreadable.is_none() && !reading.shallow {
             origin = named(&path);
-            match stored(&path, &evidence.tips) {
+            match stored(&path, &reading.tips) {
                 Ok(found) => held = found,
-                Err(why) => evidence.unreadable = Some(why.to_string()),
+                Err(why) => reading.unreadable = Some(why.to_string()),
             }
         }
-        Self { path, evidence, origin, held, heads: OnceCell::new() }
+        Self { path, reading, origin, held, heads: OnceCell::new() }
     }
 
     /// Where it is.
@@ -283,7 +283,7 @@ impl Checkout {
 ///
 /// One reading of the checkout's object store covers all three lists, and one reading of
 /// its refs covers the split between them. The split is made from the names, and the
-/// names arrive with the evidence ([`Evidence::own`]) rather than being read again: the
+/// names arrive with the reading ([`CloneReading::own`]) rather than being read again: the
 /// `for-each-ref` that listed the tips already knew which of them were a reading of
 /// somewhere else, and asking the same repository twice would cost a process to learn
 /// what the first answer held.
@@ -297,17 +297,17 @@ pub fn elsewhere(home: &Path, checkout: Option<&Checkout>) -> Elsewhere {
     let Some(checkout) = checkout else {
         return Elsewhere::default();
     };
-    let evidence = &checkout.evidence;
-    if evidence.unreadable.is_some() || evidence.shallow {
+    let reading = &checkout.reading;
+    if reading.unreadable.is_some() || reading.shallow {
         return Elsewhere::default();
     }
     let relation = relation(home, checkout);
-    let trusted = vouched(home, checkout, relation, evidence.clone());
+    let trusted = vouched(home, checkout, relation, reading.clone());
     let Ok(held) = holdings(checkout, &trusted.tips) else {
         return Elsewhere::default();
     };
     let carried: BTreeSet<&Oid> = held.iter().collect();
-    let own: Vec<Oid> = evidence.own.iter().filter(|oid| carried.contains(oid)).cloned().collect();
+    let own: Vec<Oid> = reading.own.iter().filter(|oid| carried.contains(oid)).cloned().collect();
     let remote: Vec<Oid> =
         trusted.tips.iter().filter(|oid| carried.contains(oid)).cloned().collect();
     let named: BTreeSet<&Oid> = own.iter().chain(&remote).collect();
@@ -332,7 +332,7 @@ pub fn elsewhere(home: &Path, checkout: Option<&Checkout>) -> Elsewhere {
 /// A reading that failed is an error and never an empty list, for the reason
 /// [`Checkout`] states: the caller turns it into a refusal.
 fn holdings<'a>(checkout: &'a Checkout, trusted: &[Oid]) -> Result<Cow<'a, [Oid]>> {
-    let named: BTreeSet<&Oid> = checkout.evidence.tips.iter().collect();
+    let named: BTreeSet<&Oid> = checkout.reading.tips.iter().collect();
     let extra: Vec<Oid> = trusted.iter().filter(|oid| !named.contains(oid)).cloned().collect();
     if extra.is_empty() {
         return Ok(Cow::Borrowed(&checkout.held));
@@ -341,11 +341,11 @@ fn holdings<'a>(checkout: &'a Checkout, trusted: &[Oid]) -> Result<Cow<'a, [Oid]
 }
 
 /// What a witness will vouch for, and nothing at all when there is no witness.
-fn vouched(home: &Path, checkout: &Checkout, relation: Relation, evidence: Evidence) -> Trusted {
-    let Some(witness) = witness(home, checkout, relation, evidence) else {
+fn vouched(home: &Path, checkout: &Checkout, relation: Relation, reading: CloneReading) -> Trusted {
+    let Some(witness) = witness(home, checkout, relation, reading) else {
         return Trusted::default();
     };
-    let subject = Subject { path: home.to_path_buf(), evidence: inspect::evidence(home) };
+    let subject = Subject { path: home.to_path_buf(), reading: inspect::reading(home) };
     believed(&subject, &[&witness])
 }
 
@@ -354,20 +354,20 @@ fn witness(
     home: &Path,
     checkout: &Checkout,
     relation: Relation,
-    mut evidence: Evidence,
+    mut reading: CloneReading,
 ) -> Option<Subject> {
     match relation {
         // Two clones of one remote. The checkout's reading replaces the home's only
         // where it is the later one, it covers every branch, and it can therefore say
         // that a branch is gone.
-        Relation::SameRemote if evidence.complete && later(&evidence, home) => {}
+        Relation::SameRemote if reading.complete && later(&reading, home) => {}
         // The checkout is what the base was cloned from, so its branches are not a
         // reading of the remote. They are the remote, and reading the authority needs
         // no comparison with anybody's copy of it.
-        Relation::IsTheRemote => evidence.remotes = checkout.heads().to_vec(),
+        Relation::IsTheRemote => reading.remotes = checkout.heads().to_vec(),
         _ => return None,
     }
-    Some(Subject { path: checkout.path.clone(), evidence })
+    Some(Subject { path: checkout.path.clone(), reading })
 }
 
 /// The commits of `tips` that the repository they were read out of actually holds.
@@ -442,7 +442,7 @@ fn vouched_for(repo: &Path, wanted: &[Oid]) -> Result<Vec<Oid>> {
 ///
 /// An unknown date on either side, and an equal one, witness nothing. A comparison that
 /// cannot be made is not a comparison that passed.
-fn later(checkout: &Evidence, home: &Path) -> bool {
+fn later(checkout: &CloneReading, home: &Path) -> bool {
     read_since(home, checkout.heard)
 }
 
@@ -453,7 +453,7 @@ fn later(checkout: &Evidence, home: &Path) -> bool {
 /// `stat`. It is not the whole rule — [`witness`] also requires that the checkout fetch
 /// every branch, which is a reading of its configuration — so a caller that uses this on
 /// its own gets the cheap necessary condition and not the proof. `nodal ls` is that
-/// caller: it flags a unit whose remote evidence *cannot* be current, for a per-row cost
+/// caller: it flags a unit whose remote reading *cannot* be current, for a per-row cost
 /// of two `stat` calls, and leaves the proof to `nodal reclaim --check`.
 ///
 /// An unknown date on either side, and an equal one, witness nothing. A comparison that

@@ -38,7 +38,7 @@
 //! safe because the other holds the copy: the reading of one names the other's home as a
 //! second object store, and the reading of the other names the first. Each answer is true
 //! and the pair is not, and a person clearing a machine removes both. So a home of this
-//! project's own open units is not believed as a second store ([`assess::counts`]), and a
+//! project's own open units is not believed as a second store ([`kernel::joint`]), and a
 //! commit that lives only in one of them is reported here.
 //!
 //! The project's checkout, and the clones beside it that are nobody's unit home, are
@@ -53,6 +53,7 @@ use rusqlite::Connection;
 
 use crate::doctor::{Known, Scope, Section, scan, size};
 use crate::lifecycle::assess::{self, Copies};
+use crate::lifecycle::kernel;
 use crate::lifecycle::witness::Checkout;
 use crate::model::{Unit, UnitStatus};
 use crate::output::view::doctor::{Finding, Kind};
@@ -119,14 +120,18 @@ fn open_units(conn: &Connection, known: &Known) -> crate::Result<Vec<Unit>> {
 ///
 /// `homes` is every open home of this project, this one included. A copy that lives only
 /// in one of them is not a copy a person clearing the machine keeps, so the joint rule
-/// discounts it ([`assess::joined`]).
+/// discounts it ([`kernel::joint`]).
 ///
 /// That rule is asked of the reading rather than built into it. The reading is exactly
-/// [`assess::Input::refusal`], the same one a refusing `nodal reclaim` makes, and the
-/// set is applied to the [`Copies::SecondLocalCopy`] groups it comes back with — which
-/// is the same route `nodal reclaim --check` takes over a set of units. So the two joint
-/// answers cannot name different holders, because there is one rule and one place it is
-/// asked.
+/// [`assess::Input::refusal`], the same one a refusing `nodal reclaim` makes, and the set is
+/// handed to the kernel, which applies it to the [`Copies::SecondLocalCopy`] groups the
+/// reading came back with ([`kernel::joint`]) — the same route `nodal reclaim --check` takes
+/// over a set of units. So the two joint answers cannot name different holders, because
+/// there is one rule and one place it is asked.
+///
+/// The row itself is the kernel's verdict and not a count compared with zero. What the two
+/// clauses below add is which of the two refusals it is, and how many commits each is
+/// about, which a verdict does not carry and a person reading the section wants.
 ///
 /// `None` for a home whose every commit lives somewhere else, which is the home the
 /// closing line is about.
@@ -146,7 +151,7 @@ fn read(
     };
     let only_here = counted(|copies| matches!(copies, Copies::OnlyHere { .. }));
     let unchecked = counted(|copies| matches!(copies, Copies::NotChecked { .. }));
-    let shared = assess::joined(&assessed, homes);
+    let shared = kernel::joint(&assessed.loss_set(), homes);
     if only_here == 0 && unchecked == 0 && shared.is_empty() && assessed.notes.is_empty() {
         return None;
     }

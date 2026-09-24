@@ -341,19 +341,6 @@ impl Git {
         branches::merged_into(&self.root, base)
     }
 
-    /// How many commits of `rev` exist on no remote-tracking ref.
-    ///
-    /// One `rev-list` and nothing else, which is what makes an audit of three hundred
-    /// refs one process per ref. [`Git::remote_containment`] answers the same question
-    /// with the commits themselves, for callers that need them.
-    ///
-    /// # Errors
-    /// [`Error::Git`] when the revision is unknown, [`Error::GitParse`] when the count
-    /// could not be read.
-    pub fn unpushed_count(&self, rev: &str) -> Result<usize> {
-        branches::unpushed_count(&self.root, rev)
-    }
-
     /// Whether a local branch exists.
     ///
     /// # Errors
@@ -435,6 +422,26 @@ impl Git {
     /// [`Error::Git`] when `git for-each-ref` failed.
     pub fn list_refs(&self, prefix: &str) -> Result<Vec<refs::Ref>> {
         refs::list(&self.root, prefix)
+    }
+
+    /// The commits this repository last saw on any remote, as the tips of its own
+    /// remote-tracking refs.
+    ///
+    /// **A reading and never a proof.** These refs are written when this repository fetches
+    /// or pushes and nothing corrects them afterwards, so a branch deleted on the remote is
+    /// still reachable from one of them. A caller may say "this checkout has seen these
+    /// commits on a remote"; it may not say "a remote holds them". The reading that earns the
+    /// second is what a witness vouches for
+    /// ([`crate::doctor::unique::believed`]), and the destructive paths ask that one.
+    ///
+    /// It exists so that the report surfaces which need the weaker reading name the refs they
+    /// rested on rather than asking for the `--remotes` namespace, which is the construction
+    /// [`crate::git::outside`] exists to refuse. One `for-each-ref`.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when `git for-each-ref` failed.
+    pub fn seen_on_remotes(&self) -> Result<Vec<Oid>> {
+        Ok(refs::list(&self.root, "refs/remotes/")?.into_iter().map(|one| one.oid).collect())
     }
 
     /// The names of the refs of this repository that reach any of `commits`.
@@ -528,15 +535,6 @@ impl Git {
             return Ok(Vec::new());
         }
         Ok(output.lines()?.iter().map(|line| (*line).to_owned()).collect())
-    }
-
-    /// Which commits of a revision exist on no remote. The Git half of the uniqueness
-    /// check `nodal reclaim` runs before removing anything.
-    ///
-    /// # Errors
-    /// [`Error::Git`] when the revision is unknown.
-    pub fn remote_containment(&self, rev: &str) -> Result<remote::Containment> {
-        remote::containment(&self.root, rev)
     }
 
     /// The URL a remote fetches from, `None` when there is no such remote.

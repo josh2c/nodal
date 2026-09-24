@@ -120,6 +120,7 @@ use crate::git::{Git, Oid, refs, snapshot, union};
 use crate::lifecycle::assess;
 use crate::lifecycle::idle;
 use crate::lifecycle::journal;
+use crate::lifecycle::kernel::{self, Evidence, LossSet};
 use crate::lifecycle::uniqueness::Finding;
 use crate::lifecycle::witness::Checkout;
 use crate::model::{
@@ -586,17 +587,28 @@ fn held_back(entry: &Trashed, reading: &Reading) -> Result<Option<HeldBack>> {
 /// The commits of a trashed home that no ref outside the directory reaches, and what the
 /// reading could say about the remote.
 ///
-/// The reading a reclaim makes, and deliberately not a second one
-/// ([`crate::lifecycle::assess`]). Two things differ, and each is a fact about a home
-/// nobody is working in.
+/// The reading a reclaim makes, and the verdict the one judge makes of it
+/// ([`kernel::judge`]) — deliberately not a second implementation of either. **The row the
+/// reclaim wrote is not read here at all.** A record of what a removal rested on is not
+/// permission to finish it: the sweep asks again, and what it may remove is what its own
+/// reading proves. The row is read afterwards, to say which of the copies it named has
+/// since gone ([`gone_copies`]).
+///
+/// Two things differ from the reclaim's reading, and each is a fact about a home nobody is
+/// working in.
 ///
 /// The work is read from the refs the reclaim proved rather than from every ref the home
 /// holds ([`work_tips`]).
 ///
-/// The paths of the working tree decide nothing, because a reclaim already settled them:
-/// a home with none was the condition of an ordinary reclaim, and a forced one put what
-/// it found on a ref. An untracked file the trash still holds would otherwise keep a home
-/// for ever over a file nobody committed.
+/// The paths of the working tree decide nothing, because a reclaim already settled them: a
+/// home with none was the condition of an ordinary reclaim, and a forced one put what it
+/// found on a ref. An untracked file the trash still holds would otherwise keep a home for
+/// ever over a file nobody committed. So the loss set handed to the judge carries the
+/// commits and no path, which is that rule stated as a value rather than as a filter over
+/// the answer.
+///
+/// `None` is a home the sweep may remove. The [`Finding`] a held-back home answers with is
+/// the words the report prints over it, read only where the verdict already refused.
 ///
 /// # Errors
 /// [`Error::Git`] and [`Error::NotARepository`] when the trashed home could not be read.
@@ -607,7 +619,16 @@ fn only_here(entry: &Trashed, reading: &Reading) -> Result<Option<Finding>> {
         work: assess::Work::Tips(&tips),
         ..assess::Input::refusal(&entry.path, Some(&reading.checkout), &reading.siblings)
     };
-    Ok(assess::assess(&input)?
+    let assessment = assess::assess(&input)?;
+    let commits = LossSet {
+        home: entry.path.clone(),
+        paths: Vec::new(),
+        commits: assessment.commits.clone(),
+    };
+    if kernel::judge(&commits, &Evidence::of_work(Timestamp::now())).safe() {
+        return Ok(None);
+    }
+    Ok(assessment
         .findings()
         .into_iter()
         .find(|finding| matches!(finding, Finding::Unpushed { .. })))

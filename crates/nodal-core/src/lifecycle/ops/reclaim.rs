@@ -293,7 +293,8 @@ pub fn check(store: &Store, request: &Request) -> Result<Preflight> {
 ///
 /// Each unit is read exactly as [`check`] reads it alone, so the per-unit answer in the
 /// report is the answer that unit would have got on its own. The joint verdict is derived
-/// from those readings ([`assess::together`]) and takes no second reading of anything: a
+/// from those readings — the kernel is asked again with the set handed to it
+/// ([`crate::lifecycle::kernel::judge`]) — and it takes no second reading of anything: a
 /// `second_local_copy` group already names the store that holds the commits, and what the
 /// joint question asks is whether that store is one this operation removes too.
 ///
@@ -310,10 +311,12 @@ pub fn check_all(store: &Store, request: &Request, targets: &[String]) -> Result
         units.push(check(store, &one)?);
     }
     let homes: Vec<PathBuf> = units.iter().map(|one| one.assessment.home.clone()).collect();
+    let now = Timestamp::now();
     for one in &mut units {
-        one.together(assess::together(&one.assessment, &homes));
+        let joint = one.assessment.verdict(homes.clone(), now);
+        one.together(&joint);
     }
-    Ok(Preflights::new(Timestamp::now(), units))
+    Ok(Preflights::new(now, units))
 }
 
 /// The one reading, for a home that is there, and an empty one for a home that is not.
@@ -1121,19 +1124,24 @@ struct Examined {
 /// reads it again until `gc` does ([`super::gc`]); a record that named nothing would
 /// leave that sweep unable to say which copy had gone. The dispositions change what is
 /// reported and never what is decided ([`assess::Input::dispositions`]).
+///
+/// The refusal is the kernel's and no other. A safe verdict carries the one
+/// [`crate::lifecycle::kernel::Proof`] this crate can make, and the row the trash keeps is
+/// that proof's own record — so nothing can write a row that says safe over a reading that
+/// did not.
 fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Result<Examined> {
     let Some(home) = placed.path() else { return Ok(Examined::default()) };
     let checkout = Checkout::read(source);
     let siblings = crate::doctor::scan::siblings(source);
     let refusal = assess::Input::refusal(home, Some(&checkout), &siblings);
     let assessment = assess::assess(&assess::Input { dispositions: true, ..refusal })?;
-    let findings = assessment.findings();
-    if findings.is_empty() {
+    if let Some(proof) = assessment.verdict(Vec::new(), Timestamp::now()).proof() {
         return Ok(Examined {
-            findings,
-            rested: Rested::Safe { copies: assess::outside_copies(&assessment) },
+            findings: Vec::new(),
+            rested: Rested::Safe { copies: proof.record() },
         });
     }
+    let findings = assessment.findings();
     if force {
         return Ok(Examined { findings, rested: Rested::Forced });
     }

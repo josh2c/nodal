@@ -5,11 +5,11 @@
 //! no snapshot, moves nothing to the trash, writes no registry row and reaches no
 //! remote. It reads, and it prints what it read.
 //!
-//! The verdict is the line to read first, and it is not a second opinion. It is
-//! [`Assessment::safe_to_reclaim`], which is read off the same reasons a `nodal reclaim`
-//! refuses with, produced by the same evaluator ([`crate::lifecycle::assess`]). A
-//! preflight that said safe where the reclaim refuses would be worse than no preflight
-//! at all, because a person would stop checking.
+//! The verdict is the line to read first, and it is not a second opinion. It is the
+//! [`Verdict`] the kernel answers over the same reading a `nodal reclaim` refuses with
+//! ([`crate::lifecycle::kernel::judge`]), and this view renders it. A preflight that said
+//! safe where the reclaim refuses would be worse than no preflight at all, because a
+//! person would stop checking.
 //!
 //! What the answer says that a refusal cannot:
 //!
@@ -34,6 +34,7 @@ use crate::doctor::size::Bytes;
 use crate::lifecycle::assess::{
     Assessment, CommitGroup, Copies, PathGroup, Reason, Runtime, SameContent,
 };
+use crate::lifecycle::kernel::Verdict;
 use crate::lifecycle::uniqueness::Witness;
 use crate::model::Timestamp;
 use crate::output::Render;
@@ -52,9 +53,9 @@ pub struct Preflight {
     pub slug: String,
     /// Whether a reclaim run now would go ahead rather than refuse.
     ///
-    /// Read off [`Preflight::assessment`], whose reasons are made by the predicates the
-    /// operation itself refuses on. It is written out here because it is the field a
-    /// script gates on, and a script must not have to re-derive a verdict.
+    /// The kernel's verdict over [`Preflight::assessment`], which is the verdict the
+    /// operation itself acts on. It is written out here because it is the field a script
+    /// gates on, and a script must not have to re-derive a verdict.
     pub safe_to_reclaim: bool,
     /// Where the home would go, for a home Nodal made. `None` for a checkout adopted in
     /// place, which a reclaim unregisters and leaves exactly where it is.
@@ -78,9 +79,13 @@ pub struct Preflight {
 /// reclaim of that unit alone would do, and it stays exactly what it was; this is what the
 /// same reading says when every home in the set goes at once.
 ///
-/// The verdict is read off the reasons rather than stored beside them, for the reason
-/// [`SameContent`] reads its disposition off its own type: a stored verdict is one that
-/// can drift from what it is a verdict of. [`Serialize`] writes it out, so a script
+/// The reasons come from one [`Verdict`], which is the kernel's answer over the same
+/// reading with the set handed to it ([`crate::lifecycle::kernel::judge`]). There is no
+/// second rule here: the reasons are a rendering of the verdict.
+///
+/// The verdict itself is read off those reasons rather than stored beside them, for the
+/// reason [`SameContent`] reads its disposition off its own type: a stored verdict is one
+/// that can drift from what it is a verdict of. [`Serialize`] writes it out, so a script
 /// gates on `safe` without re-deriving it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Together {
@@ -89,10 +94,16 @@ pub struct Together {
 }
 
 impl Together {
+    /// What a reclaim of the whole set would find about this unit, from the joint verdict.
+    #[must_use]
+    pub fn of(verdict: &Verdict) -> Self {
+        Self { reasons: verdict.reasons() }
+    }
+
     /// Whether a reclaim of the whole set would go ahead over this unit.
     ///
-    /// The same predicate [`Assessment::safe_to_reclaim`] reads off the per-unit reasons,
-    /// over the joint ones, so the two verdicts differ only where the reasons do.
+    /// The same predicate [`Verdict::safe`] answers, over the reasons that verdict printed,
+    /// so the two agree wherever the reasons do.
     #[must_use]
     pub fn safe(&self) -> bool {
         !self.reasons.iter().any(|reason| reason.needs.refuses())
@@ -100,7 +111,7 @@ impl Together {
 }
 
 impl Serialize for Together {
-    /// The reasons, with the verdict written out from [`Together::safe`].
+    /// The reasons, with the verdict read off them by [`Together::safe`].
     fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct as _;
 
@@ -179,22 +190,16 @@ impl Preflight {
         trash: Option<PathBuf>,
         assessment: Assessment,
     ) -> Self {
-        Self {
-            now,
-            slug,
-            safe_to_reclaim: assessment.safe_to_reclaim(),
-            trash,
-            assessment,
-            together: None,
-        }
+        let verdict = assessment.verdict(Vec::new(), now);
+        Self { now, slug, safe_to_reclaim: verdict.safe(), trash, assessment, together: None }
     }
 
     /// Record what a reclaim of the whole set would find about this unit.
     ///
     /// The per-unit verdict above is untouched, for the reason [`Together`] exists: both
     /// answers are true and a person needs the one that matches what they are about to do.
-    pub fn together(&mut self, reasons: Vec<Reason>) {
-        self.together = Some(Together { reasons });
+    pub fn together(&mut self, verdict: &Verdict) {
+        self.together = Some(Together::of(verdict));
     }
 }
 
@@ -504,10 +509,16 @@ mod tests {
     use crate::output::Render;
     use crate::runtime::attribute::{Note, Source, Standing};
 
+    /// The instant every reading in these properties was taken. Fixed, because a property
+    /// about a verdict must not depend on the clock.
+    fn now() -> Timestamp {
+        Timestamp::parse("2026-09-07T09:00:00Z").unwrap()
+    }
+
     /// A preflight over one assessment, at a fixed instant.
     fn preflight(assessment: Assessment) -> Preflight {
         Preflight::new(
-            Timestamp::parse("2026-09-07T09:00:00Z").unwrap(),
+            now(),
             String::from("worker-import"),
             Some(PathBuf::from("/state/project/trash/E1")),
             assessment,
@@ -536,7 +547,7 @@ mod tests {
 
         let mut refusing = clear();
         refusing.paths.push(group(Held::Untracked));
-        refusing.reasons = crate::lifecycle::assess::reasons(&refusing);
+        refusing.ranked(now());
         let lines = preflight(refusing).doc().lines().join("\n");
         assert!(lines.contains("this command changed nothing"), "{lines}");
         assert!(lines.contains("refuse"), "{lines}");
@@ -560,7 +571,7 @@ mod tests {
         assert!(preflight(clear()).doc().lines().join("\n").contains("safe — a reclaim would go"));
         let mut refusing = clear();
         refusing.paths.push(group(Held::Uncommitted));
-        refusing.reasons = crate::lifecycle::assess::reasons(&refusing);
+        refusing.ranked(now());
         let report = preflight(refusing);
         assert!(!report.safe_to_reclaim);
         assert!(report.doc().lines().join("\n").contains("refuse — a reclaim would stop"));
@@ -657,10 +668,11 @@ mod tests {
                 count: 2,
                 sample: vec![crate::git::Oid::parse(&"ab".repeat(20)).unwrap()],
             });
-            assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+            assessment.ranked(now());
             let mut one = preflight(assessment);
             assert!(one.safe_to_reclaim, "each unit is safe on its own");
-            one.together(crate::lifecycle::assess::together(&one.assessment, &homes));
+            let joint = one.assessment.verdict(homes.to_vec(), now());
+            one.together(&joint);
             units.push(one);
         }
 
@@ -694,10 +706,11 @@ mod tests {
             count: 1,
             sample: vec![crate::git::Oid::parse(&"ab".repeat(20)).unwrap()],
         });
-        assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+        assessment.ranked(now());
         let mut one = preflight(assessment);
         let homes = [PathBuf::from("/state/project/e/E1")];
-        one.together(crate::lifecycle::assess::together(&one.assessment, &homes));
+        let joint = one.assessment.verdict(homes.to_vec(), now());
+        one.together(&joint);
 
         assert!(one.safe_to_reclaim);
         let report = Preflights::new(Timestamp::parse("2026-09-07T09:00:00Z").unwrap(), vec![one]);
@@ -717,7 +730,7 @@ mod tests {
             count: 1,
             sample: vec![crate::git::Oid::parse(&"ab".repeat(20)).unwrap()],
         });
-        assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+        assessment.ranked(now());
         let without = preflight(assessment.clone());
 
         assessment.content.push(SameContent {
@@ -726,7 +739,7 @@ mod tests {
             tip: crate::git::Oid::parse(&"cd".repeat(20)).unwrap(),
             tree: crate::git::Oid::parse(&"ef".repeat(20)).unwrap(),
         });
-        assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+        assessment.ranked(now());
         let with = preflight(assessment);
 
         assert_eq!(with.safe_to_reclaim, without.safe_to_reclaim, "the row is not evidence");
@@ -796,7 +809,7 @@ mod tests {
             let mut assessment = clear();
             assessment.moves = moves;
             assessment.runtime = Some(unread.clone());
-            assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+            assessment.ranked(now());
             let report = preflight(assessment);
             let lines = report.doc().lines().join("\n");
             assert!(!lines.contains("nothing standing in the home"), "{lines}");
@@ -812,7 +825,7 @@ mod tests {
             bystanders: vec![Standing::new(4711, Some(String::from("tmux")))],
             ..Runtime::default()
         });
-        assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+        assessment.ranked(now());
         let lines = preflight(assessment).doc().lines().join("\n");
         assert!(lines.contains("tmux (pid 4711)"), "{lines}");
         assert!(lines.contains("never signalled"), "{lines}");
@@ -844,7 +857,7 @@ mod tests {
     fn the_two_renderings_carry_one_verdict() {
         let mut assessment = clear();
         assessment.paths.push(group(Held::Untracked));
-        assessment.reasons = crate::lifecycle::assess::reasons(&assessment);
+        assessment.ranked(now());
         let report = preflight(assessment);
         let written: serde_json::Value = serde_json::to_value(&report).unwrap();
         assert_eq!(written["safe_to_reclaim"], serde_json::json!(false));

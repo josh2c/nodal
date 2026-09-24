@@ -155,11 +155,17 @@ impl Finding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Standing {
-    /// Commits of this branch exist on no remote-tracking ref. This is the only bucket
+    /// This checkout has not seen the commits of this branch on any remote. The only bucket
     /// that holds work a machine could lose.
     Unpushed,
-    /// The default branch does not hold it, and every commit of it is on a remote.
-    OnRemote,
+    /// The default branch does not hold it, and a remote-tracking ref of this checkout
+    /// reaches every commit of it.
+    ///
+    /// **Seen, and not proved.** Those refs are written when the checkout fetches or pushes
+    /// and nothing corrects them, so a branch the remote has since dropped is still in this
+    /// bucket. The word says what the reading is worth; what a removal rests on is a witness
+    /// ([`crate::doctor::unique::believed`]), and this report removes nothing.
+    SeenOnRemote,
     /// The default branch already holds it.
     Merged,
 }
@@ -170,7 +176,7 @@ impl Standing {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Unpushed => "unpushed",
-            Self::OnRemote => "on a remote",
+            Self::SeenOnRemote => "seen on a remote",
             Self::Merged => "merged",
         }
     }
@@ -183,7 +189,7 @@ pub struct BranchRow {
     pub name: String,
     /// Which bucket it is in.
     pub standing: Standing,
-    /// How many of its commits exist on no remote.
+    /// How many of its commits this checkout has not seen on any remote.
     pub unpushed: usize,
     /// The remote-tracking branch it is set to follow, `None` when it follows none.
     #[serde(default)]
@@ -392,17 +398,21 @@ impl Doctor {
             return vec![Block::line("no local branch is without a worktree")];
         }
         let mut blocks = vec![self.loud()];
-        for standing in [Standing::Merged, Standing::OnRemote] {
+        for standing in [Standing::Merged, Standing::SeenOnRemote] {
             blocks.extend(self.safe(standing));
         }
         blocks
     }
 
     /// The unpushed branches, one row each, or a line saying there are none.
+    ///
+    /// The line for an empty table says what was read. It used to say "no branch holds commits
+    /// that exist on no remote", which is a claim about the remote; the reading behind it is a
+    /// reading of this checkout's own refs, and the sentence now says so.
     fn loud(&self) -> Block {
         let unpushed = self.branches.bucket(Standing::Unpushed);
         if unpushed.is_empty() {
-            return Block::line("no branch holds commits that exist on no remote");
+            return Block::line("no branch holds a commit this checkout has not seen on a remote");
         }
         let mut table = Table::new(&UNPUSHED);
         for row in unpushed {
@@ -451,7 +461,7 @@ impl Doctor {
         match (standing, &self.branches.base) {
             (Standing::Merged, Some(base)) => format!("merged into {base}"),
             (Standing::Merged, None) => String::from("merged"),
-            (Standing::OnRemote, _) => String::from("unmerged, every commit on a remote"),
+            (Standing::SeenOnRemote, _) => String::from("unmerged, every commit seen on a remote"),
             (Standing::Unpushed, _) => String::from("unpushed"),
         }
     }
@@ -572,7 +582,7 @@ mod tests {
                 branch("importer/retry", Standing::Unpushed, 33, true),
                 branch("hotfix/logs", Standing::Unpushed, 2, false),
                 branch("shipped", Standing::Merged, 0, false),
-                branch("review/api", Standing::OnRemote, 0, false),
+                branch("review/api", Standing::SeenOnRemote, 0, false),
             ],
             expand: false,
         }
@@ -675,7 +685,7 @@ mod tests {
     fn a_branch_whose_commits_are_elsewhere_is_a_count_and_not_a_row() {
         let text = report().doc().to_string();
         assert!(text.contains("branches merged into origin/main: 1"), "{text}");
-        assert!(text.contains("branches unmerged, every commit on a remote: 1"), "{text}");
+        assert!(text.contains("branches unmerged, every commit seen on a remote: 1"), "{text}");
         assert!(!text.contains("shipped"), "a safe branch is not a row by default: {text}");
         assert!(!text.contains("review/api"), "{text}");
     }
@@ -704,7 +714,10 @@ mod tests {
         let mut safe = report();
         safe.branches.rows.retain(|row| row.standing != Standing::Unpushed);
         let text = safe.doc().to_string();
-        assert!(text.contains("no branch holds commits that exist on no remote"), "{text}");
+        assert!(
+            text.contains("no branch holds a commit this checkout has not seen on a remote"),
+            "{text}"
+        );
         assert!(text.contains("branches merged into origin/main: 1"), "{text}");
     }
 

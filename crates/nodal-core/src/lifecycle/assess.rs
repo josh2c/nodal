@@ -101,9 +101,10 @@ use crate::Result;
 use crate::doctor::size::Bytes;
 use crate::git::status::{Entry, State, Summary};
 use crate::git::{Git, Oid, union};
+use crate::lifecycle::kernel::{self, Evidence, LossSet, Verdict};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
 use crate::lifecycle::witness::{self, Checkout};
-use crate::model::{Needs, Outside, Timestamp, UnitId};
+use crate::model::{Needs, Timestamp, UnitId};
 use crate::paths;
 use crate::runtime::attribute::{Note, Source, Standing};
 use crate::runtime::processes::{self, Processes as _};
@@ -230,7 +231,7 @@ pub struct Input<'a> {
     ///
     /// It changes what is reported and never what is decided. Every group it adds is one
     /// [`Copies::survives`] is true of, which neither [`Assessment::findings`] nor
-    /// [`reasons`] reads, so the verdict is the same verdict either way.
+    /// [`kernel::judge`] refuses over, so the verdict is the same verdict either way.
     pub dispositions: bool,
     /// The unit whose runtime to attribute, or nothing to leave it unread.
     pub runtime: Option<Attribution<'a>>,
@@ -353,9 +354,12 @@ impl Copies {
     }
 
     /// Whether removing this home leaves the commit readable somewhere.
+    ///
+    /// Read off [`Copies::needs`], and not a second partition of the same four variants: a
+    /// disposition survives a removal exactly when nothing about it would stop one.
     #[must_use]
     pub const fn survives(&self) -> bool {
-        matches!(self, Self::SecondLocalCopy { .. } | Self::RemoteProved { .. })
+        self.needs().is_none()
     }
 
     /// Why a reclaim would stop over it, when it would.
@@ -379,8 +383,8 @@ impl Copies {
 ///
 /// It is [`Survival::Reconstructable`] and never evidence of a second copy. Taking the
 /// tree from the ref rebuilds the content; it does not rebuild the commit, its message,
-/// its author or its parents. So this never reaches [`reasons`] and never moves a verdict
-/// ([`Assessment::safe_to_reclaim`]); `--force` is how a person says the content is
+/// its author or its parents. So this never reaches a refusal and never moves a verdict
+/// ([`kernel::judge`]); `--force` is how a person says the content is
 /// enough.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct SameContent {
@@ -710,7 +714,7 @@ pub enum Unmovable<'a> {
 
 /// Why a move of the home would refuse over this reading, or nothing when it would not.
 ///
-/// The one rule for both callers. [`reasons`] asks it of the runtime a preflight read,
+/// The one rule for both callers. [`kernel::judge`] asks it of the runtime a preflight read,
 /// and the reclaim's move step asks it of the scan it makes just before the move. A
 /// second copy of the rule would let the preflight say safe where the move refuses.
 #[must_use]
@@ -1007,19 +1011,57 @@ pub struct Assessment {
 }
 
 impl Assessment {
-    /// Whether a reclaim run now would go ahead rather than refuse.
+    /// What this reading found that a removal of the home would take away.
     ///
-    /// Read off the reasons, so the verdict and the reasons cannot disagree, and the
-    /// reasons are made by the same predicates the reclaim refuses on.
+    /// The members are cloned rather than borrowed, and that is deliberate: the same type
+    /// is what [`kernel::loss_set`] answers a caller which read a directory and holds no
+    /// assessment, and one owned shape for both readers is worth more than a borrowed one
+    /// here and an owned one there. Every vector in it is a sample of at most [`SAMPLE`]
+    /// entries, and one command clones them once per home.
     #[must_use]
-    pub fn safe_to_reclaim(&self) -> bool {
-        !self.reasons.iter().any(|reason| reason.needs.refuses())
+    pub fn loss_set(&self) -> LossSet {
+        LossSet {
+            home: self.home.clone(),
+            paths: self.paths.clone(),
+            commits: self.commits.clone(),
+        }
     }
 
-    /// The one reason to act on first, or [`Needs::Nothing`] when there is none.
+    /// What this reading took beside the loss set: the occupancy of the home, the set it
+    /// goes with, and when it was read.
+    ///
+    /// `set` is the other homes the same removal takes, and it is empty for a home judged
+    /// alone.
+    ///
+    /// The occupancy is handed over only for a home the removal would move. What stands in a
+    /// checkout that is unregistered and left exactly where it is has nothing taken out from
+    /// under it, so there is no occupancy question to ask about it, and the kernel is given
+    /// none rather than a reading and a second field saying to ignore it.
     #[must_use]
-    pub fn top(&self) -> Needs {
-        self.reasons.first().map_or(Needs::Nothing, |reason| reason.needs)
+    pub fn evidence(&self, set: Vec<PathBuf>, at: Timestamp) -> Evidence {
+        Evidence { runtime: self.moves.then(|| self.runtime.clone()).flatten(), set, read_at: at }
+    }
+
+    /// The kernel's answer over this reading, which is the one place a safe verdict is
+    /// made.
+    ///
+    /// Every surface that removes a home, or prints a sentence about whether one is safe,
+    /// asks this. It reads nothing and it is the whole of the predicate, so a `nodal
+    /// reclaim --check` that says safe and a `nodal reclaim` that refuses cannot both
+    /// happen ([`kernel::judge`]).
+    #[must_use]
+    pub fn verdict(&self, set: Vec<PathBuf>, at: Timestamp) -> Verdict {
+        kernel::judge(&self.loss_set(), &self.evidence(set, at))
+    }
+
+    /// Fill in the ranked reasons from the kernel's verdict over this reading.
+    ///
+    /// [`assess`] calls it once, and so does any caller that assembles an assessment from
+    /// parts. The reasons are a rendering of the verdict and never a second predicate, so
+    /// a reading whose reasons were filled in here cannot say safe where
+    /// [`Assessment::verdict`] refuses.
+    pub fn ranked(&mut self, at: Timestamp) {
+        self.reasons = self.verdict(Vec::new(), at).reasons();
     }
 
     /// The assessment as the findings a destructive operation refuses with.
@@ -1076,61 +1118,6 @@ impl Assessment {
     }
 }
 
-/// Name the repositories and refs that hold the commits this home would not lose.
-///
-/// A naming and never a second reading of safety. The verdict is
-/// [`Assessment::safe_to_reclaim`] and it is already made; what this adds is the name of
-/// the store each surviving commit is also in, so that the record of the reclaim says
-/// what its verdict rested on and a later sweep can say which copy has since gone
-/// ([`crate::lifecycle::ops::gc`]).
-///
-/// One `for-each-ref` per repository, over the commits of the groups that repository
-/// answered for. A reading that fails names no ref and drops no repository: the
-/// repository held the commits either way, and the refs are how a person finds them.
-///
-/// The commits it asks about are each group's sample, so a group of forty names the ten
-/// the report already prints. [`Outside::commits`] is the exact count, and the refs are
-/// the ones that reach at least one of the ten.
-///
-/// The answer is in path order, which is the map's own. Nothing reads it in the order
-/// the dispositions were made, and one order a person can predict is worth more than
-/// the order a reading happened to take.
-///
-/// Empty for a home with no commit of its own, and for one whose commits are all
-/// refused: there is then nothing outside the home to name.
-#[must_use]
-pub fn outside_copies(assessment: &Assessment) -> Vec<Outside> {
-    let mut found: BTreeMap<PathBuf, (usize, Vec<Oid>)> = BTreeMap::new();
-    for group in assessment.commits.iter().filter(|group| group.copies.survives()) {
-        for repository in holders(&group.copies) {
-            let seen = found.entry(repository).or_insert((0, Vec::new()));
-            seen.0 += group.count;
-            seen.1.extend(group.sample.iter().cloned());
-        }
-    }
-    found
-        .into_iter()
-        .map(|(repository, (commits, sample))| {
-            let references = Git::at(&repository).reaching(&sample, SAMPLE);
-            Outside { repository, references, commits }
-        })
-        .collect()
-}
-
-/// The repositories one disposition credits, and none for a disposition that credits
-/// nothing.
-///
-/// A second local copy is one store. A commit proved on the remote is credited to the
-/// repositories whose reading of that remote was believed ([`Witness::by`]), which is
-/// where the ref that proves it is readable on this disk.
-fn holders(copies: &Copies) -> Vec<PathBuf> {
-    match copies {
-        Copies::SecondLocalCopy { held_by } => vec![held_by.clone()],
-        Copies::RemoteProved { witness } => witness.by().to_vec(),
-        Copies::OnlyHere { .. } | Copies::NotChecked { .. } => Vec::new(),
-    }
-}
-
 /// Read `home`, and report everything a reclaim of it would have an opinion about.
 ///
 /// One `git status`, one `rev-list` for the refusal, and whatever [`Input`] asked for
@@ -1138,14 +1125,15 @@ fn holders(copies: &Copies) -> Vec<PathBuf> {
 /// the ignored state, a scan for the runtime. Nothing is written, nothing is signalled,
 /// and no remote is reached.
 ///
-/// **One reading, one answer.** Every path that removes a home asks this function first,
-/// and there is deliberately only one such reading. A second implementation of "is this
-/// safe to delete" is a second answer to a question that has to have one, and the
+/// **One reading, and one judge of it.** Every path that removes a home asks this function
+/// for the reading, and asks [`kernel::judge`] for the answer. A second implementation of
+/// "is this safe to delete" is a second answer to a question that has to have one, and the
 /// difference between the two is the day somebody loses a morning's work. A refusal asks
-/// for the part it rests on and nothing else ([`Input::refusal`]); the read-only
-/// preflight asks the same function for the whole of it and prints what a refusal throws
-/// away. A `nodal reclaim --check` that says safe and a `nodal reclaim` that refuses
-/// therefore cannot both happen: there is one evaluator under both.
+/// for the part it rests on and nothing else ([`Input::refusal`]); the read-only preflight
+/// asks the same function for the whole of it and prints what a refusal throws away. A
+/// `nodal reclaim --check` that says safe and a `nodal reclaim` that refuses therefore
+/// cannot both happen: there is one reading and one maker of a [`kernel::Proof`] under
+/// both.
 ///
 /// # Errors
 /// [`crate::Error::Git`] when the status or a revision could not be read, and
@@ -1170,7 +1158,7 @@ pub fn assess(input: &Input<'_>) -> Result<Assessment> {
         reasons: Vec::new(),
         notes,
     };
-    assessment.reasons = reasons(&assessment);
+    assessment.ranked(Timestamp::now());
     Ok(assessment)
 }
 
@@ -1179,7 +1167,11 @@ pub fn assess(input: &Input<'_>) -> Result<Assessment> {
 // ---------------------------------------------------------------------------
 
 /// The paths of the working tree that carry work, in the two kinds they come in.
-fn working(status: &Summary, fate: Fate) -> Vec<PathGroup> {
+///
+/// Visible to the kernel, which is where [`kernel::loss_set`] reads the loss set of a
+/// directory for a caller that holds no assessment. One reader of a `git status`, so the
+/// two entries cannot group one status two ways.
+pub(crate) fn working(status: &Summary, fate: Fate) -> Vec<PathGroup> {
     let tracked =
         paths_where(status, |entry| matches!(entry.state, State::Tracked { .. } | State::Unmerged));
     let untracked = paths_where(status, |entry| entry.state == State::Untracked);
@@ -1391,11 +1383,11 @@ fn rewritten(git: &Git, kept: &[Oid]) -> Result<Vec<SameContent>> {
 ///
 /// The [`Copies::SecondLocalCopy`] groups [`local_copies`] found are reported and not
 /// thrown away, and that is what makes one joint rule serve both callers
-/// ([`together`]). They carry no [`Copies::needs`], so [`reasons`] makes nothing of
-/// them and [`Assessment::findings`] drops them: the verdict on this path is the
-/// verdict it always was. What they add is the name of the store, which is the whole of
-/// what a joint question needs and the one thing a reading that discarded them could
-/// not supply.
+/// ([`kernel::joint`]). They carry no [`Copies::needs`], so [`kernel::judge`] raises no loss
+/// over them on its own and [`Assessment::findings`] drops them: the verdict on this path is
+/// the verdict it always was. What they add is the name of the store, which is the whole of
+/// what a joint question needs and the one thing a reading that discarded them could not
+/// supply.
 fn refusing(
     git: &Git,
     input: &Input<'_>,
@@ -1467,24 +1459,6 @@ fn local_copies(
         left = rest;
     }
     (found, left)
-}
-
-/// Whether a copy this store holds survives a removal that takes `kin` as well.
-///
-/// The one rule behind both joint readings, asked by one route: `nodal doctor`'s
-/// only-here section asks it of the project's other open homes, and `nodal reclaim
-/// --check` over several units asks it of the units named on the command line. Both
-/// reach it through [`together`], over the [`Copies::SecondLocalCopy`] groups the
-/// reading already holds. A copy inside something the same operation removes is not a
-/// copy of anything afterwards.
-///
-/// Paths are resolved on both sides, because a home reached through a symbolic link and
-/// the same home reached directly are one directory with two names, and a comparison of
-/// the spellings would count it as a second store.
-#[must_use]
-pub fn counts(store: &Path, kin: &[PathBuf]) -> bool {
-    let store = paths::resolve(store);
-    !kin.iter().any(|home| paths::resolve(home) == store)
 }
 
 /// Which of these commits one repository really holds.
@@ -1560,117 +1534,6 @@ fn running(asked: Attribution<'_>, home: &Path) -> Runtime {
     Runtime { groups: asked.own.groups.to_vec(), ..seen }
 }
 
-// ---------------------------------------------------------------------------
-// The verdict.
-// ---------------------------------------------------------------------------
-
-/// Why a person is needed, ranked, most actionable first.
-///
-/// Public so that a caller which assembles an [`Assessment`] from parts — a test, and
-/// `nodal ls`, which reads the cheap half of this for every unit at once — reaches the
-/// one ranking rather than writing a second one.
-///
-/// Every reason a reclaim refuses over is made here, from the same groups the refusal is
-/// projected from, which is what makes [`Assessment::safe_to_reclaim`] agree with what
-/// the operation would actually do.
-#[must_use]
-pub fn reasons(assessment: &Assessment) -> Vec<Reason> {
-    let mut reasons = Vec::new();
-    reasons.extend(assessment.paths.iter().filter(|group| group.held.refuses()).map(|group| {
-        Reason::new(Needs::UniqueLoss, format!("{} ({})", group.held.label(), group.count))
-    }));
-    reasons.extend(assessment.commits.iter().filter_map(|group| {
-        Some(Reason::new(
-            group.copies.needs()?,
-            format!("{} ({})", group.copies.label(), group.count),
-        ))
-    }));
-    reasons.extend(blocked(assessment));
-    reasons.sort_by_key(|reason| reason.needs);
-    reasons
-}
-
-/// What one reading gains when every home in `set` goes with it.
-///
-/// Per-unit safety is not joint safety. Two units can each be safe because the other holds
-/// the copy, and no per-unit reading can see that: each one is true, and the pair is not.
-/// A reading of five unit homes on one machine found it — the second copy of one unit's
-/// work was inside another unit's home — and nothing answered the joint question.
-///
-/// Every reason the unit had on its own is kept and is first. What is added is one reason
-/// for each second copy that lives only inside the set, naming the home that holds it and
-/// how many commits go with it.
-///
-/// It is derived from the reading and takes no second one. A [`Copies::SecondLocalCopy`]
-/// group already names the store that holds the commits, which is the whole of what this
-/// needs ([`counts`]), and both paths through [`history`] report those groups
-/// ([`held_groups`]) — so the cheap refusal reading answers this question as well as the
-/// full one, and there is one route rather than two rules that could name different
-/// holders.
-#[must_use]
-pub fn together(assessment: &Assessment, set: &[PathBuf]) -> Vec<Reason> {
-    let mut reasons = assessment.reasons.clone();
-    reasons.extend(joined(assessment, set));
-    reasons.sort_by_key(|reason| reason.needs);
-    reasons
-}
-
-/// The reasons the set adds, and none of the ones the unit already had.
-///
-/// The rule itself, split off from [`together`] because the two callers want it at
-/// different widths and must not each write their own. `nodal reclaim --check` prints
-/// the whole ranked list beside the per-unit one and asks [`together`]; `nodal doctor`
-/// has a per-unit row already and needs only what the set adds to it. One rule, one
-/// wording, two widths.
-///
-/// The wording names no operation, because two of them ask: a reclaim of the units on a
-/// command line, and a person clearing a machine of every open home of a project.
-#[must_use]
-pub fn joined(assessment: &Assessment, set: &[PathBuf]) -> Vec<Reason> {
-    assessment
-        .commits
-        .iter()
-        .filter_map(|group| {
-            let Copies::SecondLocalCopy { held_by } = &group.copies else { return None };
-            if counts(held_by, set) {
-                return None;
-            }
-            Some(Reason::new(
-                Needs::UniqueLoss,
-                format!(
-                    "{} {} whose only other copy is in {}, which the same removal takes",
-                    group.count,
-                    if group.count == 1 { "commit" } else { "commits" },
-                    held_by.display()
-                ),
-            ))
-        })
-        .collect()
-}
-
-/// The reason the process table gives, when there is a move for it to block.
-///
-/// A bystander blocks the move. A table that could not be read blocks it too, as
-/// unknown evidence, because nothing standing in the home was not read, it was not
-/// proved.
-///
-/// A checkout adopted in place is unregistered and left exactly where it is, so nothing
-/// is moved out from under anybody and a process standing in it stops nothing. Reporting
-/// it as blocking would refuse a reclaim the operation itself would not refuse.
-fn blocked(assessment: &Assessment) -> Option<Reason> {
-    let runtime = assessment.runtime.as_ref().filter(|_| assessment.moves)?;
-    Some(match unmovable(runtime)? {
-        Unmovable::Standing(standing) => {
-            let named: Vec<String> = standing.iter().take(SAMPLE).map(Standing::label).collect();
-            Reason::new(Needs::BlockingRuntime, named.join(", "))
-        }
-        Unmovable::Unread(note) => Reason::new(
-            Needs::UnknownEvidence,
-            format!("the process table could not be read: {}", note.why),
-        ),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
@@ -1681,7 +1544,7 @@ mod tests {
 
     use super::{
         Assessment, CommitGroup, Copies, Fate, Held, Needs, Own, PathGroup, Reason, Timestamp,
-        Wrapper, bystander, owns, reasons,
+        Wrapper, bystander, owns,
     };
     use crate::git::Oid;
     use crate::git::status::{Change, Entry, State, Submodule};
@@ -1850,8 +1713,19 @@ mod tests {
             paths,
             ..Assessment::default()
         };
-        assessment.reasons = reasons(&assessment);
+        assessment.ranked(at());
         assessment
+    }
+
+    /// The instant every reading in these properties was taken. Fixed, because a property
+    /// about a verdict must not depend on the clock.
+    fn at() -> Timestamp {
+        Timestamp::parse("2026-09-23T09:00:00Z").unwrap()
+    }
+
+    /// Whether a reclaim of this reading would go ahead, asked of the one judge.
+    fn goes_ahead(assessment: &Assessment) -> bool {
+        assessment.verdict(Vec::new(), at()).safe()
     }
 
     /// One commit group of one commit.
@@ -1874,7 +1748,7 @@ mod tests {
     /// go ahead. Anything else keeps the home, including the one that means "I do not
     /// know", because unknown is not safe evidence.
     #[test]
-    fn only_a_second_copy_or_a_proved_remote_makes_a_home_safe_to_reclaim() {
+    fn only_a_second_copy_or_a_proved_remote_lets_a_reclaim_go_ahead() {
         let checkout = PathBuf::from("/w/project");
         let by = vec![checkout.clone()];
         for safe in [
@@ -1882,14 +1756,14 @@ mod tests {
             Copies::RemoteProved { witness: Witness::Checked { by: by.clone() } },
         ] {
             assert!(safe.survives(), "{safe:?}");
-            assert!(assessed(vec![commits(safe)], Vec::new()).safe_to_reclaim());
+            assert!(goes_ahead(&assessed(vec![commits(safe)], Vec::new())));
         }
         for kept in [
             Copies::OnlyHere { witness: Witness::NoRemote },
             Copies::NotChecked { witness: Witness::Unchecked },
         ] {
             assert!(!kept.survives(), "{kept:?}");
-            assert!(!assessed(vec![commits(kept)], Vec::new()).safe_to_reclaim());
+            assert!(!goes_ahead(&assessed(vec![commits(kept)], Vec::new())));
         }
     }
 
@@ -1904,9 +1778,9 @@ mod tests {
         let mut moving = assessed(Vec::new(), Vec::new());
         moving.runtime =
             Some(super::Runtime { notes: vec![unread_table()], ..super::Runtime::default() });
-        moving.reasons = reasons(&moving);
-        assert!(!moving.safe_to_reclaim());
-        assert_eq!(moving.top(), Needs::UnknownEvidence);
+        moving.ranked(at());
+        assert!(!goes_ahead(&moving));
+        assert_eq!(moving.verdict(Vec::new(), at()).top(), Needs::UnknownEvidence);
         assert_eq!(
             moving.reasons[0].detail,
             "the process table could not be read: a process scan reads /proc, which macos \
@@ -1915,8 +1789,8 @@ mod tests {
 
         let mut in_place = moving.clone();
         in_place.moves = false;
-        in_place.reasons = reasons(&in_place);
-        assert!(in_place.safe_to_reclaim(), "{:?}", in_place.reasons);
+        in_place.ranked(at());
+        assert!(goes_ahead(&in_place), "{:?}", in_place.reasons);
     }
 
     /// The preflight and the move step refuse on one rule. The step refuses where
@@ -1945,12 +1819,8 @@ mod tests {
         for runtime in readings {
             let mut moving = assessed(Vec::new(), Vec::new());
             moving.runtime = Some(runtime.clone());
-            moving.reasons = reasons(&moving);
-            assert_eq!(
-                moving.safe_to_reclaim(),
-                super::unmovable(&runtime).is_none(),
-                "{runtime:?}"
-            );
+            moving.ranked(at());
+            assert_eq!(goes_ahead(&moving), super::unmovable(&runtime).is_none(), "{runtime:?}");
         }
     }
 
@@ -1995,7 +1865,7 @@ mod tests {
             vec![commits(Copies::NotChecked { witness: Witness::Unchecked })],
             vec![paths(Held::Uncommitted)],
         );
-        assert_eq!(assessment.top(), Needs::UniqueLoss);
+        assert_eq!(assessment.verdict(Vec::new(), at()).top(), Needs::UniqueLoss);
         assert_eq!(
             assessment.reasons.iter().map(|reason| reason.needs).collect::<Vec<Needs>>(),
             vec![Needs::UniqueLoss, Needs::UnknownEvidence]
@@ -2009,8 +1879,8 @@ mod tests {
     fn state_the_trash_keeps_must_survive_and_still_lets_the_reclaim_go_ahead() {
         assert_eq!(Held::LocalState.survival(), super::Survival::MustSurvive);
         assert!(!Held::LocalState.refuses());
-        assert!(assessed(Vec::new(), vec![paths(Held::LocalState)]).safe_to_reclaim());
-        assert!(!assessed(Vec::new(), vec![paths(Held::Untracked)]).safe_to_reclaim());
+        assert!(goes_ahead(&assessed(Vec::new(), vec![paths(Held::LocalState)])));
+        assert!(!goes_ahead(&assessed(Vec::new(), vec![paths(Held::Untracked)])));
     }
 
     /// A refusal reading makes no group whose sentence depends on the fate, which is
@@ -2086,14 +1956,14 @@ mod tests {
         };
         let mut moving = assessed(Vec::new(), Vec::new());
         moving.runtime = Some(runtime.clone());
-        moving.reasons = reasons(&moving);
-        assert_eq!(moving.top(), Needs::BlockingRuntime);
-        assert!(!moving.safe_to_reclaim());
+        moving.ranked(at());
+        assert_eq!(moving.verdict(Vec::new(), at()).top(), Needs::BlockingRuntime);
+        assert!(!goes_ahead(&moving));
 
         let mut in_place = moving.clone();
         in_place.moves = false;
-        in_place.reasons = reasons(&in_place);
-        assert!(in_place.safe_to_reclaim(), "{:?}", in_place.reasons);
+        in_place.ranked(at());
+        assert!(goes_ahead(&in_place), "{:?}", in_place.reasons);
     }
 
     /// A reason always names what it is about. The rank alone is not an answer.

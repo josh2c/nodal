@@ -166,7 +166,7 @@ fn plant() -> Planted {
     write(&checkout.join("README.md"), "# app\n");
     commit(&checkout, "the project");
 
-    // A remote, so that "pushed" and "unpushed" are answers about somewhere else and
+    // A remote, so that "seen on a remote" and "unpushed" are answers about somewhere else and
     // not about a repository that has nowhere to be contained by.
     let remote = root.join("remote.git");
     git(root, &["init", "--quiet", "--bare", remote.to_str().unwrap()]);
@@ -314,27 +314,31 @@ fn a_locked_worktree_is_reported_as_locked_and_read_no_further() {
     );
     assert_eq!(held.bytes, None, "a locked worktree is not walked, so it has no size");
     assert!(held.intent.is_none(), "a locked worktree is not read for an intent");
-    for word in ["pushed", "unpushed 0", "dirty", "behind"] {
+    for word in ["seen on a remote", "unpushed 0", "dirty", "behind"] {
         assert!(!held.state.iter().any(|said| said == word), "{word} was read from a locked tree");
     }
 }
 
 /// Doctor reports the fact it read, and no claim the fact does not support.
 ///
-/// A worktree with no commits of its own is contained by every remote, because the
-/// commits it is made of are the project's and were pushed with the project. That is
-/// worth saying and it is `pushed`. It is not `merged`: nothing of that worktree has
-/// been merged anywhere, and the word would be a judgement about work that does not
-/// exist. The same vacuous containment recorded units as merged at the moment they were
-/// created (`crate::lifecycle::states`); here it never decided anything, but it was
-/// still saying something untrue.
+/// A worktree with no commits of its own holds nothing a remote-tracking ref of this
+/// checkout does not already reach, because the commits it is made of are the project's and
+/// were pushed with the project. That is worth saying and it is `seen on a remote`. The word
+/// is "seen" and not "pushed": the refs behind it are this checkout's own record of its own
+/// pushes, and a report may not turn that into a claim about a server
+/// (`nodal_core::git::Git::seen_on_remotes`).
+///
+/// It is not `merged`: nothing of that worktree has been merged anywhere, and the word would
+/// be a judgement about work that does not exist. The same vacuous reading recorded units as
+/// merged at the moment they were created (`nodal_core::lifecycle::states`); here it never
+/// decided anything, but it was still saying something untrue.
 #[test]
-fn a_worktree_with_no_commits_of_its_own_is_reported_as_pushed_and_never_as_merged() {
+fn a_worktree_with_no_commits_of_its_own_is_seen_on_a_remote_and_never_merged() {
     let machine = plant();
     let report = machine.report();
     let fresh = one(&report.here, Kind::Worktree, "fresh");
 
-    assert!(fresh.state.iter().any(|word| word == "pushed"), "{:?}", fresh.state);
+    assert!(fresh.state.iter().any(|word| word == "seen on a remote"), "{:?}", fresh.state);
     for word in ["merged", "unmerged"] {
         assert!(
             !fresh.state.iter().any(|said| said.starts_with(word)),
