@@ -354,9 +354,12 @@ impl Copies {
     }
 
     /// Whether removing this home leaves the commit readable somewhere.
+    ///
+    /// Read off [`Copies::needs`], and not a second partition of the same four variants: a
+    /// disposition survives a removal exactly when nothing about it would stop one.
     #[must_use]
     pub const fn survives(&self) -> bool {
-        matches!(self, Self::SecondLocalCopy { .. } | Self::RemoteProved { .. })
+        self.needs().is_none()
     }
 
     /// Why a reclaim would stop over it, when it would.
@@ -1029,9 +1032,14 @@ impl Assessment {
     ///
     /// `set` is the other homes the same removal takes, and it is empty for a home judged
     /// alone.
+    ///
+    /// The occupancy is handed over only for a home the removal would move. What stands in a
+    /// checkout that is unregistered and left exactly where it is has nothing taken out from
+    /// under it, so there is no occupancy question to ask about it, and the kernel is given
+    /// none rather than a reading and a second field saying to ignore it.
     #[must_use]
     pub fn evidence(&self, set: Vec<PathBuf>, at: Timestamp) -> Evidence {
-        Evidence { runtime: self.runtime.clone(), moves: self.moves, set, read_at: at }
+        Evidence { runtime: self.moves.then(|| self.runtime.clone()).flatten(), set, read_at: at }
     }
 
     /// The kernel's answer over this reading, which is the one place a safe verdict is

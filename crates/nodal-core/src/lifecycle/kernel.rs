@@ -93,19 +93,18 @@ pub struct LossSet {
 /// and it goes on the proof, so that a record of a removal says what it rested on and when.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Evidence {
-    /// What stands in the home, or `None` where the process table was not read.
+    /// What stands in the home a removal would move, or `None` where nothing here asks.
     ///
-    /// `None` is "nobody looked" and it refuses nothing. That is right for the callers that
-    /// pass it: a refusal over the work in a home is the same refusal whatever is running,
-    /// and the destructive path reads the table again immediately before it moves the
-    /// directory ([`crate::lifecycle::ops::reclaim`]).
+    /// `None` is "there is no occupancy question" and it refuses nothing, and it covers the
+    /// two ways there is none. Either the process table was not read — right for the callers
+    /// that pass it, because a refusal over the work in a home is the same refusal whatever
+    /// is running, and the destructive path reads the table again immediately before it
+    /// moves the directory ([`crate::lifecycle::ops::reclaim`]) — or the removal moves
+    /// nothing, as it does for a checkout adopted in place, which is unregistered and left
+    /// exactly where it is. A reading of a home nothing is taken from under is a reading
+    /// that stops nothing, so the caller that knows the home stays hands in `None`
+    /// ([`crate::lifecycle::assess::Assessment::evidence`]).
     pub runtime: Option<Runtime>,
-    /// Whether a removal would move this home, which is the whole of what makes something
-    /// standing in it block.
-    ///
-    /// A checkout adopted in place is unregistered and left exactly where it is, so nothing
-    /// is moved out from under anybody and a process standing in it stops nothing.
-    pub moves: bool,
     /// The other homes this one goes with, for a removal that takes several at once.
     ///
     /// Empty is one home judged alone.
@@ -117,13 +116,12 @@ pub struct Evidence {
 impl Evidence {
     /// The evidence of a reading that asked about the work and about nothing else.
     ///
-    /// No occupancy, so no move question, so nothing here to get wrong about a home that
-    /// would not move; and no set, so no joint discount. It is the stricter reading in the
-    /// direction that matters: a reading that asked less never says safe where the full one
-    /// refuses.
+    /// No occupancy, so nothing here to get wrong about a home that would not move; and no
+    /// set, so no joint discount. It is the stricter reading in the direction that matters:
+    /// a reading that asked less never says safe where the full one refuses.
     #[must_use]
     pub const fn of_work(read_at: Timestamp) -> Self {
-        Self { runtime: None, moves: false, set: Vec::new(), read_at }
+        Self { runtime: None, set: Vec::new(), read_at }
     }
 }
 
@@ -473,11 +471,10 @@ enum Blocking {
 
 /// What the occupancy reading refuses over, or nothing when it refuses over nothing.
 ///
-/// A reading nobody took refuses nothing, and a reading of a home that would not move
-/// refuses nothing either: nothing is taken out from under anybody standing in a checkout
-/// that stays where it is.
+/// A reading nobody took refuses nothing, and neither does a home that would not move: a
+/// caller with no occupancy question to ask hands in no occupancy.
 fn blocked(evidence: &Evidence) -> Option<Blocking> {
-    let runtime = evidence.runtime.as_ref().filter(|_| evidence.moves)?;
+    let runtime = evidence.runtime.as_ref()?;
     Some(match assess::unmovable(runtime)? {
         Unmovable::Standing(standing) => {
             let named: Vec<String> = standing.iter().take(SAMPLE).map(Standing::label).collect();
