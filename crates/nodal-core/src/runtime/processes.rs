@@ -235,18 +235,6 @@ impl Running {
         self
     }
 
-    /// What this process holds inside `directory`, beside standing in it.
-    ///
-    /// One predicate, here rather than at each caller, because `nodal ls` and `nodal
-    /// reclaim --check` must not be able to disagree about what occupying a home means.
-    /// `directory` must already be resolved ([`crate::paths::resolve`]), for the reason
-    /// [`crate::lifecycle::assess::bystander`] states: a home reached through a link
-    /// would otherwise match no process at all.
-    #[must_use]
-    pub fn holds_inside(&self, directory: &std::path::Path) -> Vec<Held> {
-        self.held.iter().filter(|held| held.path.starts_with(directory)).cloned().collect()
-    }
-
     /// The same process, with where it came from.
     #[must_use]
     pub const fn from(mut self, lineage: Lineage) -> Self {

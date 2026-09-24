@@ -921,7 +921,7 @@ impl<'a> Table<'a> {
                 by_cwd.insert(process.pid);
             }
             let row = Standing::new(process.pid, process.command.clone());
-            standing.push(match holding(process, placed).first() {
+            standing.push(match held_inside(process, placed) {
                 Some(held) => row.holding(held.describe()),
                 None => row,
             });
@@ -1039,18 +1039,8 @@ fn descends_from(
     false
 }
 
-/// Whether a process holds anything inside one of these homes, which is the half of the
+/// The first thing a process holds inside one of these homes, which is the half of the
 /// question [`in_one_of`] does not ask.
-///
-/// Separate from [`holding`] and not a wrapper over it, because this one is asked of every
-/// process in the table by every reader of the predicate, and the answer is a yes or a no.
-/// Naming what it holds is the refusal's business and costs an allocation, which a
-/// listing of forty units should not pay four thousand times.
-fn holds_in_one_of(process: &processes::Running, placed: &[PathBuf]) -> bool {
-    process.held.iter().any(|held| placed.iter().any(|home| held.path.starts_with(home)))
-}
-
-/// What a process holds inside one of these homes, beside standing in it.
 ///
 /// The descriptors it has open for writing, the files it has mapped so that writes reach
 /// them, and the root it is held to. This is the half of occupancy a working directory
@@ -1058,10 +1048,17 @@ fn holds_in_one_of(process: &processes::Running, placed: &[PathBuf]) -> bool {
 /// directory, writing its database into a home, stands nowhere near that home and is
 /// holding it open the whole time.
 ///
+/// One walk of the held set, answering both readers of it. The predicate asks whether
+/// there is one and the refusal names it, and a version that collected every match
+/// allocated a list for a caller that read its first entry — once for every process a
+/// listing of forty units refuses over.
+///
 /// `placed` must already be resolved, for the reason [`bystander`] states.
-#[must_use]
-pub fn holding(process: &processes::Running, placed: &[PathBuf]) -> Vec<processes::Held> {
-    placed.iter().flat_map(|home| process.holds_inside(home)).collect()
+fn held_inside<'a>(
+    process: &'a processes::Running,
+    placed: &[PathBuf],
+) -> Option<&'a processes::Held> {
+    process.held.iter().find(|held| placed.iter().any(|home| held.path.starts_with(home)))
 }
 
 /// Whether this process is something standing in one of `unit`'s homes that a reclaim of
@@ -1094,7 +1091,7 @@ pub fn bystander(
 ) -> bool {
     !owns(process, own)
         && !spared.contains(&process.pid)
-        && (in_one_of(process, placed) || holds_in_one_of(process, placed))
+        && (in_one_of(process, placed) || held_inside(process, placed).is_some())
         && !vouched_for_by_a_group(process, own)
 }
 
