@@ -550,13 +550,7 @@ fn commit_of(params: &Params) -> Commit {
         // nothing. Only this host's hold is given up: a claim another machine took is
         // that machine's to release.
         crate::runtime::lock::release(tx, unit.id)?;
-        // The reading that decided the rename, where there was a rename to decide. The
-        // one carried in the plan was taken before the teardown, and the machine has
-        // changed since — the whole point of the teardown is that it changes it.
-        let mut runtime = runtime.clone();
-        if let Some(read) = outputs.read::<Option<Runtime>>(MOVE)?.flatten() {
-            runtime = Some(read);
-        }
+        let runtime = decided_on(runtime.as_ref(), outputs)?;
         let entry = entry.clone().map(|entry| Trashed { pruned_bytes: pruned.bytes, ..entry });
         if let Some(entry) = &entry {
             trash::insert(tx, entry)?;
@@ -570,6 +564,25 @@ fn commit_of(params: &Params) -> Commit {
         serde_json::to_value(given)
             .map_err(|source| Error::Render { kind: "released ports", source })
     })
+}
+
+/// The reading a reclaim decided on, out of the two it takes.
+///
+/// The one carried in the plan was taken before the teardown, and the machine has
+/// changed since — the whole point of the teardown is that it changes it. The move step
+/// takes another, and that one is what gated the rename, so it is the one the event and
+/// the report both have to describe. `None` from the step is a move made without asking
+/// (`--force`), and then the planned reading is the only one there is.
+///
+/// One function and not one substitution at each site. The registry write and the report
+/// are two descriptions of one reclaim, and two copies of this rule are two chances for
+/// them to name different readings of the machine — which is the one thing a record of
+/// what a reclaim rested on exists to prevent.
+///
+/// # Errors
+/// As [`Outputs::read`], when the step's output is not a reading.
+fn decided_on(planned: Option<&Runtime>, outputs: &Outputs) -> Result<Option<Runtime>> {
+    Ok(outputs.read::<Option<Runtime>>(MOVE)?.flatten().or_else(|| planned.cloned()))
 }
 
 /// The process groups the teardown signalled and could not stop.
@@ -1503,12 +1516,7 @@ fn report(
             notes.push(note);
         }
     }
-    // The same substitution the registry write makes: the report and the event describe
-    // one reading, and it is the one that let the home go.
-    let mut runtime = params.runtime.clone();
-    if let Some(read) = done.outputs.read::<Option<Runtime>>(MOVE)?.flatten() {
-        runtime = Some(read);
-    }
+    let runtime = decided_on(params.runtime.as_ref(), &done.outputs)?;
     Ok(Reclaimed {
         now: Timestamp::now(),
         slug: params.unit.slug.to_string(),
