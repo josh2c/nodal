@@ -61,6 +61,12 @@
 #   - one clone at any worker count: a copy made on one, four, eight and sixteen workers
 #     is the same tree byte for byte and reports the same clone, on both backends, and a
 #     file nothing may read stops it with the same reason at every count.
+#   - a hold is held unless its holder is proven dead: a holder whose identity the
+#     reader cannot resolve keeps the hold, a table this host could not read keeps it,
+#     and only a reading of the whole table that nothing carries the holder's identity
+#     releases it. A hold refreshed by a later process of its own lineage is read as
+#     held, which is the reading that used to call every refreshed hold gone and tell
+#     the next actor the home was free;
 #   - a home after an uninstall: a default uninstall leaves the state directory and the
 #     unit homes in it, and a surviving home is a standalone Git repository — its own
 #     history reads, its tree is clean, `git fsck` passes, it borrows no objects, and
@@ -94,3 +100,4 @@ echo "acceptance (safety): a failed base build keeps its clone and says why it f
 echo "acceptance (safety): a warm base runs the build where it hands the base over;"
 echo "acceptance (safety): a build that stopped is carried on with, whatever release stopped it;"
 echo "acceptance (safety): no process a recipe hook starts is left running that nothing owns"
+echo "acceptance (safety): a write lock is held unless a reading proves its holder gone"

@@ -61,7 +61,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::Result;
-use crate::model::Timestamp;
+use crate::model::{Holding, Timestamp};
 
 /// One process, with what a scan keeps about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -387,6 +387,29 @@ pub fn parent_of(pid: u32) -> Option<u32> {
         let _ = pid;
         None
     }
+}
+
+/// This process, named by its identifier and pinned to the instant it started.
+///
+/// What a hold records for its holder ([`crate::model::Holding`]). The identifier is
+/// asked of the kernel and the instant is read from this host's own table, so the pin a
+/// hold is written with is taken the same way as every later reading it is compared
+/// against: one number, one arithmetic, one answer.
+///
+/// `started_at` is `None` where this host would not date the process. The record then
+/// says what was read and no more, and a later reading of that row resolves no identity
+/// and proves nothing ([`crate::runtime::lock::liveness`]).
+///
+/// One process is asked for, so this is two small reads of the table and never a scan.
+#[must_use]
+pub fn current_process() -> Holding {
+    let pid = std::process::id();
+    let started_at = match Live.presences(&[pid]).ok().and_then(|seen| seen.get(&pid).copied()) {
+        Some(Presence::Running { started_at }) => started_at,
+        // A process that cannot find itself in the table is a table that would not say.
+        Some(Presence::Gone) | None => None,
+    };
+    Holding { pid, started_at }
 }
 
 /// The POSIX session this process is in, `None` where the host will not say.

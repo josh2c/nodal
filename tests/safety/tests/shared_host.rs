@@ -288,6 +288,7 @@ fn a_project_row_with_no_remote_is_given_one_from_its_own_checkout() {
                  ALTER TABLE lock DROP COLUMN actor_kind;\n\
                  ALTER TABLE lock DROP COLUMN actor_name;\n\
                  ALTER TABLE lock DROP COLUMN pid;\n\
+                 ALTER TABLE lock DROP COLUMN pid_started_at;\n\
                  ALTER TABLE lock DROP COLUMN session;\n\
                  ALTER TABLE lock DROP COLUMN taken_at;\n\
                  ALTER TABLE lock DROP COLUMN refreshed_at;\n\

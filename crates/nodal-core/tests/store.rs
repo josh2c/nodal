@@ -14,9 +14,10 @@ use nodal_core::model::base::Provenance;
 use nodal_core::model::recipe::{ToolName, ToolVersion};
 use nodal_core::model::{
     Actor, ActorKind, ActorName, Base, BranchName, CommitId, DbName, DbTemplate, Digest, EnvState,
-    Environment, Epistemic, Event, EventId, EventKind, HostName, Lease, Lock, Objective, Platform,
-    PortAllocation, PortBlock, PortName, Ports, Project, ProjectName, RawRef, RefName, ResourceKey,
-    SchemaFp, Session, Slug, Timestamp, Unit, UnitId, UnitStatus, Version, WorkspaceFp,
+    Environment, Epistemic, Event, EventId, EventKind, Holding, HostName, Lease, Lock, Objective,
+    Platform, PortAllocation, PortBlock, PortName, Ports, Project, ProjectName, RawRef, RefName,
+    ResourceKey, SchemaFp, Session, Slug, Timestamp, Unit, UnitId, UnitStatus, Version,
+    WorkspaceFp,
 };
 use nodal_core::store::{
     SCHEMA_VERSION, Store, bases, environments, events, leases, locks, port_allocations,
@@ -475,13 +476,21 @@ fn actor(name: &str) -> Actor {
     Actor { kind: ActorKind::Human, name: ActorName::parse(name).unwrap() }
 }
 
+/// The process a hold names, pinned to an instant this suite states rather than reads.
+///
+/// A row a test writes carries a pin like any other, because a row with an identifier
+/// and no pin is the one shape a reading cannot resolve, and that is its own test.
+fn took(pid: u32) -> Holding {
+    Holding { pid, started_at: Timestamp::from_unix_seconds(1_000).ok() }
+}
+
 /// The hold a test starts from: `ada` on `laptop`, taken at `now`.
 fn holding(now: Timestamp) -> Lock {
     Lock {
         unit_id: id('2'),
         host: HostName::parse("laptop").unwrap(),
         actor: Some(actor("ada")),
-        pid: Some(4_120),
+        process: Some(took(4_120)),
         session: Some(4_100),
         taken_at: now,
         refreshed_at: now,
@@ -503,7 +512,7 @@ fn one_actor_writes_a_unit_and_their_own_entry_refreshes_it() {
     let idle = held.idle_deadline(8);
 
     assert!(locks::take(conn, &held, now, idle).unwrap());
-    let rival = Lock { actor: Some(actor("bo")), pid: Some(4_121), ..held.clone() };
+    let rival = Lock { actor: Some(actor("bo")), process: Some(took(4_121)), ..held.clone() };
     assert!(!locks::take(conn, &rival, now, idle).unwrap(), "a second actor took a held lock");
     assert_eq!(locks::get(conn, id('2')).unwrap(), Some(held.clone()));
     assert_eq!(locks::list_for_host(conn, &held.host).unwrap(), vec![held.clone()]);
@@ -531,7 +540,7 @@ fn an_idle_hold_lapses_and_the_next_actor_takes_it() {
     assert!(held.has_lapsed(tomorrow, 8), "an idle hold did not lapse");
     let rival = Lock {
         actor: Some(actor("bo")),
-        pid: Some(4_121),
+        process: Some(took(4_121)),
         taken_at: tomorrow,
         refreshed_at: tomorrow,
         ..held.clone()
@@ -568,7 +577,7 @@ fn a_hand_over_moves_a_hold_the_clock_has_not_released() {
         unit_id: id('2'),
         host: host.clone(),
         actor: Some(actor("ada")),
-        pid: Some(4_120),
+        process: Some(took(4_120)),
         session: Some(4_100),
         taken_at: now,
         refreshed_at: now,
@@ -576,7 +585,7 @@ fn a_hand_over_moves_a_hold_the_clock_has_not_released() {
     };
     assert!(locks::take(conn, &held, now, held.idle_deadline(8)).unwrap());
 
-    let taken = Lock { actor: Some(actor("bo")), pid: Some(4_121), ..held.clone() };
+    let taken = Lock { actor: Some(actor("bo")), process: Some(took(4_121)), ..held.clone() };
     assert!(!locks::take(conn, &taken, now, held.idle_deadline(8)).unwrap());
     locks::hand_over(conn, &taken).unwrap();
     assert_eq!(locks::get(conn, id('2')).unwrap(), Some(taken));

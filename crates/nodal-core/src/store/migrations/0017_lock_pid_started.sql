@@ -1,0 +1,22 @@
+-- 0017 lock pid started: the instant the holder's process began, beside its identifier.
+--
+-- The row named the process that took a hold by its number alone, and a number is not a
+-- process. Identifiers are reused, so the reading that asked "is anything wearing this
+-- number" could not tell the holder from a stranger. What it compared the number against
+-- instead was `taken_at`, which belongs to the hold and not to the process: a refresh
+-- keeps `taken_at` and writes the refreshing process's own number, so every refreshed
+-- hold read as a process that started after the hold and was reported gone while it was
+-- running. A false "the holder is gone" is what grants a write that should be refused.
+--
+-- `pid_started_at` is when the recorded process started, in seconds since the epoch, as
+-- this host dates it: the boot instant plus the kernel's own count on Linux, and
+-- `proc_bsdinfo` on macOS. The pair is the holder's identity, and a reading of the table
+-- proves the holder gone only by that pair.
+--
+-- Null, and null for every row written before this migration. It is also what a host
+-- that will not date a process answers — another account's process on macOS. Both mean
+-- one thing: the identity cannot be resolved, so nothing is proved and the hold stands.
+--
+-- Nothing is signalled. The instant is read from the process table and written down.
+
+ALTER TABLE lock ADD COLUMN pid_started_at INTEGER;

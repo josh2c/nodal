@@ -122,6 +122,11 @@ pub enum Unknowable {
     NoPid,
     /// This host publishes no process table this account may read.
     NoProcessTable,
+    /// A process carries the identifier, and one of the two sides is undated: the row
+    /// records no start instant, or this host would not date what it found. The
+    /// holder's process and a later one wearing its number read the same, so the
+    /// reading resolves no identity and proves nothing.
+    Undated,
 }
 
 impl Unknowable {
@@ -132,6 +137,7 @@ impl Unknowable {
             Self::AnotherHost => "the hold was taken on another machine",
             Self::NoPid => "the lock row records no process",
             Self::NoProcessTable => "this host has no process table to read",
+            Self::Undated => "the process found at that identifier is not dated on both sides",
         }
     }
 }
@@ -215,7 +221,7 @@ impl Holder {
         Some(Self {
             actor: lock.actor.as_ref()?.name.clone(),
             host: lock.host.clone(),
-            pid: lock.pid,
+            pid: lock.process.as_ref().map(|held| held.pid),
             state,
             taken_at: lock.taken_at,
             refreshed_at: lock.refreshed_at,

@@ -81,11 +81,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "event verdict",
         sql: include_str!("migrations/0016_event_verdict.sql"),
     },
+    Migration {
+        version: 17,
+        name: "lock pid started",
+        sql: include_str!("migrations/0017_lock_pid_started.sql"),
+    },
 ];
 
 /// The schema version a database is brought to by [`run`]. Kept as a literal rather
 /// than derived from the table's length, so that a version appears in a diff.
-pub const SCHEMA_VERSION: u32 = 16;
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// Bring `store` up to [`SCHEMA_VERSION`].
 ///

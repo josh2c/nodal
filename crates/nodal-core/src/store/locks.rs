@@ -12,15 +12,15 @@
 use rusqlite::{Connection, Row, params};
 
 use crate::Result;
-use crate::model::{Actor, ActorKind, ActorName, HostName, Lock, Timestamp, UnitId};
+use crate::model::{Actor, ActorKind, ActorName, Holding, HostName, Lock, Timestamp, UnitId};
 use crate::store::row;
 
 /// The table these functions read and write.
 const TABLE: &str = "lock";
 
 /// Every column [`decode`] reads.
-const COLUMNS: &str = "unit_id, host, actor_kind, actor_name, pid, session, taken_at, \
-     refreshed_at, expires_at";
+const COLUMNS: &str = "unit_id, host, actor_kind, actor_name, pid, pid_started_at, session, \
+     taken_at, refreshed_at, expires_at";
 
 /// Take the write on a unit, or refresh a hold this actor already has.
 ///
@@ -52,11 +52,12 @@ const COLUMNS: &str = "unit_id, host, actor_kind, actor_name, pid, session, take
 pub fn take(conn: &Connection, lock: &Lock, now: Timestamp, idle_deadline: i64) -> Result<bool> {
     let taken = row::write(
         conn,
-        "INSERT INTO lock (unit_id, host, actor_kind, actor_name, pid, session, taken_at, \
-         refreshed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+        "INSERT INTO lock (unit_id, host, actor_kind, actor_name, pid, pid_started_at, session, \
+         taken_at, refreshed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT (unit_id) DO UPDATE SET host = excluded.host, \
          actor_kind = excluded.actor_kind, actor_name = excluded.actor_name, \
-         pid = excluded.pid, session = excluded.session, \
+         pid = excluded.pid, pid_started_at = excluded.pid_started_at, \
+         session = excluded.session, \
          refreshed_at = excluded.refreshed_at, \
          expires_at = excluded.expires_at, \
          taken_at = CASE WHEN lock.host = excluded.host \
@@ -73,7 +74,8 @@ pub fn take(conn: &Connection, lock: &Lock, now: Timestamp, idle_deadline: i64) 
             lock.host.as_str(),
             kind_of(lock)?,
             name_of(lock),
-            lock.pid,
+            pid_of(lock),
+            started_of(lock),
             lock.session,
             lock.taken_at.unix_seconds(),
             lock.refreshed_at.unix_seconds(),
@@ -97,18 +99,20 @@ pub fn take(conn: &Connection, lock: &Lock, now: Timestamp, idle_deadline: i64) 
 pub fn hand_over(conn: &Connection, lock: &Lock) -> Result<()> {
     row::write(
         conn,
-        "INSERT INTO lock (unit_id, host, actor_kind, actor_name, pid, session, taken_at, \
-         refreshed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+        "INSERT INTO lock (unit_id, host, actor_kind, actor_name, pid, pid_started_at, session, \
+         taken_at, refreshed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT (unit_id) DO UPDATE SET host = excluded.host, \
          actor_kind = excluded.actor_kind, actor_name = excluded.actor_name, \
-         pid = excluded.pid, session = excluded.session, taken_at = excluded.taken_at, \
+         pid = excluded.pid, pid_started_at = excluded.pid_started_at, \
+         session = excluded.session, taken_at = excluded.taken_at, \
          refreshed_at = excluded.refreshed_at, expires_at = excluded.expires_at",
         params![
             lock.unit_id.to_string(),
             lock.host.as_str(),
             kind_of(lock)?,
             name_of(lock),
-            lock.pid,
+            pid_of(lock),
+            started_of(lock),
             lock.session,
             lock.taken_at.unix_seconds(),
             lock.refreshed_at.unix_seconds(),
@@ -168,6 +172,33 @@ pub fn release(conn: &Connection, unit_id: UnitId, holder: &HostName) -> Result<
     Ok(released == 1)
 }
 
+/// The identifier of the process a hold was taken by, `None` when it records none.
+const fn pid_of(lock: &Lock) -> Option<u32> {
+    match &lock.process {
+        Some(held) => Some(held.pid),
+        None => None,
+    }
+}
+
+/// When that process started, in seconds since the epoch, `None` where it is undated.
+///
+/// A row with a process and no instant is the one a reading cannot resolve, and it is
+/// written as it was read: this host would not date the process, so nothing is claimed
+/// about when it began.
+fn started_of(lock: &Lock) -> Option<i64> {
+    lock.process.as_ref()?.started_at.map(Timestamp::unix_seconds)
+}
+
+/// The process a row records, pinned to when it started.
+///
+/// The instant is read only where an identifier is there. A `pid_started_at` beside a
+/// null `pid` would be a pin on nothing, which no write here produces and which reading
+/// as a holder would name a process the registry never recorded.
+fn process_of(row: &Row<'_>) -> Result<Option<Holding>> {
+    let Some(pid) = row::number_opt::<u32>(row, TABLE, "pid")? else { return Ok(None) };
+    Ok(Some(Holding { pid, started_at: row::stamp_opt(row, TABLE, "pid_started_at")? }))
+}
+
 /// The stored spelling of a lock's actor kind, `None` when it holds no actor.
 fn kind_of(lock: &Lock) -> Result<Option<String>> {
     lock.actor.as_ref().map(|actor| row::name_of(&actor.kind, "actor kind")).transpose()
@@ -190,7 +221,7 @@ fn decode(row: &Row<'_>) -> Result<Lock> {
         unit_id: row::scalar::<UnitId>(row, TABLE, "unit_id")?,
         host: row::scalar::<HostName>(row, TABLE, "host")?,
         actor: kind.zip(name).map(|(kind, name)| Actor { kind, name }),
-        pid: row::number_opt::<u32>(row, TABLE, "pid")?,
+        process: process_of(row)?,
         session: row::number_opt::<u32>(row, TABLE, "session")?,
         taken_at: row::stamp(row, TABLE, "taken_at")?,
         refreshed_at: row::stamp(row, TABLE, "refreshed_at")?,

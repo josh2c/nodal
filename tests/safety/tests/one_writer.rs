@@ -15,7 +15,7 @@
 //! | the refusal names a way out | a person is stopped with no way to carry on |
 //! | the lock is advisory | Nodal stops an editor, a `git` call or a process it did not start |
 //! | `--take` is deliberate and recorded | a hold moves with nothing written down |
-//! | an idle hold lapses | a home nobody has entered for a day stays locked |
+//! | an idle hold lapses, and says so | a home nobody has entered for a day stays locked, or changes hands with no record of why |
 //!
 //! ## The second actor, without a second account
 //!
@@ -185,12 +185,20 @@ fn take_moves_the_hold_and_records_the_hand_off() {
     assert!(stderr(&refused).contains(SECOND), "{}", stderr(&refused));
 }
 
-/// A hold nobody has refreshed for longer than the idle window is anybody's.
+/// A hold nobody has refreshed for longer than the idle window is anybody's, and the
+/// move says which clock released it.
 ///
 /// The window is a recipe key, so the test sets it to zero and asserts that the next
 /// actor walks in. Zero is the honest way to test an idle window without sleeping: the
 /// question is whether the clock is consulted at all, and a test that waited eight hours
 /// would answer the same question a day later.
+///
+/// The move is written down. A lapsed hold used to move in silence, on the reasoning
+/// that nothing had been taken from anybody, and what that left was a person whose home
+/// had changed hands with no record of why. A hold moves on three grounds — a reading
+/// proved the holder gone, the lease expired, or somebody asked — and the two that
+/// happen without anybody asking are the two worth reading afterwards, so each says
+/// which it was.
 #[test]
 fn an_idle_hold_lapses_and_the_next_actor_takes_it() {
     let workspace =
@@ -205,10 +213,15 @@ fn an_idle_hold_lapses_and_the_next_actor_takes_it() {
     let held = locks::get(store.conn(), unit).unwrap().unwrap();
     assert_eq!(held.actor.unwrap().name.as_str(), SECOND, "the lapsed hold did not move");
 
-    // A hold that lapsed moves without a hand-off. Nothing was taken from anybody.
+    let handed: Vec<_> =
+        workspace.events().into_iter().filter(|event| event.kind == EventKind::Handoff).collect();
+    assert_eq!(handed.len(), 1, "a lapsed hold moved with {} lines written", handed.len());
+    let body = &handed[0].body;
+    assert!(body.contains(FIRST) && body.contains(SECOND), "the move names nobody: {body}");
+    assert!(body.contains("lease"), "the move does not say which clock released it: {body}");
     assert!(
-        !workspace.events().iter().any(|event| event.kind == EventKind::Handoff),
-        "a lapsed hold was recorded as a hand-off",
+        !body.contains("proven gone"),
+        "a clock that ran out was recorded as a reading of the table: {body}"
     );
 }
 
