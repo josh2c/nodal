@@ -319,3 +319,82 @@ fn merged_and_due(machine: &Machine, slug: &str) {
         .expect("the unit is moved to merged");
     assert!(merged, "no row was moved to merged");
 }
+
+/// The ordinary shape after a pull request merges, and the one this file was missing.
+///
+/// A host deletes the branch when the request merges. The person then pulls, which is a
+/// fetch without `--prune` by default, so the checkout keeps `refs/remotes/origin/topic`
+/// over a branch the remote has not got. The old reading took that ref as the newest
+/// reading of the remote and called the only copy of the commit proved.
+///
+/// The record Git writes tells the two apart. `FETCH_HEAD` lists every ref the last
+/// fetch saw, and a branch the remote dropped is not in it. So the reading is dated per
+/// branch and a branch the last fetch did not see is unproved, whatever the tracking ref
+/// still names. The row says which fetch to run.
+#[test]
+fn a_branch_the_last_fetch_did_not_see_is_not_proved_by_a_ref_it_left() {
+    let machine = machine();
+    let (home, tip) = pushed(&machine, SLUG);
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+    git(machine.origin(), &["update-ref", "-d", &format!("refs/heads/{TOPIC}")]);
+    git(&machine.source, &["fetch", "--quiet", "origin"]);
+    assert_eq!(
+        git(&machine.source, &["rev-parse", &format!("refs/remotes/origin/{TOPIC}")]),
+        tip,
+        "the fetch pruned the ref, so this asserts nothing about a stale one"
+    );
+
+    let refused = machine.nodal(&["reclaim", SLUG]);
+    assert!(!refused.status.success(), "a stale ref proved the remote: {}", stdout(&refused));
+    let told = stderr(&refused);
+    assert!(told.contains(&tip[..8]), "the refusal does not name the commit: {told}");
+    assert!(told.contains("--prune"), "the refusal does not say what to run: {told}");
+    intact(&machine, &home, &tip);
+}
+
+/// A collection is not a reading of a remote.
+///
+/// `heard` took the newest of `FETCH_HEAD`, `packed-refs` and `refs/remotes`, and `git
+/// gc`, `git pack-refs` and `git maintenance` all rewrite `packed-refs` with no fetch.
+/// Git runs a collection after many ordinary commands, so a checkout whose last real
+/// fetch was a month ago became the newest reading of the remote over a command that
+/// reached nothing. `packed-refs` is out of the reading for that reason.
+#[test]
+fn collecting_garbage_in_the_checkout_makes_no_witness() {
+    let machine = machine();
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+    let (home, tip) = stranded(&machine, SLUG);
+    git(&machine.source, &["gc", "--quiet", "--prune=now"]);
+    git(&machine.source, &["pack-refs", "--all"]);
+
+    let refused = machine.nodal(&["reclaim", SLUG]);
+    assert!(!refused.status.success(), "a collection witnessed: {}", stdout(&refused));
+    let told = stderr(&refused);
+    assert!(told.contains("nothing here read the remote to check them"), "{told}");
+    intact(&machine, &home, &tip);
+}
+
+/// A store's own reading of a remote is no durable second copy of anything.
+///
+/// The checkout holds the commit under `refs/remotes/origin/topic` and under nothing
+/// else. That ref is the checkout's record of a fetch, and one `git fetch --prune` in
+/// the checkout deletes it, exactly as a `git gc` deletes an object under no ref. A
+/// reading that counted it rested a fourteen-day trash timer on the weakest ref there
+/// is. What a second copy needs is a ref the store keeps of its own accord.
+#[test]
+fn a_commit_a_store_holds_only_under_a_tracking_ref_is_no_second_copy() {
+    let machine = machine();
+    let (home, tip) = pushed(&machine, SLUG);
+    git(&machine.source, &["fetch", "--quiet", "origin"]);
+    git(machine.origin(), &["update-ref", "-d", &format!("refs/heads/{TOPIC}")]);
+    git(&machine.source, &["fetch", "--quiet", "origin"]);
+    assert_eq!(git(&machine.source, &["cat-file", "-t", &tip]), "commit", "no object, no test");
+
+    let refused = machine.nodal(&["reclaim", SLUG]);
+    assert!(!refused.status.success(), "a tracking ref was a copy: {}", stdout(&refused));
+    intact(&machine, &home, &tip);
+
+    git(&machine.source, &["branch", "--quiet", "keep", &tip]);
+    let allowed = machine.nodal(&["reclaim", SLUG]);
+    assert!(allowed.status.success(), "a branch of its own is a copy: {}", stderr(&allowed));
+}

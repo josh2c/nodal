@@ -286,3 +286,40 @@ fn a_ref_of_another_remote_does_not_answer_for_origin() {
     assert!(report.contains(keeper.to_str().unwrap()), "the clone is not named:\n{report}");
     assert!(report.contains("1 commit"), "the count is not there:\n{report}");
 }
+
+/// The branch table of `nodal doctor` answers the same question, and it may not answer
+/// it from the checkout's own bookkeeping.
+///
+/// The sequence is the one a person meets every week: push a branch, merge the request,
+/// and the host deletes the branch. Nothing prunes, so `refs/remotes/origin/feature`
+/// still names the commit inside the checkout. The table read those refs and told the
+/// person the branch was seen on a remote, and the person then deleted it by hand. The
+/// loss goes through the person's own hands, on Nodal's advice, which is a worse failure
+/// than a refused reclaim.
+///
+/// The remote is on this disk here, so it is read directly, and what it does not hold it
+/// does not hold. The row says the work is only here.
+#[test]
+fn the_branch_table_does_not_call_a_dropped_branch_seen_on_a_remote() {
+    let machine = Machine::with_remote();
+    let checkout = machine.source.clone();
+    let base = git(&checkout, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    git(&checkout, &["switch", "--quiet", "--create", "feature"]);
+    std::fs::write(checkout.join("work.md"), "the only copy\n").unwrap();
+    git::commit(&checkout, "work only this checkout has");
+    git(&checkout, &["push", "--quiet", "origin", "feature"]);
+    git(&checkout, &["switch", "--quiet", &base]);
+    git(machine.origin(), &["update-ref", "-d", "refs/heads/feature"]);
+    assert!(
+        !git(&checkout, &["rev-parse", "refs/remotes/origin/feature"]).is_empty(),
+        "the checkout pruned the ref, so this asserts nothing about a stale one"
+    );
+
+    let report = stdout(&machine.nodal(&["doctor"]));
+    assert!(report.contains("feature"), "the branch is not named:\n{report}");
+    assert!(report.contains("only here"), "the work is called something softer:\n{report}");
+    assert!(
+        !report.contains("no branch holds a commit this checkout has not seen on a remote"),
+        "the table reassured over work the remote has not got:\n{report}"
+    );
+}
