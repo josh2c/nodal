@@ -79,19 +79,16 @@ pub struct Preflight {
 /// reclaim of that unit alone would do, and it stays exactly what it was; this is what the
 /// same reading says when every home in the set goes at once.
 ///
-/// Both halves come from one [`Verdict`], which is the kernel's answer over the same
+/// The reasons come from one [`Verdict`], which is the kernel's answer over the same
 /// reading with the set handed to it ([`crate::lifecycle::kernel::judge`]). There is no
-/// second rule here: a verdict and the reasons it prints cannot disagree, because the
-/// reasons are a rendering of the verdict. [`Serialize`] writes the verdict out, so a
-/// script gates on `safe` without re-deriving it.
+/// second rule here: the reasons are a rendering of the verdict.
+///
+/// The verdict itself is read off those reasons rather than stored beside them, for the
+/// reason [`SameContent`] reads its disposition off its own type: a stored verdict is one
+/// that can drift from what it is a verdict of. [`Serialize`] writes it out, so a script
+/// gates on `safe` without re-deriving it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Together {
-    /// Whether a reclaim of the whole set would go ahead over this unit.
-    ///
-    /// Defaulted on the way in, because it is written out of the verdict rather than read:
-    /// a document that carried only the reasons is one an older Nodal wrote.
-    #[serde(default)]
-    pub safe: bool,
     /// Every reason, ranked, with the per-unit ones first and the joint ones added.
     pub reasons: Vec<Reason>,
 }
@@ -100,17 +97,26 @@ impl Together {
     /// What a reclaim of the whole set would find about this unit, from the joint verdict.
     #[must_use]
     pub fn of(verdict: &Verdict) -> Self {
-        Self { safe: verdict.safe(), reasons: verdict.reasons() }
+        Self { reasons: verdict.reasons() }
+    }
+
+    /// Whether a reclaim of the whole set would go ahead over this unit.
+    ///
+    /// The same predicate [`Verdict::safe`] answers, over the reasons that verdict printed,
+    /// so the two agree wherever the reasons do.
+    #[must_use]
+    pub fn safe(&self) -> bool {
+        !self.reasons.iter().any(|reason| reason.needs.refuses())
     }
 }
 
 impl Serialize for Together {
-    /// The verdict, then the reasons behind it.
+    /// The reasons, with the verdict read off them by [`Together::safe`].
     fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct as _;
 
         let mut joint = out.serialize_struct("Together", 2)?;
-        joint.serialize_field("safe", &self.safe)?;
+        joint.serialize_field("safe", &self.safe())?;
         joint.serialize_field("reasons", &self.reasons)?;
         joint.end()
     }
@@ -135,7 +141,7 @@ impl Preflights {
     #[must_use]
     pub fn new(now: Timestamp, units: Vec<Preflight>) -> Self {
         let safe_together = units.iter().all(|unit| match &unit.together {
-            Some(together) => together.safe,
+            Some(together) => together.safe(),
             None => unit.safe_to_reclaim,
         });
         Self { now, units, safe_together }
@@ -329,7 +335,7 @@ impl Preflight {
     /// one where they do not.
     fn together_cell(&self) -> String {
         let Some(together) = &self.together else { return String::new() };
-        if together.safe {
+        if together.safe() {
             return String::from("safe with the other units named here too");
         }
         let joined: Vec<String> = together
