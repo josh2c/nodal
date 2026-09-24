@@ -95,13 +95,10 @@ use rusqlite::Connection;
 use std::path::Path;
 
 use crate::Result;
-use crate::git::{Divergence, Git, Integration, Oid};
+use crate::git::{Divergence, Git, Integration};
 use crate::model::{Timestamp, UnitStatus};
 use crate::output::view::UnitRow;
 use crate::store::units;
-
-/// Where a repository keeps what it last saw of a remote.
-const TRACKING: &str = "refs/remotes/";
 
 /// What this home's own record of its own pushes says about one branch.
 ///
@@ -190,9 +187,9 @@ fn flip(conn: &Connection, row: &UnitRow, now: Timestamp) -> Result<bool> {
 
 /// What this home's own remote-tracking refs say about its branch.
 ///
-/// One `git remote` for the names, one `for-each-ref` for the tips it last saw, and one
-/// `rev-list` for the count. The tips are named rather than taken from `--remotes`, so the
-/// reading states which refs it rested on instead of naming a namespace
+/// One `git remote` for the names, one [`Git::seen_on_remotes`] for the tips it last saw,
+/// and one `rev-list` for the count. The tips are named rather than taken from `--remotes`,
+/// so the reading states which refs it rested on instead of naming a namespace
 /// ([`crate::git::outside`]).
 ///
 /// # Errors
@@ -203,7 +200,7 @@ fn out_there(home: &Path, branch: &str) -> Result<OnRemote> {
     if remotes.is_empty() {
         return Ok(OnRemote { remotes, seen_on_remote: false });
     }
-    let seen: Vec<Oid> = git.list_refs(TRACKING)?.into_iter().map(|one| one.oid).collect();
+    let seen = git.seen_on_remotes()?;
     Ok(OnRemote { remotes, seen_on_remote: git.count_outside(branch, &seen)? == 0 })
 }
 
