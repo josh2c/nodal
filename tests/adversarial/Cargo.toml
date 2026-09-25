@@ -1,0 +1,30 @@
+[package]
+name = "nodal-adversarial"
+description = "The proof protocol as a test: a grid of shapes, the predicate, and an oracle of Git plumbing that answers the same question."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "nodal_adversarial"
+path = "src/lib.rs"
+
+[dependencies]
+# The one call that makes a process of this account unreadable to it, which the
+# withheld-occupancy shape needs and no other call in this crate does.
+libc.workspace = true
+nodal-core.workspace = true
+# The test kit: the fixture machine, the `git` runner and the process shapes. This crate
+# composes those into shapes; it writes none of them again.
+nodal-safety.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The directory the bare remote is moved to, which must outlive the shape and must not be
+# inside the machine the oracle walks.
+tempfile.workspace = true
+
+[lints]
+workspace = true
