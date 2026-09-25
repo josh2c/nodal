@@ -29,6 +29,9 @@
 //! | a reclaim writes into no other home | `a_reclaim_of_one_unit_writes_into_no_other_home` |
 //! | an unreadable verdict is asked again | `a_verdict_this_binary_cannot_read_is_asked_again_rather_than_taken` |
 //! | a record `done` left behind keeps nothing | `a_record_done_left_behind_does_not_keep_the_home` |
+//! | a side branch whose copy went keeps it | `a_side_branch_whose_copy_went_survives_its_retention` |
+//! | a tag whose copy went keeps it | `a_tag_whose_copy_went_survives_its_retention` |
+//! | a stash whose copy went keeps it | `a_stash_whose_copy_went_survives_its_retention` |
 //!
 //! Both hosts read every signal these properties use, so each one asserts the same thing
 //! on Linux and on macOS.
@@ -52,6 +55,12 @@ const ONLY: &str = "only-here.txt";
 
 /// The branch a second repository keeps its copy of the home's commit on.
 const COPY: &str = "rescued";
+
+/// A path the fixture tracks, which is what a stash needs to have something to hold.
+const TRACKED: &str = "apps/web/app/page.tsx";
+
+/// The branch a commit is made on and left, so `HEAD` does not reach it afterwards.
+const SIDE: &str = "side-work";
 
 /// A second clone of the project, beside the checkout, where a person keeps a copy.
 const SIBLING: &str = "sibling";
@@ -133,9 +142,15 @@ fn reaches(repo: &Path, tip: &str) -> bool {
 /// The invariant: the trashed home is still there and plain Git still reads the work out
 /// of it. A sweep that kept a row and took the directory would keep nothing.
 fn readable(trash: &Path, tip: &str) {
+    holds(trash, tip);
+    assert_eq!(std::fs::read_to_string(trash.join(ONLY)).unwrap(), "the only copy\n");
+}
+
+/// The same invariant over work no working tree carries: a commit on a ref of the home
+/// that `HEAD` does not reach is read out of the directory the sweep kept.
+fn holds(trash: &Path, tip: &str) {
     assert!(trash.is_dir(), "the sweep removed the home it said it kept");
     assert_eq!(git(trash, &["cat-file", "-t", tip]), "commit", "the commit is not readable");
-    assert_eq!(std::fs::read_to_string(trash.join(ONLY)).unwrap(), "the only copy\n");
 }
 
 /// A verdict of "second local copy" rests on a ref in another repository, and that ref
@@ -546,4 +561,90 @@ fn a_record_done_left_behind_does_not_keep_the_home() {
     let report = stdout(&swept);
     assert!(!trash.exists(), "a record `done` wrote kept the home: {report}");
     assert!(machine.trashed().is_empty(), "and the row went with the directory");
+}
+
+/// A commit in the home that `HEAD` does not reach afterwards, and its identifier.
+///
+/// The branch is made, committed on and left. `HEAD` goes back to the unit's own branch,
+/// so the commit is reachable from the side branch and from nothing else in this home.
+fn on_a_side_branch(home: &Path) -> String {
+    let branch = git(home, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    git(home, &["switch", "--quiet", "--create", SIDE]);
+    std::fs::write(home.join(ONLY), "the only copy\n").unwrap();
+    git(home, &["add", "--all"]);
+    git(home, &["commit", "--quiet", "--message", "work on a branch nothing else has"]);
+    let tip = git(home, &["rev-parse", "HEAD"]);
+    git(home, &["switch", "--quiet", &branch]);
+    assert_ne!(git(home, &["rev-parse", "HEAD"]), tip, "HEAD still reaches the commit");
+    tip
+}
+
+/// Delete the copy the verdict rested on, which is one ordinary command in a repository
+/// Nodal never touched.
+fn copy_goes(sibling: &Path, tip: &str) {
+    git(sibling, &["update-ref", "-d", &format!("refs/heads/{COPY}")]);
+    git(sibling, &["reflog", "expire", "--expire=now", "--all"]);
+    assert!(!reaches(sibling, tip), "the sibling still reaches the commit");
+}
+
+/// Sweep, and insist the home was kept over this commit and named in the report.
+fn kept_over(machine: &Machine, trash: &Path, tip: &str) {
+    let swept = machine.nodal(&["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    let report = stdout(&swept);
+    assert!(report.contains(&format!("kept: {}", &tip[..8])), "{report}");
+    holds(trash, tip);
+    assert_eq!(machine.trashed(), vec![trash.to_path_buf()], "and the row was kept with it");
+}
+
+/// A commit on a side branch is work, and the sweep reads the branch.
+///
+/// The reclaim is refused over every ref the home holds, and the sweep used to ask again
+/// over `HEAD` alone. So a commit `HEAD` did not reach went into the trash on a copy
+/// somewhere else, the copy went while the home sat there, and the retention removed the
+/// last copy of it with nothing having read the ref that held it — the one promise this
+/// sweep exists to keep, broken for every ref but `HEAD`.
+#[test]
+fn a_side_branch_whose_copy_went_survives_its_retention() {
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    let tip = on_a_side_branch(&home);
+    let sibling = sibling_holding(&machine, &home, &tip);
+    let trash = reclaimed(&machine, SLUG);
+
+    copy_goes(&sibling, &tip);
+    kept_over(&machine, &trash, &tip);
+}
+
+/// A tag is a ref like any other. The branch that carried the commit is deleted, so the
+/// tag is the one name on it, and a sweep that walked branches alone would miss it too.
+#[test]
+fn a_tag_whose_copy_went_survives_its_retention() {
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    let tip = on_a_side_branch(&home);
+    let sibling = sibling_holding(&machine, &home, &tip);
+    git(&home, &["tag", "--annotate", "--message", "a release", "kept", &tip]);
+    git(&home, &["branch", "--quiet", "--delete", "--force", SIDE]);
+    let trash = reclaimed(&machine, SLUG);
+
+    copy_goes(&sibling, &tip);
+    kept_over(&machine, &trash, &tip);
+}
+
+/// A stash is a commit nobody else has, and it leaves the working tree clean, so
+/// `refs/stash` is the one thing that names it.
+#[test]
+fn a_stash_whose_copy_went_survives_its_retention() {
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    std::fs::write(home.join(TRACKED), "edited, then stashed\n").unwrap();
+    git(&home, &["stash", "push", "--quiet", "--message", "work only this home has"]);
+    let tip = git(&home, &["rev-parse", "refs/stash"]);
+    assert!(git(&home, &["status", "--porcelain"]).is_empty(), "the stash left the tree dirty");
+    let sibling = sibling_holding(&machine, &home, &tip);
+    let trash = reclaimed(&machine, SLUG);
+
+    copy_goes(&sibling, &tip);
+    kept_over(&machine, &trash, &tip);
 }

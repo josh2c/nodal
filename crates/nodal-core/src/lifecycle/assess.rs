@@ -147,25 +147,43 @@ pub struct Attribution<'a> {
 
 /// Where one home's work is read from.
 ///
-/// A live home is read from every ref it holds, and not from the branch it is on. A
-/// person works on that branch most of the time, and most of the time is not a promise a
-/// removal may rest on. `git switch -c`, `git stash` and `git tag` each write a ref, and
-/// a commit under one of those is work this home holds and nothing else has. A reading
-/// of `HEAD` alone reported no commits at all over such a home, called it safe, and the
-/// directory went to the trash whole and out of it on a timer.
+/// A home is read from every ref it holds, and not from the branch it is on. A person
+/// works on that branch most of the time, and most of the time is not a promise a removal
+/// may rest on. `git switch -c`, `git stash` and `git tag` each write a ref, and a commit
+/// under one of those is work this home holds and nothing else has. A reading of `HEAD`
+/// alone reported no commits at all over such a home, called it safe, and the directory
+/// went to the trash whole and out of it on a timer.
 ///
-/// A trashed home is read from the tips its caller names instead. Nothing is checked out
-/// in the trash, so there is no `HEAD` to start from, and the caller has the tips already
-/// from the record the reclaim left.
+/// **A home in the trash is read from the same refs**, and that is what makes a refusal
+/// mean anything. The reclaim refuses over a set of refs; the sweep of the trash asks
+/// again before it removes the directory ([`crate::lifecycle::ops::gc`]). A sweep that
+/// asked over fewer refs than the refusal was raised over would remove, on the clock, a
+/// commit the reclaim would have refused to let go — a side branch, a tag or a stash
+/// whose one other copy went while the home sat in the trash. The two readings are one
+/// reading, so they cannot disagree.
+///
+/// The trash adds one ref and takes nothing away. A forced reclaim commits the working
+/// tree it found to a ref of Nodal's own before it moves the home, and nothing is checked
+/// out in the trash, so that ref is the only reading left of a tree the walk below would
+/// otherwise reach through the checkout.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum Work<'a> {
-    /// Every ref the home holds, plus `HEAD`. The reading every caller but the sweep of
-    /// the trash makes, and therefore the default.
+    /// Every ref the home holds of its own, plus `HEAD`. The reading every caller but
+    /// the sweep of the trash makes, and therefore the default.
     #[default]
     Checkout,
-    /// The commits these tips reach, and nothing else. An empty list is a home with no
-    /// work on any ref, which is a fact and not a failure.
-    Tips(&'a [Oid]),
+    /// The same refs, and the ref a trash row names besides.
+    ///
+    /// The name comes off the row and is never built from the unit. A home can hold a
+    /// work-in-progress ref no reclaim ever wrote: `nodal done` takes one on every run
+    /// ([`crate::lifecycle::ops::done`]), whether or not `--wip` sends it. That commit is
+    /// Nodal's record of a working tree rather than a reclaim's preserved work, and it is
+    /// built on `HEAD`, so no other ref reaches it. A reading that named
+    /// `refs/nodal/<unit>/wip` by construction therefore kept every home of a unit that
+    /// had ever run `done`, on every sweep, with nothing a person could do to release it.
+    /// The row names the ref for the one reclaim that preserved work, and nothing for the
+    /// reclaims that had none to preserve.
+    Trashed(Option<&'a str>),
 }
 
 /// The namespaces a home carries that hold no work of its own.
@@ -190,10 +208,13 @@ pub enum Work<'a> {
 /// from the branch. Counting them would keep every home that has ever run a command, for
 /// ever, which is a leak and not a safety property.
 ///
-/// `nodal gc` draws the same line over a home in the trash ([`crate::lifecycle::ops::gc`]),
-/// with one addition this reading does not need: nothing is checked out in the trash, so
-/// the sweep names the snapshot ref itself, because a forced reclaim put a working tree on
-/// it that no tree reading can reach any more.
+/// `nodal gc` draws this same line over a home in the trash
+/// ([`crate::lifecycle::ops::gc`]), because it is this same reading: the refusal a reclaim
+/// raises and the sweep that asks again before the retention removes the directory are one
+/// walk of one set of refs, and a sweep that walked fewer would remove what the refusal
+/// was raised over. The trash adds one name and takes none away
+/// ([`Work::Trashed`]): nothing is checked out there, so a working tree a forced reclaim
+/// committed to a ref of Nodal's own is reachable by no other reading.
 const NOT_ITS_OWN: [&str; 2] = ["refs/remotes/", crate::git::refs::NAMESPACE];
 
 /// What one reading walks, read once and used for every question it asks.
@@ -221,14 +242,13 @@ impl Work<'_> {
     /// `HEAD` nothing answers for is an unborn branch, which is a home with no commit of
     /// its own rather than a reading that failed.
     ///
-    fn resolve(self, git: &Git, refs: &[crate::git::refs::Ref]) -> Scope {
-        if let Self::Tips(tips) = self {
-            return Scope {
-                tips: tips.to_vec(),
-                walked: tips.iter().map(ToString::to_string).collect(),
-                not_walked: Vec::new(),
-            };
-        }
+    /// The ref a trash row names is asked for by name, and a row naming a ref the home
+    /// does not hold is a row about a ref that has gone rather than a reading that
+    /// failed.
+    ///
+    /// # Errors
+    /// [`Error::Git`] when the ref a trash row names could not be read.
+    fn resolve(self, git: &Git, refs: &[crate::git::refs::Ref]) -> Result<Scope> {
         let mut named = Vec::new();
         let mut tips = Vec::new();
         for reference in refs {
@@ -241,18 +261,23 @@ impl Work<'_> {
         if !checked_out(git.root(), &named) {
             tips.extend(git.rev_parse(HEAD).ok());
         }
+        let mut walked: Vec<String> = WALKED.iter().map(|&name| String::from(name)).collect();
+        if let Self::Trashed(Some(recorded)) = self {
+            tips.extend(git.rev_parse_opt(recorded)?);
+            walked.push(String::from(recorded));
+        }
         tips.sort_unstable();
         tips.dedup();
-        Scope {
+        Ok(Scope {
             tips,
-            walked: WALKED.iter().map(|&name| String::from(name)).collect(),
+            walked,
             not_walked: NOT_ITS_OWN
                 .iter()
                 .map(|kind| {
                     format!("{kind}* (a record of somewhere else, not this home's own work)")
                 })
                 .collect(),
-        }
+        })
     }
 }
 
@@ -353,7 +378,7 @@ impl<'a> Input<'a> {
     ///
     /// The work is read from the branch the home is on, which is every caller but the
     /// sweep of the trash ([`Work`]). The one caller that reads named tips instead sets
-    /// the field over this: `Input { work: Work::Tips(&tips), ..Input::refusal(..) }`.
+    /// the field over this: `Input { work: Work::Trashed(named), ..Input::refusal(..) }`.
     ///
     /// [`Input::fate`] is unread by this reading and is not a claim about the home.
     /// `state: false` is what makes that true: the two dispositions whose sentence
@@ -1830,7 +1855,7 @@ fn history(
     let refs = git.all_refs()?;
     let found = witness::elsewhere(input.home, input.checkout, &refs);
     let checkout = input.checkout.map(Checkout::path);
-    let work = input.work.resolve(git, &refs);
+    let work = input.work.resolve(git, &refs)?;
     reading.refs.walked.clone_from(&work.walked);
     reading.refs.not_walked.clone_from(&work.not_walked);
     if !input.dispositions {
