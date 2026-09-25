@@ -74,7 +74,7 @@ pub fn take(conn: &Connection, lock: &Lock, now: Timestamp, idle_deadline: i64) 
             lock.host.as_str(),
             kind_of(lock)?,
             name_of(lock),
-            pid_of(lock),
+            lock.pid(),
             started_of(lock),
             lock.session,
             lock.taken_at.unix_seconds(),
@@ -111,7 +111,7 @@ pub fn hand_over(conn: &Connection, lock: &Lock) -> Result<()> {
             lock.host.as_str(),
             kind_of(lock)?,
             name_of(lock),
-            pid_of(lock),
+            lock.pid(),
             started_of(lock),
             lock.session,
             lock.taken_at.unix_seconds(),
@@ -170,14 +170,6 @@ pub fn release(conn: &Connection, unit_id: UnitId, holder: &HostName) -> Result<
         params![unit_id.to_string(), holder.as_str()],
     )?;
     Ok(released == 1)
-}
-
-/// The identifier of the process a hold was taken by, `None` when it records none.
-const fn pid_of(lock: &Lock) -> Option<u32> {
-    match &lock.process {
-        Some(held) => Some(held.pid),
-        None => None,
-    }
 }
 
 /// When that process started, in seconds since the epoch, `None` where it is undated.

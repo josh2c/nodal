@@ -66,7 +66,9 @@
 #     and only a reading of the whole table that nothing carries the holder's identity
 #     releases it. A hold refreshed by a later process of its own lineage is read as
 #     held, which is the reading that used to call every refreshed hold gone and tell
-#     the next actor the home was free;
+#     the next actor the home was free. The holder's own re-entry reads no process
+#     table: the reads it charges are counted against the reads one walk charges, in the
+#     same test, and both numbers are printed;
 #   - a home after an uninstall: a default uninstall leaves the state directory and the
 #     unit homes in it, and a surviving home is a standalone Git repository — its own
 #     history reads, its tree is clean, `git fsck` passes, it borrows no objects, and

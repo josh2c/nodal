@@ -33,7 +33,7 @@ pub const DEFAULT_IDLE_HOURS: u32 = 8;
 /// instant is a stranger. Where either side is undated the reading proves nothing, and
 /// [`crate::runtime::lock::liveness`] says so rather than guessing
 /// (`docs/contracts.md`, Locks).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Holding {
     /// The identifier the process carried.
     pub pid: u32,
@@ -83,6 +83,19 @@ pub struct Lock {
 }
 
 impl Lock {
+    /// The identifier of the process the hold was taken by, `None` when it records none.
+    ///
+    /// One question with one spelling. Five places asked it — the two writers of the
+    /// row, the two readings of the table and the report — and each reached through the
+    /// pin for the half it wanted.
+    #[must_use]
+    pub const fn pid(&self) -> Option<u32> {
+        match &self.process {
+            Some(held) => Some(held.pid),
+            None => None,
+        }
+    }
+
     /// Whether the lock has lapsed at `now`, by either clock.
     ///
     /// Two ways to lapse and both count. The absolute lapse is what a bundle from

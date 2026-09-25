@@ -42,15 +42,26 @@
 //! The three unresolved-identity shapes below are the ones to carry into the adversarial
 //! grid (lane C) when it lands: an identifier the reader cannot pin, an identifier proven
 //! absent, and a table that could not be read.
+//!
+//! ## The one cost asserted here
+//!
+//! A hold is on the path of every write verb, and the holder's own re-entry is the
+//! commonest entry there is. What it may not do is read the process table, and that is
+//! measured rather than reasoned about — see
+//! [`the_holders_own_re_entry_reads_no_process_table`].
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "a test fails by panicking")]
 
 use std::collections::BTreeMap;
 
-use nodal_core::model::{Actor, ActorKind, ActorName, Holding, HostName, Lock, Timestamp, UnitId};
+use nodal_core::model::{
+    Actor, ActorKind, ActorName, Holding, HostName, Lock, ProjectId, Timestamp, UnitId,
+};
 use nodal_core::output::view::{HolderState, Unknowable};
 use nodal_core::runtime::lock::{self, Lineage, Seen};
 use nodal_core::runtime::processes::{self, Presence, Processes, Running};
+use nodal_core::store::{Store, locks, projects, units};
+use nodal_safety::rows;
 
 /// The unit every hold here is on. Nothing is written, so one identifier does.
 const UNIT: &str = "01J9X2K4Q7QW8QG4M2N5B3T6HP";
@@ -458,6 +469,98 @@ fn a_table_read_all_the_way_through_answers_for_the_session_it_holds() {
 #[test]
 fn a_table_read_all_the_way_through_answers_for_the_session_it_holds() {
     assert!(nodal_safety::platform::skipped(STATED_TABLE, "this host publishes no /proc"));
+}
+
+// ---------------------------------------------------------------------------
+// What the holder's own re-entry costs.
+// ---------------------------------------------------------------------------
+
+/// The claim only Linux publishes a counter for: read syscalls charged to this process.
+#[cfg(not(target_os = "linux"))]
+const COUNTED_READS: &str = "the reads an entry charges, counted; macOS publishes no per-process \
+                             syscall counter this account can read";
+
+/// How many read syscalls this process has been charged.
+#[cfg(target_os = "linux")]
+fn reads_so_far() -> u64 {
+    std::fs::read_to_string("/proc/self/io")
+        .expect("this host counts the reads it charges")
+        .lines()
+        .find_map(|line| line.strip_prefix("syscr:"))
+        .expect("the counter is in the record")
+        .trim()
+        .parse()
+        .expect("the counter is a number")
+}
+
+/// The holder entering its own home again reads no process table.
+///
+/// This is a cost, and it is asserted because it was lost once. The reading that decides
+/// a lineage was made an argument, and an argument is evaluated before the function that
+/// ignores it — so the one entry that never looks at the reading, the holder's own,
+/// walked the whole table and threw the answer away. It is the hot entry: the prompt hook
+/// runs `nodal env --export` on every entry into a home, and the holder's `nodal run`,
+/// `nodal shell` and `nodal cd` run it too.
+///
+/// The claim is measured rather than read off the shape of the code, as the only-here
+/// survey's is: one walk of this host's table is counted in the same test, and the
+/// re-entry has to cost a small fraction of it. Both numbers are printed on every run,
+/// pass or fail, so a green run leaves the record a later reading needs.
+///
+/// What the re-entry still pays for is its own pin — two small reads of this host's
+/// table — because the entry writes a row and a row records a pinned process.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_holders_own_re_entry_reads_no_process_table() {
+    let registry = tempfile::tempdir().expect("a directory");
+    let mut store = Store::open(registry.path().join("registry.db")).expect("a registry");
+    nodal_core::store::migrations::run(&mut store).expect("the registry is current");
+    let now = Timestamp::now();
+
+    let project_id = ProjectId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    let project = rows::project(project_id, registry.path().to_path_buf(), "scratch", now);
+    projects::insert(store.conn(), &project).expect("the project row is written");
+    let unit_id = UnitId::parse("01ARZ3NDEKTSV4RRFFQ69G5F01").unwrap();
+    let unit = rows::unit(unit_id, project_id, "worker-import", "nodal/worker-import", now);
+    units::insert(store.conn(), &unit).expect("the unit row is written");
+
+    // A hold this very process already has: its actor, its host, its lineage.
+    let mine = Lock {
+        unit_id,
+        actor: Some(nodal_core::runtime::actor::current().expect("this process says who it is")),
+        session: processes::current_session(),
+        ..held(Some(Holding { pid: 1, started_at: None }))
+    };
+    locks::take(store.conn(), &mine, now, mine.idle_deadline(8)).expect("the hold is written");
+
+    // Warmed once, so the measurement is of the entry and not of whatever it loads first.
+    lock::enter(store.conn(), &unit, &project, false, Timestamp::now()).expect("the holder");
+    let before = reads_so_far();
+    let entered = lock::enter(store.conn(), &unit, &project, false, Timestamp::now())
+        .expect("the holder enters its own home");
+    let re_entry = reads_so_far() - before;
+
+    // One walk of this host's table, for scale, on a lineage that is not this one.
+    let elsewhere = processes::current_session().map_or(1, |session| session + 1);
+    let before = reads_so_far();
+    let _ = processes::session_is_live(elsewhere);
+    let walk = reads_so_far() - before;
+
+    println!("lock: the holder's re-entry charged {re_entry} reads; one walk charged {walk}");
+    assert_eq!(entered, nodal_core::runtime::lock::Entered::Refreshed, "not the holder's re-entry");
+    assert!(
+        re_entry * 4 < walk,
+        "the holder's own re-entry read the process table: {re_entry} reads against a walk's {walk}"
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn the_holders_own_re_entry_reads_no_process_table() {
+    assert!(nodal_safety::platform::skipped(
+        COUNTED_READS,
+        "this host publishes no per-process syscall counter"
+    ));
 }
 
 // ---------------------------------------------------------------------------

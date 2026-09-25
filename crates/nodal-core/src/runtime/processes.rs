@@ -404,12 +404,25 @@ pub fn parent_of(pid: u32) -> Option<u32> {
 #[must_use]
 pub fn current_process() -> Holding {
     let pid = std::process::id();
-    let started_at = match Live.presences(&[pid]).ok().and_then(|seen| seen.get(&pid).copied()) {
-        Some(Presence::Running { started_at }) => started_at,
-        // A process that cannot find itself in the table is a table that would not say.
+    Holding { pid, started_at: started_at(pid) }
+}
+
+/// When the process wearing this identifier now started, from this host's own record.
+///
+/// `None` where this host publishes no process table, where the process has gone, and
+/// where the host dates no process it found. Each of those is "I could not read it", and
+/// every caller treats it as proof of nothing — which of the two directions that is
+/// safe in belongs to the caller, not here. A hold reads it and stands
+/// ([`crate::runtime::lock::liveness`]); a reclaim reads it and refuses
+/// ([`crate::lifecycle::assess`]).
+///
+/// One process is asked for, so this is two small reads of the table and never a scan.
+#[must_use]
+pub fn started_at(pid: u32) -> Option<Timestamp> {
+    match Live.presences(&[pid]).ok()?.get(&pid) {
+        Some(Presence::Running { started_at }) => *started_at,
         Some(Presence::Gone) | None => None,
-    };
-    Holding { pid, started_at }
+    }
 }
 
 /// The POSIX session this process is in, `None` where the host will not say.

@@ -301,11 +301,25 @@ pub fn lineage(holder: &Lock, here: Option<u32>, session_holds_a_process: Option
 /// The reading [`lineage`] is decided on: whether this host still holds a process in the
 /// session the hold was taken from.
 ///
-/// It is taken only where both sides state a lineage, because a number nobody wrote down
-/// is not an identity to resolve and walking the table for it would answer a question
-/// nobody asked. `None` where it was not taken and `None` where it could not be, which
-/// are one answer to the decision: nothing was proved.
+/// **The row is asked before the machine is.** A hold whose recorded lineage is the one
+/// asking is answered `Same` by the row alone, and a reading taken for that entry is a
+/// walk of the whole process table thrown away. The short-circuit lives here rather than
+/// in [`lineage`] because an argument is evaluated before the function that ignores it:
+/// moving the reading to the call site is what made the holder's own re-entry pay for a
+/// walk it never looks at.
+///
+/// That entry is the hot one. `nodal env --export` runs it from the prompt hook on every
+/// entry into a home, and `nodal run`, `nodal shell` and `nodal cd` by the holder run it
+/// too — one walk of this host's table is about 2,700 reads against a 5 ms budget.
+///
+/// A reading is otherwise taken only where both sides state a lineage, because a number
+/// nobody wrote down is not an identity to resolve. `None` where it was not taken and
+/// `None` where it could not be, which are one answer to the decision: nothing was
+/// proved, and `Second`, `Gone` and `Unreadable` each still rest on a real reading.
 fn reading_of(holder: &Lock, here: Option<u32>) -> Option<bool> {
+    if holder.was_taken_from(here) {
+        return None;
+    }
     let (Some(recorded), Some(_)) = (holder.session, here) else { return None };
     crate::runtime::processes::session_is_live(recorded)
 }
@@ -643,7 +657,7 @@ fn hold_line(held: &Lock, entry: &Entry) -> String {
              and this command is in another one."
         );
     }
-    let pids: Vec<u32> = held.process.iter().map(|process| process.pid).collect();
+    let pids: Vec<u32> = held.pid().into_iter().collect();
     let seen = Seen::read(&crate::runtime::processes::Live, &pids);
     match liveness(held, &HostName::current(), &seen) {
         HolderState::Gone => {

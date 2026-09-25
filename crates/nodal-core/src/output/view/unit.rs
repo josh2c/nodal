@@ -221,7 +221,7 @@ impl Holder {
         Some(Self {
             actor: lock.actor.as_ref()?.name.clone(),
             host: lock.host.clone(),
-            pid: lock.process.as_ref().map(|held| held.pid),
+            pid: lock.pid(),
             state,
             taken_at: lock.taken_at,
             refreshed_at: lock.refreshed_at,
