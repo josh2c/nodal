@@ -59,12 +59,46 @@ use crate::error::{Error, Result};
 /// # Errors
 /// [`Error::Git`] when `rev-list` failed, [`Error::GitOid`] on unreadable output.
 pub(super) fn held(repo: &Path, wanted: &[Oid]) -> Result<Vec<Oid>> {
+    Ok(reaching(repo, wanted, None)?.reached)
+}
+
+/// What this repository has of `wanted`, and which of those a ref of it reaches.
+///
+/// Both facts, because the caller that asks the stricter question wants both and one pair
+/// of processes answers both. A store that holds a commit and may not vouch for it is a row
+/// a person can act on — it names a directory on their own disk — and a caller given only
+/// the second answer had to run the first reading again to write that row.
+#[derive(Debug)]
+pub struct Reaches {
+    /// Which of `wanted` the object store has at all.
+    pub stored: Vec<Oid>,
+    /// Which of those a ref this repository keeps reaches.
+    pub reached: Vec<Oid>,
+}
+
+/// The reading both [`held`] and [`owned`] are: what the store has, less what no ref of it
+/// reaches.
+///
+/// `exclude` is the one thing the two differ by. `None` counts every ref under `refs/` and
+/// `HEAD`; [`NOT_TRACKING`] leaves a store's own reading of a remote out of the exclusion,
+/// so a commit only such a ref reaches comes back as unreached.
+///
+/// Two processes at worst and one in the ordinary case: a repository that has none of
+/// `wanted` is finished after the first, which is what an unrelated repository beside the
+/// checkout answers.
+///
+/// The order is the safe one. `rev-list --ignore-missing` drops an identifier this
+/// repository does not have, so the exclusion question alone cannot tell a missing commit
+/// from a reachable one, and reading the second as the first is the false safe these two
+/// functions exist to remove.
+fn reaching(repo: &Path, wanted: &[Oid], exclude: Option<&str>) -> Result<Reaches> {
     let stored = stores(repo, wanted)?;
     if stored.is_empty() {
-        return Ok(stored);
+        return Ok(Reaches { reached: Vec::new(), stored });
     }
-    let stranded: BTreeSet<Oid> = stranded(repo, &stored)?.into_iter().collect();
-    Ok(stored.into_iter().filter(|oid| !stranded.contains(oid)).collect())
+    let away: BTreeSet<Oid> = read(repo, &not_reached(&stored, exclude))?.into_iter().collect();
+    let reached = stored.iter().filter(|oid| !away.contains(oid)).cloned().collect();
+    Ok(Reaches { stored, reached })
 }
 
 /// Which of `wanted` this repository's object store has, without walking any history.
@@ -86,14 +120,103 @@ pub(super) fn stores(repo: &Path, wanted: &[Oid]) -> Result<Vec<Oid>> {
     read(repo, &stores_args(wanted))
 }
 
-/// Which of `stored` no ref of this repository reaches.
+/// Which of `wanted` this repository reaches from a ref it keeps of its own accord.
 ///
-/// `--ignore-missing` covers the refs as well as the arguments. A ref that names an
-/// object the store does not have is the shape a pruned or half-written store leaves,
-/// and it reaches nothing; without the flag one such ref stops the whole reading and the
-/// repository proves nothing at all.
-fn stranded(repo: &Path, stored: &[Oid]) -> Result<Vec<Oid>> {
-    read(repo, &stranded_args(stored))
+/// [`held`] with one namespace left out, and the namespace decides a removal.
+/// `refs/remotes/` inside a repository is that repository's record of a fetch or a push
+/// it made, and `git fetch --prune` deletes one the moment the remote drops the branch —
+/// exactly as `git gc` deletes an object under no ref. A commit a store holds only under
+/// such a ref is therefore a copy one ordinary command takes away, and a verdict that
+/// rested a fourteen-day trash timer on it rested it on the weakest ref there is.
+///
+/// What is left is a ref the store keeps because somebody there wanted it kept: a branch,
+/// a tag, the stash, a detached `HEAD`. That is what a second copy means.
+///
+/// The remote question about such a ref is a different question and it has its own
+/// answer: a dated observation of the remote ([`crate::doctor::unique::believed`]). This
+/// reading does not try to answer it and does not stand in for it.
+///
+/// # Errors
+/// [`Error::Git`] when `rev-list` failed, [`Error::GitOid`] on unreadable output.
+pub(super) fn owned(repo: &Path, wanted: &[Oid]) -> Result<Reaches> {
+    reaching(repo, wanted, Some(NOT_TRACKING))
+}
+
+/// What takes a store's own reading of a remote out of the exclusion. `--exclude` applies
+/// to the `--all` that follows it.
+const NOT_TRACKING: &str = "--exclude=refs/remotes/*";
+
+/// How many objects behind `commits` this repository has not got.
+///
+/// A commit being here is not the work being here. The work is the trees and the blobs
+/// the commit names, and a partial clone holds every commit and none of them. So the
+/// commits are walked for their objects, and `--missing=print` prints one line beginning
+/// with a question mark for each object the walk wanted and could not find.
+///
+/// `boundary` bounds the walk. It is the parents of `commits` that are not themselves in
+/// `commits`, so what is walked is the objects those commits introduce and not the whole
+/// history behind them. A root commit has no boundary, and then the walk is of that one
+/// tree.
+///
+/// `--ignore-missing` covers the boundary as well as the commits, because a store that
+/// holds the work need not hold the history under it, and a boundary it has not got would
+/// otherwise stop the reading rather than widen it.
+///
+/// # Errors
+/// [`Error::Git`] when `rev-list` failed, [`Error::GitEncoding`] on unreadable output.
+pub(super) fn missing_objects(repo: &Path, commits: &[Oid], boundary: &[Oid]) -> Result<usize> {
+    if commits.is_empty() {
+        return Ok(0);
+    }
+    let output = cmd::run_ok(repo, &missing_args(commits, boundary))?;
+    Ok(output.lines()?.iter().filter(|line| line.starts_with(MISSING)).count())
+}
+
+/// What `rev-list --missing=print` writes before an object it could not find.
+const MISSING: char = '?';
+
+/// Whether this repository fetches the objects it has not got, rather than holding them.
+///
+/// One `git config --get-regexp`, which exits non-zero when nothing matches. A promisor
+/// remote and `extensions.partialClone` are the two ways a repository says it is partial,
+/// and either is enough.
+///
+/// # Errors
+/// [`Error::GitSpawn`] when `git` could not be started.
+pub(super) fn partial(repo: &Path) -> Result<bool> {
+    Ok(cmd::run(repo, &["config", "--get-regexp", "--", PARTIAL])?.ok())
+}
+
+/// The two settings a partial clone writes, either of which says it is one.
+const PARTIAL: &str = "^(remote\\..*\\.promisor|extensions\\.partialclone)$";
+
+/// The parents of `commits` that none of `commits` is, which is where an object walk of
+/// them stops.
+///
+/// One `rev-list --parents --no-walk`, whose every line is a commit and then its parents.
+///
+/// # Errors
+/// [`Error::Git`] when `rev-list` failed, [`Error::GitOid`] on unreadable output.
+pub(super) fn boundary_of(repo: &Path, commits: &[Oid]) -> Result<Vec<Oid>> {
+    if commits.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec!["rev-list", "--ignore-missing", "--parents", "--no-walk"];
+    args.extend(commits.iter().map(Oid::as_str));
+    let output = cmd::run_ok(repo, &args)?;
+    let inside: BTreeSet<&Oid> = commits.iter().collect();
+    let mut found: Vec<Oid> = Vec::new();
+    for line in output.lines()? {
+        for field in line.split_whitespace().skip(1) {
+            let parent = Oid::parse(field)?;
+            if !inside.contains(&parent) {
+                found.push(parent);
+            }
+        }
+    }
+    found.sort_unstable();
+    found.dedup();
+    Ok(found)
 }
 
 /// Commits of any of `revs` that none of `held` reaches, newest first.
@@ -167,11 +290,28 @@ fn stores_args(wanted: &[Oid]) -> Vec<&str> {
     args
 }
 
-/// The argument list that asks which of them no ref reaches.
-fn stranded_args(stored: &[Oid]) -> Vec<&str> {
+/// The argument list that asks which objects behind these commits are not here.
+fn missing_args<'a>(commits: &'a [Oid], boundary: &'a [Oid]) -> Vec<&'a str> {
+    let mut args = vec!["rev-list", "--ignore-missing", "--objects", "--missing=print"];
+    args.extend(commits.iter().map(Oid::as_str));
+    if !boundary.is_empty() {
+        args.push("--not");
+        args.extend(boundary.iter().map(Oid::as_str));
+    }
+    args
+}
+
+/// The argument list that asks which of them no ref reaches, less `exclude`.
+///
+/// `--ignore-missing` covers the refs as well as the arguments. A ref that names an object
+/// the store does not have is the shape a pruned or half-written store leaves, and it
+/// reaches nothing; without the flag one such ref stops the whole reading and the
+/// repository proves nothing at all.
+fn not_reached<'a>(stored: &'a [Oid], exclude: Option<&'a str>) -> Vec<&'a str> {
     let mut args = vec!["rev-list", "--ignore-missing", "--no-walk"];
     args.extend(stored.iter().map(Oid::as_str));
     args.push("--not");
+    args.extend(exclude);
     args.push("--all");
     args
 }
@@ -179,7 +319,7 @@ fn stranded_args(stored: &[Oid]) -> Vec<&str> {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests fail by panicking")]
 mod tests {
-    use super::{args, stores_args, stranded_args};
+    use super::{NOT_TRACKING, args, missing_args, not_reached, stores_args};
     use crate::git::oid::Oid;
 
     const ONE: &str = "1e2f3a4b5c6d7e8f90112233445566778899aabb";
@@ -206,10 +346,38 @@ mod tests {
         assert_eq!(stores_args(&wanted), ["rev-list", "--ignore-missing", "--no-walk", ONE]);
     }
 
+    /// A repository's own reading of a remote is not a ref it keeps of its own accord,
+    /// and `--exclude` is what takes it out of the exclusion the answer rests on.
+    #[test]
+    fn a_durable_copy_excludes_the_stores_reading_of_a_remote() {
+        let stored = [one()];
+        let asked = [
+            "rev-list",
+            "--ignore-missing",
+            "--no-walk",
+            ONE,
+            "--not",
+            "--exclude=refs/remotes/*",
+            "--all",
+        ];
+        assert_eq!(not_reached(&stored, Some(NOT_TRACKING)), asked);
+    }
+
+    /// The object walk is bounded by the parents the commits share with the history
+    /// behind them, so what it asks for is what those commits add.
+    #[test]
+    fn an_object_walk_stops_at_the_boundary_it_is_given() {
+        let commits = [one()];
+        let bounded = missing_args(&commits, &commits);
+        assert_eq!(bounded[..4], ["rev-list", "--ignore-missing", "--objects", "--missing=print"]);
+        assert_eq!(bounded[4..], [ONE, "--not", ONE]);
+        assert_eq!(missing_args(&commits, &[]).len(), 5, "no boundary asks for no exclusion");
+    }
+
     #[test]
     fn reachability_excludes_every_ref_of_the_repository() {
         let stored = [one()];
         let asked = ["rev-list", "--ignore-missing", "--no-walk", ONE, "--not", "--all"];
-        assert_eq!(stranded_args(&stored), asked);
+        assert_eq!(not_reached(&stored, None), asked);
     }
 }

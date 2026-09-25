@@ -35,7 +35,7 @@
 //!
 //! | fact | read from |
 //! |---|---|
-//! | pushed, unpushed or no remote | `git rev-list <head> --not --remotes`: commits no remote has |
+//! | on the remote, only here, or no remote | the remote itself where it is a directory here, and what this checkout has seen where it is not |
 //! | dirty | `git status`: paths a commit would capture |
 //! | behind | `git status`: commits the upstream has and this does not |
 //! | size | a walk of the directory ([`super::size`]) |
@@ -52,8 +52,8 @@
 
 use std::path::Path;
 
-use crate::doctor::{Section, intent, size};
-use crate::git::{Git, Oid};
+use crate::doctor::{Section, intent, size, unique};
+use crate::git::Git;
 use crate::output::view::doctor::{Finding, Kind};
 use crate::paths;
 use crate::{Result, git};
@@ -77,7 +77,12 @@ pub const PRUNABLE: &str = "prunable";
 ///
 /// # Errors
 /// [`crate::Error::Git`] when the repository's own record could not be read.
-pub fn find(root: &Path, sessions: Option<&Path>, section: Section) -> Result<Vec<Finding>> {
+pub fn find(
+    root: &Path,
+    sessions: Option<&Path>,
+    section: Section,
+    seen: &unique::Read,
+) -> Result<Vec<Finding>> {
     let Ok(git) = Git::open(root) else {
         return Ok(Vec::new());
     };
@@ -100,11 +105,8 @@ pub fn find(root: &Path, sessions: Option<&Path>, section: Section) -> Result<Ve
     // Read once for every worktree of this checkout. A worktree shares the object store and
     // the remote-tracking refs of the repository it belongs to, so what this checkout has seen
     // on a remote is one fact about the repository rather than one per worktree.
-    let seen = git.seen_on_remotes().unwrap_or_default();
-    let findings = registered
-        .drain(..)
-        .map(|one_of| one(&root, &one_of, sessions, (section, &seen)))
-        .collect();
+    let findings =
+        registered.drain(..).map(|one_of| one(&root, &one_of, sessions, (section, seen))).collect();
     Ok(findings)
 }
 
@@ -114,15 +116,15 @@ pub fn find(root: &Path, sessions: Option<&Path>, section: Section) -> Result<Ve
 /// The whole path is what makes a worktree beside the checkout findable. A relative
 /// name for one would be a walk back out of the checkout, and a bare directory name
 /// would not say where to look at all.
-/// `read` pairs the section this worktree belongs to with what the checkout has seen on a
-/// remote, which [`find`] read once for the whole repository. They travel together because
-/// they are asked together: a worktree of another project is not read at all, and one of this
-/// project is counted against exactly those tips.
+/// `read` pairs the section this worktree belongs to with the reading of the remote the
+/// survey took once for this repository ([`crate::doctor::unique::seen`]). They travel
+/// together because they are asked together: a worktree of another project is not read at
+/// all, and one of this project is counted against exactly those tips.
 fn one(
     root: &Path,
     registered: &git::worktree::Registered,
     sessions: Option<&Path>,
-    read: (Section, &[Oid]),
+    read: (Section, &unique::Read),
 ) -> Finding {
     let (section, seen) = read;
     let name = registered.path.strip_prefix(root).unwrap_or(&registered.path);
@@ -184,10 +186,12 @@ fn prunable(finding: Finding, reason: &str) -> Finding {
 /// binary: after a push, a merge and a remote branch deletion without a prune, this row said
 /// "pushed" about work the remote no longer held.
 ///
-/// The refs are named now ([`crate::git::Git::seen_on_remotes`]), and the word says what the
-/// reading is worth: **seen on a remote**. A reading that failed says so rather than saying
-/// nothing. Two processes either way: one for the remotes it names, one for the count.
-fn state(finding: Finding, path: &Path, branch: Option<&str>, seen: &[Oid]) -> Finding {
+/// The row asks the strong reading first. A remote that is a directory on this machine is
+/// read directly ([`crate::doctor::unique::read_directly`]), and what it has not got it has
+/// not got, so the row says **on the remote** or **only here**. A remote on a server cannot
+/// be read at all, and the row then states what this checkout has seen on one, in those
+/// words. A reading that failed says so rather than saying nothing.
+fn state(finding: Finding, path: &Path, branch: Option<&str>, seen: &unique::Read) -> Finding {
     let Ok(git) = Git::open(path) else {
         return finding.says("not a checkout");
     };
@@ -201,10 +205,12 @@ fn state(finding: Finding, path: &Path, branch: Option<&str>, seen: &[Oid]) -> F
             // repository has no remote.
             finding.says("no remote")
         } else {
-            match git.count_outside("HEAD", seen) {
-                Ok(0) => finding.says("seen on a remote"),
-                Ok(kept) => finding.says(format!("unpushed {kept}")),
-                Err(_) => finding.says("not read"),
+            match (git.count_outside("HEAD", &seen.tips), seen.checked) {
+                (Ok(0), true) => finding.says("on the remote"),
+                (Ok(0), false) => finding.says("seen on a remote"),
+                (Ok(kept), true) => finding.says(format!("only here {kept}")),
+                (Ok(kept), false) => finding.says(format!("unpushed {kept}")),
+                (Err(_), _) => finding.says("not read"),
             }
         };
     }

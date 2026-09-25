@@ -100,7 +100,8 @@ use serde::{Deserialize, Serialize};
 use crate::Result;
 use crate::doctor::size::Bytes;
 use crate::git::status::{Entry, State, Summary};
-use crate::git::{Git, Oid, union};
+use crate::git::{Git, Oid, Reaches};
+use crate::lifecycle::complete::{self, Incomplete, Lacking};
 use crate::lifecycle::kernel::{self, Evidence, LossSet, Verdict};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
 use crate::lifecycle::witness::{self, Checkout};
@@ -146,18 +147,20 @@ pub struct Attribution<'a> {
 
 /// Where one home's work is read from.
 ///
-/// A live home is read from `HEAD`, because a person works on the branch they are
-/// checked out on and every commit of theirs is behind it.
+/// A live home is read from every ref it holds, and not from the branch it is on. A
+/// person works on that branch most of the time, and most of the time is not a promise a
+/// removal may rest on. `git switch -c`, `git stash` and `git tag` each write a ref, and
+/// a commit under one of those is work this home holds and nothing else has. A reading
+/// of `HEAD` alone reported no commits at all over such a home, called it safe, and the
+/// directory went to the trash whole and out of it on a timer.
 ///
-/// A trashed home is read from the tips its caller names instead, and the difference is
-/// not a preference. Nothing is checked out in the trash, and a forced reclaim wrote the
-/// working tree onto `refs/nodal/<unit>/wip`, which no branch reaches: a reading from
-/// `HEAD` alone would call that snapshot no part of the home and let the directory
-/// holding it go.
+/// A trashed home is read from the tips its caller names instead. Nothing is checked out
+/// in the trash, so there is no `HEAD` to start from, and the caller has the tips already
+/// from the record the reclaim left.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum Work<'a> {
-    /// The branch the home is on. The reading every caller but the sweep of the trash
-    /// makes, and therefore the default.
+    /// Every ref the home holds, plus `HEAD`. The reading every caller but the sweep of
+    /// the trash makes, and therefore the default.
     #[default]
     Checkout,
     /// The commits these tips reach, and nothing else. An empty list is a home with no
@@ -165,16 +168,119 @@ pub enum Work<'a> {
     Tips(&'a [Oid]),
 }
 
+/// The namespaces a home carries that hold no work of its own.
+///
+/// What is left when these go is the refs the home keeps of its own accord: its branches,
+/// its tags, its stash. That is the same line a second copy is counted over in every other
+/// repository on the machine ([`crate::git::outside::owned`]), and one rule for "what a
+/// repository has to say for itself" is better than two that can disagree.
+///
+/// `refs/remotes/` is a record of a fetch. The commits behind it came from the remote and
+/// are the project's history rather than this unit's work; the home's own
+/// `refs/remotes/origin/*` in particular is what its `nodal done` push wrote, and reading
+/// it as work would report the push back as a loss.
+///
+/// `refs/nodal/` is every ref Nodal wrote. Two are copies of the person's own checkout
+/// that the create put there — its reading of the remote and its own branches
+/// ([`crate::git::refs::ORIGIN`], [`crate::git::refs::CHECKOUT`]) — and the commits behind
+/// those are in the checkout. The rest are records of runs: what one operation wrote
+/// before it ran, the branch a squash folded, and the snapshot of the working tree a
+/// `done` takes. A record's tree is the home's working tree and its parent is the home's
+/// own branch, so it holds no content this reading does not already have from the tree and
+/// from the branch. Counting them would keep every home that has ever run a command, for
+/// ever, which is a leak and not a safety property.
+///
+/// `nodal gc` draws the same line over a home in the trash ([`crate::lifecycle::ops::gc`]),
+/// with one addition this reading does not need: nothing is checked out in the trash, so
+/// the sweep names the snapshot ref itself, because a forced reclaim put a working tree on
+/// it that no tree reading can reach any more.
+const NOT_ITS_OWN: [&str; 2] = ["refs/remotes/", crate::git::refs::NAMESPACE];
+
+/// What one reading walks, read once and used for every question it asks.
+///
+/// Three `rev-list` runs at worst ask about the same set of tips, and the tips are one
+/// reading of the home's refs. Taking them three times would cost two processes to learn
+/// what the first answer held.
+struct Scope {
+    /// The tips the reading starts from.
+    tips: Vec<Oid>,
+    /// What the record says was walked.
+    walked: Vec<String>,
+    /// What the record says was not, and each of those is a reason rather than a gap.
+    not_walked: Vec<String>,
+}
+
 impl Work<'_> {
-    /// The commits of this home that none of `held` reaches, newest first.
+    /// Read what this home's work hangs off, for the evidence record and for the walk.
     ///
-    /// One `rev-list` either way.
-    fn outside(self, git: &Git, held: &[Oid]) -> Result<Vec<Oid>> {
-        match self {
-            Self::Checkout => git.commits_outside("HEAD", held),
-            Self::Tips(tips) => git.among_outside(tips, held),
+    /// One `for-each-ref` and one `rev-parse` for a live home, and no process at all for
+    /// a home whose tips the caller already holds.
+    ///
+    /// `HEAD` is asked for separately because `for-each-ref` does not list it, and a home
+    /// left on a detached `HEAD` has a commit checked out that no ref of it names. A
+    /// `HEAD` nothing answers for is an unborn branch, which is a home with no commit of
+    /// its own rather than a reading that failed.
+    ///
+    fn resolve(self, git: &Git, refs: &[crate::git::refs::Ref]) -> Scope {
+        if let Self::Tips(tips) = self {
+            return Scope {
+                tips: tips.to_vec(),
+                walked: tips.iter().map(ToString::to_string).collect(),
+                not_walked: Vec::new(),
+            };
+        }
+        let mut named = Vec::new();
+        let mut tips = Vec::new();
+        for reference in refs {
+            if NOT_ITS_OWN.iter().any(|kind| reference.name.starts_with(kind)) {
+                continue;
+            }
+            tips.push(reference.oid.clone());
+            named.push(reference.name.clone());
+        }
+        if !checked_out(git.root(), &named) {
+            tips.extend(git.rev_parse(HEAD).ok());
+        }
+        tips.sort_unstable();
+        tips.dedup();
+        Scope {
+            tips,
+            walked: WALKED.iter().map(|&name| String::from(name)).collect(),
+            not_walked: NOT_ITS_OWN
+                .iter()
+                .map(|kind| {
+                    format!("{kind}* (a record of somewhere else, not this home's own work)")
+                })
+                .collect(),
         }
     }
+}
+
+/// What the record says a reading of a live home walked.
+///
+/// The namespaces rather than the names. A home holds one branch of its own and a copy of
+/// every branch the checkout has, so the names would be a list of the checkout's work
+/// under a heading about this home.
+const WALKED: [&str; 4] = ["HEAD", "refs/heads/*", "refs/tags/*", "refs/stash"];
+
+/// What a revision is called when it is the commit the home has checked out.
+const HEAD: &str = "HEAD";
+
+/// What `HEAD` holds when it names a branch rather than a commit.
+const SYMBOLIC: &str = "ref: ";
+
+/// Whether `HEAD` names one of the refs already read, which is the ordinary case.
+///
+/// `HEAD` is a file Git writes, and a repository checked out on a branch has one line in
+/// it naming that branch. So the ordinary home costs no process here: the commit is one
+/// this reading already has under the branch's own name. A detached `HEAD`, and a `HEAD`
+/// naming a ref this reading did not take, are asked of Git, because a checked-out commit
+/// no ref reaches is still a real copy and still this home's work.
+fn checked_out(repo: &Path, named: &[String]) -> bool {
+    let Some(git_dir) = crate::git::layout::dir(repo) else { return false };
+    let Ok(text) = std::fs::read_to_string(git_dir.join(HEAD)) else { return false };
+    let Some(reference) = text.trim().strip_prefix(SYMBOLIC) else { return false };
+    named.iter().any(|name| name == reference)
 }
 
 /// One home, and how much of it to read.
@@ -317,11 +423,21 @@ pub enum Copies {
         /// Which reading, and who took it.
         witness: Witness,
     },
-    /// Nothing on this machine read the remote and nothing here holds it, so whether it
-    /// survives is not known. Kept, because unknown is not safe evidence.
+    /// Nothing proved a copy of it, and a reading that could have is missing. Kept,
+    /// because unknown is not safe evidence.
     NotChecked {
-        /// Why the reading could not be made.
+        /// What this machine could say about the remote.
         witness: Witness,
+        /// The stores that hold it and could not be proved to hold the work behind it.
+        ///
+        /// Empty is the ordinary case: nothing here read the remote and no store on this
+        /// disk has the commit at all. A store in this list is the other case, and it is
+        /// the one a person can act on, so it is named rather than folded into the first.
+        ///
+        /// Defaulted on the way in, so that a group written by an older Nodal reads as
+        /// the first case rather than as a claim it never made.
+        #[serde(default)]
+        stores: Vec<Incomplete>,
     },
 }
 
@@ -349,7 +465,7 @@ impl Copies {
         match self {
             Self::OnlyHere { witness }
             | Self::RemoteProved { witness }
-            | Self::NotChecked { witness } => Some(witness),
+            | Self::NotChecked { witness, .. } => Some(witness),
             Self::SecondLocalCopy { .. } => None,
         }
     }
@@ -361,6 +477,34 @@ impl Copies {
     #[must_use]
     pub const fn survives(&self) -> bool {
         self.needs().is_none()
+    }
+
+    /// The disposition of a commit nothing checked and no store on this disk holds.
+    ///
+    /// The ordinary way one is made, and the one every caller outside this module wants:
+    /// a store that holds the commit is the other case, and it is made where the stores
+    /// are read ([`unchecked`]).
+    #[must_use]
+    pub const fn not_checked(witness: Witness) -> Self {
+        Self::NotChecked { witness, stores: Vec::new() }
+    }
+
+    /// The words a refusal is raised under, which name the store where there is one.
+    ///
+    /// The label alone says a reading was not made. A person refused over a store that is
+    /// on their own disk needs to know which store and which property it failed, or the
+    /// refusal is a wall. It is built from what the group already holds, so the one maker
+    /// of a verdict reads nothing to print it ([`kernel::judge`]).
+    #[must_use]
+    pub fn detail(&self, count: usize) -> String {
+        let mut said = format!("{} ({count})", self.label());
+        if let Self::NotChecked { stores, .. } = self {
+            for store in stores {
+                said.push_str("; ");
+                said.push_str(&store.because());
+            }
+        }
+        said
     }
 
     /// Why a reclaim would stop over it, when it would.
@@ -1411,7 +1555,9 @@ impl Assessment {
         let sample: Vec<Oid> =
             kept.iter().flat_map(|group| group.sample.clone()).take(SAMPLE).collect();
         let witness = match kept.first().map(|group| &group.copies) {
-            Some(Copies::OnlyHere { witness } | Copies::NotChecked { witness }) => witness.clone(),
+            Some(Copies::OnlyHere { witness } | Copies::NotChecked { witness, .. }) => {
+                witness.clone()
+            }
             _ => Witness::default(),
         };
         Some(Finding::Unpushed { count, sample, remotes: self.remotes.clone(), witness })
@@ -1465,28 +1611,6 @@ pub fn assess(input: &Input<'_>) -> Result<Assessment> {
     assessment.ranked(Timestamp::now());
     record_table(&mut assessment.reading, assessment.runtime.as_mut(), taken::PREFLIGHT);
     Ok(assessment)
-}
-
-impl Work<'_> {
-    /// What this reading walks, and what it therefore does not, for the evidence record.
-    ///
-    /// The second half is the honest one. A commit on a branch, a tag or a stash that the
-    /// walk does not reach is work the verdict says nothing about, and until it is walked
-    /// the record has to say so rather than let an empty `commits` list read as an empty
-    /// home. It is read off the reading itself and never written down twice: a widened
-    /// walk that left this behind would print a warning about refs it had just covered.
-    fn refs(self) -> (Vec<String>, Vec<String>) {
-        match self {
-            Self::Checkout => (
-                vec![String::from("HEAD")],
-                ["refs/heads/* not reached by HEAD", "refs/tags/*", "refs/stash"]
-                    .iter()
-                    .map(|&name| String::from(name))
-                    .collect(),
-            ),
-            Self::Tips(tips) => (tips.iter().map(ToString::to_string).collect(), Vec::new()),
-        }
-    }
 }
 
 /// The readings this assessment was not asked to make, each with the reason it was not.
@@ -1668,9 +1792,17 @@ fn measured(held: Held, fate: Fate, candidates: Vec<prune::Candidate>) -> Option
 /// The home's own commits, grouped by where else they live, the remotes it names, and
 /// every refused commit whose content a remote tip already holds.
 ///
-/// Three `rev-list` runs at worst, and each answers for the whole history at once. One
-/// of the three is the refusal and the other two are the dispositions, so a caller that
-/// did not ask for those takes the shorter path through [`refusing`] and pays for one.
+/// Two `rev-list` runs at worst, and each answers for the whole history at once. One is
+/// the refusal and the other fixes the denominator, so a caller that did not ask for the
+/// dispositions takes the shorter path through [`refusing`] and pays for one.
+///
+/// It was three. The third asked which commits no witnessed reading of the remote proved,
+/// over the same exclusion set as the refusal itself — the two became one set when a
+/// store's own remote-tracking refs stopped counting as a durable copy, because that is
+/// what the two sets differed by. What it fed was a group for the commits the checkout
+/// named under a ref nothing vouched for, and there are none of those by construction now.
+/// The reading is gone rather than restored: restoring it would mean counting a ref one
+/// `git fetch --prune` deletes as a second copy again.
 ///
 /// The first fixes the denominator: the commits reachable from `HEAD` that the project's
 /// own checkout does not reach from a branch, a tag or a stash of its own
@@ -1678,15 +1810,12 @@ fn measured(held: Held, fate: Fate, candidates: Vec<prune::Candidate>) -> Option
 /// rather than this unit's work, and grouping it would print ninety thousand commits
 /// under `remote_proved` and hide the three that matter.
 ///
-/// The second takes out what a witnessed reading of the remote proves. With no witness it
-/// takes out nothing, because a home's own remote-tracking refs are the record of a push
-/// it made and not a reading of anything ([`witness`]).
+/// The second takes out what a witnessed reading of the remote proves, on top of that.
+/// With no witness it takes out nothing, because a home's own remote-tracking refs are the
+/// record of a push it made and not a reading of anything ([`witness`]).
 ///
-/// The third takes out what the checkout holds without a ref of its own on it: a commit
-/// under an unvouched-for `origin/*`, or one fetched by identifier and named by nothing.
-///
-/// What survives all three is a commit this machine cannot find a second copy of, and how
-/// it is reported turns on whether the remote question was ever asked ([`unreached`]).
+/// What survives both is a commit this machine cannot find a second copy of, and how it is
+/// reported turns on whether the remote question was ever asked ([`unreached`]).
 fn history(
     git: &Git,
     input: &Input<'_>,
@@ -1694,30 +1823,42 @@ fn history(
     reading: &mut Reading,
 ) -> Result<(Vec<CommitGroup>, Vec<String>, Vec<SameContent>)> {
     let remotes = git.remotes()?;
-    let found = witness::elsewhere(input.home, input.checkout);
+    // One `for-each-ref` of the home, and two readings drawn off it. The assessed set is
+    // the refs this home keeps of its own accord, and the remote question is asked of the
+    // refs it names under `origin`; both are in one listing, and asking twice would cost a
+    // process per home to learn what the first answer held.
+    let refs = git.all_refs()?;
+    let found = witness::elsewhere(input.home, input.checkout, &refs);
     let checkout = input.checkout.map(Checkout::path);
-    (reading.refs.walked, reading.refs.not_walked) = input.work.refs();
+    let work = input.work.resolve(git, &refs);
+    reading.refs.walked.clone_from(&work.walked);
+    reading.refs.not_walked.clone_from(&work.not_walked);
     if !input.dispositions {
-        let refused = refusing(git, input, &found, &remotes, reading)?;
+        let unproved = git.among_outside(&work.tips, &found.tips())?;
+        reading.refs.commits = unproved.len();
+        if unproved.is_empty() {
+            reading.stores = unasked(input, NOTHING_TO_LOOK_FOR);
+            return Ok((Vec::new(), remotes, Vec::new()));
+        }
+        let refused = refusing(input, unproved, &found, &remotes, reading);
         return Ok((refused, remotes, Vec::new()));
     }
-    let ours = input.work.outside(git, &found.own)?;
+    let ours = git.among_outside(&work.tips, &found.own)?;
     reading.refs.commits = ours.len();
     if ours.is_empty() {
         reading.stores = unasked(input, NOTHING_TO_LOOK_FOR);
         return Ok((Vec::new(), remotes, Vec::new()));
     }
     let witness = Witness::of(&remotes, &found);
-    let off_remote = input.work.outside(git, &union(&found.own, &found.remote))?;
-    let unproved = input.work.outside(git, &found.tips())?;
-    let proved = difference(&ours, &off_remote);
-    let second = difference(&off_remote, &unproved);
-    let (held, only) = local_copies(input.home, checkout, input.siblings, unproved, reading);
-    let content = same_content(git, &only, notes);
+    let unproved = git.among_outside(&work.tips, &found.tips())?;
+    let proved = difference(&ours, &unproved);
+    let copies = local_copies(input.home, checkout, input.siblings, unproved, reading);
+    let content = same_content(git, &copies.only, notes);
     let mut groups = Vec::new();
     groups.extend(commit_group(Copies::RemoteProved { witness: witness.clone() }, proved));
-    groups.extend(second_groups(checkout, second, held));
-    groups.extend(commit_group(unreached(&witness), only));
+    groups.extend(held_groups(copies.held));
+    groups.extend(commit_group(unchecked(&witness, copies.unread), copies.unchecked));
+    groups.extend(commit_group(unreached(&witness), copies.only));
     Ok((groups, remotes, content))
 }
 
@@ -1799,24 +1940,19 @@ fn rewritten(git: &Git, kept: &[Oid]) -> Result<Vec<SameContent>> {
 /// what a joint question needs and the one thing a reading that discarded them could not
 /// supply.
 fn refusing(
-    git: &Git,
     input: &Input<'_>,
+    unproved: Vec<Oid>,
     found: &witness::Elsewhere,
     remotes: &[String],
     reading: &mut Reading,
-) -> Result<Vec<CommitGroup>> {
-    let unproved = input.work.outside(git, &found.tips())?;
-    reading.refs.commits = unproved.len();
-    if unproved.is_empty() {
-        reading.stores = unasked(input, NOTHING_TO_LOOK_FOR);
-        return Ok(Vec::new());
-    }
+) -> Vec<CommitGroup> {
     let checkout = input.checkout.map(Checkout::path);
-    let (held, only) = local_copies(input.home, checkout, input.siblings, unproved, reading);
+    let read = local_copies(input.home, checkout, input.siblings, unproved, reading);
     let witness = Witness::of(remotes, found);
-    let mut groups = held_groups(held);
-    groups.extend(commit_group(unreached(&witness), only));
-    Ok(groups)
+    let mut groups = held_groups(read.held);
+    groups.extend(commit_group(unchecked(&witness, read.unread), read.unchecked));
+    groups.extend(commit_group(unreached(&witness), read.only));
+    groups
 }
 
 /// How the commits nothing proved are reported: as only here, or as not checked.
@@ -1828,9 +1964,20 @@ fn refusing(
 /// machine did not earn.
 fn unreached(witness: &Witness) -> Copies {
     if witness.unchecked() {
-        return Copies::NotChecked { witness: witness.clone() };
+        return Copies::NotChecked { witness: witness.clone(), stores: Vec::new() };
     }
     Copies::OnlyHere { witness: witness.clone() }
+}
+
+/// How the commits a store holds and could not vouch for are reported.
+///
+/// Never as only here, whatever the remote reading said. A directory on this disk has
+/// these commits, so "only here" would be a claim this machine did not earn; and it could
+/// not be proved to hold the work, so a second copy would be the false safe the guard
+/// exists to remove. What is true is that nobody checked, and the stores are named on the
+/// group so the report can say which directory and which property.
+fn unchecked(witness: &Witness, stores: Vec<Incomplete>) -> Copies {
+    Copies::NotChecked { witness: witness.clone(), stores }
 }
 
 /// Split the commits no remote reading proved into the ones another object store holds
@@ -1853,10 +2000,11 @@ fn local_copies(
     siblings: &[PathBuf],
     unproved: Vec<Oid>,
     reading: &mut Reading,
-) -> (Vec<(PathBuf, Vec<Oid>)>, Vec<Oid>) {
+) -> Found {
     let itself = paths::resolve(home);
     let mut left = unproved;
-    let mut found = Vec::new();
+    let mut held = Vec::new();
+    let mut doubtful: Vec<(Incomplete, BTreeSet<Oid>)> = Vec::new();
     for (store, role) in stores(checkout, siblings) {
         if left.is_empty() {
             reading.stores.push(asked(store, role, Answered::NotAsked, ACCOUNTED_FOR));
@@ -1866,19 +2014,79 @@ fn local_copies(
             reading.stores.push(asked(store, role, Answered::NotAsked, ITSELF));
             continue;
         }
-        let Some(holds) = holds_of(store, &left) else {
+        if let Some(lacking) = complete::admits(store, home) {
+            // Its own reading, because nothing has asked this store anything yet. The row
+            // names the commits it has, and no commit moves between the two dispositions
+            // in between: the set is read once, here, for the row alone.
+            let has = Git::at(store).stores(&left).unwrap_or_default();
+            doubtful.extend(doubted(store, lacking, has, reading, role));
+            continue;
+        }
+        let Some(reaches) = holds_of(store, &left) else {
             reading.stores.push(asked(store, role, Answered::No, UNREADABLE));
             continue;
         };
-        reading.stores.push(asked(store, role, Answered::Yes, ""));
-        if holds.is_empty() {
+        if reaches.reached.is_empty() {
+            reading.stores.push(asked(store, role, Answered::Yes, ""));
             continue;
         }
-        let (held, rest) = left.into_iter().partition(|oid| holds.contains(oid));
-        found.push((store.to_path_buf(), held));
+        // The object walk is over what the store keeps of its own accord, and the row a
+        // failure writes names every commit the store has — which the one reading above
+        // already answered, so nothing asks it again.
+        if let Some(lacking) = complete::incomplete(store, home, &reaches.reached) {
+            doubtful.extend(doubted(store, lacking, reaches.stored, reading, role));
+            continue;
+        }
+        let holds: BTreeSet<Oid> = reaches.reached.into_iter().collect();
+        reading.stores.push(asked(store, role, Answered::Yes, ""));
+        let (found, rest) = left.into_iter().partition(|oid| holds.contains(oid));
+        held.push((store.to_path_buf(), found));
         left = rest;
     }
-    (found, left)
+    let unread: Vec<Incomplete> = doubtful
+        .iter()
+        .filter(|(_, commits)| left.iter().any(|oid| commits.contains(oid)))
+        .map(|(store, _)| store.clone())
+        .collect();
+    let doubted: BTreeSet<&Oid> = doubtful.iter().flat_map(|(_, commits)| commits.iter()).collect();
+    let (unchecked, only): (Vec<Oid>, Vec<Oid>) =
+        left.into_iter().partition(|oid| doubted.contains(oid));
+    Found { held, unread, unchecked, only }
+}
+
+/// What every store on this machine answered about the commits nothing else proved.
+struct Found {
+    /// Each store that holds a commit and was proved to hold the work behind it.
+    held: Vec<(PathBuf, Vec<Oid>)>,
+    /// Each store that holds a commit and could not be proved to hold the work.
+    unread: Vec<Incomplete>,
+    /// The commits only those stores have, which are the ones nobody checked.
+    unchecked: Vec<Oid>,
+    /// The commits no store on this machine has at all.
+    only: Vec<Oid>,
+}
+
+/// Record a store that may not vouch, and say which of the commits it has anyway.
+///
+/// The commits are read out of it even though it proves nothing, and that is the whole
+/// point of the reading. A store that holds a commit and cannot produce the work is a
+/// different answer from a store that never had it, and a person owed a refusal is owed
+/// the one that names a directory on their own disk.
+///
+/// The commits are not taken out of what is left, so a store later in the order may still
+/// prove them. First hit wins among the stores that can vouch, and a store that cannot
+/// never takes a commit away from one that can.
+fn doubted(
+    store: &Path,
+    lacking: Lacking,
+    has: Vec<Oid>,
+    reading: &mut Reading,
+    role: reading::Role,
+) -> Option<(Incomplete, BTreeSet<Oid>)> {
+    let incomplete = Incomplete { store: store.to_path_buf(), lacking };
+    reading.stores.push(asked(store, role, Answered::No, incomplete.lacking.because()));
+    let has: BTreeSet<Oid> = has.into_iter().collect();
+    (!has.is_empty()).then_some((incomplete, has))
 }
 
 /// Why a store was not asked: every commit was already accounted for by the time its
@@ -1933,9 +2141,8 @@ fn unasked(input: &Input<'_>, why: &str) -> Vec<Store> {
 /// with nothing. That is the stricter reading and it is the safe direction: a store
 /// nobody could read has proved no second copy of anything, and the commit stays in the
 /// group a refusal is raised over.
-fn holds_of(store: &Path, commits: &[Oid]) -> Option<BTreeSet<Oid>> {
-    let git = Git::open(store).ok()?;
-    git.held(commits).map(|held| held.into_iter().collect()).ok()
+fn holds_of(store: &Path, commits: &[Oid]) -> Option<Reaches> {
+    Git::open(store).ok()?.owned(commits).ok()
 }
 
 /// The members of `all` that `fewer` does not have, in the order `all` has them.
@@ -1951,27 +2158,6 @@ fn commit_group(copies: Copies, commits: Vec<Oid>) -> Option<CommitGroup> {
     }
     let count = commits.len();
     Some(CommitGroup { copies, count, sample: commits.into_iter().take(SAMPLE).collect() })
-}
-
-/// One group per object store on this machine that holds a second copy.
-///
-/// The checkout's own group carries the commits it names under a ref nothing vouched for
-/// as well as the ones its store was found to hold, because both are the same claim
-/// about the same repository and two rows would read as two findings.
-fn second_groups(
-    checkout: Option<&Path>,
-    named_by_checkout: Vec<Oid>,
-    mut held: Vec<(PathBuf, Vec<Oid>)>,
-) -> Vec<CommitGroup> {
-    if let Some(checkout) = checkout
-        && !named_by_checkout.is_empty()
-    {
-        match held.iter_mut().find(|(store, _)| store == checkout) {
-            Some((_, commits)) => *commits = union(commits, &named_by_checkout),
-            None => held.insert(0, (checkout.to_path_buf(), named_by_checkout)),
-        }
-    }
-    held_groups(held)
 }
 
 /// One group per object store that was found to hold a second copy.
@@ -2214,14 +2400,14 @@ mod tests {
         let by = vec![checkout.clone()];
         for safe in [
             Copies::SecondLocalCopy { held_by: checkout },
-            Copies::RemoteProved { witness: Witness::Checked { by: by.clone() } },
+            Copies::RemoteProved { witness: Witness::checked(by.clone()) },
         ] {
             assert!(safe.survives(), "{safe:?}");
             assert!(goes_ahead(&assessed(vec![commits(safe)], Vec::new())));
         }
         for kept in [
             Copies::OnlyHere { witness: Witness::NoRemote },
-            Copies::NotChecked { witness: Witness::Unchecked },
+            Copies::not_checked(Witness::Unchecked),
         ] {
             assert!(!kept.survives(), "{kept:?}");
             assert!(!goes_ahead(&assessed(vec![commits(kept)], Vec::new())));
@@ -2323,7 +2509,7 @@ mod tests {
     #[test]
     fn the_reasons_are_ranked_and_the_top_one_is_the_first() {
         let assessment = assessed(
-            vec![commits(Copies::NotChecked { witness: Witness::Unchecked })],
+            vec![commits(Copies::not_checked(Witness::Unchecked))],
             vec![paths(Held::Uncommitted)],
         );
         assert_eq!(assessment.verdict(Vec::new(), at()).top(), Needs::UniqueLoss);
@@ -2389,7 +2575,7 @@ mod tests {
         let mut assessment = assessed(
             vec![
                 commits(Copies::RemoteProved { witness: Witness::NoRemote }),
-                commits(Copies::NotChecked { witness: Witness::Unchecked }),
+                commits(Copies::not_checked(Witness::Unchecked)),
             ],
             vec![paths(Held::Untracked), paths(Held::Generated)],
         );

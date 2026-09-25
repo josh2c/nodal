@@ -132,6 +132,19 @@ pub enum Witness {
     Checked {
         /// The repositories whose reading was used.
         by: Vec<PathBuf>,
+        /// The branches that reading is older than, and so says nothing about.
+        ///
+        /// A reading covers the branches of a remote as they were when the fetch was made.
+        /// A branch this home wrote its own record of after that fetch is outside it: a
+        /// branch absent from such a reading is one that did not exist yet, and a branch
+        /// present in it stands at a commit from before the work. Either way the reading
+        /// answers for the remote and not for this work, so the branch is named and the
+        /// person is told what to run.
+        ///
+        /// Defaulted on the way in, so that a finding written by an older Nodal reads as
+        /// a reading with nothing to report rather than as a claim it never made.
+        #[serde(default)]
+        unobserved: Vec<String>,
     },
     /// The remote itself is on this machine and was read. A project with no remote of
     /// its own is cloned from the person's checkout, so the checkout is the remote, and
@@ -163,16 +176,27 @@ impl Witness {
     pub fn because(&self) -> Option<String> {
         match self {
             Self::NoRemote | Self::Direct { .. } => None,
-            Self::Checked { by } => Some(format!(
-                "the newest reading of the remote here is {}, and it does not reach them",
-                names(by.iter().map(|path| path.display().to_string()))
-            )),
+            Self::Checked { by, unobserved } => {
+                let read = format!(
+                    "the newest reading of the remote here is {}, and it does not reach them",
+                    names(by.iter().map(|path| path.display().to_string()))
+                );
+                if unobserved.is_empty() {
+                    return Some(read);
+                }
+                Some(format!(
+                    "{read}; that reading was taken before this home wrote its own record of \
+                     {}, so for those branches it is the older one; fetch in the checkout and \
+                     read again",
+                    names(unobserved.iter().cloned())
+                ))
+            }
             Self::Unchecked => Some(String::from(UNREAD)),
         }
     }
 
-    /// Whether nothing on this machine read the remote at all, which is the strictest of
-    /// the four and the default.
+    /// Whether this reading leaves the remote question open, which is the strictest
+    /// reading of the four and the default.
     ///
     /// The line every report draws between a commit that is only here and a commit
     /// nothing could check: [`crate::lifecycle::assess`] draws it to choose the
@@ -185,8 +209,15 @@ impl Witness {
     /// says what it last saw, so a report that calls such a commit only here says on the
     /// next line which reading that rests on ([`Witness::because`]).
     #[must_use]
-    pub const fn unchecked(&self) -> bool {
-        matches!(self, Self::Unchecked)
+    pub fn unchecked(&self) -> bool {
+        match self {
+            Self::Unchecked => true,
+            // A reading that covered some branches of a remote and not others cannot
+            // carry "only here" about work on one it did not cover. The verdict is the
+            // same either way; the word a person reads is not.
+            Self::Checked { unobserved, .. } => !unobserved.is_empty(),
+            Self::Direct { .. } | Self::NoRemote => false,
+        }
     }
 
     /// Whether this reading settled the remote question, rather than leaving it open.
@@ -204,9 +235,18 @@ impl Witness {
     #[must_use]
     pub fn by(&self) -> &[PathBuf] {
         match self {
-            Self::Checked { by } | Self::Direct { by } => by,
+            Self::Checked { by, .. } | Self::Direct { by } => by,
             Self::Unchecked | Self::NoRemote => &[],
         }
+    }
+
+    /// A reading of the remote that had nothing it could not observe.
+    ///
+    /// The ordinary shape, and the one every caller outside the assessment wants. The
+    /// other is made where the observations are read ([`Witness::of`]).
+    #[must_use]
+    pub const fn checked(by: Vec<PathBuf>) -> Self {
+        Self::Checked { by, unobserved: Vec::new() }
     }
 
     /// Which case this is, for a home with these remotes and this reading of them.
@@ -225,7 +265,7 @@ impl Witness {
         if found.direct {
             return Self::Direct { by: found.witnesses.clone() };
         }
-        Self::Checked { by: found.witnesses.clone() }
+        Self::Checked { by: found.witnesses.clone(), unobserved: found.unobserved.clone() }
     }
 }
 
@@ -388,7 +428,7 @@ mod tests {
     /// refusal names the reading rather than claiming the remote is empty.
     #[test]
     fn a_reading_that_does_not_reach_a_commit_names_the_reading() {
-        let checked = unpushed(Witness::Checked { by: vec![PathBuf::from("/w/project")] });
+        let checked = unpushed(Witness::checked(vec![PathBuf::from("/w/project")]));
         assert_eq!(checked.label(), "commits no current reading proves a remote has");
         let described = checked.describe();
         assert!(described.contains("/w/project"), "{described}");

@@ -302,6 +302,7 @@ fn a_commit_a_sibling_has_under_no_ref_is_only_here() {
     let beside = sibling(&machine);
     git(&beside, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD"]);
     git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+    nodal_safety::git::fetched_later(&machine.source);
     assert_eq!(git(&beside, &["cat-file", "-t", &tip]), "commit", "the sibling has the object");
 
     let answer = check(&machine, SLUG);
@@ -327,6 +328,7 @@ fn garbage_collection_in_a_sibling_moves_no_verdict() {
     let beside = sibling(&machine);
     git(&beside, &["fetch", "--quiet", home.to_str().unwrap(), "HEAD"]);
     git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+    nodal_safety::git::fetched_later(&machine.source);
 
     let before = check(&machine, SLUG);
     git(&beside, &["gc", "--quiet", "--prune=now"]);
@@ -416,16 +418,21 @@ fn a_commit_a_current_reading_reaches_is_proved_on_the_remote() {
 
 /// Three ways a checkout fails to answer for a remote, and one answer to all of them.
 ///
-/// It read the remote before the home pushed; it fetches one branch and so cannot say
-/// another is gone; or nothing here ever read it. None of the three is a reading of the
-/// remote as it is now, so the commits are `not_checked` — which is neither `only_here`,
-/// a claim this machine did not earn, nor safe.
+/// It read the remote before the home pushed, so its record of that fetch names every
+/// branch the remote had then and not this one; it fetches one branch and so cannot say
+/// another is gone; or nothing here ever read it. None of the three answers for this
+/// work, so the commits are `not_checked` — which is neither `only_here`, a claim this
+/// machine did not earn, nor safe.
+///
+/// The three differ in what they may say about themselves, and the row says which. The
+/// first took a real reading of the remote and it did not cover this branch, so it is a
+/// checked reading with the branch named beside it; the other two read nothing at all.
 #[test]
 fn a_witness_that_cannot_answer_leaves_the_commits_not_checked() {
-    for (case, prepare) in [
-        ("an older reading", older as fn(&Machine)),
-        ("a partial reading", partial),
-        ("no reading at all", |_: &Machine| {}),
+    for (case, prepare, reading) in [
+        ("an older reading", older as fn(&Machine), "checked"),
+        ("a partial reading", partial, "unchecked"),
+        ("no reading at all", |_: &Machine| {}, "unchecked"),
     ] {
         let machine = machine();
         prepare(&machine);
@@ -436,7 +443,7 @@ fn a_witness_that_cannot_answer_leaves_the_commits_not_checked() {
         assert_eq!(count(commits(&answer, "not_checked")), 1, "{case}: {answer:#}");
         assert_eq!(count(commits(&answer, "only_here")), 0, "{case}: a claim it did not earn");
         let witness = &commits(&answer, "not_checked").unwrap()["copies"]["witness"];
-        assert_eq!(witness["kind"], Value::from("unchecked"), "{case}");
+        assert_eq!(witness["kind"], Value::from(reading), "{case}");
         assert_eq!(answer["reasons"][0]["needs"], Value::from("unknown_evidence"), "{case}");
 
         reclaim_also_refuses(&machine, SLUG, "commits no current reading proves a remote has (1)");

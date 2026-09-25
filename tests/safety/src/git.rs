@@ -101,6 +101,29 @@ pub fn try_git(directory: impl AsRef<Path>, args: &[&str]) -> Output {
     command(directory.as_ref(), args).output().expect("git runs")
 }
 
+/// Date the record of this repository's last fetch well after everything before it.
+///
+/// Git writes `FETCH_HEAD` in whole seconds, and a property that pushes and then fetches
+/// does both in one. A reading that concludes the remote has **not** got a branch rests
+/// on that reading alone, with no commit to check it against, so Nodal asks for the two
+/// records to be in a definite order and reports the branch as unobserved where they are
+/// not. A property that left the order to the clock would assert its rule only when the
+/// second happened to turn over between the two commands.
+///
+/// So the order is stated. This is the same record a fetch a minute later would leave.
+///
+/// # Panics
+/// When the repository has no record of a fetch to date.
+pub fn fetched_later(repo: impl AsRef<Path>) {
+    let when = std::time::SystemTime::now() + std::time::Duration::from_secs(600);
+    let record = repo.as_ref().join(".git/FETCH_HEAD");
+    let handle = std::fs::File::options()
+        .write(true)
+        .open(&record)
+        .unwrap_or_else(|why| panic!("{} has no record of a fetch: {why}", record.display()));
+    handle.set_times(std::fs::FileTimes::new().set_modified(when)).expect("the record is dated");
+}
+
 /// A repository with one branch and this suite's identity, and nothing committed yet.
 ///
 /// # Panics

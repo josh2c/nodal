@@ -269,11 +269,12 @@ fn a_ref_naming_a_commit_its_own_store_lost_vouches_for_nothing() {
     intact(&machine, &home, &tip);
 }
 
-/// Being the repository a person usually fetches in is not a reading of the remote.
+/// Being the repository a person usually fetches in is not a reading of the branch.
 ///
-/// The checkout read `origin` before the home pushed, so it has never seen the branch
-/// the home wrote. It may not be called the newest reading of that remote, and the
-/// refusal has to say that nothing here read it rather than name a reading it does have.
+/// The checkout read `origin` before the home pushed, so its last fetch wrote down every
+/// branch the remote had then and this branch was not one of them. The reading is a real
+/// reading and it is not a reading of this work, and the refusal names the branch rather
+/// than saying something vague about the repository.
 #[test]
 fn a_checkout_that_has_not_read_the_remote_since_the_push_is_not_a_witness() {
     let machine = machine();
@@ -284,8 +285,8 @@ fn a_checkout_that_has_not_read_the_remote_since_the_push_is_not_a_witness() {
     assert!(!refused.status.success(), "an older reading answered for the remote");
     let told = stderr(&refused);
     assert!(told.contains("commits no current reading proves a remote has (1)"), "{told}");
-    assert!(told.contains("nothing here read the remote to check them"), "{told}");
-    assert!(!told.contains("the newest reading of the remote here"), "{told}");
+    assert!(told.contains(TOPIC), "the refusal does not name the branch: {told}");
+    assert!(told.contains("it is the older one"), "{told}");
     intact(&machine, &home, &tip);
 }
 
@@ -318,4 +319,180 @@ fn merged_and_due(machine: &Machine, slug: &str) {
     let merged = units::update_status(store.conn(), unit.id, UnitStatus::Merged, Timestamp::now())
         .expect("the unit is moved to merged");
     assert!(merged, "no row was moved to merged");
+}
+
+/// The ordinary shape after a pull request merges, and the one this file was missing.
+///
+/// A host deletes the branch when the request merges. The person then pulls, which is a
+/// fetch without `--prune` by default, so the checkout keeps `refs/remotes/origin/topic`
+/// over a branch the remote has not got. The old reading took that ref as the newest
+/// reading of the remote and called the only copy of the commit proved.
+///
+/// The record Git writes tells the two apart. `FETCH_HEAD` lists every ref the last fetch
+/// saw, and a branch the remote dropped is not in it. That is a reading and not a gap: the
+/// fetch asked the remote for its branches and this was not one of them. So the commit is
+/// only here, whatever the tracking ref still names.
+#[test]
+fn a_branch_the_last_fetch_did_not_see_is_not_proved_by_a_ref_it_left() {
+    let machine = machine();
+    let (home, tip) = pushed(&machine, SLUG);
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+    git(machine.origin(), &["update-ref", "-d", &format!("refs/heads/{TOPIC}")]);
+    git(&machine.source, &["fetch", "--quiet", "origin"]);
+    nodal_safety::git::fetched_later(&machine.source);
+    assert_eq!(
+        git(&machine.source, &["rev-parse", &format!("refs/remotes/origin/{TOPIC}")]),
+        tip,
+        "the fetch pruned the ref, so this asserts nothing about a stale one"
+    );
+
+    let refused = machine.nodal(&["reclaim", SLUG]);
+    assert!(!refused.status.success(), "a stale ref proved the remote: {}", stdout(&refused));
+    let told = stderr(&refused);
+    assert!(told.contains(&tip[..8]), "the refusal does not name the commit: {told}");
+    assert!(told.contains("only here"), "the reading did not settle it: {told}");
+    intact(&machine, &home, &tip);
+}
+
+/// A collection is not a reading of a remote.
+///
+/// `heard` took the newest of `FETCH_HEAD`, `packed-refs` and `refs/remotes`, and `git
+/// gc`, `git pack-refs` and `git maintenance` all rewrite `packed-refs` with no fetch.
+/// Git runs a collection after many ordinary commands, so a checkout whose last real
+/// fetch was a month ago became the newest reading of the remote over a command that
+/// reached nothing. `packed-refs` is out of the reading for that reason, and the verdict
+/// is the same on both sides of the collection.
+#[test]
+fn collecting_garbage_in_the_checkout_makes_no_witness() {
+    let machine = machine();
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+    let (home, tip) = stranded(&machine, SLUG);
+
+    let before = check(&machine, SLUG);
+    git(&machine.source, &["gc", "--quiet", "--prune=now"]);
+    git(&machine.source, &["pack-refs", "--all"]);
+    let after = check(&machine, SLUG);
+
+    assert_eq!(before["commits"], after["commits"], "the collection moved the reading");
+    assert_eq!(after["safe_to_reclaim"], serde_json::Value::Bool(false), "{after:#}");
+    intact(&machine, &home, &tip);
+}
+
+/// The preflight for one unit, as the value a property that compares two readings uses.
+fn check(machine: &Machine, slug: &str) -> serde_json::Value {
+    let asked = machine.nodal(&["reclaim", slug, "--check", "--json"]);
+    serde_json::from_str(&nodal_safety::answer(&asked)).expect("--check --json is one document")
+}
+
+/// A store's own reading of a remote is no durable second copy of anything.
+///
+/// The checkout holds the commit under `refs/remotes/origin/topic` and under nothing
+/// else. That ref is the checkout's record of a fetch, and one `git fetch --prune` in
+/// the checkout deletes it, exactly as a `git gc` deletes an object under no ref. A
+/// reading that counted it rested a fourteen-day trash timer on the weakest ref there
+/// is. What a second copy needs is a ref the store keeps of its own accord.
+#[test]
+fn a_commit_a_store_holds_only_under_a_tracking_ref_is_no_second_copy() {
+    let machine = machine();
+    let (home, tip) = pushed(&machine, SLUG);
+    git(&machine.source, &["fetch", "--quiet", "origin"]);
+    git(machine.origin(), &["update-ref", "-d", &format!("refs/heads/{TOPIC}")]);
+    git(&machine.source, &["fetch", "--quiet", "origin"]);
+    assert_eq!(git(&machine.source, &["cat-file", "-t", &tip]), "commit", "no object, no test");
+
+    let refused = machine.nodal(&["reclaim", SLUG]);
+    assert!(!refused.status.success(), "a tracking ref was a copy: {}", stdout(&refused));
+    intact(&machine, &home, &tip);
+
+    git(&machine.source, &["branch", "--quiet", "keep", &tip]);
+    let allowed = machine.nodal(&["reclaim", SLUG]);
+    assert!(allowed.status.success(), "a branch of its own is a copy: {}", stderr(&allowed));
+}
+
+/// A remote that is a server, which is what every real remote is.
+///
+/// Every other property in this file has a remote that is a directory on this disk,
+/// because a property cannot reach a server. That hid a reduction applied twice. The
+/// configured url was reduced to `host/path` by the relation, and the reading of
+/// `FETCH_HEAD` reduced it again — and a reducer reads a schemeless `host/path` as a
+/// filesystem path and puts a slash in front of it. The two spellings never compared
+/// equal, so no branch of any `ssh` or `https` remote was ever observed, every such
+/// branch read as not checked, and a reclaim refused a home whose work was on the remote.
+///
+/// The server is never contacted. What proves a commit is the record the last fetch left
+/// behind, and this property writes that record exactly as Git writes it. The url is in a
+/// reserved domain, so a reading that tried to reach it would fail rather than pass.
+#[test]
+fn a_remote_that_is_a_server_is_observed_from_the_record_of_the_fetch() {
+    for url in ["git@example.invalid:owner/repo.git", "https://example.invalid/owner/repo.git"] {
+        let machine = machine();
+        let (home, tip) = pushed(&machine, SLUG);
+        git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+
+        // Both repositories name the server now. The checkout keeps the objects and the
+        // reading of that remote it already has; only the spelling of the url changes.
+        git(&home, &["remote", "set-url", "origin", url]);
+        git(&machine.source, &["remote", "set-url", "origin", url]);
+        observed(&machine.source, &tip, url);
+
+        let answer = check(&machine, SLUG);
+        assert_eq!(answer["safe_to_reclaim"], serde_json::Value::Bool(true), "{url}: {answer:#}");
+        let proved = answer["commits"]
+            .as_array()
+            .and_then(|groups| {
+                groups.iter().find(|group| group["copies"]["kind"] == "remote_proved")
+            })
+            .unwrap_or_else(|| panic!("{url}: no commit is proved on the remote: {answer:#}"));
+        assert_eq!(proved["count"], 1, "{url}: {answer:#}");
+        assert!(home.is_dir(), "{url}: the check moved the home");
+    }
+}
+
+/// Write the record the last fetch of `url` left, naming `tip` on `TOPIC`.
+///
+/// One line per ref the fetch saw, in the shape Git writes: the commit, whether it would
+/// be merged, and what was fetched from where. The record is then dated after the push it
+/// followed, because a reading older than the work answers for an older state of it.
+fn observed(checkout: &Path, tip: &str, url: &str) {
+    let record = checkout.join(".git/FETCH_HEAD");
+    std::fs::write(&record, format!("{tip}\t\tbranch '{TOPIC}' of {url}\n")).unwrap();
+    nodal_safety::git::fetched_later(checkout);
+}
+
+/// A fetch of one branch by name asked about nothing else, and says nothing about the rest.
+///
+/// `git fetch origin main` writes a record naming `main` alone, whatever the configured
+/// refspec covers. An absence in that record is therefore not an absence on the remote, and
+/// reading it as one claimed a firm loss over a branch nobody had asked about. The ref tells
+/// the two apart: a fetch that pruned would have deleted `origin/topic`, and this one left
+/// it standing. The branch is not checked, and the row names it.
+#[test]
+fn a_fetch_of_one_branch_by_name_answers_for_no_other_branch() {
+    let machine = machine();
+    let (home, tip) = pushed(&machine, SLUG);
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+
+    // The person fetches one branch. The record now names it alone, and every other
+    // remote-tracking ref of the checkout is where it was.
+    git(&machine.source, &["fetch", "--quiet", "origin", "main"]);
+    nodal_safety::git::fetched_later(&machine.source);
+    assert_eq!(
+        git(&machine.source, &["rev-parse", &format!("refs/remotes/origin/{TOPIC}")]),
+        tip,
+        "the fetch pruned the ref, so this asserts nothing about a narrow one"
+    );
+
+    let answer = check(&machine, SLUG);
+    assert_eq!(answer["safe_to_reclaim"], serde_json::Value::Bool(false), "{answer:#}");
+    let kinds: Vec<&str> = answer["commits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|group| group["copies"]["kind"].as_str().unwrap_or_default())
+        .collect();
+    assert!(kinds.contains(&"not_checked"), "a narrow fetch settled the branch: {answer:#}");
+    assert!(!kinds.contains(&"only_here"), "it claimed a loss it did not read: {answer:#}");
+    let told = stderr(&machine.nodal(&["reclaim", SLUG]));
+    assert!(told.contains(TOPIC), "the refusal does not name the branch: {told}");
+    intact(&machine, &home, &tip);
 }

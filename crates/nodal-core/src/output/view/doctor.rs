@@ -36,7 +36,7 @@ const HERE: [&str; 5] = ["what", "kind", "size", "state", "intent"];
 const ELSEWHERE: [&str; 3] = ["what", "kind", "size"];
 
 /// The columns of the loud bucket of the branch section.
-const UNPUSHED: [&str; 4] = ["branch", "unpushed", "last commit", "upstream"];
+const UNPUSHED: [&str; 4] = ["branch", "commits", "last commit", "upstream"];
 
 /// The columns the safe buckets print under `--all`.
 const SAFE: [&str; 3] = ["branch", "last commit", "where its commits are"];
@@ -155,8 +155,18 @@ impl Finding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Standing {
-    /// This checkout has not seen the commits of this branch on any remote. The only bucket
-    /// that holds work a machine could lose.
+    /// A reading of the remote itself does not reach the commits of this branch. The
+    /// loudest bucket there is: the work is here and the remote has not got it.
+    ///
+    /// Only a remote that is a directory on this machine earns this word
+    /// ([`crate::doctor::unique::read_directly`]). What such a remote does not hold, the
+    /// remote does not hold.
+    OnlyHere,
+    /// This checkout has not seen the commits of this branch on any remote.
+    ///
+    /// The same bucket as [`Standing::OnlyHere`] for a person reading the table, and a
+    /// weaker sentence: nothing here read the remote, so what is stated is what this
+    /// checkout has seen rather than what a remote has.
     Unpushed,
     /// The default branch does not hold it, and a remote-tracking ref of this checkout
     /// reaches every commit of it.
@@ -166,6 +176,8 @@ pub enum Standing {
     /// bucket. The word says what the reading is worth; what a removal rests on is a witness
     /// ([`crate::doctor::unique::believed`]), and this report removes nothing.
     SeenOnRemote,
+    /// A reading of the remote itself reaches every commit of it.
+    OnRemote,
     /// The default branch already holds it.
     Merged,
 }
@@ -175,7 +187,9 @@ impl Standing {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
+            Self::OnlyHere => "only here",
             Self::Unpushed => "unpushed",
+            Self::OnRemote => "on the remote",
             Self::SeenOnRemote => "seen on a remote",
             Self::Merged => "merged",
         }
@@ -213,6 +227,18 @@ pub struct Branches {
     /// Every branch, loudest first.
     #[serde(default)]
     pub rows: Vec<BranchRow>,
+    /// Whether a reading of the remote itself stood behind the table.
+    ///
+    /// Every row's word rests on it, and so does the sentence the table ends on when it
+    /// found nothing. A reading of this checkout's own refs may say it has seen every commit
+    /// on a remote; only a reading of the remote may say the remote has them.
+    ///
+    /// Each row still carries its own word rather than recomputing one from this
+    /// ([`Standing`]), because the word is a fact of the row: the worktree section prints
+    /// rows of several repositories, and the reading that stood behind each is that
+    /// repository's.
+    #[serde(default)]
+    pub checked: bool,
     /// Whether the safe buckets print row by row (`--all`).
     ///
     /// A rendering choice and not an answer. Both renderings carry every row; this
@@ -398,7 +424,7 @@ impl Doctor {
             return vec![Block::line("no local branch is without a worktree")];
         }
         let mut blocks = vec![self.loud()];
-        for standing in [Standing::Merged, Standing::SeenOnRemote] {
+        for standing in [Standing::Merged, Standing::OnRemote, Standing::SeenOnRemote] {
             blocks.extend(self.safe(standing));
         }
         blocks
@@ -410,15 +436,20 @@ impl Doctor {
     /// that exist on no remote", which is a claim about the remote; the reading behind it is a
     /// reading of this checkout's own refs, and the sentence now says so.
     fn loud(&self) -> Block {
-        let unpushed = self.branches.bucket(Standing::Unpushed);
+        let mut unpushed = self.branches.bucket(Standing::OnlyHere);
+        unpushed.extend(self.branches.bucket(Standing::Unpushed));
         if unpushed.is_empty() {
-            return Block::line("no branch holds a commit this checkout has not seen on a remote");
+            return Block::line(if self.branches.checked {
+                "no branch holds a commit the remote has not got"
+            } else {
+                "no branch holds a commit this checkout has not seen on a remote"
+            });
         }
         let mut table = Table::new(&UNPUSHED);
         for row in unpushed {
             table.push(vec![
                 row.name.clone(),
-                row.unpushed.to_string(),
+                format!("{} {}", row.standing.label(), row.unpushed),
                 human::span(self.now, row.committed),
                 upstream(row),
             ]);
@@ -462,7 +493,8 @@ impl Doctor {
             (Standing::Merged, Some(base)) => format!("merged into {base}"),
             (Standing::Merged, None) => String::from("merged"),
             (Standing::SeenOnRemote, _) => String::from("unmerged, every commit seen on a remote"),
-            (Standing::Unpushed, _) => String::from("unpushed"),
+            (Standing::OnRemote, _) => String::from("unmerged, every commit on the remote"),
+            (Standing::OnlyHere | Standing::Unpushed, _) => String::from("unpushed"),
         }
     }
 }
@@ -585,6 +617,7 @@ mod tests {
                 branch("review/api", Standing::SeenOnRemote, 0, false),
             ],
             expand: false,
+            checked: false,
         }
     }
 

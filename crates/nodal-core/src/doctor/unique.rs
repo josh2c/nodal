@@ -55,6 +55,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::git::refs::{DEFAULT, HEADS, REMOTE as ORIGIN, TRACKING};
 use crate::git::{Git, Oid};
 
 /// One remote-tracking ref: which branch of which remote, and the commit it holds.
@@ -281,6 +282,177 @@ fn trusted(subjects: &[Subject], index: usize) -> Trusted {
     believed(&subjects[index], &freshest(subjects, index))
 }
 
+/// What a reading of the remote proves for one checkout, when the remote is on this disk.
+///
+/// The survey compares every clone of a group and picks the one that heard from the remote
+/// last ([`freshest`]). A report about one checkout has no group to compare, and most
+/// machines hold one clone of a repository anyway, so that route answers nothing there.
+///
+/// One route is still open, and it is the strongest of all: a remote that is a directory
+/// on this machine. A bare repository two people share, a mirror, and the checkout a
+/// project with no remote of its own is cloned from are all of them read directly, and
+/// what such a remote does not hold, the remote does not hold. `refs/heads/*` of that
+/// directory is not a reading of the remote; it is the remote.
+///
+/// `None` where `origin` names a server, or names a directory Git will not read. The
+/// caller then has no proof and says so rather than falling back to the checkout's own
+/// bookkeeping under a word that claims a remote.
+///
+/// Nothing here reaches a network: a url that is not a path on this disk is not opened.
+/// The tips one repository's rows are counted against, and what that counting is worth.
+///
+/// One value, read once per repository a report covers ([`seen`]), because both halves are
+/// one fact about the repository rather than one per row: a worktree shares the object store
+/// and the refs of the repository it belongs to, and a branch is a ref of it.
+#[derive(Debug, Clone)]
+pub struct Read {
+    /// The tips a commit is counted against.
+    pub tips: Vec<Oid>,
+    /// Whether a reading of the remote itself stood behind them.
+    ///
+    /// It decides the word every row prints over its count, and the sentence a table with
+    /// nothing to report ends on. Only a remote that is a directory on this machine earns
+    /// the strong words; a remote on a server cannot be read at all, and the rows then say
+    /// what this checkout has seen.
+    pub checked: bool,
+}
+
+/// What one repository's rows are counted against: the remote itself where it can be read,
+/// and this repository's own record of it where it cannot.
+///
+/// Asked once per repository. Both the branch audit and the worktree rows want it and each
+/// used to take it for itself, which cost two readings of the remote and four ref listings
+/// per repository for one answer.
+///
+/// A reading that failed answers with no tip and the weaker words, which puts every row of
+/// that repository in the loudest bucket. That is the safe direction, and it is not an error:
+/// doctor runs on a machine that is in a mess, and a directory the registry names that is
+/// not there any more must not stop the answer about the other eleven.
+#[must_use]
+pub fn seen(root: &Path) -> Read {
+    match read_directly(root) {
+        Some(trusted) => Read { tips: trusted.tips, checked: true },
+        None => Read { tips: Git::at(root).seen_on_remotes().unwrap_or_default(), checked: false },
+    }
+}
+
+/// Two `for-each-ref` and one `git remote get-url`, and nothing else. It is asked once per
+/// repository a report covers, so what it reads is what the answer needs: the branches the
+/// remote has, and the branches this checkout tracks of it. A full reading of the checkout
+/// would answer the same question and cost four more invocations per repository.
+#[must_use]
+pub fn read_directly(checkout: &Path) -> Option<Trusted> {
+    let remote = local(checkout, &Git::at(checkout).remote_url(ORIGIN).ok()??)?;
+    let remote = remote.as_path();
+    // A path Git will not read, and a remote with no branch at all, both answer nothing.
+    // Neither is a remote that was read and found empty, and reading either as one would
+    // put every branch of this checkout in the loudest bucket over a directory nobody
+    // could open.
+    let theirs = heads(remote);
+    if theirs.is_empty() {
+        return None;
+    }
+    let reading = |remotes| CloneReading { remotes, ..CloneReading::default() };
+    let subject = Subject { path: checkout.to_path_buf(), reading: reading(tracked(checkout)) };
+    let witness = Subject { path: remote.to_path_buf(), reading: reading(theirs) };
+    Some(believed(&subject, &[&witness]))
+}
+
+/// The directory a remote url names on this disk, and `None` for a url that names a server.
+///
+/// Three spellings name a directory and Git reads all three, so all three are read here.
+/// `/srv/git/app.git` is a path. `file:///srv/git/app.git` is the same path with a scheme
+/// in front of it, which [`crate::doctor::origin::normalize`] and the reading of a fetch
+/// record both strip already; a reading that asked `Path::is_absolute` of it answered no,
+/// and a shared bare repository on the same disk fell back to the weaker words. A relative
+/// path is resolved against the repository whose configuration holds it, which is where
+/// Git resolves it from.
+///
+/// Anything with another scheme, and anything in the `user@host:path` form, names a server:
+/// nothing here opens it, and nothing here reaches it.
+fn local(checkout: &Path, url: &str) -> Option<PathBuf> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let named = match trimmed.strip_prefix(FILE) {
+        Some(path) => path,
+        None if trimmed.split_once("://").is_some() => return None,
+        None if scp_like(trimmed) => return None,
+        None => trimmed,
+    };
+    let path = Path::new(named);
+    Some(if path.is_absolute() { path.to_path_buf() } else { checkout.join(path) })
+}
+
+/// The scheme Git accepts for a path on this disk.
+const FILE: &str = "file://";
+
+/// Whether a url is the `user@host:path` form, which names a server and never a path.
+///
+/// Git reads that form only where the colon comes before the first slash, and so does
+/// this: an absolute path that holds a colon is still a path.
+fn scp_like(url: &str) -> bool {
+    url.find(':').is_some_and(|colon| url.find('/').is_none_or(|slash| colon < slash))
+}
+
+/// What this repository last saw of `origin`, branch by branch. One `for-each-ref`.
+///
+/// The one field [`believed`] reads of the repository it judges, so it is the whole of
+/// what a caller has to read of one. A repository Git will not answer for names no branch,
+/// which is the strict direction: nothing is vouched for.
+///
+/// `refs/remotes/origin/HEAD` is dropped: it is a symbolic ref naming the default branch
+/// rather than a branch of its own, and the branch it names is in the list already.
+#[must_use]
+pub fn tracked(checkout: &Path) -> Vec<RemoteTip> {
+    let prefix = format!("{TRACKING}{ORIGIN}/");
+    tracked_in(&Git::at(checkout).list_refs(&prefix).unwrap_or_default())
+}
+
+/// The same, read out of a listing somebody else already took.
+///
+/// **The one maker of this reading.** Three callers ask it: the survey's row for a clone
+/// ([`crate::doctor::inspect`]), the reading of a unit home before a removal
+/// ([`crate::lifecycle::witness`]), and [`tracked`] for a caller that has no listing yet. A
+/// second implementation of "which branches of `origin` does this repository name" is a
+/// second answer to a question that has one.
+///
+/// A caller that has the refs in hand pays no process at all.
+///
+/// `refs/remotes/origin/HEAD` is dropped: it is a symbolic ref naming the default branch
+/// rather than a branch of its own, and the branch it names is in the list already.
+#[must_use]
+pub fn tracked_in(refs: &[crate::git::refs::Ref]) -> Vec<RemoteTip> {
+    let prefix = format!("{TRACKING}{ORIGIN}/");
+    refs.iter()
+        .filter_map(|reference| {
+            let branch = reference.name.strip_prefix(&prefix)?.to_owned();
+            (branch != DEFAULT).then_some(RemoteTip { branch, oid: reference.oid.clone() })
+        })
+        .collect()
+}
+
+/// A repository's own branches, read as the tips a clone of it would fetch.
+///
+/// **The one maker of this reading.** Two callers ask it: a remote that is a directory on
+/// this machine, read as the remote itself ([`read_directly`]), and the checkout a project
+/// with no remote of its own was cloned from ([`crate::lifecycle::witness`]). One
+/// `git for-each-ref`, and a repository Git will not read names no branch — the strict
+/// direction, because nothing is then vouched for.
+#[must_use]
+pub fn heads(repo: &Path) -> Vec<RemoteTip> {
+    Git::at(repo)
+        .list_refs(HEADS)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|reference| {
+            let branch = reference.name.strip_prefix(HEADS)?.to_owned();
+            Some(RemoteTip { branch, oid: reference.oid })
+        })
+        .collect()
+}
+
 /// The doctrine itself: what one repository's own remote-tracking refs are worth once
 /// `witnesses` have checked them.
 ///
@@ -397,14 +569,21 @@ fn witnessable(reading: &CloneReading) -> bool {
     !reading.shallow && reading.unreadable.is_none()
 }
 
-/// What Git writes when a clone hears from a remote, newest of the three is the reading.
-const HEARD: [&str; 3] = ["FETCH_HEAD", "packed-refs", "refs/remotes"];
+/// What Git writes when a clone hears from a remote, newest of the two is the reading.
+///
+/// `packed-refs` was the third and it is out, because it is not a record of hearing from
+/// anything. `git gc`, `git pack-refs` and `git maintenance` all rewrite it with no fetch,
+/// and Git runs a collection after many ordinary commands. A clone whose last real fetch
+/// was a month ago therefore became the newest reading of the remote over a command that
+/// reached nothing, and its stale refs were then believed. [`crate::git::refs::last_moved`]
+/// refuses `packed-refs` for the same reason and says so.
+const HEARD: [&str; 2] = ["FETCH_HEAD", "refs/remotes"];
 
 /// When this clone last heard from a remote.
 ///
-/// A clone that has never fetched still has `packed-refs` from the day it was made, and
-/// that day is exactly when it last heard. `None` where `.git` is not a directory of
-/// this clone's own, because then nothing here is this clone's reading.
+/// `None` where `.git` is not a directory of this clone's own, because then nothing here
+/// is this clone's reading, and `None` for a clone that has never fetched and whose refs
+/// have never moved.
 #[must_use]
 pub fn heard(path: &Path) -> Option<SystemTime> {
     let git_dir = path.join(".git");
@@ -429,8 +608,57 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
 
-    use super::{CloneReading, RemoteTip, Subject, complete, fresher, held_by_others, trusted};
+    use super::{
+        CloneReading, RemoteTip, Subject, complete, fresher, held_by_others, tracked_in, trusted,
+    };
     use crate::git::Oid;
+    use crate::git::refs::Ref;
+
+    /// One ref of a listing, as `for-each-ref` hands it over.
+    fn reference(name: &str, seed: u8) -> Ref {
+        Ref {
+            name: name.to_owned(),
+            oid: Oid::parse(&format!("{seed:02x}").repeat(20)).expect("a well formed id"),
+        }
+    }
+
+    /// A branch with a slash in it keeps every part after the remote.
+    #[test]
+    fn a_remote_ref_gives_up_its_remote_and_keeps_its_branch() {
+        let tips = [reference("refs/remotes/origin/nodal/doctor", 1)];
+        let remotes = tracked_in(&tips);
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].branch, "nodal/doctor");
+    }
+
+    /// A group is the clones of one `origin`, and a second remote is a different
+    /// question. `backup/main` may not answer for `origin/main`.
+    #[test]
+    fn a_ref_of_another_remote_says_nothing_about_origin() {
+        let tips = [
+            reference("refs/remotes/backup/main", 1),
+            reference("refs/remotes/upstream/main", 2),
+            reference("refs/remotes/origin/main", 3),
+        ];
+        let remotes = tracked_in(&tips);
+        assert_eq!(remotes.len(), 1, "only origin is read: {remotes:?}");
+        assert_eq!(remotes[0].oid, reference("refs/remotes/origin/main", 3).oid);
+    }
+
+    /// The default-branch pointer is not a branch, and counting it would be counting
+    /// one branch twice.
+    #[test]
+    fn the_default_branch_pointer_is_not_a_branch() {
+        let tips = [reference("refs/remotes/origin/HEAD", 1)];
+        assert!(tracked_in(&tips).is_empty());
+    }
+
+    /// A local branch is no evidence about a remote.
+    #[test]
+    fn a_local_branch_is_not_a_remote_tip() {
+        let tips = [reference("refs/heads/main", 1)];
+        assert!(tracked_in(&tips).is_empty());
+    }
 
     fn oid(seed: u8) -> Oid {
         Oid::parse(&format!("{seed:02x}").repeat(20)).expect("a well formed id")

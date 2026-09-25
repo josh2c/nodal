@@ -110,18 +110,11 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::Result;
-use crate::doctor::unique::{CloneReading, RemoteTip, Subject, Trusted, believed};
+use crate::doctor::unique::{self, CloneReading, RemoteTip, Subject, Trusted, believed};
 use crate::doctor::{inspect, origin};
-use crate::git::{Git, Oid, union};
-
-/// The remote a home's uniqueness question is about.
-///
-/// Named, and that is the point. A project may have an `upstream` it was forked from or
-/// a `backup` it mirrors to, and neither says whether `origin` has a commit.
-const ORIGIN: &str = "origin";
-
-/// Where a repository keeps its own branches.
-const HEADS: &str = "refs/heads/";
+use crate::git::refs::{REMOTE as ORIGIN, TRACKING};
+use crate::git::{Git, Oid, fetched, refs, union};
+use crate::model::Timestamp;
 
 /// What this machine can prove already exists outside one home.
 ///
@@ -167,6 +160,8 @@ pub struct Elsewhere {
     /// does not hold, the remote does not hold. Every other reading is a clone's, and a
     /// clone can only say what it last saw.
     pub direct: bool,
+    /// The branches the witness's last fetch is older than, and so says nothing about.
+    pub unobserved: Vec<String>,
 }
 
 impl Elsewhere {
@@ -176,11 +171,23 @@ impl Elsewhere {
         union(&self.own, &self.copies)
     }
 
-    /// Every tip, for the caller that only asks whether a commit is somewhere else at
-    /// all and does not care which reading says so.
+    /// Every tip a removal may rest on: what the checkout keeps of its own accord, and
+    /// what a dated observation of the remote proves.
+    ///
+    /// [`Elsewhere::copies`] is not in it, and that is the whole of the difference between
+    /// this and a list of what the checkout happens to hold. Those commits sit under a
+    /// remote-tracking ref nothing vouched for, and such a ref is the checkout's record of
+    /// a fetch or a push that one `git fetch --prune` deletes — exactly as `git gc`
+    /// deletes an object under no ref. A verdict that rested a fourteen-day trash timer on
+    /// one rested it on the weakest ref there is, and the commits behind it are the
+    /// commits the observation rule exists to judge.
+    ///
+    /// They stay on [`Elsewhere::copies`] because a report says what it found, and a
+    /// person deciding what to do next is helped by being told the commit is in their
+    /// checkout under `origin/<branch>`.
     #[must_use]
     pub fn tips(&self) -> Vec<Oid> {
-        union(&self.local(), &self.remote)
+        union(&self.own, &self.remote)
     }
 }
 
@@ -250,7 +257,7 @@ impl Checkout {
         let mut origin = None;
         let mut held = Vec::new();
         if reading.unreadable.is_none() && !reading.shallow {
-            origin = named(&path);
+            origin = named(&path).map(|origin| origin.name);
             match stored(&path, &reading.tips) {
                 Ok(found) => held = found,
                 Err(why) => reading.unreadable = Some(why.to_string()),
@@ -271,7 +278,7 @@ impl Checkout {
     /// homes ask. Only the relation in which the checkout *is* the remote asks at all,
     /// so the reading is taken on the first home that needs it and not before.
     fn heads(&self) -> &[RemoteTip] {
-        self.heads.get_or_init(|| heads(&self.path))
+        self.heads.get_or_init(|| unique::heads(&self.path))
     }
 }
 
@@ -293,7 +300,7 @@ impl Checkout {
 /// ordinary case, and reading that commit as the remote's would take the whole of the
 /// project's history out of the denominator and report it back as this unit's work.
 #[must_use]
-pub fn elsewhere(home: &Path, checkout: Option<&Checkout>) -> Elsewhere {
+pub fn elsewhere(home: &Path, checkout: Option<&Checkout>, refs: &[refs::Ref]) -> Elsewhere {
     let Some(checkout) = checkout else {
         return Elsewhere::default();
     };
@@ -301,8 +308,20 @@ pub fn elsewhere(home: &Path, checkout: Option<&Checkout>) -> Elsewhere {
     if reading.unreadable.is_some() || reading.shallow {
         return Elsewhere::default();
     }
-    let relation = relation(home, checkout);
-    let trusted = vouched(home, checkout, relation, reading.clone());
+    let origin = named(home);
+    let relation = relation(origin.as_ref().map(|origin| origin.name.as_str()), checkout);
+    // No reading of the home at all: the refs its caller already listed are all of it.
+    // What is asked of the home here is which branches of `origin` it names — [`believed`]
+    // reads that field and no other, and [`observed`] dates each of those branches from
+    // files Git wrote. A full reading cost four invocations per home for three fields
+    // nothing below looks at.
+    let subject = Subject {
+        path: home.to_path_buf(),
+        reading: CloneReading { remotes: unique::tracked_in(refs), ..CloneReading::default() },
+    };
+    let asked = Asked { checkout, origin, subject: &subject };
+    let mut unobserved = Vec::new();
+    let trusted = vouched(&asked, relation, reading.clone(), &mut unobserved);
     let Ok(held) = holdings(checkout, &trusted.tips) else {
         return Elsewhere::default();
     };
@@ -318,6 +337,7 @@ pub fn elsewhere(home: &Path, checkout: Option<&Checkout>) -> Elsewhere {
         remote,
         witnesses: trusted.witnesses,
         direct: relation == Relation::IsTheRemote,
+        unobserved,
     }
 }
 
@@ -341,33 +361,166 @@ fn holdings<'a>(checkout: &'a Checkout, trusted: &[Oid]) -> Result<Cow<'a, [Oid]
 }
 
 /// What a witness will vouch for, and nothing at all when there is no witness.
-fn vouched(home: &Path, checkout: &Checkout, relation: Relation, reading: CloneReading) -> Trusted {
-    let Some(witness) = witness(home, checkout, relation, reading) else {
+fn vouched(
+    asked: &Asked<'_>,
+    relation: Relation,
+    reading: CloneReading,
+    unobserved: &mut Vec<String>,
+) -> Trusted {
+    let Some(witness) = witness(asked, relation, reading, unobserved) else {
         return Trusted::default();
     };
-    let subject = Subject { path: home.to_path_buf(), reading: inspect::reading(home) };
-    believed(&subject, &[&witness])
+    believed(asked.subject, &[&witness])
+}
+
+/// The pair a witness question is about: the repository that may answer, the remote the
+/// question is about, and the home it is asked for.
+struct Asked<'a> {
+    /// The repository that may answer.
+    checkout: &'a Checkout,
+    /// The home's `origin`, read once: the url a record of a fetch is asked about, and
+    /// the name the relation compares ([`Origin`]).
+    origin: Option<Origin>,
+    /// The home, and what was read of it.
+    subject: &'a Subject,
 }
 
 /// The checkout as a witness for this home's `origin`, in whichever relation it has to it.
 fn witness(
-    home: &Path,
-    checkout: &Checkout,
+    asked: &Asked<'_>,
     relation: Relation,
     mut reading: CloneReading,
+    unobserved: &mut Vec<String>,
 ) -> Option<Subject> {
     match relation {
-        // Two clones of one remote. The checkout's reading replaces the home's only
-        // where it is the later one, it covers every branch, and it can therefore say
-        // that a branch is gone.
-        Relation::SameRemote if reading.complete && later(&reading, home) => {}
+        // Two clones of one remote. What the checkout may say is what its last fetch saw
+        // and wrote down, branch by branch, and the refspec has to cover every branch or
+        // it cannot say that one is gone.
+        Relation::SameRemote if reading.complete => {
+            reading.remotes = observed(asked, unobserved)?;
+        }
         // The checkout is what the base was cloned from, so its branches are not a
         // reading of the remote. They are the remote, and reading the authority needs
         // no comparison with anybody's copy of it.
-        Relation::IsTheRemote => reading.remotes = checkout.heads().to_vec(),
+        Relation::IsTheRemote => reading.remotes = asked.checkout.heads().to_vec(),
         _ => return None,
     }
-    Some(Subject { path: checkout.path.clone(), reading })
+    Some(Subject { path: asked.checkout.path.clone(), reading })
+}
+
+/// The branches of the remote the checkout's last fetch observed, dated against this
+/// home's own record of each, and the branches it could not answer for.
+///
+/// This is the whole of the freshness rule, and the reason it is per branch rather than
+/// per repository. A directory time says a repository fetched something; it does not say
+/// which branch, and a fetch that dropped a branch from its record is the shape a merged
+/// pull request leaves. So each branch the home names is asked of the record Git wrote for
+/// the last fetch ([`crate::git::fetched`]).
+///
+/// The record is a listing and not a lookup, and that is what makes it answer in both
+/// directions. A fetch of a remote writes one line per ref it saw, so a branch in the
+/// listing is a branch the remote had at that instant, at the commit on the line; and a
+/// branch **not** in the listing is a branch the remote did not have — where the checkout
+/// has stopped tracking it as well.
+///
+/// That second condition is what the listing cannot supply on its own. `git fetch origin
+/// main` writes a record naming `main` and nothing else, whatever the configured refspec
+/// covers, so an absence in the record is not by itself an absence on the remote. The ref
+/// tells them apart: a fetch that pruned deleted the ref of a branch the remote dropped, and
+/// a fetch of one branch by name left every other ref where it was. Both readings together
+/// are the ordinary shape after a pull request merges — the host drops the branch, the
+/// person fetches with `--prune`, and the record and the refs agree that it has gone.
+///
+/// Either reading is worth something only where it is not older than the work. A fetch
+/// made before this home pushed says nothing about what the remote has since: a branch
+/// absent from it is a branch that did not exist yet, and one present in it stands at a
+/// commit from before the push. So a branch whose reading predates the home's own record
+/// of it is unobserved, and the row says so.
+///
+/// The commit vouched for is the one the fetch saw and wrote down, and never the one the
+/// tracking ref names. They are the same in the ordinary case and they come apart in
+/// exactly the cases this rule is about. It is also why there is no reading of how the
+/// checkout's own tracking ref came to move: a push moves such a ref as surely as a fetch
+/// does, and under the old rule that mattered, because the ref was the evidence. The
+/// evidence is the record of the fetch now, so what moved the ref afterwards cannot reach
+/// the proof.
+///
+/// `None` is a checkout that has made no observation of this remote at all: it has never
+/// fetched, or its last fetch was of another remote and rewrote the record with that
+/// remote's refs. Neither is a repository that found the remote empty.
+fn observed(asked: &Asked<'_>, unobserved: &mut Vec<String>) -> Option<Vec<RemoteTip>> {
+    let home = asked.subject.path.as_path();
+    // The url as it is written, not the name it groups under. The reading reduces what it
+    // finds on its own lines, so a name reduced here as well would be reduced twice
+    // ([`Origin`]).
+    let url = &asked.origin.as_ref()?.url;
+    let observation =
+        fetched::last(&asked.checkout.path, url).filter(|read| !read.seen.is_empty())?;
+    // What the checkout still tracks of that remote, which is what tells an absence that
+    // was earned from one that was not. A fetch that pruned deletes the ref of a branch the
+    // remote has dropped; a fetch of one branch by name leaves every other ref standing.
+    let tracks: BTreeSet<&str> =
+        asked.checkout.reading.remotes.iter().map(|tip| tip.branch.as_str()).collect();
+    let mut seen = Vec::new();
+    for tip in &asked.subject.reading.remotes {
+        let branch = tip.branch.clone();
+        let tracking = format!("{TRACKING}{ORIGIN}/{branch}");
+        let wrote = refs::last_moved(home, &tracking);
+        match observation.branch(&branch) {
+            Some(oid) if not_older(observation.at, wrote) => {
+                seen.push(RemoteTip { branch, oid: oid.clone() });
+            }
+            // A branch the listing does not carry, which the checkout does not track
+            // either, is a branch the remote had not got: the fetch asked the remote for
+            // its branches, this was not one of them, and the ref that used to name it was
+            // pruned. Nothing is vouched for and nothing is reported, because the question
+            // was asked and the answer was no.
+            None if strictly_later(observation.at, wrote) && !tracks.contains(branch.as_str()) => {}
+            // Everything else the reading cannot answer for. A branch absent from the
+            // listing that the checkout still tracks is the shape two different commands
+            // leave — a fetch of one branch by name, which asked about nothing else, and a
+            // fetch without `--prune` after the remote dropped the branch — and no record
+            // on this disk tells the two apart. A reading older than this home's own record
+            // of the branch answers for a state of it from before the work.
+            _ => unobserved.push(branch),
+        }
+    }
+    Some(seen)
+}
+
+/// Whether a reading taken at `read` is not older than the home's own record at `wrote`.
+///
+/// The test a **positive** observation has to pass, and it is the lenient one of the two
+/// on purpose. What proves a commit is the commit the fetch saw and wrote down, so a
+/// reading is never believed to reach work it could not have seen; the date only keeps a
+/// reading of an older state of the branch from standing as a reading of this one.
+///
+/// A record nothing dates passes. A home carries every branch its base was copied with,
+/// and those refs were packed on the day the base was built and have never moved, so Git
+/// keeps no log of them. Refusing there would refuse nearly every branch of nearly every
+/// home, and nothing is given away: the sha carries the proof.
+///
+/// One second counts as not older. Both records are whole seconds, so two things in one
+/// second cannot be put in an order, and reading that as "older" refused every home whose
+/// push and whose fetch fell in the same second.
+fn not_older(read: Timestamp, wrote: Option<Timestamp>) -> bool {
+    wrote.is_none_or(|written| read >= written)
+}
+
+/// Whether a reading taken at `read` is later than the home's own record at `wrote`.
+///
+/// The test a **negative** observation has to pass, and it is the strict one, because
+/// nothing else guards this direction. Concluding that the remote has not got a branch
+/// rests on the reading alone: there is no sha to check it against. A reading taken in
+/// the same second as the home's own record may have been taken first, and a branch is
+/// absent from such a reading because it did not exist yet rather than because the remote
+/// dropped it. So the two have to be in a definite order, and where they are not the
+/// branch is unobserved and the row says so.
+///
+/// A record nothing dates passes, for the reason [`not_older`] gives: a branch of the
+/// base that the remote no longer carries is a branch the remote no longer carries.
+fn strictly_later(read: Timestamp, wrote: Option<Timestamp>) -> bool {
+    wrote.is_none_or(|written| read > written)
 }
 
 /// The commits of `tips` that the repository they were read out of actually holds.
@@ -415,35 +568,6 @@ fn stored(repo: &Path, tips: &[Oid]) -> Result<Vec<Oid>> {
 /// [`crate::Error::Git`] when `rev-list` failed.
 fn vouched_for(repo: &Path, wanted: &[Oid]) -> Result<Vec<Oid>> {
     Git::at(repo).held(wanted)
-}
-
-/// Whether the checkout read `origin` after the home last wrote its own reading of it.
-///
-/// [`believed`] assumes its caller has already picked a witness that read the remote
-/// later than the subject did; the survey picks one by comparing every clone's
-/// [`crate::doctor::unique::heard`]. This is that comparison for a home, and the two
-/// halves of it are read differently on purpose.
-///
-/// The checkout's half is `heard`, which is the newest of `FETCH_HEAD`, `packed-refs`
-/// and `refs/remotes`. `FETCH_HEAD` is the one file that moves for a fetch which changed
-/// nothing, so a reading without it would call a checkout that fetched a minute ago
-/// older than one that has not fetched for a month.
-///
-/// The home's half may not use `FETCH_HEAD`, and this is the whole reason the two are
-/// not one function. A home never fetches its `origin`, but Nodal fetches the mirror
-/// into it from the checkout, over the filesystem, on any command where the checkout's
-/// refs have moved ([`crate::context::refresh`]) — which is exactly the command before a
-/// reclaim. That writes the home's `FETCH_HEAD`, and reading it would date the home by
-/// Nodal's own local copy and leave every checkout looking older than every home.
-///
-/// So the home is dated by the only refs it writes about `origin`: its own
-/// `refs/remotes/origin/*`, which the base copy and `nodal done`'s push are the only
-/// writers of.
-///
-/// An unknown date on either side, and an equal one, witness nothing. A comparison that
-/// cannot be made is not a comparison that passed.
-fn later(checkout: &CloneReading, home: &Path) -> bool {
-    read_since(home, checkout.heard)
 }
 
 /// Whether a repository that last heard from the remote at `heard` heard from it after
@@ -505,11 +629,11 @@ enum Relation {
 }
 
 /// Which of the three this pair is.
-fn relation(home: &Path, checkout: &Checkout) -> Relation {
-    let Some(origin) = named(home) else {
+fn relation(origin: Option<&str>, checkout: &Checkout) -> Relation {
+    let Some(origin) = origin else {
         return Relation::Unrelated;
     };
-    if checkout.origin.as_ref().is_some_and(|theirs| *theirs == origin) {
+    if checkout.origin.as_deref().is_some_and(|theirs| theirs == origin) {
         return Relation::SameRemote;
     }
     if resolved(&checkout.path).is_some_and(|path| origin::normalize(&path) == origin) {
@@ -519,30 +643,35 @@ fn relation(home: &Path, checkout: &Checkout) -> Relation {
 }
 
 /// The grouping name of a repository's `origin`, `None` when it has none to read.
-fn named(repo: &Path) -> Option<String> {
+fn named(repo: &Path) -> Option<Origin> {
     let url = Git::at(repo).remote_url(ORIGIN).ok()??;
     let name = origin::normalize(&url);
-    (!name.is_empty()).then_some(name)
+    (!name.is_empty()).then_some(Origin { url, name })
+}
+
+/// A repository's `origin`, as it is written and as it is grouped.
+///
+/// Both, because two readings want different ones and each reduces a url once. The
+/// relation compares the **name**, which is the spelling every clone of one remote shares
+/// ([`origin::normalize`]). The record of the last fetch is asked about the **url**, and it
+/// reduces what it finds on its own lines ([`crate::git::fetched`]).
+///
+/// Handing the name to that second reading is what a reduction applied twice looks like: a
+/// reducer given `host/path` finds no scheme and no `user@host:`, reads it as a filesystem
+/// path, and puts a slash in front of it. `github.com/owner/repo` became
+/// `/github.com/owner/repo`, which matched no line of any record, so no branch of any
+/// server remote was ever observed.
+#[derive(Debug, PartialEq, Eq)]
+struct Origin {
+    /// The url as the repository's configuration holds it.
+    url: String,
+    /// The spelling every clone of that remote shares.
+    name: String,
 }
 
 /// A path as the filesystem spells it, so two names for one directory compare equal.
 fn resolved(path: &Path) -> Option<String> {
     Some(std::fs::canonicalize(path).ok()?.to_str()?.to_owned())
-}
-
-/// A repository's own branches, read as the tips a clone of it would fetch.
-///
-/// One `git for-each-ref`. [`Checkout::heads`] is what calls it, and keeps the answer.
-fn heads(repo: &Path) -> Vec<RemoteTip> {
-    Git::at(repo)
-        .list_refs(HEADS)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|reference| {
-            let branch = reference.name.strip_prefix(HEADS)?.to_owned();
-            Some(RemoteTip { branch, oid: reference.oid })
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -557,15 +686,20 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let absent = directory.path().join("gone");
         assert_eq!(named(&absent), None);
-        assert_eq!(relation(&absent, &Checkout::read(directory.path())), Relation::Unrelated);
-        assert!(elsewhere(&absent, Some(&Checkout::read(&absent))).witnesses.is_empty());
+        let origin = named(&absent);
+        let none = relation(
+            origin.as_ref().map(|origin| origin.name.as_str()),
+            &Checkout::read(directory.path()),
+        );
+        assert_eq!(none, Relation::Unrelated);
+        assert!(elsewhere(&absent, Some(&Checkout::read(&absent)), &[]).witnesses.is_empty());
     }
 
     /// With no checkout to ask, nothing is believed and nobody vouched.
     #[test]
     fn a_home_with_no_checkout_to_ask_believes_nothing() {
         let directory = tempfile::tempdir().unwrap();
-        let read = elsewhere(directory.path(), None);
+        let read = elsewhere(directory.path(), None, &[]);
         assert!(read.tips().is_empty(), "{read:?}");
         assert!(read.witnesses.is_empty(), "{read:?}");
     }
