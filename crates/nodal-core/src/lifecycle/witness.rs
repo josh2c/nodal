@@ -325,10 +325,7 @@ pub fn elsewhere(home: &Path, checkout: Option<&Checkout>, refs: &[refs::Ref]) -
     // nothing below looks at.
     let subject = Subject {
         path: home.to_path_buf(),
-        reading: CloneReading {
-            remotes: unique::named_of(ORIGIN, refs),
-            ..CloneReading::default()
-        },
+        reading: CloneReading { remotes: unique::tracked_in(refs), ..CloneReading::default() },
     };
     let asked = Asked { checkout, origin, subject: &subject };
     let mut unobserved = Vec::new();

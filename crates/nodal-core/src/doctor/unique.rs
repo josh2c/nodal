@@ -334,19 +334,24 @@ pub fn read_directly(checkout: &Path) -> Option<Trusted> {
 #[must_use]
 pub fn tracked(checkout: &Path) -> Vec<RemoteTip> {
     let prefix = format!("{TRACKING}{ORIGIN}/");
-    named_of(ORIGIN, &Git::at(checkout).list_refs(&prefix).unwrap_or_default())
+    tracked_in(&Git::at(checkout).list_refs(&prefix).unwrap_or_default())
 }
 
 /// The same, read out of a listing somebody else already took.
 ///
-/// A caller that has the refs in hand pays no process at all, which is what the reading of
-/// a unit home does ([`crate::lifecycle::witness`]).
+/// **The one maker of this reading.** Three callers ask it: the survey's row for a clone
+/// ([`crate::doctor::inspect`]), the reading of a unit home before a removal
+/// ([`crate::lifecycle::witness`]), and [`tracked`] for a caller that has no listing yet. A
+/// second implementation of "which branches of `origin` does this repository name" is a
+/// second answer to a question that has one.
 ///
-/// `refs/remotes/<remote>/HEAD` is dropped: it is a symbolic ref naming the default branch
+/// A caller that has the refs in hand pays no process at all.
+///
+/// `refs/remotes/origin/HEAD` is dropped: it is a symbolic ref naming the default branch
 /// rather than a branch of its own, and the branch it names is in the list already.
 #[must_use]
-pub fn named_of(remote: &str, refs: &[crate::git::refs::Ref]) -> Vec<RemoteTip> {
-    let prefix = format!("{TRACKING}{remote}/");
+pub fn tracked_in(refs: &[crate::git::refs::Ref]) -> Vec<RemoteTip> {
+    let prefix = format!("{TRACKING}{ORIGIN}/");
     refs.iter()
         .filter_map(|reference| {
             let branch = reference.name.strip_prefix(&prefix)?.to_owned();

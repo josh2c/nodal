@@ -25,15 +25,6 @@ use crate::{Error, Result};
 /// How many ignored directories a row keeps.
 const TOP: usize = 3;
 
-/// Where the refs that say what a clone last saw of its own remote live.
-///
-/// The remote is named, and that is the point of the constant. A group is the clones
-/// that share the URL of `origin`, so `origin` is the remote the group's question is
-/// about. A clone often has others — a `backup` it mirrors to, an `upstream` it was
-/// forked from — and their refs say nothing about whether `origin` has a commit.
-/// `backup/main` is not a reading of `origin/main` and may not stand in for one.
-const REMOTES: &str = "refs/remotes/origin/";
-
 /// Where a repository keeps its reading of any remote at all.
 ///
 /// The wider prefix [`REMOTES`] sits inside, and the two answer different questions. That
@@ -176,19 +167,14 @@ fn head_of(git: &Git, branch: Option<&str>, tips: &[crate::git::refs::Ref]) -> R
 
 /// What this clone last saw of `origin`, branch by branch.
 ///
-/// Refs of any other remote are left out; [`REMOTES`] says why. They stay in `tips`,
-/// because a ref of any name keeps an object alive in the store it sits in, and that is
-/// a second copy whoever wrote the ref.
-///
-/// `refs/remotes/origin/HEAD` is dropped: it is a symbolic ref naming the default
-/// branch, not a branch of its own, and the branch it names is in the list already.
+/// One maker for this reading, over in [`super::unique::tracked_in`], because three
+/// callers ask it and a second implementation is a second answer. Refs of any other remote
+/// are left out: a group is the clones that share the URL of `origin`, so `origin` is the
+/// remote the group's question is about, and `backup/main` is not a reading of
+/// `origin/main`. They stay in `tips`, because a ref of any name keeps an object alive in
+/// the store it sits in, and that is a second copy whoever wrote the ref.
 fn remote_tips(tips: &[crate::git::refs::Ref]) -> Vec<RemoteTip> {
-    tips.iter()
-        .filter_map(|tip| {
-            let branch = tip.name.strip_prefix(REMOTES)?;
-            (branch != HEAD).then(|| RemoteTip { branch: branch.to_owned(), oid: tip.oid.clone() })
-        })
-        .collect()
+    super::unique::tracked_in(tips)
 }
 
 /// Paths a commit would capture. A status Git cannot read is none.
