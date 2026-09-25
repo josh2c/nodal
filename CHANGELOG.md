@@ -80,10 +80,21 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   also live: the repository that holds them and the refs in it. The trash row records the
   same, so a later sweep can name the copy the verdict rested on.
 - `nodal gc` reads every expired home again before it removes it, with the reading a
-  reclaim makes, over the refs that home holds. A commit no ref outside the directory
-  reaches keeps the home and its row, and one line names the commit and the copy that is
-  gone. Nothing is removed on a reading that could not be made. A home a reclaim forced
-  past a finding is removed on its retention as before.
+  reclaim makes. It reads two refs of that home: `HEAD`, and the ref the trash row says
+  the reclaim committed the work to before it moved the home. It reads no other ref the
+  home holds. A home carries every branch of the base it was copied from, Nodal writes a
+  record ref before each operation, `nodal merge` writes the commits it squashed, and
+  `nodal done` writes a work-in-progress ref on every run. None of those commits is what
+  the reclaim proved, and a sweep that read one would keep the directory for ever. A
+  commit no ref outside the directory reaches keeps the home and its row, and one line
+  names the commit and the copy that is gone. Nothing is removed on a reading that could
+  not be made. A home a reclaim forced past a finding is removed on its retention as
+  before.
+- `nodal gc` reads a home again when the trash row holds a verdict this build cannot
+  parse. Nodal read such a row as forced where the row also named a snapshot ref, and a
+  forced reclaim is the one verdict the sweep does not ask again, so the retention removed
+  the home with no fresh reading. A row a later Nodal wrote is not a loss a person
+  accepted.
 - `nodal reclaim` writes into the home of the unit it names and into the registry, and
   into nothing else. It no longer rewrites `WORKUNIT.md`, fetches refs or writes a tree
   object into every other open home. The report says so, and the next command that reads
