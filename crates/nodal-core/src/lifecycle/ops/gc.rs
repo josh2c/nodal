@@ -67,8 +67,8 @@
 //!
 //! So every expired home is read with the reading a reclaim makes
 //! ([`crate::lifecycle::assess`]), over the two refs that reclaim proved: `HEAD`, and the
-//! `refs/nodal/<unit>/wip` a forced reclaim wrote the working tree onto, which no branch
-//! reaches ([`work_tips`]). A commit no ref outside the directory reaches keeps the home,
+//! ref the row says the reclaim wrote the working tree onto, which no branch reaches
+//! ([`work_tips`]). A commit no ref outside the directory reaches keeps the home,
 //! keeps the row, and prints one line naming the commit and the copy the reclaim rested
 //! on ([`crate::model::Rested`]). The row stays expired, so the next sweep reads it again
 //! and a copy somebody restores is all it takes.
@@ -658,15 +658,25 @@ fn gone_copies(entry: &Trashed, sample: &[Oid]) -> Vec<Outside> {
         .collect()
 }
 
-/// The refs a trashed home's own work is on: `HEAD`, and the work-in-progress snapshot a
-/// forced reclaim wrote.
+/// The refs a trashed home's own work is on: `HEAD`, and the ref the row says a reclaim
+/// wrote the work to before it moved the home ([`Trashed::snapshot`]).
 ///
 /// Two names and not every ref, and the rule behind the pair is one sentence: gc reads
 /// exactly what the reclaim proved. A reclaim reads the working tree and `HEAD`
 /// ([`crate::lifecycle::assess::Work::Checkout`]), so a commit no other reading of this
 /// home ever looked at cannot by itself keep the directory; and a ref that exists only
-/// because Nodal wrote it is not the person's work. `wip` is the one exception both
-/// halves agree on: a forced reclaim put the work it found there itself.
+/// because Nodal wrote it is not the person's work. The recorded ref is the one
+/// exception both halves agree on: a reclaim put the work it found there itself, and the
+/// row is where it said so.
+///
+/// **The name comes off the row and is never built from the unit.** A home can hold a
+/// work-in-progress ref no reclaim ever wrote: `nodal done` takes one on every run
+/// ([`super::done`]), whether or not `--wip` sends it. That commit is Nodal's record of a
+/// working tree rather than a reclaim's preserved work, and it is built on `HEAD`, so no
+/// other ref reaches it. A reading that named `refs/nodal/<unit>/wip` by construction
+/// therefore kept every home of a unit that had ever run `done`, on every sweep, with
+/// nothing a person could do to release it. The row names the ref for the one reclaim
+/// that preserved work, and nothing for the reclaims that had none to preserve.
 ///
 /// Everything left out is left out under that rule. `refs/nodal/origin/*` and
 /// `refs/nodal/checkout/*` are readings Nodal fetched in from the person's own checkout,
@@ -698,14 +708,18 @@ fn gone_copies(entry: &Trashed, sample: &[Oid]) -> Vec<Outside> {
 /// Neither holds content the rest of this list does not. A record's tree is the home's
 /// working tree and its parent is the home's own branch; the homes read here are the ones
 /// whose reclaim found nothing only there, so their working trees held no uncommitted and
-/// no untracked work. Where a reclaim did find something, `--force` put it on `wip`,
-/// which is named above, and [`crate::model::Rested::re_asks`] keeps that home out of
-/// this reading altogether.
+/// no untracked work. Where a reclaim did find something, `--force` put it on the ref the
+/// row names, which is read here.
+///
+/// A row that names such a ref is a forced reclaim's row, and
+/// [`crate::model::Rested::re_asks`] keeps a home the sweep can read as forced out of this
+/// reading altogether. What reaches the ref is the row a verdict cannot be read out of:
+/// text a later Nodal wrote is [`crate::model::Rested::Unrecorded`], and this reading is
+/// how the preserved work such a row points at is seen rather than removed on the clock.
 fn work_tips(git: &Git, entry: &Trashed) -> Result<Vec<Oid>> {
-    let named = [String::from("HEAD"), refs::wip(&entry.unit_id.to_string())];
     let mut tips = Vec::new();
-    for name in named {
-        tips.extend(git.rev_parse_opt(&name)?);
+    for name in [Some("HEAD"), entry.snapshot.as_deref()].into_iter().flatten() {
+        tips.extend(git.rev_parse_opt(name)?);
     }
     Ok(union(&tips, &[]))
 }

@@ -27,6 +27,8 @@
 //! | a branch neither reading misses is refused at the reclaim | `a_branch_the_reclaim_never_read_is_refused_at_the_reclaim` |
 //! | an unreadable home is kept | `a_trashed_home_nothing_can_read_is_kept_and_the_report_says_why` |
 //! | a reclaim writes into no other home | `a_reclaim_of_one_unit_writes_into_no_other_home` |
+//! | an unreadable verdict is asked again | `a_verdict_this_binary_cannot_read_is_asked_again_rather_than_taken` |
+//! | a record `done` left behind keeps nothing | `a_record_done_left_behind_does_not_keep_the_home` |
 //!
 //! Both hosts read every signal these properties use, so each one asserts the same thing
 //! on Linux and on macOS.
@@ -407,6 +409,46 @@ fn permissions(path: &Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
+/// A verdict this binary cannot read is a verdict, and a snapshot beside it is not
+/// permission to remove the home.
+///
+/// The row is put into that state by hand, because no version of this binary writes one:
+/// text a later Nodal wrote in the `rested` column, and the `snapshot` column filled as a
+/// forced reclaim fills it. The reading used to answer `forced` for that pair, and a
+/// forced reclaim is the one answer the sweep does not ask again — so an unreadable
+/// verdict removed the home on the clock alone. It reads as `unrecorded` now: the sweep
+/// reads the home again and keeps it over the copy that went.
+///
+/// This shape carries into the adversarial grid (lane C) when it lands: a row whose
+/// verdict this binary cannot parse.
+#[test]
+fn a_verdict_this_binary_cannot_read_is_asked_again_rather_than_taken() {
+    let machine = machine();
+    let (home, tip) = only_here(&machine, SLUG);
+    let sibling = sibling_holding(&machine, &home, &tip);
+    let trash = reclaimed(&machine, SLUG);
+    {
+        let store = machine.store();
+        let later = String::from("{\"kind\":\"from a later nodal\"}");
+        let snapshot = format!("refs/nodal/{}/wip", unit_id(&machine));
+        store
+            .conn()
+            .execute("UPDATE trash SET rested = ?, snapshot = ?", [later, snapshot])
+            .unwrap();
+    }
+
+    git(&sibling, &["update-ref", "-d", &format!("refs/heads/{COPY}")]);
+    git(&sibling, &["reflog", "expire", "--expire=now", "--all"]);
+    assert!(!reaches(&sibling, &tip), "the sibling still reaches the commit");
+
+    let swept = machine.nodal(&["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    let report = stdout(&swept);
+    assert!(report.contains(&format!("kept: {}", &tip[..8])), "{report}");
+    readable(&trash, &tip);
+    assert_eq!(machine.trashed(), vec![trash], "and the row was kept with it");
+}
+
 /// The identifier of the one unit this machine has, as its refs spell it.
 fn unit_id(machine: &Machine) -> String {
     let store = machine.store();
@@ -472,5 +514,36 @@ fn a_branch_the_reclaim_never_read_is_refused_at_the_reclaim() {
     let swept = machine.nodal(&["gc"]);
     assert!(swept.status.success(), "{}", stderr(&swept));
     assert!(!trash.exists(), "a branch both readings proved kept the home: {}", stdout(&swept));
+    assert!(machine.trashed().is_empty(), "and the row went with the directory");
+}
+
+/// A record `nodal done` wrote is not the home's work, and the retention still removes the
+/// home.
+///
+/// `nodal done` commits the whole home to `refs/nodal/<unit>/wip` on every run, whether or
+/// not `--wip` sends it. That commit is built on `HEAD`, so no branch reaches it and no
+/// push carries it. The sweep read that ref by name, found the commit only there, and kept
+/// the home — on that sweep and on every sweep after it, with nothing a person could do to
+/// release it. Any unit that had ever run `done` was affected.
+///
+/// The sweep reads the ref the trash row names instead. An ordinary reclaim names none,
+/// because it had no work to preserve.
+#[test]
+fn a_record_done_left_behind_does_not_keep_the_home() {
+    let machine = machine();
+    let home = machine.unit(SLUG);
+    let sent = machine.nodal(&["done", SLUG]);
+    assert!(sent.status.success(), "the push failed: {}", stderr(&sent));
+    let wip = format!("refs/nodal/{}/wip", unit_id(&machine));
+    let record = git(&home, &["rev-parse", &wip]);
+    assert!(!reaches(&machine.source, &record), "the checkout holds the record already");
+
+    let trash = reclaimed(&machine, SLUG);
+    assert_eq!(git(&trash, &["rev-parse", &wip]), record, "the record is what this is about");
+
+    let swept = machine.nodal(&["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    let report = stdout(&swept);
+    assert!(!trash.exists(), "a record `done` wrote kept the home: {report}");
     assert!(machine.trashed().is_empty(), "and the row went with the directory");
 }
