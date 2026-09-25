@@ -54,14 +54,10 @@
 
 use std::collections::BTreeMap;
 
-use nodal_core::model::{
-    Actor, ActorKind, ActorName, Holding, HostName, Lock, ProjectId, Timestamp, UnitId,
-};
+use nodal_core::model::{Actor, ActorKind, ActorName, Holding, HostName, Lock, Timestamp, UnitId};
 use nodal_core::output::view::{HolderState, Unknowable};
 use nodal_core::runtime::lock::{self, Lineage, Seen};
 use nodal_core::runtime::processes::{self, Presence, Processes, Running};
-use nodal_core::store::{Store, locks, projects, units};
-use nodal_safety::rows;
 
 /// The unit every hold here is on. Nothing is written, so one identifier does.
 const UNIT: &str = "01J9X2K4Q7QW8QG4M2N5B3T6HP";
@@ -512,6 +508,10 @@ fn reads_so_far() -> u64 {
 #[cfg(target_os = "linux")]
 #[test]
 fn the_holders_own_re_entry_reads_no_process_table() {
+    use nodal_core::model::ProjectId;
+    use nodal_core::store::{Store, locks, projects, units};
+    use nodal_safety::rows;
+
     let registry = tempfile::tempdir().expect("a directory");
     let mut store = Store::open(registry.path().join("registry.db")).expect("a registry");
     nodal_core::store::migrations::run(&mut store).expect("the registry is current");
