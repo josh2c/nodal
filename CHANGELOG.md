@@ -22,6 +22,30 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   with, else the one on the `PATH`. When neither holds one, it prints "nodal is not on the
   path" and exits 127, where it ran an empty command and printed `permission denied`.
 
+### Locks
+
+- A unit's write lock records the process that took it as a pinned identity: its
+  identifier and the instant it started. A hold is read as `gone` only where a reading of
+  this host's whole process table does not hold that identity. A process the reading
+  cannot date on both sides, an unreadable table, a row that names no process and a hold
+  taken on another machine are all `unknown`, and none of them frees a hold.
+- `nodal show` and `nodal ls` no longer say "pid 4120 is not on this host any more" about
+  a hold whose own process is running. The reading compared the recorded process against
+  the instant the hold began, which a refresh keeps while it writes the refreshing
+  process's identifier, so every refreshed hold read as a recycled number. The refusal
+  that quoted that reading told the next actor a held home was free
+  (`crates/nodal-core/src/runtime/lock.rs`, `tests/safety/tests/lock_liveness.rs`).
+- A hold moves on three grounds and each writes its own `handoff` line on the unit's log:
+  a reading proved the holder gone, the lease expired on the clock, or a person asked with
+  `--take`. A lapsed hold used to move with nothing written down. A hold that came back to
+  the holder it already had writes no line: the same actor re-entering its own home after
+  the idle window is not a hand-off, and the log no longer says "taken from ada by ada".
+- A holder's process is read as the one the row pinned when the two instants are within a
+  second. The instant is derived from the boot instant, which some kernels recompute, so
+  exact equality reported a running holder gone on a second of arithmetic.
+- This build reads registry schema 17. `lock.pid_started_at` holds the instant, null for every
+  row written before it.
+
 ### Reclaim
 
 - `nodal reclaim` prints a `record` line naming the ref the home was committed to before

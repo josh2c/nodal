@@ -72,6 +72,8 @@
 //! | approvals stay their owner's | one person's reading of a hook decides what runs as another | `tests/shared_host.rs` |
 //! | one writer per home | two actors write one home and neither is told the other is there | `tests/one_writer.rs` |
 //! | an advisory lock | a held unit stops an editor, a `git` call or a read command | `tests/one_writer.rs` |
+//! | a hold held unless proven dead | a holder the reader cannot resolve is read as gone, and its home is handed to the next actor | `tests/lock_liveness.rs` |
+//! | the holder's own re-entry is cheap | the commonest entry of all walks the process table for a reading it never looks at | `tests/lock_liveness.rs` |
 //!
 //! ## How the properties are asserted
 //!

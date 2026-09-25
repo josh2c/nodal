@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 
 use nodal_core::git::Git;
 use nodal_core::model::{
-    Actor, ActorKind, ActorName, Digest, HostName, Lock, Needs, Project, ProjectId, ProjectName,
-    Timestamp, UnitId,
+    Actor, ActorKind, ActorName, Digest, Holding, HostName, Lock, Needs, Project, ProjectId,
+    ProjectName, Timestamp, UnitId,
 };
 use nodal_core::output::Render;
 use nodal_core::output::view::{Disk, HolderState, Unknowable, Unmeasured};
@@ -390,6 +390,15 @@ fn an_unread_process_table_makes_every_readable_home_unknown() {
 /// Written straight to the table rather than through `runtime::lock`, because these
 /// tests are about what a report says of a row that is already there: a row the process
 /// that wrote it did not outlive.
+/// The instant every hold a test writes pins its process to.
+///
+/// Stated rather than read from this machine. A pin is compared for equality, so what a
+/// test has to control is that the row and the table say one thing or two, and an
+/// instant either of them read would leave that to the host.
+fn began() -> Timestamp {
+    Timestamp::from_unix_seconds(1_700_000_000).expect("a stated instant")
+}
+
 fn hold(fixture: &Fixture, branch: &str, host: HostName, pid: Option<u32>) -> UnitId {
     let unit = fixture.units[branch].0;
     let now = Timestamp::now();
@@ -400,7 +409,7 @@ fn hold(fixture: &Fixture, branch: &str, host: HostName, pid: Option<u32>) -> Un
             kind: ActorKind::Agent,
             name: ActorName::parse("claude-code").unwrap(),
         }),
-        pid,
+        process: pid.map(|pid| Holding { pid, started_at: Some(began()) }),
         session: None,
         taken_at: now,
         refreshed_at: now,
@@ -446,13 +455,40 @@ fn a_hold_whose_process_is_running_is_reported_as_held() {
     let (unit, home) = fixture.units["ahead"].clone();
     let pid = 4_120;
     hold(&fixture, "ahead", HostName::current(), Some(pid));
-    let table = Table(vec![running(pid, &unit, &home, &[("CLAUDECODE", "1")])]);
+    // Dated to the instant the row pins the holder to: one process, one identity.
+    let table = Started(vec![running(pid, &unit, &home, &[("CLAUDECODE", "1")])], began());
 
     let list = fixture.list(&table);
     let row = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
 
     assert_eq!(row.holder.as_ref().unwrap().state, HolderState::Live);
     assert!(who(&list, "ahead").contains("claude-code holds"), "{}", who(&list, "ahead"));
+    drop(fixture.directory);
+}
+
+/// A process carries the identifier and the table will not date it, so the holder and a
+/// later process wearing its number read the same. Nothing is proved, and the reading
+/// says so rather than choosing one of the two.
+///
+/// This is the shape a host that answers `EPERM` for another account's process gives on
+/// macOS, and the shape every row written before a hold carried a pin gives anywhere.
+/// Reading it as `live` would claim an identity nothing resolved; reading it as `gone`
+/// would take a home away from somebody still working in it.
+#[test]
+fn a_process_the_table_will_not_date_resolves_no_identity_and_is_never_gone() {
+    let fixture = Fixture::build();
+    let (unit, home) = fixture.units["ahead"].clone();
+    let pid = 4_120;
+    hold(&fixture, "ahead", HostName::current(), Some(pid));
+    let table = Table(vec![running(pid, &unit, &home, &[("CLAUDECODE", "1")])]);
+
+    let list = fixture.list(&table);
+    let row = list.units.iter().find(|row| row.slug.as_str() == "ahead").unwrap();
+    let holder = row.holder.as_ref().expect("the row carries the holder");
+
+    assert_eq!(holder.state, HolderState::Unknown { why: Unknowable::Undated });
+    let cell = who(&list, "ahead");
+    assert!(cell.contains("claude-code holds"), "an unresolved identity let the hold go: {cell}");
     drop(fixture.directory);
 }
 

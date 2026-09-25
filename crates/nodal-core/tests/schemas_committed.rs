@@ -17,6 +17,9 @@ use nodal_core::model::schema;
 /// model type from shipping without a schema.
 const EMBEDDED_TYPES: &[&str] = &[
     "Actor",
+    // The process a hold was taken by, with the instant it started: one identity in two
+    // halves, published inside `Lock`.
+    "Holding",
     "SubFp",
     "SchemaDoc",
     // The sections of a recipe. `nodal.toml` is one document, so `Recipe` is the record

@@ -105,7 +105,7 @@ use crate::lifecycle::kernel::{self, Evidence, LossSet, Verdict};
 use crate::lifecycle::uniqueness::{Finding, SAMPLE, Witness};
 use crate::lifecycle::witness::{self, Checkout};
 use crate::model::reading::{self, Answered, Reading, Store, Unchecked};
-use crate::model::{Needs, Timestamp, UnitId};
+use crate::model::{Holding, Needs, Timestamp, UnitId};
 use crate::paths;
 use crate::runtime::attribute::{Note, Source, Standing};
 use crate::runtime::processes::{self, Processes as _};
@@ -1150,30 +1150,8 @@ pub struct Own<'a> {
     /// tether, or a group a recipe hook left behind.
     pub groups: &'a [u32],
     /// The `nodal run` that each of those groups hangs off, resolved while the group was
-    /// still alive ([`Wrapper`]). Empty for a caller that took no such reading.
-    pub wrappers: &'a [Wrapper],
-}
-
-/// A `nodal run` that started a group Nodal recorded, and when it started.
-///
-/// **Why the instant is here.** The relation that identifies this process — it is the
-/// parent of the leader of a recorded group — can only be read while that leader is
-/// alive, and a reclaim stops the group before it moves the home. So the relation is
-/// resolved once, while it is still readable, and what is carried forward is the answer.
-///
-/// A carried process identifier is exactly the stale number this module refuses to treat
-/// as a name, so it is not treated as one: it counts only when the process wearing it now
-/// started at the instant this one did. An identifier that came round again belongs to a
-/// process that started later, so it cannot match, and a host that does not date its
-/// processes matches nothing at all. Being wrong in that direction leaves a refusal
-/// standing, which is the safe one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Wrapper {
-    /// Its process identifier when the reading was taken.
-    pub pid: u32,
-    /// When it started, from this host's own record. `None` where the host does not say,
-    /// and then nothing matches it.
-    pub started_at: Option<Timestamp>,
+    /// still alive ([`wrappers_of`]). Empty for a caller that took no such reading.
+    pub wrappers: &'a [Holding],
 }
 
 impl<'a> Own<'a> {
@@ -1185,7 +1163,7 @@ impl<'a> Own<'a> {
 
     /// The same, with the `nodal run` each group hangs off already resolved.
     #[must_use]
-    pub const fn and_wrappers(mut self, wrappers: &'a [Wrapper]) -> Self {
+    pub const fn and_wrappers(mut self, wrappers: &'a [Holding]) -> Self {
         self.wrappers = wrappers;
         self
     }
@@ -1249,33 +1227,29 @@ fn vouched_for_by_a_group(process: &processes::Running, own: Own<'_>) -> bool {
 /// identifier that came round again belongs to a process that started later, and a host
 /// that dates nothing proves nothing. Either way the answer is no, which leaves the
 /// stricter reading standing.
-fn is_still(pid: u32, wrapper: Wrapper) -> bool {
-    pid == wrapper.pid && wrapper.started_at.is_some() && started_at(pid) == wrapper.started_at
-}
-
-/// When the process wearing this identifier now started, from this host's own record.
-///
-/// `None` where the host publishes no process table, where the process has gone, and
-/// where the host dates no process. Each of those is "I could not read it", and every
-/// caller here treats that as proof of nothing.
-fn started_at(pid: u32) -> Option<Timestamp> {
-    match processes::Live.presences(&[pid]).ok()?.get(&pid) {
-        Some(processes::Presence::Running { started_at }) => *started_at,
-        _ => None,
-    }
+fn is_still(pid: u32, wrapper: Holding) -> bool {
+    pid == wrapper.pid
+        && wrapper.started_at.is_some()
+        && processes::started_at(pid) == wrapper.started_at
 }
 
 /// The `nodal run` each of these groups hangs off, read while the groups are alive.
 ///
 /// Taken by the caller that still can — before anything is stopped — because the relation
-/// is unreadable afterwards ([`Wrapper`]).
+/// that identifies the process is the parent of the leader of a recorded group, and a
+/// reclaim stops that group before it moves the home. So the relation is resolved once,
+/// while it is still readable, and what is carried forward is the answer.
+///
+/// What is carried is a [`Holding`]: a number and the instant the process wearing it
+/// started. A carried identifier on its own is exactly the stale number this module
+/// refuses to treat as a name, and the pin is what makes it one again ([`is_still`]).
 #[must_use]
-pub fn wrappers_of(groups: &[u32]) -> Vec<Wrapper> {
+pub fn wrappers_of(groups: &[u32]) -> Vec<Holding> {
     groups
         .iter()
         .filter_map(|leader| processes::parent_of(*leader))
         .filter(|pid| *pid > 1)
-        .map(|pid| Wrapper { pid, started_at: started_at(pid) })
+        .map(|pid| Holding { pid, started_at: processes::started_at(pid) })
         .collect()
 }
 
@@ -2030,8 +2004,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        Assessment, CommitGroup, Copies, Fate, Held, Needs, Own, PathGroup, Reason, Timestamp,
-        Wrapper, bystander, owns,
+        Assessment, CommitGroup, Copies, Fate, Held, Holding, Needs, Own, PathGroup, Reason,
+        Timestamp, bystander, owns, processes,
     };
     use crate::git::Oid;
     use crate::git::status::{Change, Entry, State, Submodule};
@@ -2100,7 +2074,7 @@ mod tests {
         let standing = crate::runtime::processes::Running::new(pid, BTreeMap::new())
             .in_directory(&home)
             .running("nodal run");
-        let asked = |wrappers: &[Wrapper]| {
+        let asked = |wrappers: &[Holding]| {
             bystander(
                 &standing,
                 Own::of(unit, &[]).and_wrappers(wrappers),
@@ -2109,11 +2083,11 @@ mod tests {
             )
         };
 
-        let started_at = super::started_at(pid).unwrap();
+        let started_at = processes::started_at(pid).unwrap();
 
         // No group to read: the reclaim stopped it. The carried answer is what is left.
         assert!(
-            !asked(&[Wrapper { pid, started_at: Some(started_at) }]),
+            !asked(&[Holding { pid, started_at: Some(started_at) }]),
             "the wrapper is not a stranger once its group has gone"
         );
 
@@ -2121,18 +2095,18 @@ mod tests {
         // belongs to a process that started later, so it matches nothing.
         let earlier = Timestamp::from_unix_seconds(started_at.unix_seconds() - 60).ok();
         assert!(
-            asked(&[Wrapper { pid, started_at: earlier }]),
+            asked(&[Holding { pid, started_at: earlier }]),
             "a number that came round again proves nothing"
         );
 
         // And an undated reading is not evidence either.
-        assert!(asked(&[Wrapper { pid, started_at: None }]), "an undated reading is not evidence");
+        assert!(asked(&[Holding { pid, started_at: None }]), "an undated reading is not evidence");
 
         // What the wrapper started is its own too, while the wrapper is the one read. The
         // process that started this test stands in for the wrapper, and this test for the
         // process it started.
         let parent = crate::runtime::processes::parent_of(pid).unwrap();
-        let carried = [Wrapper { pid: parent, started_at: super::started_at(parent) }];
+        let carried = [Holding { pid: parent, started_at: processes::started_at(parent) }];
         let vouched = !asked(&carried);
         assert!(vouched, "a process the wrapper started is not a stranger");
     }

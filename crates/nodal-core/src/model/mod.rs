@@ -44,7 +44,7 @@ pub use crate::model::ids::{
     BaseId, EnvId, EventId, OperationId, ProjectId, SessionId, TemplateId, UnitId,
 };
 pub use crate::model::lease::{Lease, ResourceKey};
-pub use crate::model::lock::{DEFAULT_IDLE_HOURS, Lock};
+pub use crate::model::lock::{DEFAULT_IDLE_HOURS, Holding, Lock};
 pub use crate::model::manifest::{Manifest, Missing, Origin, Want};
 pub use crate::model::needs::Needs;
 pub use crate::model::operation::State as OperationState;

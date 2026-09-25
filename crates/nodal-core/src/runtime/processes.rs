@@ -61,7 +61,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::Result;
-use crate::model::Timestamp;
+use crate::model::{Holding, Timestamp};
 
 /// One process, with what a scan keeps about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -386,6 +386,42 @@ pub fn parent_of(pid: u32) -> Option<u32> {
     {
         let _ = pid;
         None
+    }
+}
+
+/// This process, named by its identifier and pinned to the instant it started.
+///
+/// What a hold records for its holder ([`crate::model::Holding`]). The identifier is
+/// asked of the kernel and the instant is read from this host's own table, so the pin a
+/// hold is written with is taken the same way as every later reading it is compared
+/// against: one number, one arithmetic, one answer.
+///
+/// `started_at` is `None` where this host would not date the process. The record then
+/// says what was read and no more, and a later reading of that row resolves no identity
+/// and proves nothing ([`crate::runtime::lock::liveness`]).
+///
+/// One process is asked for, so this is two small reads of the table and never a scan.
+#[must_use]
+pub fn current_process() -> Holding {
+    let pid = std::process::id();
+    Holding { pid, started_at: started_at(pid) }
+}
+
+/// When the process wearing this identifier now started, from this host's own record.
+///
+/// `None` where this host publishes no process table, where the process has gone, and
+/// where the host dates no process it found. Each of those is "I could not read it", and
+/// every caller treats it as proof of nothing — which of the two directions that is
+/// safe in belongs to the caller, not here. A hold reads it and stands
+/// ([`crate::runtime::lock::liveness`]); a reclaim reads it and refuses
+/// ([`crate::lifecycle::assess`]).
+///
+/// One process is asked for, so this is two small reads of the table and never a scan.
+#[must_use]
+pub fn started_at(pid: u32) -> Option<Timestamp> {
+    match Live.presences(&[pid]).ok()?.get(&pid) {
+        Some(Presence::Running { started_at }) => *started_at,
+        Some(Presence::Gone) | None => None,
     }
 }
 

@@ -20,6 +20,28 @@ use crate::model::timestamp::Timestamp;
 /// Hours a lock survives with nothing entering the home, when a recipe does not say.
 pub const DEFAULT_IDLE_HOURS: u32 = 8;
 
+/// The process a hold was taken by: its identifier, and when that identifier began.
+///
+/// The two travel together because neither answers the question on its own. An
+/// identifier is reused, so a number alone cannot tell the process that took a hold
+/// from a later one wearing its number; and a start instant names no process. Two
+/// fields on the lock would be two fields that can disagree, and a pin with no process
+/// would be a record of nothing.
+///
+/// The pin is what makes a reading of the table a proof. A process found at this
+/// identifier and dated to this instant is the holder, and one dated to any other
+/// instant is a stranger. Where either side is undated the reading proves nothing, and
+/// [`crate::runtime::lock::liveness`] says so rather than guessing
+/// (`docs/contracts.md`, Locks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Holding {
+    /// The identifier the process carried.
+    pub pid: u32,
+    /// When it started, `None` on a host that would not date it. A process of another
+    /// account on macOS is found and not dated.
+    pub started_at: Option<Timestamp>,
+}
+
 /// The single-writer claim on a unit.
 ///
 /// Two clocks, and they answer different questions. `expires_at` is the absolute lapse
@@ -36,9 +58,12 @@ pub struct Lock {
     /// Who holds it. `None` for a row written before locks carried an actor: such a row
     /// names a host and holds no actor, and the next entry rewrites it.
     pub actor: Option<Actor>,
-    /// The process that took the hold. Recorded so a person can look. Nothing signals
-    /// it, and a lock is never expired because the process is gone.
-    pub pid: Option<u32>,
+    /// The process that took the hold, pinned to the instant it started.
+    ///
+    /// `None` for a row written before locks carried a process, and on a host that
+    /// would not name this one. Nothing signals it, and a lock is never expired
+    /// because the process is gone.
+    pub process: Option<Holding>,
     /// The POSIX session that process was in: the lineage the hold belongs to.
     ///
     /// What a re-entry is measured against, because an actor name is not a writer. Why
@@ -58,6 +83,19 @@ pub struct Lock {
 }
 
 impl Lock {
+    /// The identifier of the process the hold was taken by, `None` when it records none.
+    ///
+    /// One question with one spelling. Five places asked it — the two writers of the
+    /// row, the two readings of the table and the report — and each reached through the
+    /// pin for the half it wanted.
+    #[must_use]
+    pub const fn pid(&self) -> Option<u32> {
+        match &self.process {
+            Some(held) => Some(held.pid),
+            None => None,
+        }
+    }
+
     /// Whether the lock has lapsed at `now`, by either clock.
     ///
     /// Two ways to lapse and both count. The absolute lapse is what a bundle from
@@ -119,7 +157,7 @@ impl Lock {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
-    use super::Lock;
+    use super::{Holding, Lock};
     use crate::model::{Actor, ActorKind, ActorName, HostName, Timestamp, UnitId};
 
     /// A person at a terminal, by the name they log in as.
@@ -133,7 +171,7 @@ mod tests {
             unit_id: "01J9X2K4Q7QW8QG4M2N5B3T6HP".parse::<UnitId>().unwrap(),
             host: HostName::parse("laptop").unwrap(),
             actor: Some(actor("ada")),
-            pid: Some(4_120),
+            process: Some(Holding { pid: 4_120, started_at: Timestamp::from_unix_seconds(0).ok() }),
             session: Some(4_100),
             taken_at: Timestamp::from_unix_seconds(taken).unwrap(),
             refreshed_at: Timestamp::from_unix_seconds(refreshed).unwrap(),

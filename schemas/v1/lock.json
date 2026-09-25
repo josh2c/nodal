@@ -39,6 +39,32 @@
       "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]+$",
       "type": "string"
     },
+    "Holding": {
+      "description": "The process a hold was taken by: its identifier, and when that identifier began.\n\nThe two travel together because neither answers the question on its own. An\nidentifier is reused, so a number alone cannot tell the process that took a hold\nfrom a later one wearing its number; and a start instant names no process. Two\nfields on the lock would be two fields that can disagree, and a pin with no process\nwould be a record of nothing.\n\nThe pin is what makes a reading of the table a proof. A process found at this\nidentifier and dated to this instant is the holder, and one dated to any other\ninstant is a stranger. Where either side is undated the reading proves nothing, and\n[`crate::runtime::lock::liveness`] says so rather than guessing\n(`docs/contracts.md`, Locks).",
+      "properties": {
+        "pid": {
+          "description": "The identifier the process carried.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When it started, `None` on a host that would not date it. A process of another\naccount on macOS is found and not dated."
+        }
+      },
+      "required": [
+        "pid"
+      ],
+      "type": "object"
+    },
     "HostName": {
       "description": "The name of a host a unit can live on.",
       "maxLength": 255,
@@ -80,14 +106,16 @@
       "$ref": "#/$defs/HostName",
       "description": "The host that holds the write."
     },
-    "pid": {
-      "description": "The process that took the hold. Recorded so a person can look. Nothing signals\nit, and a lock is never expired because the process is gone.",
-      "format": "uint32",
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
+    "process": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Holding"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The process that took the hold, pinned to the instant it started.\n\n`None` for a row written before locks carried a process, and on a host that\nwould not name this one. Nothing signals it, and a lock is never expired\nbecause the process is gone."
     },
     "refreshed_at": {
       "$ref": "#/$defs/Timestamp",

@@ -17,9 +17,9 @@ use nodal_core::model::recipe::{
 };
 use nodal_core::model::{
     Actor, ActorKind, ActorName, Base, BaseId, BranchName, CommitId, DbName, DbTemplate, Digest,
-    EnvId, EnvState, Environment, Epistemic, Event, EventId, EventKind, HostName, Lease, Lock,
-    Objective, Platform, PortName, Ports, Project, ProjectId, ProjectName, RawRef, Recipe, RefName,
-    ResourceKey, SchemaFp, Session, SessionId, Slug, TemplateId, Timestamp, Unit, UnitId,
+    EnvId, EnvState, Environment, Epistemic, Event, EventId, EventKind, Holding, HostName, Lease,
+    Lock, Objective, Platform, PortName, Ports, Project, ProjectId, ProjectName, RawRef, Recipe,
+    RefName, ResourceKey, SchemaFp, Session, SessionId, Slug, TemplateId, Timestamp, Unit, UnitId,
     UnitStatus, Version, WorkspaceFp,
 };
 use serde::Serialize;
@@ -180,7 +180,7 @@ fn lock() -> Lock {
             kind: ActorKind::Agent,
             name: ActorName::parse("claude-code").expect("sample actor is a line"),
         }),
-        pid: Some(4_120),
+        process: Some(Holding { pid: 4_120, started_at: Some(at("2026-09-06T08:59:00Z")) }),
         session: Some(4_100),
         taken_at: at("2026-09-06T09:00:00Z"),
         refreshed_at: at("2026-09-06T10:30:00Z"),

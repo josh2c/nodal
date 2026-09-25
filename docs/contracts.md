@@ -867,8 +867,19 @@ free lock. It refuses nobody, and a second actor's shell carries the unit's vari
 A hold lapses two ways. The absolute expiry passes, which is the clock a transfer bundle carries from
 another host. Or nobody enters the home for the idle window, which is `lock.idle_hours` in
 `nodal.toml` and eight hours when the recipe does not say. The idle window runs from the last entry.
-A lapsed hold is taken by the next actor without `--take` and without a hand-off, because nothing was
-taken from anybody.
+A lapsed hold is taken by the next actor without `--take`, and the take is written on the unit's log
+as a hand-off saying the previous holder's lease had expired.
+
+A hold is taken from a previous holder on three grounds and no others: a reading proved the holder
+gone, the lease expired on the clock, or a person asked with `--take`. Each writes its own line on
+the unit's log, because a hold that moved with no reason recorded is a hold a person cannot account
+for afterwards, and the two that happen without anybody asking are exactly the ones worth reading.
+
+A recorded move is a real move. A hold that came back to the holder it already had — the same actor,
+on the same host, from the same lineage — changed nobody's hands, and nothing is written. The lapse
+is still real: the row was anybody's for the asking, and the next person to ask happened to be its
+own holder. An unstated lineage on either side writes nothing either, because nothing there can show
+the hold moved.
 
 `--take` moves a hold that has not lapsed. It writes a `handoff` event on the unit naming who it came
 from and who it went to. Nothing else moves a live hold.
@@ -889,9 +900,10 @@ shell is the same holder and passes, and `nodal run --tether` keeps working: the
 the shell that started it holds.
 
 Where the recorded session still holds a process, a second lineage of the same actor is refused, and
-the refusal says which of the two the hold belongs to. Where it holds none, the hold has lapsed for
-re-entry: the next actor takes it, the take is written on the unit's log as a hand-off, and the log
-says the previous holder was gone.
+the refusal says which of the two the hold belongs to. Where a reading of the whole table holds none,
+the holder is proven gone and the hold has lapsed for re-entry: the next actor takes it, the take is
+written on the unit's log as a hand-off, and the log says the previous holder was proven gone from
+this host. Nothing short of that reading frees a lineage.
 
 A reading that could not be taken refuses nobody, and never lets a hold go. "I cannot see" is not "it
 is gone", and three things say it: a host that publishes no process table, a table this host could not
@@ -911,10 +923,37 @@ The process that took a hold is recorded and reported. Nothing signals it, and n
 session either: both numbers are read from the process table and written down. No hold is released
 because the recorded process is gone.
 
+The row names that process by a pinned identity: its identifier and the instant it started
+(`lock.pid`, `lock.pid_started_at`). Neither half is an identity on its own. An identifier is reused,
+so a number alone cannot tell the process that took a hold from a later one wearing its number; and
+an instant names no process. A row written before holds carried a pin records the identifier and no
+instant, and a host that will not date a process — another account's on macOS — records the same.
+
 A report says whether that actor is still there. The holder carries a `state`: `live`, `gone`, or
-`unknown` with the reason it could not be read — the hold is on another machine, the row records no
-process, or this host has no process table. The reading is the process table and never a signal. It is
-one question: whether the process the row records is still on this host.
+`unknown` with the reason the reading proved nothing — the hold is on another machine, the row
+records no process, this host has no process table, or a process carries the identifier and one of
+the two sides is undated, so the holder and a later process wearing its number read alike. The
+reading is the process table and never a signal. It is one question: whether the process the row
+pinned is still on this host.
+
+**Gone is a proof and never a default.** The only reading that says it is a reading of this host's
+table that the pinned identity is not in it: no process carries the identifier, or one does and began
+at another instant. Every reading that stops short of that is `unknown`, and `unknown` never takes a
+home away from anybody.
+
+Two readings of one start instant may differ by a second and still be one process. The instant is
+derived rather than stated — Linux publishes the boot instant and the process's age in ticks, and the
+sum moves when a kernel recomputes the boot instant as now minus uptime — so exact equality reported
+a running holder gone on nothing but that arithmetic. A second of slack is the width of it. What the
+slack could admit is an identifier reused within a second of the hold being taken, which needs the
+whole identifier space to come round inside that second, and it errs towards the hold standing.
+
+The instant compared against is the row's own pin, and never the instant the hold began. A refresh
+keeps `taken_at`, because the hold began when it began, and writes the refreshing process's own
+identifier, because that is the process to look for now. Comparing the second against the first read
+every refreshed hold as an identifier that had come round again: `nodal show` printed "pid 4120 is
+not on this host any more" about a process that was running, and the refusal told the next actor the
+home was free. A false "the holder is gone" is what grants a write the lock exists to refuse.
 
 Nothing else raises a hold to `live`. An actor name is not a process, and neither is the unit's own
 identifier: an agent that is killed leaves a child standing in the home, and that child carries both.
@@ -1552,7 +1591,7 @@ is still attached to is never reported, whatever the clock says.
 
 The registry is one SQLite file, `registry.db`, in Nodal's state directory. SQLite's own
 `PRAGMA user_version` records how far the file has come. **Version 0.1.0-rc.3 reads
-registry schema 14.**
+registry schema 17.**
 
 This number is not the version of the JSON schema catalogue in `schemas/`. The catalogue
 is `v1` and is versioned by directory (`schemas/README.md`). The two numbers move
@@ -1566,7 +1605,7 @@ person runs no upgrade command. A registry that is already current takes no writ
 message names both numbers:
 
 ```
-/home/you/.nodal/registry.db is at schema version 15, and this build understands 14
+/home/you/.nodal/registry.db is at schema version 18, and this build understands 17
 ```
 
 **There is no down-migration.** A registry that a newer binary migrated cannot be brought

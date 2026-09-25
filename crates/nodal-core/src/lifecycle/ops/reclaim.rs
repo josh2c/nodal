@@ -132,8 +132,8 @@ use crate::lifecycle::witness::Checkout;
 use crate::lifecycle::{Done, Rebuild, marker, run};
 use crate::model::reading::{Reading, Unchecked};
 use crate::model::{
-    EnvId, EnvState, Environment, EventKind, Project, Recipe, Rested, Timestamp, Trashed, Unit,
-    UnitId, UnitStatus, expiry,
+    EnvId, EnvState, Environment, EventKind, Holding, Project, Recipe, Rested, Timestamp, Trashed,
+    Unit, UnitId, UnitStatus, expiry,
 };
 use crate::output::view::{Leftover, Preflight, Preflights, Pruned, Reclaimed};
 use crate::runtime::attribute::{Note, Source};
@@ -224,13 +224,13 @@ pub struct Params {
     /// A reclaim stops the groups before it moves the home, and the relation that says
     /// "this process is the one that started that group" cannot be read once the group
     /// has gone. So it is read here, before anything is stopped, and each answer is
-    /// pinned to the instant that process started ([`assess::Wrapper`]). Nothing here is
+    /// pinned to the instant that process started ([`assess::wrappers_of`]). Nothing here is
     /// ever signalled: it only stops Nodal's own wrapper being mistaken for a stranger in
     /// the moment between its group ending and itself ending.
     ///
     /// Defaulted on the way in, for the reason the groups are.
     #[serde(default)]
-    pub wrappers: Vec<assess::Wrapper>,
+    pub wrappers: Vec<Holding>,
     /// Whether the home is moved although something Nodal did not start is standing in
     /// it. Journalled, because the step that refuses the move is the one a rebuilt plan
     /// runs again, and it has to refuse the same way.
@@ -737,7 +737,7 @@ struct StopRuntime {
     /// The process groups its tethers hold, from the journal rather than the machine.
     tethers: Vec<u32>,
     /// The `nodal run` each of them hangs off, from the journal for the same reason.
-    wrappers: Vec<assess::Wrapper>,
+    wrappers: Vec<Holding>,
 }
 
 impl Step for StopRuntime {
@@ -817,7 +817,7 @@ struct Occupancy {
     /// The `nodal run` each group hangs off. Both steps run after the groups were
     /// stopped, which is exactly when that relation can no longer be read, so it is
     /// carried here from before.
-    wrappers: Vec<assess::Wrapper>,
+    wrappers: Vec<Holding>,
 }
 
 impl Occupancy {

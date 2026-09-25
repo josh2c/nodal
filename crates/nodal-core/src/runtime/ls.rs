@@ -150,7 +150,7 @@ impl Held {
     ) -> Result<Self> {
         let here = HostName::current();
         // One reading of the process table for every lock, rather than one for each.
-        let pids: Vec<u32> = locks.iter().filter_map(|lock| lock.pid).collect();
+        let pids: Vec<u32> = locks.iter().filter_map(Lock::pid).collect();
         let seen = crate::runtime::lock::Seen::read(processes, &pids);
         let mut groups: BTreeMap<EnvId, Vec<u32>> = BTreeMap::new();
         for session in session_rows::list_open_all(conn)? {
