@@ -636,41 +636,41 @@ fn occupant(steps: &mut Steps, home: &Path, shape: Occupant) -> Started {
     }
 }
 
-/// A process of this account that this account may not read.
+/// A process of this account that this account may not read, and the process it belongs to.
 ///
-/// `prctl(PR_SET_DUMPABLE, 0)` is the one way to make one without a second account: the
-/// kernel then owns every file under `/proc/<pid>` and refuses this account the working
-/// directory, the environment and the descriptors. It has to be set in a child that does not
-/// `exec`, because `execve` puts the attribute back.
+/// Two processes, and the pair is the relation the refusal rests on. A withheld process refuses
+/// a managed move over the one thing still readable about it: its lineage. A hidden process
+/// descended from nothing near the home is a residual the report states and refuses nothing; one
+/// whose group leader stands in the home is the command a person typed there and the job it
+/// started, and that is occupancy.
 ///
-/// The reading is then checked rather than assumed. A host that answered anyway is a host
-/// the shape was not built on, and it says so instead of asserting nothing quietly.
-#[cfg(target_os = "linux")]
+/// [`Hidden::forked_in`] answers nothing on a host that will not make one, and then the shape is
+/// not built and [`Hidden::why`] says why. The readable half is started either way, so the note
+/// is about the one value the host refused and not about the whole shape.
 fn unreadable(steps: &mut Steps, home: &Path) -> Started {
     let typed = nodal_safety::process::standing_in(home);
     steps.note(format!("(cd {} && sleep 30 &)", home.display()));
-    let Some(hidden) = Hidden::forked_in(home, typed.pid()) else {
-        let why = String::from("this host lets the account read a process that hid itself");
-        return Started { held: vec![typed], skipped: Some(why), ..Started::default() };
-    };
-    steps.note(String::from("# and the job it started, with prctl(PR_SET_DUMPABLE, 0)"));
-    Started { held: vec![typed], hidden: Some(hidden), skipped: None }
-}
-
-/// macOS publishes no such attribute and no such table, so the shape is not built there.
-#[cfg(not(target_os = "linux"))]
-fn unreadable(_steps: &mut Steps, _home: &Path) -> Started {
-    let why = String::from("this host publishes no per-process table for a process to hide from");
-    Started { skipped: Some(why), ..Started::default() }
+    match Hidden::forked_in(home, typed.pid()) {
+        Some(hidden) => {
+            steps.note(String::from("# and the job it started, with prctl(PR_SET_DUMPABLE, 0)"));
+            Started { held: vec![typed], hidden: Some(hidden), skipped: None }
+        }
+        None => {
+            Started { held: vec![typed], hidden: None, skipped: Some(String::from(Hidden::why())) }
+        }
+    }
 }
 
 /// A child of this process that this account may not read.
 ///
-/// The kit owns every other process a fixture starts, and it cannot own this one. A child
-/// that never `exec`s is a child of the test process, so nothing else can reap it: the kit's
-/// reclaim signals the group and then waits for the process to leave the table, and a child
-/// nobody waited for stays in it as a zombie for ever. So this type signals it and reaps it,
-/// in that order, and it is the only process in this crate that is not the kit's.
+/// The kit owns every other process a fixture starts, and it cannot own this one. A child that
+/// never `exec`s is a child of the test process, so nothing else can reap it: the kit's reclaim
+/// signals the group and then waits for the process to leave the table, and a child nobody
+/// waited for stays in it as a zombie for ever. So this type signals it and reaps it, in that
+/// order, and it is the only process in this crate that is not the kit's.
+///
+/// One type and two hosts. Linux publishes the attribute that makes a process unreadable to its
+/// own account; macOS does not, and there the constructor answers nothing and the reason says so.
 #[cfg(target_os = "linux")]
 struct Hidden {
     /// The child.
@@ -679,31 +679,26 @@ struct Hidden {
 
 #[cfg(target_os = "linux")]
 impl Hidden {
-    /// Fork a child that hides itself, stands in `home`, and sleeps.
+    /// Fork a child that hides itself, joins `leader`'s process group, stands in `home`, and
+    /// sleeps.
     ///
-    /// `prctl(PR_SET_DUMPABLE, 0)` is the one way to make an unreadable process without a
-    /// second account: the kernel then owns every file under `/proc/<pid>` and refuses this
-    /// account the working directory, the environment and the descriptors. It has to be set
-    /// in a child that does not `exec`, because `execve` puts the attribute back.
+    /// `prctl(PR_SET_DUMPABLE, 0)` is the one way to make an unreadable process without a second
+    /// account: the kernel then owns every file under `/proc/<pid>` and refuses this account the
+    /// working directory, the environment and the descriptors. It has to be set in a child that
+    /// does not `exec`, because `execve` puts the attribute back.
     ///
-    /// The child joins `leader`'s process group, and that is what makes the shape the one FS-6
-    /// is about. A withheld process refuses a move over the one thing still readable about it:
-    /// its lineage. A hidden process descended from nothing near the home is a residual the
-    /// report states and refuses nothing; a hidden process whose group leader stands in the
-    /// home is the command a person typed there and the job it started, and that is occupancy.
-    ///
-    /// The child calls `prctl`, `chdir`, `nanosleep` and `_exit` and allocates nothing. Each
-    /// of those is safe to call between a fork and an exec in a process that has threads, and
-    /// this child never execs and never returns into Rust. The path is made into a C string
-    /// before the fork for the same reason.
+    /// The child calls `setpgid`, `prctl`, `chdir`, `nanosleep` and `_exit` and allocates
+    /// nothing. Each of those is safe to call between a fork and an exec in a process that has
+    /// threads, and this child never execs and never returns into Rust. The path is made into a C
+    /// string before the fork for the same reason.
     fn forked_in(home: &Path, leader: u32) -> Option<Self> {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt as _;
 
         let at = CString::new(home.as_os_str().as_bytes()).ok()?;
         let group = i32::try_from(leader).ok()?;
-        // SAFETY: the child below calls only functions that are safe between a fork and an
-        // exec, and it ends with `_exit`, which runs no handler and no destructor.
+        // SAFETY: the child below calls only functions that are safe between a fork and an exec,
+        // and it ends with `_exit`, which runs no handler and no destructor.
         let forked = unsafe { libc::fork() };
         if forked == 0 {
             // SAFETY: as above.
@@ -716,19 +711,18 @@ impl Hidden {
                 libc::_exit(0);
             }
         }
-        let pid = u32::try_from(forked).ok()?;
-        let hidden = Self { pid };
+        let hidden = Self { pid: u32::try_from(forked).ok()? };
         hidden.hid()?;
         Some(hidden)
     }
 
-    /// Wait until this account really cannot read the child, and answer nothing where it
-    /// still can.
+    /// Wait until this account really cannot read the child, and answer nothing where it still
+    /// can.
     ///
     /// The attribute is set by the child, after the fork returned in the parent. So a reading
-    /// taken the instant the fork returns is a reading of a child that has not hidden yet,
-    /// and a shape built on it would assert the opposite of what it names. The wait is
-    /// bounded: a host that never refuses the reading is a host the shape is not built on.
+    /// taken the instant the fork returns is a reading of a child that has not hidden yet, and a
+    /// shape built on it would assert the opposite of what it names. The wait is bounded: a host
+    /// that never refuses the reading is a host the shape is not built on.
     fn hid(&self) -> Option<()> {
         let cwd = format!("/proc/{}/cwd", self.pid);
         let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -740,6 +734,11 @@ impl Hidden {
         }
         None
     }
+
+    /// What this host said when it would not make one.
+    const fn why() -> &'static str {
+        "this host lets the account read a process that hid itself"
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -747,12 +746,31 @@ impl Drop for Hidden {
     /// Signal the child and reap it, so it leaves the table rather than staying in it.
     fn drop(&mut self) {
         let pid = i32::try_from(self.pid).unwrap_or_default();
-        // SAFETY: both calls take a process identifier this type forked and nothing else
-        // holds, and neither writes through a pointer.
+        // SAFETY: both calls take a process identifier this type forked and nothing else holds,
+        // and neither writes through a pointer.
         unsafe {
             libc::kill(pid, libc::SIGKILL);
             libc::waitpid(pid, std::ptr::null_mut(), 0);
         }
+    }
+}
+
+/// macOS publishes no per-process attribute for a process to hide behind, and no table to hide
+/// from. The type is here so that a shape carries the same field on both hosts, and it is never
+/// made.
+#[cfg(not(target_os = "linux"))]
+struct Hidden;
+
+#[cfg(not(target_os = "linux"))]
+impl Hidden {
+    /// Nothing, on this host.
+    const fn forked_in(_home: &Path, _leader: u32) -> Option<Self> {
+        None
+    }
+
+    /// What this host said when it would not make one.
+    const fn why() -> &'static str {
+        "this host publishes no per-process attribute for a process to hide behind"
     }
 }
 
