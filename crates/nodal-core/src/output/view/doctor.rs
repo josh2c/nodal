@@ -229,9 +229,14 @@ pub struct Branches {
     pub rows: Vec<BranchRow>,
     /// Whether a reading of the remote itself stood behind the table.
     ///
-    /// It decides one sentence and no row: what the table says when it found nothing. A
-    /// reading of this checkout's own refs may say it has seen every commit on a remote;
-    /// only a reading of the remote may say the remote has them.
+    /// Every row's word rests on it, and so does the sentence the table ends on when it
+    /// found nothing. A reading of this checkout's own refs may say it has seen every commit
+    /// on a remote; only a reading of the remote may say the remote has them.
+    ///
+    /// Each row still carries its own word rather than recomputing one from this
+    /// ([`Standing`]), because the word is a fact of the row: the worktree section prints
+    /// rows of several repositories, and the reading that stood behind each is that
+    /// repository's.
     #[serde(default)]
     pub checked: bool,
     /// Whether the safe buckets print row by row (`--all`).

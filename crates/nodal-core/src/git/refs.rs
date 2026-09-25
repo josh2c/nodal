@@ -12,6 +12,25 @@ const LOGS: &str = "logs";
 /// Where Nodal keeps its own refs inside a unit's repository.
 pub const NAMESPACE: &str = "refs/nodal/";
 
+/// Where a repository keeps its own branches.
+pub const HEADS: &str = "refs/heads/";
+
+/// Where a repository keeps its reading of a remote.
+///
+/// A reading of somewhere else, never something the repository has to say for itself. What
+/// counts as work it holds, and what counts as a durable copy it can vouch for, both leave
+/// this namespace out ([`crate::git::outside::owned`]).
+pub const TRACKING: &str = "refs/remotes/";
+
+/// The ref under `refs/remotes/<remote>/` that names a default branch rather than one.
+pub const DEFAULT: &str = "HEAD";
+
+/// The remote every question about "the" remote is about.
+///
+/// Named, and that is the point of the constant. A project may have an `upstream` it was
+/// forked from or a `backup` it mirrors to, and neither says whether this one has a commit.
+pub const REMOTE: &str = "origin";
+
 /// Where a home keeps the copy it took of the person's own checkout's branches.
 ///
 /// A home is cloned from a base, and a base is a clone of the remote. Neither of them

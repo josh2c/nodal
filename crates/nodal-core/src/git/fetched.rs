@@ -29,13 +29,10 @@
 //! ran `git fetch origin main` leaves a file naming `main` alone. Every other branch is
 //! then unobserved, which is the refusing direction and the true one.
 //!
-//! The reflog of the tracking ref is the second record, and it is read for one thing this
-//! file cannot answer ([`crate::git::refs::last_move`]). Git writes a line there every
-//! time the ref moves, and a **push** moves it as surely as a fetch does. A ref whose
-//! last movement was a push is this repository's record of what it sent, which is the
-//! very thing that may not stand as a reading. Absence of a line is not evidence either
-//! way: Git writes none until the ref first moves, so an unchanged branch of a fresh
-//! clone has no log at all, and that is the ordinary case rather than a suspicious one.
+//! What it cannot answer alone is whether an absence in the listing is an absence on the
+//! remote, and the ref answers that: a fetch that pruned deleted the ref of a branch the
+//! remote dropped, and a fetch of one branch by name left every other ref standing
+//! ([`crate::lifecycle::witness`]).
 //!
 //! Nothing here starts a process. Both records are files Git wrote, and they are read
 //! with `read_to_string` and `stat`.

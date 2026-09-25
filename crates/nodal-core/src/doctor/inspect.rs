@@ -16,7 +16,8 @@ use std::fs;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
-use crate::doctor::unique::{CloneReading, RemoteTip};
+use crate::doctor::unique::CloneReading;
+use crate::git::refs::{DEFAULT as HEAD, TRACKING};
 use crate::git::{Git, Oid};
 use crate::model::Timestamp;
 use crate::output::view::machine::{CloneRow, IgnoredDir};
@@ -24,17 +25,6 @@ use crate::{Error, Result};
 
 /// How many ignored directories a row keeps.
 const TOP: usize = 3;
-
-/// Where a repository keeps its reading of any remote at all.
-///
-/// The wider prefix [`REMOTES`] sits inside, and the two answer different questions. That
-/// one asks what this clone last saw of `origin`. This one asks which refs are a reading
-/// of somewhere else, whoever the somewhere is, so that what is left over is what the
-/// repository holds of its own accord.
-const TRACKING: &str = "refs/remotes/";
-
-/// The ref under `refs/remotes/<remote>/` that names a default branch rather than one.
-const HEAD: &str = "HEAD";
 
 /// Files seen already in this survey, by device and inode, so a hardlinked file is
 /// counted once towards a group even though every clone holding it has it.
@@ -128,7 +118,7 @@ fn reading_of(git: &Git, path: &Path, branch: Option<&str>) -> CloneReading {
     let refspecs = git.fetch_refspecs("origin").unwrap_or_default();
     CloneReading {
         head,
-        remotes: remote_tips(&tips),
+        remotes: super::unique::tracked_in(&tips),
         own: own_tips(&tips),
         tips: tips.into_iter().map(|reference| reference.oid).collect(),
         heard: super::unique::heard(path),
@@ -163,18 +153,6 @@ fn head_of(git: &Git, branch: Option<&str>, tips: &[crate::git::refs::Ref]) -> R
         Err(Error::Git { .. }) => Ok(None),
         Err(error) => Err(error),
     }
-}
-
-/// What this clone last saw of `origin`, branch by branch.
-///
-/// One maker for this reading, over in [`super::unique::tracked_in`], because three
-/// callers ask it and a second implementation is a second answer. Refs of any other remote
-/// are left out: a group is the clones that share the URL of `origin`, so `origin` is the
-/// remote the group's question is about, and `backup/main` is not a reading of
-/// `origin/main`. They stay in `tips`, because a ref of any name keeps an object alive in
-/// the store it sits in, and that is a second copy whoever wrote the ref.
-fn remote_tips(tips: &[crate::git::refs::Ref]) -> Vec<RemoteTip> {
-    super::unique::tracked_in(tips)
 }
 
 /// Paths a commit would capture. A status Git cannot read is none.
@@ -289,57 +267,4 @@ fn top_ignored(prefixes: &[PathBuf], buckets: &[u64], shared: &[u64]) -> Vec<Ign
     });
     dirs.truncate(TOP);
     dirs
-}
-
-#[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests fail by panicking")]
-mod tests {
-    use super::remote_tips;
-    use crate::git::Oid;
-    use crate::git::refs::Ref;
-
-    fn reference(name: &str, seed: u8) -> Ref {
-        Ref {
-            name: name.to_owned(),
-            oid: Oid::parse(&format!("{seed:02x}").repeat(20)).expect("a well formed id"),
-        }
-    }
-
-    /// A branch with a slash in it keeps every part after the remote.
-    #[test]
-    fn a_remote_ref_gives_up_its_remote_and_keeps_its_branch() {
-        let tips = [reference("refs/remotes/origin/nodal/doctor", 1)];
-        let remotes = remote_tips(&tips);
-        assert_eq!(remotes.len(), 1);
-        assert_eq!(remotes[0].branch, "nodal/doctor");
-    }
-
-    /// A group is the clones of one `origin`, and a second remote is a different
-    /// question. `backup/main` may not answer for `origin/main`.
-    #[test]
-    fn a_ref_of_another_remote_says_nothing_about_origin() {
-        let tips = [
-            reference("refs/remotes/backup/main", 1),
-            reference("refs/remotes/upstream/main", 2),
-            reference("refs/remotes/origin/main", 3),
-        ];
-        let remotes = remote_tips(&tips);
-        assert_eq!(remotes.len(), 1, "only origin is read: {remotes:?}");
-        assert_eq!(remotes[0].oid, reference("refs/remotes/origin/main", 3).oid);
-    }
-
-    /// The default-branch pointer is not a branch, and counting it would be counting
-    /// one branch twice.
-    #[test]
-    fn the_default_branch_pointer_is_not_a_branch() {
-        let tips = [reference("refs/remotes/origin/HEAD", 1)];
-        assert!(remote_tips(&tips).is_empty());
-    }
-
-    /// A local branch is no evidence about a remote.
-    #[test]
-    fn a_local_branch_is_not_a_remote_tip() {
-        let tips = [reference("refs/heads/main", 1)];
-        assert!(remote_tips(&tips).is_empty());
-    }
 }

@@ -106,6 +106,7 @@ pub mod origin;
 pub mod scan;
 pub mod unique;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -316,9 +317,15 @@ pub fn survey(
     let mut elsewhere = Vec::new();
     let mut notes = Vec::new();
 
+    // What the remote of each repository is worth, read once for that repository. Both the
+    // worktree rows and the branch audit count against it, and each used to take it for
+    // itself: two readings of the remote and four ref listings for one answer
+    // ([`unique::seen`]).
+    let mut seen: BTreeMap<&PathBuf, unique::Read> = BTreeMap::new();
     for root in scope.root.iter().chain(&scope.others) {
         let section = scope.section(root);
-        let found = worktrees::find(root, scope.sessions.as_deref(), section)?;
+        let read = seen.entry(root).or_insert_with(|| unique::seen(root));
+        let found = worktrees::find(root, scope.sessions.as_deref(), section, read)?;
         push(&mut here, &mut elsewhere, section, found);
         push(&mut here, &mut elsewhere, section, caches::find(root, now));
     }
@@ -331,7 +338,10 @@ pub fn survey(
     }
     notes.extend(registry.note());
     let branches = match &scope.root {
-        Some(root) => branches::find(root, now)?,
+        Some(root) => {
+            let read = seen.entry(root).or_insert_with(|| unique::seen(root));
+            branches::find(root, read, now)?
+        }
         None => Branches::default(),
     };
 

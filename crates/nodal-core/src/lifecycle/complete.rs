@@ -166,3 +166,23 @@ pub fn admits(store: &Path, home: &Path) -> Option<Lacking> {
 pub fn missing(store: &Path, commits: &[Oid], boundary: &[Oid]) -> Option<usize> {
     Git::at(store).missing_objects(commits, boundary).ok()
 }
+
+/// Whether a store that admits nothing against itself is missing an object anyway.
+///
+/// The dear half of the reading, and it is taken only of a store that passed the cheap
+/// half and holds something. `boundary_of` is asked in the home, because the home is the
+/// repository that has the history these commits sit on; the walk is then made in the
+/// store, over what those commits add and nothing more.
+///
+/// A reading that would not run leaves the store unchecked rather than trusted.
+#[must_use]
+pub fn incomplete(store: &Path, home: &Path, claimed: &[Oid]) -> Option<Lacking> {
+    let Ok(boundary) = Git::at(home).boundary_of(claimed) else {
+        return Some(Lacking::Unreadable);
+    };
+    match missing(store, claimed, &boundary) {
+        Some(0) => None,
+        Some(objects) => Some(Lacking::Missing { objects }),
+        None => Some(Lacking::Unreadable),
+    }
+}

@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Instant, SystemTime};
 
-use nodal_core::doctor::branches;
+use nodal_core::doctor::{branches, unique};
 use nodal_core::model::Timestamp;
 use nodal_core::output::Render;
 use nodal_core::output::view::doctor::{BranchRow, Branches, Standing};
@@ -48,7 +48,8 @@ struct Planted {
 impl Planted {
     /// The audit of this machine.
     fn audit(&self) -> Branches {
-        branches::find(&self.checkout, Timestamp::now()).expect("a checkout doctor can read")
+        let seen = unique::seen(&self.checkout);
+        branches::find(&self.checkout, &seen, Timestamp::now()).expect("a checkout doctor can read")
     }
 }
 

@@ -408,3 +408,91 @@ fn a_commit_a_store_holds_only_under_a_tracking_ref_is_no_second_copy() {
     let allowed = machine.nodal(&["reclaim", SLUG]);
     assert!(allowed.status.success(), "a branch of its own is a copy: {}", stderr(&allowed));
 }
+
+/// A remote that is a server, which is what every real remote is.
+///
+/// Every other property in this file has a remote that is a directory on this disk,
+/// because a property cannot reach a server. That hid a reduction applied twice. The
+/// configured url was reduced to `host/path` by the relation, and the reading of
+/// `FETCH_HEAD` reduced it again — and a reducer reads a schemeless `host/path` as a
+/// filesystem path and puts a slash in front of it. The two spellings never compared
+/// equal, so no branch of any `ssh` or `https` remote was ever observed, every such
+/// branch read as not checked, and a reclaim refused a home whose work was on the remote.
+///
+/// The server is never contacted. What proves a commit is the record the last fetch left
+/// behind, and this property writes that record exactly as Git writes it. The url is in a
+/// reserved domain, so a reading that tried to reach it would fail rather than pass.
+#[test]
+fn a_remote_that_is_a_server_is_observed_from_the_record_of_the_fetch() {
+    for url in ["git@example.invalid:owner/repo.git", "https://example.invalid/owner/repo.git"] {
+        let machine = machine();
+        let (home, tip) = pushed(&machine, SLUG);
+        git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+
+        // Both repositories name the server now. The checkout keeps the objects and the
+        // reading of that remote it already has; only the spelling of the url changes.
+        git(&home, &["remote", "set-url", "origin", url]);
+        git(&machine.source, &["remote", "set-url", "origin", url]);
+        observed(&machine.source, &tip, url);
+
+        let answer = check(&machine, SLUG);
+        assert_eq!(answer["safe_to_reclaim"], serde_json::Value::Bool(true), "{url}: {answer:#}");
+        let proved = answer["commits"]
+            .as_array()
+            .and_then(|groups| {
+                groups.iter().find(|group| group["copies"]["kind"] == "remote_proved")
+            })
+            .unwrap_or_else(|| panic!("{url}: no commit is proved on the remote: {answer:#}"));
+        assert_eq!(proved["count"], 1, "{url}: {answer:#}");
+        assert!(home.is_dir(), "{url}: the check moved the home");
+    }
+}
+
+/// Write the record the last fetch of `url` left, naming `tip` on `TOPIC`.
+///
+/// One line per ref the fetch saw, in the shape Git writes: the commit, whether it would
+/// be merged, and what was fetched from where. The record is then dated after the push it
+/// followed, because a reading older than the work answers for an older state of it.
+fn observed(checkout: &Path, tip: &str, url: &str) {
+    let record = checkout.join(".git/FETCH_HEAD");
+    std::fs::write(&record, format!("{tip}\t\tbranch '{TOPIC}' of {url}\n")).unwrap();
+    nodal_safety::git::fetched_later(checkout);
+}
+
+/// A fetch of one branch by name asked about nothing else, and says nothing about the rest.
+///
+/// `git fetch origin main` writes a record naming `main` alone, whatever the configured
+/// refspec covers. An absence in that record is therefore not an absence on the remote, and
+/// reading it as one claimed a firm loss over a branch nobody had asked about. The ref tells
+/// the two apart: a fetch that pruned would have deleted `origin/topic`, and this one left
+/// it standing. The branch is not checked, and the row names it.
+#[test]
+fn a_fetch_of_one_branch_by_name_answers_for_no_other_branch() {
+    let machine = machine();
+    let (home, tip) = pushed(&machine, SLUG);
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+
+    // The person fetches one branch. The record now names it alone, and every other
+    // remote-tracking ref of the checkout is where it was.
+    git(&machine.source, &["fetch", "--quiet", "origin", "main"]);
+    nodal_safety::git::fetched_later(&machine.source);
+    assert_eq!(
+        git(&machine.source, &["rev-parse", &format!("refs/remotes/origin/{TOPIC}")]),
+        tip,
+        "the fetch pruned the ref, so this asserts nothing about a narrow one"
+    );
+
+    let answer = check(&machine, SLUG);
+    assert_eq!(answer["safe_to_reclaim"], serde_json::Value::Bool(false), "{answer:#}");
+    let kinds: Vec<&str> = answer["commits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|group| group["copies"]["kind"].as_str().unwrap_or_default())
+        .collect();
+    assert!(kinds.contains(&"not_checked"), "a narrow fetch settled the branch: {answer:#}");
+    assert!(!kinds.contains(&"only_here"), "it claimed a loss it did not read: {answer:#}");
+    let told = stderr(&machine.nodal(&["reclaim", SLUG]));
+    assert!(told.contains(TOPIC), "the refusal does not name the branch: {told}");
+    intact(&machine, &home, &tip);
+}

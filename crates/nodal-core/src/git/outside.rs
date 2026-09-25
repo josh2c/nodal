@@ -59,12 +59,46 @@ use crate::error::{Error, Result};
 /// # Errors
 /// [`Error::Git`] when `rev-list` failed, [`Error::GitOid`] on unreadable output.
 pub(super) fn held(repo: &Path, wanted: &[Oid]) -> Result<Vec<Oid>> {
+    Ok(reaching(repo, wanted, None)?.reached)
+}
+
+/// What this repository has of `wanted`, and which of those a ref of it reaches.
+///
+/// Both facts, because the caller that asks the stricter question wants both and one pair
+/// of processes answers both. A store that holds a commit and may not vouch for it is a row
+/// a person can act on — it names a directory on their own disk — and a caller given only
+/// the second answer had to run the first reading again to write that row.
+#[derive(Debug)]
+pub struct Reaches {
+    /// Which of `wanted` the object store has at all.
+    pub stored: Vec<Oid>,
+    /// Which of those a ref this repository keeps reaches.
+    pub reached: Vec<Oid>,
+}
+
+/// The reading both [`held`] and [`owned`] are: what the store has, less what no ref of it
+/// reaches.
+///
+/// `exclude` is the one thing the two differ by. `None` counts every ref under `refs/` and
+/// `HEAD`; [`NOT_TRACKING`] leaves a store's own reading of a remote out of the exclusion,
+/// so a commit only such a ref reaches comes back as unreached.
+///
+/// Two processes at worst and one in the ordinary case: a repository that has none of
+/// `wanted` is finished after the first, which is what an unrelated repository beside the
+/// checkout answers.
+///
+/// The order is the safe one. `rev-list --ignore-missing` drops an identifier this
+/// repository does not have, so the exclusion question alone cannot tell a missing commit
+/// from a reachable one, and reading the second as the first is the false safe these two
+/// functions exist to remove.
+fn reaching(repo: &Path, wanted: &[Oid], exclude: Option<&str>) -> Result<Reaches> {
     let stored = stores(repo, wanted)?;
     if stored.is_empty() {
-        return Ok(stored);
+        return Ok(Reaches { reached: Vec::new(), stored });
     }
-    let stranded: BTreeSet<Oid> = stranded(repo, &stored)?.into_iter().collect();
-    Ok(stored.into_iter().filter(|oid| !stranded.contains(oid)).collect())
+    let away: BTreeSet<Oid> = read(repo, &not_reached(&stored, exclude))?.into_iter().collect();
+    let reached = stored.iter().filter(|oid| !away.contains(oid)).cloned().collect();
+    Ok(Reaches { stored, reached })
 }
 
 /// Which of `wanted` this repository's object store has, without walking any history.
@@ -86,16 +120,6 @@ pub(super) fn stores(repo: &Path, wanted: &[Oid]) -> Result<Vec<Oid>> {
     read(repo, &stores_args(wanted))
 }
 
-/// Which of `stored` no ref of this repository reaches.
-///
-/// `--ignore-missing` covers the refs as well as the arguments. A ref that names an
-/// object the store does not have is the shape a pruned or half-written store leaves,
-/// and it reaches nothing; without the flag one such ref stops the whole reading and the
-/// repository proves nothing at all.
-fn stranded(repo: &Path, stored: &[Oid]) -> Result<Vec<Oid>> {
-    read(repo, &stranded_args(stored))
-}
-
 /// Which of `wanted` this repository reaches from a ref it keeps of its own accord.
 ///
 /// [`held`] with one namespace left out, and the namespace decides a removal.
@@ -114,14 +138,13 @@ fn stranded(repo: &Path, stored: &[Oid]) -> Result<Vec<Oid>> {
 ///
 /// # Errors
 /// [`Error::Git`] when `rev-list` failed, [`Error::GitOid`] on unreadable output.
-pub(super) fn owned(repo: &Path, wanted: &[Oid]) -> Result<Vec<Oid>> {
-    let stored = stores(repo, wanted)?;
-    if stored.is_empty() {
-        return Ok(stored);
-    }
-    let elsewhere: BTreeSet<Oid> = read(repo, &owned_args(&stored))?.into_iter().collect();
-    Ok(stored.into_iter().filter(|oid| !elsewhere.contains(oid)).collect())
+pub(super) fn owned(repo: &Path, wanted: &[Oid]) -> Result<Reaches> {
+    reaching(repo, wanted, Some(NOT_TRACKING))
 }
+
+/// What takes a store's own reading of a remote out of the exclusion. `--exclude` applies
+/// to the `--all` that follows it.
+const NOT_TRACKING: &str = "--exclude=refs/remotes/*";
 
 /// How many objects behind `commits` this repository has not got.
 ///
@@ -267,17 +290,6 @@ fn stores_args(wanted: &[Oid]) -> Vec<&str> {
     args
 }
 
-/// The argument list that asks which of them no ref of the store's own reaches.
-///
-/// `--exclude` applies to the `--all` that follows it, so the exclusion is every ref
-/// under `refs/` and `HEAD`, less this repository's reading of somewhere else.
-fn owned_args(stored: &[Oid]) -> Vec<&str> {
-    let mut args = vec!["rev-list", "--ignore-missing", "--no-walk"];
-    args.extend(stored.iter().map(Oid::as_str));
-    args.extend(["--not", "--exclude=refs/remotes/*", "--all"]);
-    args
-}
-
 /// The argument list that asks which objects behind these commits are not here.
 fn missing_args<'a>(commits: &'a [Oid], boundary: &'a [Oid]) -> Vec<&'a str> {
     let mut args = vec!["rev-list", "--ignore-missing", "--objects", "--missing=print"];
@@ -289,11 +301,17 @@ fn missing_args<'a>(commits: &'a [Oid], boundary: &'a [Oid]) -> Vec<&'a str> {
     args
 }
 
-/// The argument list that asks which of them no ref reaches.
-fn stranded_args(stored: &[Oid]) -> Vec<&str> {
+/// The argument list that asks which of them no ref reaches, less `exclude`.
+///
+/// `--ignore-missing` covers the refs as well as the arguments. A ref that names an object
+/// the store does not have is the shape a pruned or half-written store leaves, and it
+/// reaches nothing; without the flag one such ref stops the whole reading and the
+/// repository proves nothing at all.
+fn not_reached<'a>(stored: &'a [Oid], exclude: Option<&'a str>) -> Vec<&'a str> {
     let mut args = vec!["rev-list", "--ignore-missing", "--no-walk"];
     args.extend(stored.iter().map(Oid::as_str));
     args.push("--not");
+    args.extend(exclude);
     args.push("--all");
     args
 }
@@ -301,7 +319,7 @@ fn stranded_args(stored: &[Oid]) -> Vec<&str> {
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests fail by panicking")]
 mod tests {
-    use super::{args, missing_args, owned_args, stores_args, stranded_args};
+    use super::{NOT_TRACKING, args, missing_args, not_reached, stores_args};
     use crate::git::oid::Oid;
 
     const ONE: &str = "1e2f3a4b5c6d7e8f90112233445566778899aabb";
@@ -342,7 +360,7 @@ mod tests {
             "--exclude=refs/remotes/*",
             "--all",
         ];
-        assert_eq!(owned_args(&stored), asked);
+        assert_eq!(not_reached(&stored, Some(NOT_TRACKING)), asked);
     }
 
     /// The object walk is bounded by the parents the commits share with the history
@@ -360,6 +378,6 @@ mod tests {
     fn reachability_excludes_every_ref_of_the_repository() {
         let stored = [one()];
         let asked = ["rev-list", "--ignore-missing", "--no-walk", ONE, "--not", "--all"];
-        assert_eq!(stranded_args(&stored), asked);
+        assert_eq!(not_reached(&stored, None), asked);
     }
 }

@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 pub use self::history::{Commit, FileChange};
 pub use self::integration::{Divergence, Integration, Standing};
 pub use self::oid::{Oid, union};
+pub use self::outside::Reaches;
 use crate::error::{Error, Result};
 
 /// A branch and the commit it points at.
@@ -500,7 +501,7 @@ impl Git {
     ///
     /// # Errors
     /// [`Error::Git`] when `rev-list` failed.
-    pub fn owned(&self, wanted: &[Oid]) -> Result<Vec<Oid>> {
+    pub fn owned(&self, wanted: &[Oid]) -> Result<Reaches> {
         outside::owned(&self.root, wanted)
     }
 

@@ -66,7 +66,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::doctor::unique;
-use crate::git::{Git, Oid};
+use crate::git::Git;
 use crate::model::Timestamp;
 use crate::output::view::doctor::{BranchRow, Branches, Standing};
 use crate::{Result, git};
@@ -86,7 +86,7 @@ const FALLBACK: [&str; 2] = ["main", "master"];
 /// # Errors
 /// [`crate::Error::Git`] when `git for-each-ref` failed, [`crate::Error::GitParse`] on
 /// a record that could not be read.
-pub fn find(root: &Path, now: Timestamp) -> Result<Branches> {
+pub fn find(root: &Path, seen: &unique::Read, now: Timestamp) -> Result<Branches> {
     let Ok(git) = Git::open(root) else {
         return Ok(Branches::default());
     };
@@ -100,46 +100,35 @@ pub fn find(root: &Path, now: Timestamp) -> Result<Branches> {
     // checkout and not about each branch, so it is read once for the whole table: asking for
     // it per branch would multiply one `for-each-ref` by three hundred.
     let locals = git.local_branches()?;
-    // The strong reading first, and the weak one only where there is no strong one. A
-    // remote that is a directory on this machine is read directly, and what it has not got
-    // it has not got; a remote on a server cannot be read at all, and the table then states
-    // what this checkout has seen rather than what a remote has.
-    let proved = unique::read_directly(root);
-    let seen = match &proved {
-        Some(trusted) => trusted.tips.clone(),
-        None => git.seen_on_remotes()?,
-    };
-    let checked = proved.is_some();
     let mut rows = Vec::new();
     for local in locals {
         if held.contains(&local.name) {
             continue;
         }
-        rows.push(row(&git, &local, &merged, (&seen, checked), now)?);
+        rows.push(row(&git, &local, &merged, seen, now)?);
     }
     loudest_first(&mut rows);
-    Ok(Branches { base, rows, expand: false, checked })
+    Ok(Branches { base, rows, expand: false, checked: seen.checked })
 }
 
 /// One branch as a row: the bucket it is in, and the facts that bucket prints.
 ///
-/// `read` is the tips the count is taken against and whether a reading of the remote
-/// itself stood behind them, both read once for the whole repository.
+/// `seen` is the tips the count is taken against and whether a reading of the remote itself
+/// stood behind them, read once for the whole repository ([`unique::seen`]).
 ///
 /// The commits of the branch that none of those tips reaches are the count this row
-/// prints. The second half of `read` decides the word over it and nothing else: the same
+/// prints. The second half of `seen` decides the word over it and nothing else: the same
 /// number is "only here" where the remote was read and "unpushed" where this checkout's
 /// own refs are all there was, because only one of the two is a statement about a server.
 fn row(
     git: &Git,
     local: &git::branches::Local,
     merged: &BTreeSet<String>,
-    read: (&[Oid], bool),
+    seen: &unique::Read,
     now: Timestamp,
 ) -> Result<BranchRow> {
-    let (seen, checked) = read;
-    let unpushed = git.count_outside(&format!("refs/heads/{}", local.name), seen)?;
-    let standing = match (unpushed > 0, checked) {
+    let unpushed = git.count_outside(&format!("refs/heads/{}", local.name), &seen.tips)?;
+    let standing = match (unpushed > 0, seen.checked) {
         (true, true) => Standing::OnlyHere,
         (true, false) => Standing::Unpushed,
         (false, _) if merged.contains(&local.name) => Standing::Merged,
