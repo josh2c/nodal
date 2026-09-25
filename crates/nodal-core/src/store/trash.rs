@@ -123,21 +123,25 @@ fn written(rested: &Rested) -> Result<String> {
 
 /// The same, read back, for a row that also carries `snapshot`.
 ///
-/// A row this column never reached says nothing in it, and what it says instead is in
-/// the column beside it. A `--force` reclaim that had to preserve work committed that
+/// An empty column is a row this column never reached, and what that row says instead is
+/// in the column beside it. A `--force` reclaim that had to preserve work committed that
 /// work to `refs/nodal/<unit>/wip` and wrote the ref here, so a snapshot on a row older
 /// than this column is a loss the person was shown and accepted. Reading it as
 /// [`Rested::Unrecorded`] would make `nodal gc` ask again, find the snapshot only in
-/// that home, and keep the directory for ever.
+/// that home, and keep the directory for ever. An empty column with no snapshot beside
+/// it is [`Rested::Unrecorded`].
 ///
-/// A row with neither is [`Rested::Unrecorded`], and so is text no version of this model
-/// wrote: `gc` reads the home again and believes only what that reading shows it.
+/// Text this binary cannot parse is [`Rested::Unrecorded`], whether or not there is a
+/// snapshot. A row a later Nodal wrote is not a loss anybody accepted, and the snapshot
+/// beside it says nothing about the column it could not read: the two facts travelled
+/// together only in rows written before this column existed, and those rows hold no text
+/// at all. So an unreadable verdict makes `gc` read the home again and believe only what
+/// that reading shows it.
 fn read(text: &str, snapshot: Option<&str>) -> Rested {
-    let unwritten = if snapshot.is_some() { Rested::Forced } else { Rested::Unrecorded };
     if text.is_empty() {
-        return unwritten;
+        return if snapshot.is_some() { Rested::Forced } else { Rested::Unrecorded };
     }
-    serde_json::from_str(text).unwrap_or(unwritten)
+    serde_json::from_str(text).unwrap_or(Rested::Unrecorded)
 }
 
 /// A byte count as SQLite holds whole numbers, which is a signed sixty-four bit
@@ -221,8 +225,15 @@ mod tests {
 
     /// Text no version of this model wrote is not a reason to fail a sweep, and it is
     /// not evidence either. It reads as the answer that makes `gc` ask again.
+    ///
+    /// A snapshot beside it changes nothing. The snapshot stands for a forced reclaim
+    /// only in a row written before this column existed, and such a row holds no text
+    /// here at all; a row with text this binary cannot read is a row from a later Nodal,
+    /// and a verdict nothing can read is not a loss a person accepted.
     #[test]
     fn text_that_will_not_parse_reads_as_unrecorded() {
-        assert_eq!(read("{\"kind\":\"from a later nodal\"}", None), Rested::Unrecorded);
+        let later = "{\"kind\":\"from a later nodal\"}";
+        assert_eq!(read(later, None), Rested::Unrecorded);
+        assert_eq!(read(later, Some("refs/nodal/01J/wip")), Rested::Unrecorded);
     }
 }

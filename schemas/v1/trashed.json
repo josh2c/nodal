@@ -57,7 +57,7 @@
           "type": "object"
         },
         {
-          "description": "The check found nothing that existed only in the home. `copies` names the\nrepositories and refs that held the commits it did not refuse over, and it is\nempty for a home that had no commit of its own to hold.\n\nIt is a record and never permission. A [`crate::lifecycle::kernel::Proof`] is what one\nreading proved and only [`crate::lifecycle::kernel::judge`] makes one; this is what\nwas written down, and `nodal gc` asks the kernel again rather than reading this as\npermission. Nothing turns a row back into a proof.",
+          "description": "The check found nothing that existed only in the home. `copies` names the\nrepositories and refs that held the commits it did not refuse over.\n\nIt is empty for two homes. One had no commit of its own to hold. The other was\nheld by the project's own checkout alone: the checkout's refs are the denominator\nevery disposition is drawn from, so a commit one of them reaches is the project's\nhistory rather than this unit's work, and the check names no copy outside the home\nfor it. An empty list is therefore not a claim that nothing held the commits.\n\nIt is a record and never permission. A [`crate::lifecycle::kernel::Proof`] is what one\nreading proved and only [`crate::lifecycle::kernel::judge`] makes one; this is what\nwas written down, and `nodal gc` asks the kernel again rather than reading this as\npermission. Nothing turns a row back into a proof.",
           "properties": {
             "copies": {
               "description": "What held them, one entry per repository.",
