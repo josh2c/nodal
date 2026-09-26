@@ -11,19 +11,30 @@
 //! the rows a Nodal of that version held (`frozen/`) — and every test here opens all of
 //! them with today's binary.
 //!
-//! What "the rows survive" means is the whole subject. Not that the migration ran, and
-//! not that the tables are still there: that a unit is still that unit, with its handle,
-//! its branch and its status; that an event keeps the kind it was written under; that
-//! the trash keeps its verdict and what the verdict rested on. Each test below reads one
-//! subject back through today's readers, out of every version, and knows for each
-//! version what that version could hold: a column a later migration added is expected
-//! empty in the files that predate it, and expected filled in the files that do not.
+//! What "the rows survive" means is the whole subject, and it is answered twice over.
 //!
-//! Two guards keep the fixtures honest, because a fixture that follows the code proves
-//! nothing: a fixture must record the version its name states, and its schema must be
-//! the schema that version's migrations produce. The second one fails when a migration
-//! that has already shipped is edited, which the append-only rule forbids and nothing
-//! else notices.
+//! In one claim over everything: every value of every row of every table of a fixture is
+//! read before the upgrade and held to afterwards, addressed by primary key
+//! (`every_value_of_every_fixture_survives_the_upgrade`). Nothing is chosen, so nothing is
+//! missed — a column no test names is a column this one still names, which is what a
+//! table rebuilt with a column left out of its `SELECT` list needs somebody to notice.
+//!
+//! Then in meaning, subject by subject: that a unit is still that unit, with its handle,
+//! its branch and its status; that an event keeps the kind it was written under; that the
+//! trash keeps its verdict and what the verdict rested on. Each of those tests reads one
+//! subject back through today's readers, out of every version, and knows for each version
+//! what that version could hold: a column a later migration added is expected empty in the
+//! files that predate it, and expected filled in the files that do not. A value can
+//! survive as bytes and be read as something else, and that is what these catch.
+//!
+//! Four guards keep the fixtures honest, because a fixture that follows the code proves
+//! nothing: a fixture must record the version its name states; its schema must be the
+//! schema that version's migrations produce; every value it holds must survive the
+//! upgrade; and it must hold a value in every place its own migration made. The second
+//! fails when a migration that has already shipped is edited, which the append-only rule
+//! forbids and nothing else notices. The fourth fails when a migration is appended and
+//! nothing is written for it to hold, which used to pass as coverage because a file
+//! existed.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
@@ -43,8 +54,9 @@ use nodal_core::store::{
 use tempfile::TempDir;
 
 use crate::frozen::rows::{
-    BASE, COMMIT, ENVIRONMENT, EVENT, OPERATION, PORT, PROJECT, PRUNED, RECLAIMED, SESSION,
-    SUFFIXED, TEMPLATE, TRASHED, UNIT, VERDICT,
+    BASE, COMMIT, ENVIRONMENT, EVENT, FORCED, FORCED_HOME, IN_REVIEW, MERGED, MERGED_HOME,
+    OPERATION, PORT, PROJECT, PRUNED, RECLAIMED, REVIEW_HOME, SESSION, SNAPSHOT, SUFFIXED,
+    TEMPLATE, TRASHED, UNIT, VERDICT,
 };
 
 /// Every version there has ever been, which is every upgrade a person can run.
@@ -75,9 +87,10 @@ fn at(seconds: i64) -> Timestamp {
 
 /// Every schema version has a fixture, and every fixture has a schema version.
 ///
-/// The first half is the coverage claim: a migration appended without a fixture leaves
-/// its own upgrade path untested, and this is what says so. The second half catches a
-/// fixture left behind by a version that was never released.
+/// Necessary and not sufficient. A migration appended without a fixture leaves its own
+/// upgrade path untested and this is what says so, but a file is not coverage: what the
+/// file has to hold is in `a_fixture_holds_a_value_in_every_place_its_migration_made`. The
+/// second half catches a fixture left behind by a version that was never released.
 #[test]
 fn every_schema_version_has_a_frozen_fixture() {
     assert_eq!(
@@ -106,21 +119,98 @@ fn a_fixture_records_the_version_it_starts_from() {
 ///
 /// Migrations are append-only, and nothing enforced it. An edit to a migration that has
 /// already shipped changes what a person's registry crossed years ago without changing
-/// any frozen file, and this is the test that fails when that happens: the committed
-/// schema of version N and the schema migrations one to N produce today are compared
-/// statement by statement.
+/// any frozen file, and this is the test that fails when that happens.
+///
+/// Object by object, not schema by schema. Both are the same claim, and only one of them
+/// can be read: a whole schema held against a whole schema prints two walls of every
+/// table in the registry and leaves the reader to find the edited line, while a
+/// comparison per object names the table and prints its two statements alone.
 #[test]
 fn a_fixture_holds_the_schema_its_version_produced() {
     for version in versions() {
         let directory = TempDir::new().unwrap();
         let path = frozen::registry(directory.path(), version);
-        let frozen_schema = frozen::schema_of(&rusqlite::Connection::open(&path).unwrap());
+        let was = frozen::schema_of(&rusqlite::Connection::open(&path).unwrap());
+        let now = frozen::schema_of(&frozen::replayed(version));
 
         assert_eq!(
-            frozen_schema,
-            frozen::schema_of(&frozen::replayed(version)),
-            "the frozen schema of version {version} is not what its migrations now produce, \
-             so a migration that had already shipped was edited"
+            was.keys().collect::<Vec<&String>>(),
+            now.keys().collect::<Vec<&String>>(),
+            "version {version} holds objects its migrations do not produce, or the other \
+             way about, so a migration that had already shipped was edited"
+        );
+        for (object, frozen_sql) in &was {
+            assert_eq!(
+                frozen_sql, &now[object],
+                "the frozen {object} of version {version} is not what its migrations now \
+                 produce, so a migration that had already shipped was edited"
+            );
+        }
+    }
+}
+
+/// Every value a fixture holds is still there after the upgrade.
+///
+/// The tests below this one each read one subject back through today's readers, which is
+/// what says a unit is still a unit. None of them can say that nothing *else* was lost:
+/// they name the columns they name, and a migration that drops a column nobody named goes
+/// green. So the whole of every fixture is read before the upgrade and held to afterwards,
+/// cell by cell, addressed by primary key — every row of every table, with no list of
+/// columns anywhere to fall behind the schema.
+///
+/// A migration that has to rewrite a value a person's registry already holds fails this
+/// and has to say so, in the test that expects the new value. For the seventeen versions
+/// here nothing does: a migration makes a place, and a fixture that predates the place has
+/// no cell in it to compare.
+#[test]
+fn every_value_of_every_fixture_survives_the_upgrade() {
+    for version in versions() {
+        let directory = TempDir::new().unwrap();
+        let path = frozen::registry(directory.path(), version);
+        let before = frozen::cells::of(&rusqlite::Connection::open(&path).unwrap());
+        assert!(!before.is_empty(), "the version {version} fixture holds no rows at all");
+
+        Store::open(&path).unwrap();
+
+        let lost = frozen::cells::lost(&before, &rusqlite::Connection::open(&path).unwrap());
+        assert!(
+            lost.is_empty(),
+            "upgrading a version {version} registry did not keep what it held:\n  {}",
+            lost.join("\n  ")
+        );
+    }
+}
+
+/// A migration's own fixture holds something in every place that migration made.
+///
+/// The coverage claim used to be that a file exists for every version, which a file holds
+/// whether or not it says anything. A migration appended with no rows written for it got a
+/// fixture with its new column empty in every row, and the whole suite passed without one
+/// assertion about the thing the migration added.
+///
+/// So the places are read out of the schema — a table the version made, a column it added
+/// to a table already there — and its fixture has to hold a value in each. A migration
+/// that makes no place, such as an index rule or a widened constraint, asks nothing of its
+/// fixture and gets nothing asked of it.
+#[test]
+fn a_fixture_holds_a_value_in_every_place_its_migration_made() {
+    for version in versions() {
+        let directory = TempDir::new().unwrap();
+        let path = frozen::registry(directory.path(), version);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+
+        let empty: Vec<String> = frozen::places_made(version)
+            .into_iter()
+            .filter(|place| !frozen::filled(&conn, place))
+            .map(|place| place.to_string())
+            .collect();
+
+        assert!(
+            empty.is_empty(),
+            "migration {version} made {} and the version {version} fixture holds nothing \
+             there, so nothing in this file tests what that migration added: write it into \
+             tests/frozen/rows.rs as the entry for version {version}",
+            empty.join(", ")
         );
     }
 }
@@ -352,6 +442,34 @@ fn the_trash_row_of_every_version_keeps_its_verdict() {
     }
 }
 
+/// A `--force` reclaim older than the column that records one still reads as forced.
+///
+/// The one state in the registry that cannot be made by a Nodal of today, and the reason
+/// the trash carries two facts rather than one. Before migration 15 a forced reclaim left
+/// no verdict — there was no column — and said what it had done by committing the work it
+/// was about to move and writing that ref in `snapshot`. A row with a snapshot and no
+/// verdict beside it is therefore a loss a person was shown and accepted, and reading it
+/// as `Unrecorded` would make `gc` read the home again, find the snapshot only in that
+/// home, and keep the directory for ever.
+#[test]
+fn a_forced_reclaim_of_every_version_reads_as_forced() {
+    for version in versions() {
+        let (_directory, store) = opened(version);
+
+        let entry = trash::get(store.conn(), FORCED_HOME.parse().unwrap()).unwrap();
+
+        // Migration 4 made the trash. A version before it holds no such row at all.
+        let Some(entry) = entry else {
+            assert!(version < 4, "version {version} lost the forced reclaim in its trash");
+            continue;
+        };
+        assert_eq!(entry.unit_id.to_string(), FORCED, "version {version}");
+        assert_eq!(entry.snapshot.as_deref(), Some(SNAPSHOT), "version {version}");
+        assert_eq!(entry.rested, Rested::Forced, "version {version}");
+        assert!(!entry.rested.re_asks(), "a version {version} registry made gc ask again");
+    }
+}
+
 /// The verdict a version's reclaim could write down.
 ///
 /// Migration 15 added it. A row written before it says nothing, and nothing is what it
@@ -490,6 +608,55 @@ fn the_units_a_registry_held_keep_their_handles() {
         let suffixed =
             units::get(conn, SUFFIXED.parse().unwrap()).unwrap().expect("the suffixed unit");
         assert_eq!(suffixed.slug.as_str(), "worker-import-2", "version {version}");
+    }
+}
+
+/// A unit in review and a merged unit both go on holding their handle.
+///
+/// Migration 13 narrowed the handle rule from every unit that ever held one to the units
+/// that hold one, and it drew that line at `status <> 'archived'`. So the interesting rows
+/// are the ones on the keeping side of it under a status that is neither open nor
+/// archived: a unit in review and a merged unit each keep their name, the name still
+/// reaches them, and a new unit still cannot take it.
+#[test]
+fn a_unit_in_review_and_a_merged_unit_keep_their_handles() {
+    let wanted = [
+        (
+            IN_REVIEW,
+            "retry-the-probe",
+            UnitStatus::Review,
+            REVIEW_HOME,
+            "01J8Z6H0000000000000000051",
+        ),
+        (MERGED, "name-the-queue", UnitStatus::Merged, MERGED_HOME, "01J8Z6H0000000000000000052"),
+    ];
+    for version in versions() {
+        let (_directory, store) = opened(version);
+        let conn = store.conn();
+
+        for (id, slug, status, home, taker) in wanted {
+            let unit = units::get(conn, id.parse().unwrap()).unwrap().expect("the unit");
+            assert_eq!(unit.slug.as_str(), slug, "version {version}");
+            assert_eq!(unit.status, status, "version {version}");
+
+            // The home of a unit that is not open is still that unit's home: a status the
+            // handle rule reads is not a status anything else reads differently.
+            let materialised =
+                environments::get(conn, home.parse().unwrap()).unwrap().expect("the home");
+            assert_eq!(materialised.unit_id.to_string(), id, "version {version}");
+            assert_eq!(materialised.state, EnvState::Stopped, "version {version}");
+
+            let found =
+                units::find_by_slug(conn, PROJECT.parse().unwrap(), &Slug::parse(slug).unwrap())
+                    .unwrap()
+                    .expect("the name reaches a unit");
+            assert_eq!(found.id.to_string(), id, "version {version}");
+            assert!(
+                units::insert(conn, &made(taker, slug, &format!("nodal/{slug}-again"))).is_err(),
+                "a version {version} registry let a new unit take the handle a {status:?} \
+                 unit holds"
+            );
+        }
     }
 }
 

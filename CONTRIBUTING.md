@@ -39,10 +39,17 @@ that has shipped.
 
 Each schema version has a frozen fixture in `crates/nodal-core/tests/fixtures/registry/`.
 A fixture is a committed registry of that version, held as SQL. `cargo test -p nodal-core
---test upgrade` migrates every fixture to the current version. It checks that each row
-keeps its meaning, that a fixture records the version it starts from, and that a fixture
-holds the schema its version produces. A new migration with no fixture fails that suite.
-The README in that directory states how to write one.
+--test upgrade` migrates every fixture to the current version. It checks that every value
+of every row is still there afterwards, addressed by primary key and with no list of
+columns anywhere to fall behind the schema; that each row still reads back through today's
+readers with the meaning it had; that a fixture records the version it starts from; and
+that a fixture holds the schema its version produces. A new migration fails that suite
+until it has a fixture, and until that fixture holds a value in every place the migration
+made. The README in that directory states how to write one.
+
+A migration that rewrites a value a person's registry already holds fails the first of
+those checks, which is the point: say so in the test that expects the new value, rather
+than letting the check choose which columns it reads.
 
 ## Commit messages
 

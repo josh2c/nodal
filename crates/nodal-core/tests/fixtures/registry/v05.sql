@@ -196,10 +196,22 @@ INSERT INTO unit (id, project_id, slug, objective, branch, parent_branch, status
 VALUES ('01J8Z6H0000000000000000008', '01J8Z6H0000000000000000001', 'worker-import', 'import the workers', 'nodal/worker-import', 'main', 'archived', 1788688870, 1788688880);
 INSERT INTO unit (id, project_id, slug, objective, branch, parent_branch, status, created_at, updated_at)
 VALUES ('01J8Z6H0000000000000000009', '01J8Z6H0000000000000000001', 'worker-import-2', 'import the workers', 'nodal/worker-import', 'main', 'open', 1788688890, 1788688890);
+INSERT INTO unit (id, project_id, slug, objective, branch, parent_branch, status, created_at, updated_at)
+VALUES ('01J8Z6H0000000000000000041', '01J8Z6H0000000000000000001', 'retry-the-probe', 'retry the probe once', 'nodal/retry-the-probe', 'main', 'review', 1788688700, 1788688710);
+INSERT INTO unit (id, project_id, slug, objective, branch, parent_branch, status, created_at, updated_at)
+VALUES ('01J8Z6H0000000000000000042', '01J8Z6H0000000000000000001', 'name-the-queue', 'name the queue after what it carries', 'nodal/name-the-queue', 'main', 'merged', 1788688600, 1788688610);
+INSERT INTO unit (id, project_id, slug, objective, branch, parent_branch, status, created_at, updated_at)
+VALUES ('01J8Z6H0000000000000000043', '01J8Z6H0000000000000000001', 'spike-the-pool', 'spike a pool and throw it away', 'nodal/spike-the-pool', 'main', 'archived', 1788688500, 1788688520);
 INSERT INTO environment (id, unit_id, attempt, home, managed, base_id, ws_fp_materialized, schema_fp_materialized, host, db_name, ports, fixed_port, state, created_at, last_active)
 VALUES ('01J8Z6H0000000000000000005', '01J8Z6H0000000000000000002', 1, '/home/dev/.nodal/acme/e/01J8Z6H0', 1, '01J8Z6H0000000000000000003', '7c1e9a2b', '41bd', 'laptop', 'acme_e_01j8z6h0', '{"app":20002}', 5432, 'stopped', 1788689040, 1788689040);
 INSERT INTO environment (id, unit_id, attempt, home, managed, base_id, ws_fp_materialized, schema_fp_materialized, host, db_name, ports, fixed_port, state, created_at, last_active)
 VALUES ('01J8Z6H0000000000000000011', '01J8Z6H0000000000000000008', 1, '/home/dev/.nodal/acme/e/01J8Z6H1', 1, NULL, NULL, NULL, 'laptop', NULL, '{}', NULL, 'absent', 1788688900, 1788688960);
+INSERT INTO environment (id, unit_id, attempt, home, managed, base_id, ws_fp_materialized, schema_fp_materialized, host, db_name, ports, fixed_port, state, created_at, last_active)
+VALUES ('01J8Z6H0000000000000000044', '01J8Z6H0000000000000000041', 1, '/home/dev/.nodal/acme/e/01J8Z6H4', 1, '01J8Z6H0000000000000000003', '7c1e9a2b', '41bd', 'laptop', NULL, '{}', NULL, 'stopped', 1788688710, 1788688720);
+INSERT INTO environment (id, unit_id, attempt, home, managed, base_id, ws_fp_materialized, schema_fp_materialized, host, db_name, ports, fixed_port, state, created_at, last_active)
+VALUES ('01J8Z6H0000000000000000045', '01J8Z6H0000000000000000042', 1, '/home/dev/.nodal/acme/e/01J8Z6H5', 1, '01J8Z6H0000000000000000003', '7c1e9a2b', '41bd', 'laptop', NULL, '{}', NULL, 'stopped', 1788688610, 1788688620);
+INSERT INTO environment (id, unit_id, attempt, home, managed, base_id, ws_fp_materialized, schema_fp_materialized, host, db_name, ports, fixed_port, state, created_at, last_active)
+VALUES ('01J8Z6H0000000000000000046', '01J8Z6H0000000000000000043', 1, '/home/dev/.nodal/acme/e/01J8Z6H6', 1, NULL, NULL, NULL, 'laptop', NULL, '{}', NULL, 'absent', 1788688510, 1788688520);
 INSERT INTO session (id, environment_id, actor_kind, actor_name, pid, started_at, ended_at, pgid)
 VALUES ('01J8Z6H0000000000000000006', '01J8Z6H0000000000000000005', 'agent', 'claude-code', 4242, 1788689100, NULL, 4240);
 INSERT INTO event (id, unit_id, environment_id, ts, actor_kind, actor_name, kind, epistemic, body, refs, raw_ref)
@@ -244,3 +256,5 @@ INSERT INTO port_allocation (port, project_id, environment_id, name)
 VALUES (20002, '01J8Z6H0000000000000000001', '01J8Z6H0000000000000000005', 'app');
 INSERT INTO trash (environment_id, unit_id, project_id, slug, home, path, snapshot, trashed_at, expires_at)
 VALUES ('01J8Z6H0000000000000000011', '01J8Z6H0000000000000000008', '01J8Z6H0000000000000000001', 'worker-import', '/home/dev/.nodal/acme/e/01J8Z6H1', '/home/dev/.nodal/acme/trash/01J8Z6H1', NULL, 1788688960, 1789898560);
+INSERT INTO trash (environment_id, unit_id, project_id, slug, home, path, snapshot, trashed_at, expires_at)
+VALUES ('01J8Z6H0000000000000000046', '01J8Z6H0000000000000000043', '01J8Z6H0000000000000000001', 'spike-the-pool', '/home/dev/.nodal/acme/e/01J8Z6H6', '/home/dev/.nodal/acme/trash/01J8Z6H6', 'refs/nodal/01J8Z6H0000000000000000043/wip', 1788688520, 1789898120);

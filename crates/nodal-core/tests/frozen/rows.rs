@@ -6,11 +6,24 @@
 //! could hold them, and a back-fill a later migration performs runs over rows that were
 //! already there rather than over rows written afterwards.
 //!
-//! Every fixture therefore tells one story at a different age. One project with two
-//! bases of work: a unit somebody is working in, and a unit that was reclaimed, whose
-//! name a second unit had to take a suffix to avoid. The columns the story is told in
-//! grow with the versions; the story does not change, which is what lets one set of
-//! expectations be read against seventeen files.
+//! Every fixture therefore tells one story at a different age. One project, and five
+//! bases of work in it: a unit somebody is working in; a unit that was reclaimed, whose
+//! name a second unit had to take a suffix to avoid; a unit whose work is in review; a
+//! unit whose work was merged; and a unit a `--force` reclaim gave up over work that was
+//! only in its home. The columns the story is told in grow with the versions; the story
+//! does not change, which is what lets one set of expectations be read against seventeen
+//! files.
+//!
+//! The last three are here because only an old registry can be in the state they are in.
+//! A unit in review and a merged unit both still hold their handle when migration 13
+//! narrows the rule to the units that hold one: the rule it relaxes is for archived rows
+//! alone, and until these two nothing crossed that index under any other status. The
+//! forced reclaim is the row [`Rested::Forced`] is read from — a snapshot ref with no
+//! verdict beside it, which is what a `--force` wrote before migration 15 gave it a column
+//! to write in, and which `nodal gc` must not re-ask about. Neither state is one a Nodal
+//! of today can write, so this is the only place either can be tested.
+//!
+//! [`Rested::Forced`]: nodal_core::model::Rested::Forced
 //!
 //! A version whose migration added no place to put anything — an index rule, a
 //! back-fill — has no entry here. Its fixture is the version before it, carried across
@@ -40,6 +53,18 @@ pub const TRASHED: &str = "01J8Z6H0000000000000000011";
 pub const OPERATION: &str = "01J8Z6H0000000000000000012";
 /// The verdict a reclaim wrote once there was a kind for it.
 pub const VERDICT: &str = "01J8Z6H0000000000000000032";
+/// The unit whose work is in review, which holds its handle throughout.
+pub const IN_REVIEW: &str = "01J8Z6H0000000000000000041";
+/// The unit whose work was merged, which holds its handle throughout.
+pub const MERGED: &str = "01J8Z6H0000000000000000042";
+/// The unit a `--force` reclaim gave up, over work that was only in its home.
+pub const FORCED: &str = "01J8Z6H0000000000000000043";
+/// The home of the unit in review.
+pub const REVIEW_HOME: &str = "01J8Z6H0000000000000000044";
+/// The home of the merged unit.
+pub const MERGED_HOME: &str = "01J8Z6H0000000000000000045";
+/// The forced unit's home, which is the second row in the trash.
+pub const FORCED_HOME: &str = "01J8Z6H0000000000000000046";
 
 /// The commit the unit's work is on, in the two places it is recorded.
 pub const COMMIT: &str = "9a3f1c2d4e5b6a7980c1d2e3f4a5b6c7d8e9f001";
@@ -47,6 +72,9 @@ pub const COMMIT: &str = "9a3f1c2d4e5b6a7980c1d2e3f4a5b6c7d8e9f001";
 pub const PORT: u16 = 20002;
 /// What the prune dropped from the reclaimed home, in bytes.
 pub const PRUNED: u64 = 12_884_901_888;
+/// Where the forced reclaim committed the work it was about to move, inside the home it
+/// moved. The one thing a row with no verdict beside it says about itself.
+pub const SNAPSHOT: &str = "refs/nodal/01J8Z6H0000000000000000043/wip";
 
 /// The rows for one version, applied right after that version's migration.
 pub const ROWS: &[(u32, &str)] = &[
@@ -94,7 +122,16 @@ VALUES ('01J8Z6H0000000000000000002', '01J8Z6H0000000000000000001', 'fix-worker-
         1788688870, 1788688880),
        ('01J8Z6H0000000000000000009', '01J8Z6H0000000000000000001', 'worker-import-2',
         'import the workers', 'nodal/worker-import', 'main', 'open',
-        1788688890, 1788688890);
+        1788688890, 1788688890),
+       ('01J8Z6H0000000000000000041', '01J8Z6H0000000000000000001', 'retry-the-probe',
+        'retry the probe once', 'nodal/retry-the-probe', 'main', 'review',
+        1788688700, 1788688710),
+       ('01J8Z6H0000000000000000042', '01J8Z6H0000000000000000001', 'name-the-queue',
+        'name the queue after what it carries', 'nodal/name-the-queue', 'main', 'merged',
+        1788688600, 1788688610),
+       ('01J8Z6H0000000000000000043', '01J8Z6H0000000000000000001', 'spike-the-pool',
+        'spike a pool and throw it away', 'nodal/spike-the-pool', 'main', 'archived',
+        1788688500, 1788688520);
 
 INSERT INTO environment (id, unit_id, attempt, home, managed, base_id, ws_fp_materialized,
                          schema_fp_materialized, host, db_name, ports, fixed_port, state,
@@ -105,7 +142,16 @@ VALUES ('01J8Z6H0000000000000000005', '01J8Z6H0000000000000000002', 1,
         1788689040, 1788689040),
        ('01J8Z6H0000000000000000011', '01J8Z6H0000000000000000008', 1,
         '/home/dev/.nodal/acme/e/01J8Z6H1', 1, NULL, NULL, NULL, 'laptop', NULL,
-        '{}', NULL, 'absent', 1788688900, 1788688960);
+        '{}', NULL, 'absent', 1788688900, 1788688960),
+       ('01J8Z6H0000000000000000044', '01J8Z6H0000000000000000041', 1,
+        '/home/dev/.nodal/acme/e/01J8Z6H4', 1, '01J8Z6H0000000000000000003', '7c1e9a2b',
+        '41bd', 'laptop', NULL, '{}', NULL, 'stopped', 1788688710, 1788688720),
+       ('01J8Z6H0000000000000000045', '01J8Z6H0000000000000000042', 1,
+        '/home/dev/.nodal/acme/e/01J8Z6H5', 1, '01J8Z6H0000000000000000003', '7c1e9a2b',
+        '41bd', 'laptop', NULL, '{}', NULL, 'stopped', 1788688610, 1788688620),
+       ('01J8Z6H0000000000000000046', '01J8Z6H0000000000000000043', 1,
+        '/home/dev/.nodal/acme/e/01J8Z6H6', 1, NULL, NULL, NULL, 'laptop', NULL,
+        '{}', NULL, 'absent', 1788688510, 1788688520);
 
 INSERT INTO session (id, environment_id, actor_kind, actor_name, pid, started_at, ended_at)
 VALUES ('01J8Z6H0000000000000000006', '01J8Z6H0000000000000000005', 'agent',
@@ -179,14 +225,24 @@ INSERT INTO port_allocation (port, project_id, environment_id, name)
 VALUES (20002, '01J8Z6H0000000000000000001', '01J8Z6H0000000000000000005', 'app');
 ";
 
-/// Version 4: the reclaimed home, in the trash and findable again.
+/// Version 4: the two reclaimed homes, in the trash and findable again.
+///
+/// The second was given up by a `--force` over work that existed nowhere else, so the
+/// reclaim committed that work inside the home and wrote the ref in `snapshot`. Nothing
+/// rewrites that row afterwards — no migration touches it and no Nodal reads it until the
+/// retention runs out — so it is still what it was in every later fixture: the state
+/// `Rested::Forced` is read from.
 const V4: &str = "
 INSERT INTO trash (environment_id, unit_id, project_id, slug, home, path, snapshot,
                    trashed_at, expires_at)
 VALUES ('01J8Z6H0000000000000000011', '01J8Z6H0000000000000000008',
         '01J8Z6H0000000000000000001', 'worker-import',
         '/home/dev/.nodal/acme/e/01J8Z6H1', '/home/dev/.nodal/acme/trash/01J8Z6H1',
-        NULL, 1788688960, 1789898560);
+        NULL, 1788688960, 1789898560),
+       ('01J8Z6H0000000000000000046', '01J8Z6H0000000000000000043',
+        '01J8Z6H0000000000000000001', 'spike-the-pool',
+        '/home/dev/.nodal/acme/e/01J8Z6H6', '/home/dev/.nodal/acme/trash/01J8Z6H6',
+        'refs/nodal/01J8Z6H0000000000000000043/wip', 1788688520, 1789898120);
 ";
 
 /// Version 5: the process group the session's tethered command was given.
