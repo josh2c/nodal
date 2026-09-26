@@ -1,0 +1,50 @@
+name: nightly
+# The full adversarial grid: every shape the five axes make, which is 7,200 of them.
+#
+# It is here and not in `ci.yml` because of what it costs and not because of what it proves.
+# A pull request gets a sample of sixty shapes drawn from one constant seed
+# (`acceptance (adversarial)`), which holds every value of every axis and blocks the merge.
+# The whole product takes minutes rather than seconds, and a gate that takes minutes on
+# every push is a gate people route around.
+#
+# This job blocks nothing and opens nothing. A shape that disagrees prints itself as a list
+# of commands that makes it again, and the coordinator files it from the log.
+on:
+  schedule:
+    # Every day, well away from the hour, because every runner in the world is busy on it.
+    - cron: "37 3 * * *"
+  workflow_dispatch:
+
+# The job reads.
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  NODAL_ADVERSARIAL: full
+
+jobs:
+  adversarial-full:
+    name: adversarial (full grid)
+    runs-on: ${{ matrix.os }}
+    # Measured at 104 seconds over 7,200 shapes on a sixteen-core workstation. A runner has
+    # fewer cores, so the ceiling is generous and it is a ceiling and not a budget: a job
+    # that is killed at the limit reports nothing, and a nightly that reports nothing is a
+    # nightly nobody misses.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: the binary the shapes are asked of
+        run: cargo build --locked -p nodal-cli
+      - name: every shape the five axes make, against an oracle of git plumbing
+        run: cargo test --locked -p nodal-adversarial -- --nocapture

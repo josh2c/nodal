@@ -6,6 +6,7 @@ members = [
   "benches/startup",
   "tests/fixture",
   "tests/safety",
+  "tests/adversarial",
 ]
 
 [workspace.package]

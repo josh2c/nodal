@@ -310,6 +310,20 @@ jobs:
       - name: two units of one project cannot reach each other, under a linked path too
         run: ci/acceptance-safety.sh
 
+  acceptance-adversarial:
+    name: acceptance (adversarial)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: every known false-safe is reproduced, and a sampled grid agrees with an oracle of git plumbing
+        run: ci/acceptance-adversarial.sh
+
   acceptance-ports:
     name: acceptance (ports)
     runs-on: ${{ matrix.os }}

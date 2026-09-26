@@ -39,9 +39,8 @@
 //! say so out loud there ([`nodal_safety::platform::skipped`]) and the reading of the
 //! real machine is asserted on both.
 //!
-//! The three unresolved-identity shapes below are the ones to carry into the adversarial
-//! grid (lane C) when it lands: an identifier the reader cannot pin, an identifier proven
-//! absent, and a table that could not be read.
+//! The adversarial grid carries the three unresolved-identity shapes below: an identifier
+//! the reader cannot pin, an identifier proven absent, and a table that could not be read.
 //!
 //! ## The one cost asserted here
 //!
