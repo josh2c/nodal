@@ -80,10 +80,31 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   also live: the repository that holds them and the refs in it. The trash row records the
   same, so a later sweep can name the copy the verdict rested on.
 - `nodal gc` reads every expired home again before it removes it, with the reading a
-  reclaim makes, over the refs that home holds. A commit no ref outside the directory
-  reaches keeps the home and its row, and one line names the commit and the copy that is
-  gone. Nothing is removed on a reading that could not be made. A home a reclaim forced
-  past a finding is removed on its retention as before.
+  reclaim makes, over the refs that reclaim was refused over: every ref the home holds of
+  its own — its branches, its tags, its stash — and `HEAD`, and the ref the trash row says
+  the reclaim committed the work to before it moved the home. The sweep used to read
+  `HEAD` and that one recorded ref alone, so a commit on a side branch, on a tag or in a
+  stash went into the trash on a copy somewhere else, the copy went while the home sat
+  there, and the retention removed the last copy of it with nothing having read the ref
+  that held it. The gate and the sweep are one reading now, and the one cannot let go of
+  what the other refuses over. The records Nodal writes for itself are read by neither:
+  the record ref taken before each operation, the commits `nodal merge` squashed and the
+  work-in-progress ref `nodal done` writes on every run are Nodal's bookkeeping rather
+  than the person's work, and a reading that counted them would keep every home that had
+  ever run a command, for ever. A commit no ref outside the directory reaches keeps the
+  home and its row, and one line names the commit and the copy that is gone. Nothing is
+  removed on a reading that could not be made. A home a reclaim forced past a finding is
+  removed on its retention as before. A reading this wide also keeps homes nobody meant to
+  keep: a branch a person rewrote or deleted in their own checkout holds every trashed home
+  built from that base, on every sweep, because a home carries the base's `refs/heads/*`
+  frozen and the sweep reads them like any other ref. That is a home held and not work
+  lost — the line names the commit — and `nodal gc` has no override for it: restore the ref
+  in the checkout, or remove the directory by hand.
+- `nodal gc` reads a home again when the trash row holds a verdict this build cannot
+  parse. Nodal read such a row as forced where the row also named a snapshot ref, and a
+  forced reclaim is the one verdict the sweep does not ask again, so the retention removed
+  the home with no fresh reading. A row a later Nodal wrote is not a loss a person
+  accepted.
 - `nodal reclaim` writes into the home of the unit it names and into the registry, and
   into nothing else. It no longer rewrites `WORKUNIT.md`, fetches refs or writes a tree
   object into every other open home. The report says so, and the next command that reads

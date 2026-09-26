@@ -66,11 +66,16 @@
 //! copy of a commit, with no refusal and no line.
 //!
 //! So every expired home is read with the reading a reclaim makes
-//! ([`crate::lifecycle::assess`]), over the two refs that reclaim proved: `HEAD`, and the
-//! `refs/nodal/<unit>/wip` a forced reclaim wrote the working tree onto, which no branch
-//! reaches ([`work_tips`]). A commit no ref outside the directory reaches keeps the home,
-//! keeps the row, and prints one line naming the commit and the copy the reclaim rested
-//! on ([`crate::model::Rested`]). The row stays expired, so the next sweep reads it again
+//! ([`crate::lifecycle::assess`]), over the refs that reclaim was refused over: every ref
+//! the home holds of its own — its branches, its tags, its stash — and `HEAD`, and the
+//! ref the row says a forced reclaim wrote the working tree onto, which no branch reaches
+//! ([`crate::lifecycle::assess::Work`]). The set is the reclaim's own and not a
+//! narrower one, because a sweep that asked over fewer refs than the gate refuses over
+//! removes on the clock what the gate would not let go: a commit on a side branch, a tag
+//! or a stash, whose one other copy went while the home sat here, was swept with nothing
+//! having read it. A commit no ref outside the directory reaches keeps the home, keeps
+//! the row, and prints one line naming the commit and the copy the reclaim rested on
+//! ([`crate::model::Rested`]). The row stays expired, so the next sweep reads it again
 //! and a copy somebody restores is all it takes.
 //!
 //! A home the reclaim forced past a finding is not read again. The loss was named,
@@ -116,7 +121,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
-use crate::git::{Git, Oid, refs, snapshot, union};
+use crate::git::{Git, Oid, refs, snapshot};
 use crate::lifecycle::assess;
 use crate::lifecycle::idle;
 use crate::lifecycle::journal;
@@ -594,11 +599,8 @@ fn held_back(entry: &Trashed, reading: &Reading) -> Result<Option<HeldBack>> {
 /// reading proves. The row is read afterwards, to say which of the copies it named has
 /// since gone ([`gone_copies`]).
 ///
-/// Two things differ from the reclaim's reading, and each is a fact about a home nobody is
+/// One thing differs from the reclaim's reading, and it is a fact about a home nobody is
 /// working in.
-///
-/// The work is read from the refs the reclaim proved rather than from every ref the home
-/// holds ([`work_tips`]).
 ///
 /// The paths of the working tree decide nothing, because a reclaim already settled them: a
 /// home with none was the condition of an ordinary reclaim, and a forced one put what it
@@ -613,10 +615,8 @@ fn held_back(entry: &Trashed, reading: &Reading) -> Result<Option<HeldBack>> {
 /// # Errors
 /// [`Error::Git`] and [`Error::NotARepository`] when the trashed home could not be read.
 fn only_here(entry: &Trashed, reading: &Reading) -> Result<Option<Finding>> {
-    let git = Git::open(&entry.path)?;
-    let tips = work_tips(&git, entry)?;
     let input = assess::Input {
-        work: assess::Work::Tips(&tips),
+        work: assess::Work(entry.snapshot.as_deref()),
         ..assess::Input::refusal(&entry.path, Some(&reading.checkout), &reading.siblings)
     };
     let assessment = assess::assess(&input)?;
@@ -656,58 +656,6 @@ fn gone_copies(entry: &Trashed, sample: &[Oid]) -> Vec<Outside> {
         })
         .cloned()
         .collect()
-}
-
-/// The refs a trashed home's own work is on: `HEAD`, and the work-in-progress snapshot a
-/// forced reclaim wrote.
-///
-/// Two names and not every ref, and the rule behind the pair is one sentence: gc reads
-/// exactly what the reclaim proved. A reclaim reads the working tree and `HEAD`
-/// ([`crate::lifecycle::assess::Work::Checkout`]), so a commit no other reading of this
-/// home ever looked at cannot by itself keep the directory; and a ref that exists only
-/// because Nodal wrote it is not the person's work. `wip` is the one exception both
-/// halves agree on: a forced reclaim put the work it found there itself.
-///
-/// Everything left out is left out under that rule. `refs/nodal/origin/*` and
-/// `refs/nodal/checkout/*` are readings Nodal fetched in from the person's own checkout,
-/// and `refs/nodal/<unit>/target` is a copy of the branch the unit was to merge into;
-/// reading one of those as work would keep the home over a branch the person deleted in
-/// their own checkout.
-///
-/// **Every `refs/heads/*` is left out, the unit's own branch among them.** A home is a
-/// byte copy of a base, so it carries the base's `refs/heads/main` frozen at the moment
-/// the base was built. A rewrite of `main` past that commit in the person's checkout
-/// would leave the home holding the only copy of a commit the reclaim never looked at,
-/// and pin the directory for ever. The unit's own branch is no different in a detached
-/// home: a commit on it that `HEAD` does not reach is a commit the reclaim was never
-/// refused over, and a sweep that read it would keep that home on every sweep from then
-/// on with nothing a person could do to release it. Reading the branch on both sides is
-/// the wider reading, and it is one change rather than two halves.
-///
-/// **A pre-operation record and a pre-merge record are left out as well**, and these are
-/// the two that have to be argued because both hold real commits.
-///
-/// Every reclaim writes a pre-operation record before its first step
-/// ([`crate::git::snapshot`]), so every trashed home holds one; and `nodal merge` writes
-/// `refs/nodal/<unit>/premerge` before it squashes, so every merged unit holds commits
-/// that by construction exist nowhere else. Reading either as work keeps that home for
-/// ever, which is a leak and not a safety property: the merge that wrote the premerge ref
-/// is the operation that put the work on the target branch, and the reclaim that wrote
-/// the record is the one being carried out.
-///
-/// Neither holds content the rest of this list does not. A record's tree is the home's
-/// working tree and its parent is the home's own branch; the homes read here are the ones
-/// whose reclaim found nothing only there, so their working trees held no uncommitted and
-/// no untracked work. Where a reclaim did find something, `--force` put it on `wip`,
-/// which is named above, and [`crate::model::Rested::re_asks`] keeps that home out of
-/// this reading altogether.
-fn work_tips(git: &Git, entry: &Trashed) -> Result<Vec<Oid>> {
-    let named = [String::from("HEAD"), refs::wip(&entry.unit_id.to_string())];
-    let mut tips = Vec::new();
-    for name in named {
-        tips.extend(git.rev_parse_opt(&name)?);
-    }
-    Ok(union(&tips, &[]))
 }
 
 /// Stop what is still running for a unit whose home is not there any more.

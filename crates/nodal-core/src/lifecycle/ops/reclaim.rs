@@ -356,8 +356,8 @@ fn read(
     assess::assess(&assess::Input {
         home,
         checkout: Some(&Checkout::read(&project.root)),
-        // A live home, so the work is what the branch a person is on reaches.
-        work: assess::Work::Checkout,
+        // A live home, so the work is every ref it holds and no name off a trash row.
+        work: assess::Work(None),
         // The rest of what "another copy on this machine" promises: the other
         // repositories beside the project's checkout, proved by their own object stores
         // and never by a name.

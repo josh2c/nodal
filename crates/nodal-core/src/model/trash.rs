@@ -68,8 +68,13 @@ pub enum Rested {
     #[default]
     Unrecorded,
     /// The check found nothing that existed only in the home. `copies` names the
-    /// repositories and refs that held the commits it did not refuse over, and it is
-    /// empty for a home that had no commit of its own to hold.
+    /// repositories and refs that held the commits it did not refuse over.
+    ///
+    /// It is empty for two homes. One had no commit of its own to hold. The other was
+    /// held by the project's own checkout alone: the checkout's refs are the denominator
+    /// every disposition is drawn from, so a commit one of them reaches is the project's
+    /// history rather than this unit's work, and the check names no copy outside the home
+    /// for it. An empty list is therefore not a claim that nothing held the commits.
     ///
     /// It is a record and never permission. A [`crate::lifecycle::kernel::Proof`] is what one
     /// reading proved and only [`crate::lifecycle::kernel::judge`] makes one; this is what
