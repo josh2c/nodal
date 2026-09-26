@@ -24,15 +24,19 @@
 //! | DL-072 | a lock holder this account may not read | `a_hold_whose_holder_cannot_be_read_is_kept` |
 //! | the server remote | `origin` is an `ssh` or an `https` URL and not a path | `a_witness_of_a_served_remote_is_read_through_the_witness_path` |
 //! | the trash record | a `rested` record nothing can parse | `a_trash_record_nothing_can_parse_is_read_again` |
+//! | the swept side branch | the copy of a side-branch commit went while the home sat in the trash | `a_side_branch_whose_copy_went_is_kept` |
 //!
-//! Two of them state a defect and not a fix, because this lane writes no product code. Each
-//! says so in its own note, and each fails on the day the defect closes, which is how whoever
+//! One of them states a difference and not a fix, because this lane writes no product code. It
+//! says so in its own note, and it fails on the day the difference closes, which is how whoever
 //! closes it finds the test to turn round.
 //!
-//! | open defect | test |
+//! | open difference | test |
 //! |---|---|
 //! | a `refs/nodal/` record can be the only holder of content | `a_record_under_the_nodal_namespace_is_not_the_homes_own_work` |
-//! | the sweep reads `HEAD` where the gate reads every ref | `a_side_branch_whose_copy_went_is_swept_with_no_reading_of_it` |
+//!
+//! The last row of the table above was the other one. This lane found that false-safe and
+//! asserted it; the sweep reads every ref the gate proves now, so the test asserts the home is
+//! kept and its own note says what it used to prove.
 //!
 //! Every test that reads the process table names both hosts: the reading on Linux, and the
 //! claim not made on macOS with the reason printed.
@@ -630,31 +634,28 @@ fn a_trash_record_nothing_can_parse_is_read_again() {
     assert_eq!(built.machine.trashed(), trashed, "and the row went with it");
 }
 
-/// **An open false-safe, found by this lane. The assertion is what happens today.**
+/// A side branch whose one other copy went while the home sat in the trash keeps the home.
 ///
-/// Work on a side branch, a copy in another store at reclaim time, the copy gone while the home
-/// sits in the trash: the sweep removes the home and the work is then nowhere on the machine.
-/// Reproduced end to end by this test, which reads every store afterwards and finds none of them
-/// holds the commit.
+/// The shape: work on a branch `HEAD` does not reach, a copy in another store at reclaim time,
+/// and that copy gone before the sweep. DL-069's promise is that `gc` never removes the only
+/// copy of a commit, and the promise now holds over the refs the gate is refused over and not
+/// over `HEAD` alone.
 ///
-/// Where the two readings come apart:
+/// **This test asserted the opposite of itself until the sweep was widened.** The gate reads
+/// every ref the home holds of its own (`tests/safety/tests/home_refs.rs`), and the sweep read
+/// `HEAD` and the `wip` snapshot; a commit on a side branch, a tag or a stash was therefore swept
+/// on the clock with nothing having read it. This lane found that false-safe and reproduced it
+/// end to end, and the test stated the defect rather than the fix, because the lane writes no
+/// product code. The sweep reads the reclaim's own set now
+/// (`lifecycle::ops::gc::only_here` over `lifecycle::assess::Work`), the narrower reading and the
+/// function that made it are gone, and the three assertions at the end are the opposites of the
+/// ones this test carried.
 ///
-/// | reading | what it walks |
-/// |---|---|
-/// | the reclaim gate | every ref the home holds, less `refs/remotes/` and `refs/nodal/`, plus `HEAD` |
-/// | the sweep (`lifecycle::ops::gc::work_tips`) | `HEAD` and the `wip` snapshot, and nothing else |
-///
-/// The sweep's reading was right when the gate read `HEAD` alone: a commit the gate never looked
-/// at could not be one the gate had rested a removal on. The gate reads every ref now
-/// (`tests/safety/tests/home_refs.rs`), and the sweep was not widened with it — so DL-069's
-/// promise, that `gc` never removes the only copy, holds for `HEAD` and for nothing else.
-///
-/// This lane writes no product code, so the test states the defect rather than the fix. **When
-/// the sweep reads the refs the gate reads, this test fails**, and whoever closes it turns the
-/// three assertions at the end into their opposites and renames it
-/// `a_side_branch_whose_copy_went_is_kept`.
+/// The commit is read back out of the trashed home afterwards. "The home was kept" and "the work
+/// is still on the machine" are two claims, and a sweep that kept a directory it had already
+/// emptied would pass the first.
 #[test]
-fn a_side_branch_whose_copy_went_is_swept_with_no_reading_of_it() {
+fn a_side_branch_whose_copy_went_is_kept() {
     let (built, check, oracle) = asked(shape(
         Witness::FullClone,
         Refs::Branch,
@@ -679,10 +680,17 @@ fn a_side_branch_whose_copy_went_is_swept_with_no_reading_of_it() {
 
     let swept = built.machine.nodal(&["gc"]);
     assert!(swept.status.success(), "{}", stderr(&swept));
-    assert!(!trashed[0].is_dir(), "the sweep kept it: the defect is closed, see this test's note");
-    assert!(built.machine.trashed().is_empty(), "the row was kept, see this test's note");
-    for store in [built.machine.source.clone(), store, built.origin.clone()] {
-        assert!(!holds(&store, &work), "{} still holds the work", store.display());
+    let report = stdout(&swept);
+    assert!(report.contains(&work[..8]), "the sweep does not name the commit: {report}");
+    assert!(trashed[0].is_dir(), "the sweep removed a home holding the only copy of a commit");
+    assert_eq!(built.machine.trashed(), trashed, "the row went while the home stayed");
+    assert!(holds(&trashed[0], &work), "the home was kept and the work is not in it");
+    for elsewhere in [built.machine.source.clone(), store, built.origin.clone()] {
+        assert!(
+            !holds(&elsewhere, &work),
+            "{} holds a copy, so this proves nothing",
+            elsewhere.display()
+        );
     }
 }
 
