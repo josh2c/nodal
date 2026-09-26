@@ -434,8 +434,8 @@ fn permissions(path: &Path, mode: u32) {
 /// verdict removed the home on the clock alone. It reads as `unrecorded` now: the sweep
 /// reads the home again and keeps it over the copy that went.
 ///
-/// This shape carries into the adversarial grid (lane C) when it lands: a row whose
-/// verdict this binary cannot parse.
+/// The adversarial grid carries this shape when it lands: a row whose verdict this
+/// binary cannot parse.
 #[test]
 fn a_verdict_this_binary_cannot_read_is_asked_again_rather_than_taken() {
     let machine = machine();
