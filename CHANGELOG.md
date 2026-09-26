@@ -94,7 +94,12 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   ever run a command, for ever. A commit no ref outside the directory reaches keeps the
   home and its row, and one line names the commit and the copy that is gone. Nothing is
   removed on a reading that could not be made. A home a reclaim forced past a finding is
-  removed on its retention as before.
+  removed on its retention as before. A reading this wide also keeps homes nobody meant to
+  keep: a branch a person rewrote or deleted in their own checkout holds every trashed home
+  built from that base, on every sweep, because a home carries the base's `refs/heads/*`
+  frozen and the sweep reads them like any other ref. That is a home held and not work
+  lost — the line names the commit — and `nodal gc` has no override for it: restore the ref
+  in the checkout, or remove the directory by hand.
 - `nodal gc` reads a home again when the trash row holds a verdict this build cannot
   parse. Nodal read such a row as forced where the row also named a snapshot ref, and a
   forced reclaim is the one verdict the sweep does not ask again, so the retention removed
