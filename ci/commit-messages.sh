@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
-# Check that the commits a change adds carry no trailer lines and a known author.
+# Check that the commits a change adds carry no trailer lines, and that every commit
+# names only people this project knows in its author and committer fields.
 #
 # A commit message in this project is prose. The person who wrote the commit is its
 # author, and the author field already says so. A trailer line adds a second, weaker
@@ -34,20 +35,27 @@
 # without the flag, so a merge a person made on the branch is read like any other
 # commit, which is where a trailer in a merge body is caught.
 #
-# One rule stands over the author of a commit rather than over its body. The author is
-# the only claim this project keeps about who wrote a commit, which is the reason there
-# are no trailer lines: the field has to be true. A unit home holds no identity of its
-# own, so a home the project's identity was never set in writes its commits under the
-# machine's global one, and a merge into this repository keeps the author of every commit
-# it brings. So the author of each commit in the range is read, and one this project does
-# not know fails the check and is named with the author it carries.
+# One rule stands over the people a commit names rather than over its body. Those fields
+# are the only claim this project keeps about who wrote a commit, which is the reason there
+# are no trailer lines: they have to be true. A unit home holds no identity of its own, so
+# a home the project's identity was never set in writes its commits under the machine's
+# global one, and a merge into this repository keeps every field of every commit it brings.
+# So each commit in the range is read, and one this project does not know fails the check
+# and is named with the field and the identity it carries.
+#
+# Both the author and the committer are read, because the two move apart. The author is who
+# wrote the change and a rebase keeps it; the committer is who wrote the commit down last,
+# and a rebase, an amend and a cherry-pick each replace it with whoever ran them. So work
+# written in a home with the identity set and rebased in one without it arrives with every
+# author right and every committer the machine's fallback, and reading the author alone let
+# that branch through. That is the hole this closes.
 #
 # Two identities are this project's and both are the same person: the account the work is
 # pushed under, which a unit home commits as, and the one the project's own checkout is
-# configured with. A commit under either is a commit a person wrote.
+# configured with. A commit under either, in either field, is a commit a person wrote.
 #
-# A merge is not read for its author. Every merge that reaches this repository is one
-# GitHub made, and its author is the account that pressed the button.
+# A merge is read for neither field. Every merge that reaches this repository is one GitHub
+# made: its author is the account that pressed the button, and its committer is GitHub.
 #
 # The left side of the range can be unreadable through no fault of a message. A first
 # push and a force-push both leave `github.event.before` all zeros or naming a commit
@@ -98,8 +106,25 @@ Josh Garcia <garciajosh313@gmail.com>'
 
 # Whether this is one of them, read whole: a name alone and an address alone each pass a
 # commit the pair would fail.
-known_author() {
+known_identity() {
     printf '%s\n' "$IDENTITIES" | grep -Fxq "$1"
+}
+
+# The fields of one commit that name somebody this project does not know, as
+# `<field>: <name> <address>` lines, and nothing for a commit whose fields are all known.
+#
+# A merge names nobody this check reads, so it answers nothing for one.
+strange_fields() {
+    if is_merge "$1"; then
+        return 0
+    fi
+    for field in author committer; do
+        case "$field" in
+            author) who=$(git log -1 --format='%an <%ae>' "$1") ;;
+            *) who=$(git log -1 --format='%cn <%ce>' "$1") ;;
+        esac
+        known_identity "$who" || echo "$field: $who"
+    done
 }
 
 # Whether the commit has a second parent, which is what makes it a merge.
@@ -122,12 +147,12 @@ failures=0
 strangers=0
 for sha in $(git rev-list $merges "$range"); do
     count=$((count + 1))
-    author=$(git log -1 --format='%an <%ae>' "$sha")
-    if ! known_author "$author" && ! is_merge "$sha"; then
+    strange=$(strange_fields "$sha")
+    if [ -n "$strange" ]; then
         strangers=$((strangers + 1))
         {
             echo "commit-messages: $sha $(git log -1 --format='%s' "$sha")"
-            echo "    author: $author"
+            printf '%s\n' "$strange" | sed 's/^/    /'
         } >&2
     fi
     lines=$(bad_lines "$sha")
@@ -149,16 +174,22 @@ if [ "$failures" -ne 0 ]; then
 fi
 
 if [ "$strangers" -ne 0 ]; then
-    echo "commit-messages: $strangers commit(s) carry an author this project does not know." >&2
-    echo "A commit is authored by the person who wrote it, under one of the identities this" >&2
-    echo "project uses. A unit home the project's identity was never set in writes the" >&2
-    echo "machine's global one instead, which is how another author gets in: set the" >&2
-    echo "identity in the home, rewrite the author of the commit, and push the branch again." >&2
+    echo "commit-messages: $strangers commit(s) name somebody this project does not know." >&2
+    echo "A commit is authored by the person who wrote it and committed by the person who" >&2
+    echo "wrote it down, under one of the identities this project uses. A unit home the" >&2
+    echo "project's identity was never set in writes the machine's global one instead, which" >&2
+    echo "is how another name gets into either field: the author when the commit was made" >&2
+    echo "there, the committer when it was rebased, amended or cherry-picked there. Set the" >&2
+    echo "identity in the home, then write the named field again over the whole branch. An" >&2
+    echo "amend writes the committer and keeps the author:" >&2
+    echo "    git rebase --exec 'git commit --amend --no-edit' <base>" >&2
+    echo "Add --reset-author to that amend where the field named above is the author." >&2
     exit 1
 fi
 
+known='every author and committer known'
 if [ -n "$merges" ]; then
-    echo "commit messages: $count commit(s) in $range, merges not read, no trailer lines, every author known"
+    echo "commit messages: $count commit(s) in $range, merges not read, no trailer lines, $known"
 else
-    echo "commit messages: $count commit(s) in $range, no trailer lines, every author known"
+    echo "commit messages: $count commit(s) in $range, no trailer lines, $known"
 fi
