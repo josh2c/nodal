@@ -32,6 +32,18 @@ See `docs/code-structure.md`. The short version:
 - One module spawns each external process. No other module calls that tool directly.
 - Clippy thresholds in `clippy.toml` are hard limits.
 
+## Registry migrations
+
+Migrations are append-only. Add a file, raise `SCHEMA_VERSION`, and never edit a migration
+that has shipped.
+
+Each schema version has a frozen fixture in `crates/nodal-core/tests/fixtures/registry/`.
+A fixture is a committed registry of that version, held as SQL. `cargo test -p nodal-core
+--test upgrade` migrates every fixture to the current version. It checks that each row
+keeps its meaning, that a fixture records the version it starts from, and that a fixture
+holds the schema its version produces. A new migration with no fixture fails that suite.
+The README in that directory states how to write one.
+
 ## Commit messages
 
 A commit message is prose. Write what the change does and why. The commit author is the
