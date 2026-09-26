@@ -20,8 +20,8 @@
 //! | §2.3, owned | `objects/info/alternates` of the store names no path inside the home |
 //! | §2.4, not the home | the store's `--git-common-dir` is not the home's |
 //! | §2, partial by rule | `extensions.partialclone` or any `remote.*.promisor` is Unknown |
-//! | §3, the observation | a `FETCH_HEAD` line of a store, dated by that file, whose sha reaches the commit |
-//! | §3, the local clock | the last reflog entry of the home's own ref, else the ref file's own time |
+//! | §3, the observation | a `FETCH_HEAD` line of a store outside the home, dated by that file, whose sha reaches the commit |
+//! | §3, the local clock | the instant the last reflog entry of the home's own ref carries, else the ref file's own time |
 //!
 //! ## Two things the oracle does deliberately
 //!
@@ -112,7 +112,7 @@ pub fn ask(home: &Path, root: &Path) -> Answer {
     let mut answer = Answer { occupancy: occupancy(home), ..Answer::default() };
     let stores = stores(root, home);
     let tips = own_refs(home);
-    let observations = observations(&stores);
+    let observations = observations(&stores, home);
     for (oid, refs) in commits(home, &tips) {
         let clock = newest(&tips, &refs, home);
         if stores.iter().any(|store| proves(store, &oid, home))
@@ -186,15 +186,28 @@ fn tree(home: &Path) -> Vec<String> {
 /// One porcelain v2 line as a path of the loss set, or nothing.
 ///
 /// `1` and `2` are a changed tracked path, `u` is an unmerged one and `?` is untracked.
-/// `!` is ignored and is not in the guarantee. The path is the last field of the line, and
-/// a rename line holds two separated by a tab, of which the first is the one that moved.
+/// `!` is ignored and is not in the guarantee.
+///
+/// The path is the **remainder** of the line after the fixed fields of its kind, and not
+/// the last field. Porcelain v2 quotes no space and escapes none: `? d/two words.txt` read
+/// as fields ends at `words.txt`, which names a path no reading can find and which no longer
+/// starts with `.nodal/` — so a file Nodal wrote, with a space in its name, would be counted
+/// as a loss and the shape would report a false `SafeAndLost`. A rename line holds two paths
+/// separated by a tab, of which the first is the one that moved.
 fn entry(line: &str) -> Option<String> {
     let (kind, rest) = line.split_once(' ')?;
-    if !["1", "2", "u", "?"].contains(&kind) {
-        return None;
+    let fixed = match kind {
+        "1" => 7,
+        "2" => 8,
+        "u" => 9,
+        "?" => 0,
+        _ => return None,
+    };
+    let mut left = rest;
+    for _ in 0..fixed {
+        left = left.split_once(' ')?.1;
     }
-    let path = rest.rsplit(' ').next()?;
-    Some(path.split('\t').next().unwrap_or(path).to_owned())
+    Some(left.split('\t').next().unwrap_or(left).to_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -374,14 +387,25 @@ impl Observation {
     }
 }
 
-/// Every `FETCH_HEAD` line of every store, dated by the file it is in.
+/// Every `FETCH_HEAD` line of every store outside the home, dated by the file it is in.
 ///
 /// DL-073 rules that `FETCH_HEAD` is the record and the reflog is not: Git writes no reflog
 /// entry until a ref first moves, so a fetch that changed nothing leaves a reflog with
 /// nothing in it and a `FETCH_HEAD` that lists everything it saw.
-fn observations(stores: &[PathBuf]) -> Vec<Observation> {
+///
+/// [`outside`] is applied here for the reason §2.4 applies it: a linked worktree of the home
+/// is at a second path and keeps its records in the home's own common directory, so the
+/// `FETCH_HEAD` of `worktree-of-home` is a file inside the directory whose removal is the
+/// question. Evidence that goes with the home proves nothing about the home. Nothing in the
+/// tree fetches into a home today, which makes this a reading that is right rather than one
+/// that is needed — and the day `nodal new` fetches, the error would be a proof taken from a
+/// record that is about to be deleted.
+fn observations(stores: &[PathBuf], home: &Path) -> Vec<Observation> {
     let mut seen = Vec::new();
     for store in stores {
+        if !outside(store, home) {
+            continue;
+        }
         let Some(common) = common_dir(store) else { continue };
         let record = common.join("FETCH_HEAD");
         let Some(at) = written(&record) else { continue };
@@ -414,14 +438,36 @@ fn newest(tips: &BTreeMap<String, String>, reaching: &[String], home: &Path) -> 
 /// packed, so it would date this ref by another ref's update, and the error would be in the
 /// direction of calling a stale reading fresh. That is FS-3.
 fn last_moved(home: &Path, name: &str) -> Option<u64> {
-    let logged = plumbing(home, &["log", "-g", "-1", "--format=%ct", name]);
-    if logged.status.success()
-        && let Ok(seconds) = text(&logged).trim().parse()
-    {
+    if let Some(seconds) = reflogged(home, name) {
         return Some(seconds);
     }
     let common = common_dir(home)?;
     written(&common.join(name))
+}
+
+/// When the newest entry of one ref's reflog was written, by that entry's own instant.
+///
+/// `%gd` under `--date=unix`, and not `%ct`. `%ct` is the **commit's** committer date, and
+/// `-g` does not change that: a ref moved on to an older commit prints the older instant and
+/// dates as though it had not moved. A remote reading taken before that move then stands
+/// ahead of the clock and proves work the reading never saw — FS-3, in the unsafe direction,
+/// which is the direction this function's own note claims to guard.
+///
+/// The selector carries the instant instead. `--date=unix` renders it as
+/// `refs/heads/side@{1758000000}`, so the digits between `@{` and `}` are when the entry was
+/// written.
+fn reflogged(home: &Path, name: &str) -> Option<u64> {
+    let logged = plumbing(home, &["log", "-g", "-1", "--date=unix", "--format=%gd", name]);
+    if !logged.status.success() {
+        return None;
+    }
+    let printed = text(&logged);
+    selected(printed.trim())
+}
+
+/// The instant a reflog selector carries, as `--date=unix` renders one.
+fn selected(selector: &str) -> Option<u64> {
+    selector.rsplit_once("@{")?.1.strip_suffix('}')?.parse().ok()
 }
 
 /// When a file was last written, in seconds, and nothing when it is not there.
@@ -436,8 +482,13 @@ fn written(path: &Path) -> Option<u64> {
 
 /// What holds the home, read from the host's own table.
 ///
-/// Recorded and never a loss. `Unread` on a host that publishes no such table, which is
-/// what macOS does for the per-descriptor open flags the rule turns on.
+/// Recorded and never a loss, and the two hosts read it differently. Linux publishes the
+/// working directory, the root and the per-descriptor open flags of every process, so the
+/// reading there is the rule itself. macOS publishes none of the flags, so the reading there
+/// is `lsof`, which names a process with the home as its working directory or with any
+/// descriptor open under it, and cannot say whether that descriptor writes — a wider reading
+/// of the same question, in the direction that finds more holders and never fewer. `Unread`
+/// where the host would not answer at all.
 #[must_use]
 pub fn occupancy(home: &Path) -> Occupancy {
     let resolved = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
@@ -505,7 +556,14 @@ fn writable(info: &str) -> bool {
         .any(|flags| flags & 0o3 != 0)
 }
 
-/// The macOS reading, which `lsof` answers and which carries no per-descriptor flags.
+/// The macOS reading: every process with a descriptor open on a file under the home.
+///
+/// `+D` walks the directory and reports a working directory under it as well as an open file,
+/// and `-t` prints the identifiers alone. It is wider than the Linux reading, in the one way
+/// this host leaves open: a descriptor open for **reading** is counted too, because macOS
+/// publishes no per-descriptor flag to tell one from a write. Occupancy is recorded and never
+/// failed, so a wider reading moves no verdict; what it must not do is answer "nothing holds
+/// it" where nothing was read, and a host with no `lsof` answers [`Occupancy::Unread`].
 #[cfg(not(target_os = "linux"))]
 fn lsof(home: &Path) -> Occupancy {
     let Ok(asked) = Command::new("lsof").arg("-t").arg("+D").arg(home).output() else {
@@ -546,4 +604,60 @@ fn plumbing(repo: &Path, args: &[&str]) -> Output {
 /// What a command printed on standard output.
 fn text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "tests fail by panicking")]
+mod tests {
+    use super::{entry, selected};
+
+    /// Porcelain v2 quotes no space, so the path is the remainder of the line and not its
+    /// last field. A reading by fields renamed a loss, and a renamed loss under `.nodal/` is
+    /// one the `.nodal/` filter no longer covers.
+    #[test]
+    fn a_path_with_a_space_in_it_is_read_whole() {
+        assert_eq!(entry("? d/two words.txt").unwrap(), "d/two words.txt");
+        assert_eq!(entry("? .nodal/two words.txt").unwrap(), ".nodal/two words.txt");
+        let changed = "1 .M N... 100644 100644 100644 aaaa bbbb d/two words.txt";
+        assert_eq!(entry(changed).unwrap(), "d/two words.txt");
+        let unmerged = "u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d/two words.txt";
+        assert_eq!(entry(unmerged).unwrap(), "d/two words.txt");
+    }
+
+    /// A rename line holds the path it moved to, a tab, and the path it moved from.
+    #[test]
+    fn a_rename_is_read_as_the_path_it_moved_to() {
+        let renamed = "2 R. N... 100644 100644 100644 aaaa bbbb R100 to here.txt\tfrom here.txt";
+        assert_eq!(entry(renamed).unwrap(), "to here.txt");
+    }
+
+    /// An ignored path is not in the guarantee, and a header line is not a path at all.
+    #[test]
+    fn a_line_that_names_no_loss_names_nothing() {
+        assert_eq!(entry("! dist/dev.sqlite"), None);
+        assert_eq!(entry("# branch.oid aaaa"), None);
+        assert_eq!(entry(""), None);
+    }
+
+    /// A line too short for its kind is read as no path, and never as the fields it has.
+    #[test]
+    fn a_truncated_line_is_read_as_nothing() {
+        assert_eq!(entry("1 .M N... 100644"), None);
+    }
+
+    /// The instant is the digits of the selector, whatever the ref is called.
+    #[test]
+    fn a_reflog_selector_carries_the_instant_of_its_entry() {
+        assert_eq!(selected("refs/heads/side@{1758000000}"), Some(1_758_000_000));
+        assert_eq!(selected("HEAD@{1758000000}"), Some(1_758_000_000));
+    }
+
+    /// A selector with no instant in it dates nothing. `%gd` without `--date=unix` prints an
+    /// ordinal, and an ordinal read as an instant is 1970.
+    #[test]
+    fn a_selector_with_no_instant_dates_nothing() {
+        assert_eq!(selected("refs/heads/side"), None);
+        assert_eq!(selected("refs/heads/side@{2 hours ago}"), None);
+        assert_eq!(selected(""), None);
+    }
 }

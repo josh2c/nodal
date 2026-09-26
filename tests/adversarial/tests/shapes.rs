@@ -11,10 +11,11 @@
 //! | FS-1, order (a) | the remote dropped the branch and the witness then pruned | `a_dropped_branch_the_witness_pruned_is_refused` |
 //! | FS-1, order (b) | the witness fetched without pruning and the remote then dropped | `a_prune_less_fetch_before_a_dropped_branch_stays_safe` |
 //! | FS-2, branch | a commit on a branch `HEAD` does not reach | `work_on_a_side_branch_is_refused` |
-//! | FS-2, stash | a stash | `work_in_the_stash_is_refused` |
+//! | FS-2, stash | a stash, and a clone of the home that fetched none of it | `work_in_the_stash_is_refused` |
 //! | FS-2, detached | a commit on a detached `HEAD` | `work_on_a_detached_head_is_refused` |
 //! | FS-2, wip | a record under `refs/nodal/` | `a_record_under_the_nodal_namespace_is_not_the_homes_own_work` |
-//! | FS-3 | `packed-refs` rewritten with no fetch | `a_rewrite_of_packed_refs_moves_no_verdict` |
+//! | FS-3, the file | `packed-refs` rewritten with no fetch | `a_rewrite_of_packed_refs_moves_no_verdict` |
+//! | FS-3, the clock | a branch moved on to a commit made years ago | `a_branch_moved_on_to_an_older_commit_is_dated_by_the_move` |
 //! | FS-6 | a process of this account it may not read | `a_process_this_account_may_not_read_refuses_the_move` |
 //! | FS-8 | a write from a directory elsewhere | `a_write_from_a_directory_elsewhere_refuses_the_move` |
 //! | FS-14 | a blobless partial clone offered as the copy | `a_blobless_clone_is_no_copy_of_the_work` |
@@ -155,23 +156,36 @@ fn work_on_a_side_branch_is_refused() {
     assert!(!one_group(&check).proves(), "{:?}", check.commits);
 }
 
-/// A stash is work the home holds.
+/// A stash is work the home holds, and a clone of the home is no copy of it.
 ///
-/// Nothing is built beside the checkout here, and that is a reading this lane took rather than a
-/// simplification. `git clone` **fetches** no stash — but a clone of a path on this disk does not
-/// fetch: the local transport copies or hard-links the whole object store, so the stash commit is
-/// in such a clone and a branch can name it. A clone over a transport is a different shape and
-/// the grid holds it. What is asserted here is the home alone.
+/// The clone is the load-bearing half. `git clone` fetches `refs/heads/*` and the tags, and no
+/// stash — so a second clone of your own repository, which is the store a person would point at
+/// and say "it is in there", holds none of it.
+///
+/// The shape asserted nothing for a while, and the reason is worth keeping: the fixture cloned
+/// the home by its **path**, which is the local transport, which copies the whole object
+/// database. The stash commit was in that clone, `git branch adversarial-copy <it>` succeeded,
+/// and both answerers found a copy that no real clone would hold. Over the four clone-shaped
+/// topologies the stash, the note and the `wip` values of the [`Refs`] axis could then never
+/// report a loss. The clones fetch now, and the last assertion here is the one that says so.
 #[test]
 fn work_in_the_stash_is_refused() {
-    let (_built, check, oracle) = asked(shape(
-        Witness::Nothing,
+    let (built, check, oracle) = asked(shape(
+        Witness::FullClone,
         Refs::Stash,
         Observed::NeverPushed,
         Tree::Clean,
         Occupant::Nothing,
     ));
-    both_refuse(&check, &oracle, "a stash");
+    both_refuse(&check, &oracle, "a stash, with a clone of the home beside the checkout");
+    assert!(!oracle.unproved.is_empty(), "the oracle named no commit, so the tree refused it");
+    let store = built.root.join("witness");
+    assert!(store.is_dir(), "the shape built no clone, so it asserts nothing about one");
+    let stash = git(&built.home, &["rev-parse", "refs/stash"]);
+    assert!(
+        !holds(&store, stash.trim()),
+        "the clone fetched the stash, so the copy it offers is the local transport and not a fetch"
+    );
 }
 
 /// A commit made with `HEAD` detached is work the home holds.
@@ -265,6 +279,100 @@ fn dated_far_ahead(path: &Path) {
     let when = std::time::SystemTime::now() + std::time::Duration::from_secs(86_400);
     let handle = std::fs::File::options().write(true).open(path).expect("the file is there");
     handle.set_times(std::fs::FileTimes::new().set_modified(when)).expect("the file is dated");
+}
+
+/// Date a file behind now, which is what a reading taken before the last local change looks
+/// like.
+fn dated_seconds_ago(path: &Path, seconds: u64) {
+    let when = std::time::SystemTime::now() - std::time::Duration::from_secs(seconds);
+    let handle = std::fs::File::options().write(true).open(path).expect("the file is there");
+    handle.set_times(std::fs::FileTimes::new().set_modified(when)).expect("the file is dated");
+}
+
+/// An instant long before any run of this suite: 13 September 2020, in whole seconds.
+///
+/// A fixed instant and not an offset from now, so the commit it dates is the same commit on
+/// every host and in every year this suite runs in.
+const LONG_AGO: &str = "1600000000 +0000";
+
+/// A commit of the tree `HEAD` holds, dated [`LONG_AGO`], on top of `HEAD`.
+fn backdated(home: &Path) -> String {
+    let tree = git(home, &["rev-parse", "HEAD^{tree}"]);
+    let parent = git(home, &["rev-parse", "HEAD"]);
+    let made = std::process::Command::new("git")
+        .arg("-C")
+        .arg(home)
+        .args(["commit-tree", &tree, "-p", &parent, "-m", "a commit made long ago"])
+        .env("GIT_AUTHOR_DATE", LONG_AGO)
+        .env("GIT_COMMITTER_DATE", LONG_AGO)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("git runs");
+    assert!(made.status.success(), "the backdated commit was not made: {}", stderr(&made));
+    String::from_utf8_lossy(&made.stdout).trim().to_owned()
+}
+
+/// A branch moved on to an older commit is dated by the move and not by the commit.
+///
+/// FS-3 in the direction that loses work. The freshness rule of §3 is an order between two
+/// instants: a reading of a remote proves work only where the reading is **after** the last
+/// local change. So the local instant has to be when the ref moved. A reading that took the
+/// commit's own committer date instead would date a ref pointed at an older commit by the age
+/// of that commit, a stale reading would stand ahead of it, and the reading would prove work
+/// it never saw.
+///
+/// The shape is the ordinary one: a commit made years ago that the remote was seen to hold, a
+/// reading of that remote taken ten minutes ago, and a branch of the home moved on to the
+/// commit **after** the reading. Nothing here is strange; a rebase, a `reset --hard` on to a
+/// release tag and a `branch --force` all do it.
+///
+/// Both halves are asserted, because the assertion is about the order of two instants and not
+/// about reachability: the sha the reading carries reaches the commit, so a reading dated after
+/// the move would prove it and the only thing that refuses it is the clock.
+#[test]
+fn a_branch_moved_on_to_an_older_commit_is_dated_by_the_move() {
+    let (built, _, _) = asked(shape(
+        Witness::Nothing,
+        Refs::Branch,
+        Observed::FetchedBefore,
+        Tree::Clean,
+        Occupant::Nothing,
+    ));
+    let checkout = built.machine.source.clone();
+
+    let older = backdated(&built.home);
+    git(&built.home, &["push", "--quiet", "origin", &format!("{older}:refs/heads/older")]);
+    git(&checkout, &["fetch", "--quiet", "origin"]);
+    dated_seconds_ago(&checkout.join(".git/FETCH_HEAD"), 600);
+    git(&built.home, &["branch", "moved-here", &older]);
+
+    let read = std::fs::read_to_string(checkout.join(".git/FETCH_HEAD")).expect("a record");
+    let mut seen = read.lines().filter_map(|line| line.split_whitespace().next());
+    assert!(
+        seen.any(|sha| sha == older),
+        "the reading does not name the commit, so the clock is not what refuses it: {read}"
+    );
+    let made: u64 = git(&built.home, &["log", "-1", "--format=%ct", &older]).parse().unwrap();
+    assert!(
+        made < dated_at(&checkout.join(".git/FETCH_HEAD")),
+        "the commit is not older than the reading, so this shape asserts nothing"
+    );
+
+    let again = built.oracle();
+    assert!(
+        again.unproved.iter().any(|lost| lost.oid == older),
+        "a reading taken before the branch moved was called a proof of it: {:?}",
+        again.unproved
+    );
+    let check = built.check();
+    assert!(!check.safe_to_reclaim, "the predicate called the stale reading a proof: {check:?}");
+}
+
+/// When a file was last written, in seconds.
+fn dated_at(path: &Path) -> u64 {
+    let modified = std::fs::metadata(path).expect("the file is there").modified().expect("a time");
+    modified.duration_since(std::time::UNIX_EPOCH).expect("an instant after the epoch").as_secs()
 }
 
 // ---------------------------------------------------------------------------

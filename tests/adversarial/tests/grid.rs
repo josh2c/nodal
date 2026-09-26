@@ -3,7 +3,8 @@
 //! One test and not one per shape. A shape is not a property a reviewer cites; it is a draw
 //! from a space, and what a reader needs is the whole of what the run asked and every
 //! difference it found. So the run prints a report and fails on the differences that are
-//! defects, and the report is printed whether or not it failed:
+//! defects, and the report is printed once: by the panic where the run failed, and on
+//! standard output where it did not.
 //!
 //! ```text
 //! adversarial (sample): 60 shapes, 0 false-safe, 4 over-refusals
@@ -81,7 +82,7 @@ fn no_shape_is_called_safe_while_the_oracle_says_work_goes_with_it() {
     let (shapes, size) = grid::asked();
     let found = over(&shapes);
     let report = found.report(size);
-    println!("{report}");
     assert_eq!(found.asked, shapes.len(), "a shape was not asked: {report}");
     assert!(found.failures().is_empty(), "{report}");
+    println!("{report}");
 }

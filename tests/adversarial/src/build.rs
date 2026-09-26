@@ -25,6 +25,10 @@
 //! not a defect of the fixture: it is the fact that a clone of your repository is not a
 //! copy of your stash, and the grid asserts that both answerers know it.
 //!
+//! That holds only of a clone that **fetches**. `git clone <path>` copies the whole object
+//! database instead, stash and notes and all, so every clone-shaped topology is built from a
+//! URL and none of them from the path the home stands at ([`url`]).
+//!
 //! The two shallow topologies are the exception. A depth needs a ref to count from, so
 //! those two shapes make one in the home for the clone to name
 //! ([`TIP`] and [`ABOVE`]), and then the work is on a branch whatever the [`Refs`] axis did
@@ -410,17 +414,18 @@ fn tree(steps: &mut Steps, home: &Path, state: Tree) {
 fn witness(steps: &mut Steps, at: &Where, work: &str, shape: Witness) {
     let (beside, home) = (at.beside.clone(), at.home.as_path());
     let path = home.to_str().expect("a printable home").to_owned();
+    let served = url(home);
     match shape {
         Witness::Nothing => steps.note(String::from("# nothing is built beside the checkout")),
         Witness::FullClone => {
-            steps.git(&beside, &["clone", "--quiet", "--no-checkout", &path, WITNESS]);
+            steps.git(&beside, &["clone", "--quiet", "--no-checkout", &served, WITNESS]);
             keeps(steps, &beside.join(WITNESS), work);
         }
         Witness::Bare => {
-            steps.git(&beside, &["clone", "--quiet", "--bare", &path, "witness.git"]);
+            steps.git(&beside, &["clone", "--quiet", "--bare", &served, "witness.git"]);
             keeps(steps, &beside.join("witness.git"), work);
         }
-        Witness::WorktreeElsewhere => worktree_elsewhere(steps, &beside, &path, work),
+        Witness::WorktreeElsewhere => worktree_elsewhere(steps, &beside, &served, work),
         Witness::WorktreeOfHome => {
             let at = beside.join(WITNESS);
             let named = at.to_str().expect("a printable path").to_owned();
@@ -430,7 +435,7 @@ fn witness(steps: &mut Steps, at: &Where, work: &str, shape: Witness) {
         Witness::ShallowBelow => shallow(steps, &beside, home, work, TIP),
         Witness::BloblessPartial => blobless(steps, &beside, home, work),
         Witness::AlternatesOutside => {
-            steps.git(&beside, &["clone", "--quiet", "--no-checkout", &path, "donor"]);
+            steps.git(&beside, &["clone", "--quiet", "--no-checkout", &served, "donor"]);
             let donor = beside.join("donor");
             keeps(steps, &donor, work);
             let named = donor.to_str().expect("a printable path").to_owned();
@@ -449,6 +454,8 @@ fn witness(steps: &mut Steps, at: &Where, work: &str, shape: Witness) {
 /// The worktree is checked out at the clone's own `HEAD` and not at the work. What holds the
 /// work is the clone's object store, which the worktree shares, and a worktree that named a
 /// commit its clone had not fetched could not be made at all.
+///
+/// The donor is cloned over the transport, for the reason [`url`] states.
 fn worktree_elsewhere(steps: &mut Steps, beside: &Path, home: &str, work: &str) {
     steps.git(beside, &["clone", "--quiet", "--no-checkout", home, "donor"]);
     let donor = beside.join("donor");
@@ -510,7 +517,25 @@ fn keeps(steps: &mut Steps, store: &Path, work: &str) {
     let _named = steps.try_git(store, &["branch", KEPT, work]);
 }
 
-/// A repository as a URL, so a clone of it uses the transport a filter and a depth need.
+/// A repository as a URL, so a clone of it fetches rather than copies.
+///
+/// Every clone-shaped topology is built from this and never from the path, and the reason is
+/// the shape itself. `git clone <path>` uses the **local** transport: it copies or hard-links
+/// the whole object database, stash commits, notes and `refs/nodal/` records included. So a
+/// clone of a path holds a stash commit, `git branch <name> <that commit>` succeeds in it, and
+/// a store that a real clone would hold no copy of is offered as the copy. Four of the ten
+/// topologies were built that way, and over them the stash, the note and the `wip` values of
+/// the [`Refs`] axis could never report a loss: a product false-safe over any of the three
+/// would have passed the grid in silence.
+///
+/// A clone over a transport fetches `refs/heads/*` and the tags, which is the clause the
+/// module note above rests on. `--no-local` would say the same thing; the URL says it in the
+/// spelling the shallow and the filtered values already use.
+///
+/// The two borrowing topologies keep a path on purpose. `--shared` is what makes an
+/// alternate, it is local by definition, and *what it borrows from* is the axis:
+/// `alternates-into-home` borrows from the home and fails §2.3, `alternates-outside` borrows
+/// from a donor that this function cloned.
 fn url(repo: &Path) -> String {
     let resolved = std::fs::canonicalize(repo).expect("the repository is there");
     format!("file://{}", resolved.display())
