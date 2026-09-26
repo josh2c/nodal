@@ -15,6 +15,8 @@
 #   - `Co-Authored-By` glued under a prose line fails, where git reads no trailer;
 #   - `Session:` glued under a prose line fails, for the key that ends in `-session`;
 #   - `Generated with` in prose fails, behind the emoji a harness puts before it;
+#   - a commit authored by the machine's global identity fails, and the output names the
+#     commit and the author it found;
 #   - a merge a person made locally, with a trailer in its body, fails: this is the case
 #     that pays for reading merges, which is what a pull request is read without;
 #   - `--no-merges` skips that same merge, and skips a merge of GitHub's shape whose
@@ -34,9 +36,19 @@ cd "$work"
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_NOSYSTEM=1
 
+# The identity the check knows, read out of the check itself so this suite keeps no
+# second copy of it. The fixture commits under it, which is what makes every claim below
+# a claim about a message rather than about an author.
+identity=$(sed -n "s/^IDENTITIES='\(.*\)$/\1/p" "$script")
+[ -n "$identity" ] || {
+    echo "acceptance (commit messages): the check states no identity to commit under" >&2
+    exit 1
+}
+address=${identity#*<}
+
 git init --quiet --initial-branch=main .
-git config user.name fixture
-git config user.email fixture@example.invalid
+git config user.name "${identity%% <*}"
+git config user.email "${address%>}"
 git config commit.gpgsign false
 
 echo one > file
@@ -162,6 +174,16 @@ Generated with a tool that writes the line, and the paragraph carries on after i
 MSG
 rejects "Generated with in prose" "Generated with a tool"
 
+# The author of a commit is read as well as its body. A commit under any other identity
+# fails, and the output names it and what it carries. This is the machine's global
+# identity, which a unit home writes when the project's own was never set in it.
+echo fallback > file
+GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@b.c \
+    git commit --quiet -am "Change what the file holds under another identity"
+stranger=$(git rev-parse HEAD)
+rejects "a commit under the machine's own identity" "$stranger" "author: a <a@b.c>" \
+    "an author this project does not know"
+
 # A merge a person made locally, with a trailer in its body, is read like any other
 # commit. Deleting the merge from the range makes this claim fail.
 git checkout --quiet -b local-side "$base"
@@ -238,4 +260,4 @@ case "$output" in
     *) fail "a base that names no commit did not say what was wrong" "$output" ;;
 esac
 
-echo "acceptance (commit messages): prose passes, what git calls a trailer and what a harness appends both fail and are named, a merge is read without --no-merges and skipped with it, an unreadable range exits 0 on a push and 2 on a pull request"
+echo "acceptance (commit messages): prose passes, what git calls a trailer and what a harness appends both fail and are named, a commit under another identity fails and is named, a merge is read without --no-merges and skipped with it, an unreadable range exits 0 on a push and 2 on a pull request"

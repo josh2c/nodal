@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Check that the commits a change adds carry no trailer lines.
+# Check that the commits a change adds carry no trailer lines and a known author.
 #
 # A commit message in this project is prose. The person who wrote the commit is its
 # author, and the author field already says so. A trailer line adds a second, weaker
@@ -33,6 +33,21 @@
 # colon. That is a person's title and no reason to fail a push. A pull request is read
 # without the flag, so a merge a person made on the branch is read like any other
 # commit, which is where a trailer in a merge body is caught.
+#
+# One rule stands over the author of a commit rather than over its body. The author is
+# the only claim this project keeps about who wrote a commit, which is the reason there
+# are no trailer lines: the field has to be true. A unit home holds no identity of its
+# own, so a home the project's identity was never set in writes its commits under the
+# machine's global one, and a merge into this repository keeps the author of every commit
+# it brings. So the author of each commit in the range is read, and one this project does
+# not know fails the check and is named with the author it carries.
+#
+# Two identities are this project's and both are the same person: the account the work is
+# pushed under, which a unit home commits as, and the one the project's own checkout is
+# configured with. A commit under either is a commit a person wrote.
+#
+# A merge is not read for its author. Every merge that reaches this repository is one
+# GitHub made, and its author is the account that pressed the button.
 #
 # The left side of the range can be unreadable through no fault of a message. A first
 # push and a force-push both leave `github.event.before` all zeros or naming a commit
@@ -77,6 +92,24 @@ git rev-parse --verify --quiet "$base^{commit}" > /dev/null ||
 # printed once.
 harness='^(co-authored-by|[A-Za-z0-9-]*session)[[:blank:]]*:|generated with'
 
+# The identities a commit of this project may carry, one per line and stated nowhere else.
+IDENTITIES='j2c <113136101+josh2c@users.noreply.github.com>
+Josh Garcia <garciajosh313@gmail.com>'
+
+# Whether this is one of them, read whole: a name alone and an address alone each pass a
+# commit the pair would fail.
+known_author() {
+    printf '%s\n' "$IDENTITIES" | grep -Fxq "$1"
+}
+
+# Whether the commit has a second parent, which is what makes it a merge.
+is_merge() {
+    case "$(git log -1 --format='%P' "$1")" in
+        *' '*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 bad_lines() {
     trailers=$(git log -1 --format='%(trailers:only,unfold)' "$1")
     appended=$(git log -1 --format='%b' "$1" | grep -iE "$harness" || true)
@@ -86,8 +119,17 @@ bad_lines() {
 
 count=0
 failures=0
+strangers=0
 for sha in $(git rev-list $merges "$range"); do
     count=$((count + 1))
+    author=$(git log -1 --format='%an <%ae>' "$sha")
+    if ! known_author "$author" && ! is_merge "$sha"; then
+        strangers=$((strangers + 1))
+        {
+            echo "commit-messages: $sha $(git log -1 --format='%s' "$sha")"
+            echo "    author: $author"
+        } >&2
+    fi
     lines=$(bad_lines "$sha")
     [ -n "$lines" ] || continue
     failures=$((failures + 1))
@@ -106,8 +148,17 @@ if [ "$failures" -ne 0 ]; then
     exit 1
 fi
 
+if [ "$strangers" -ne 0 ]; then
+    echo "commit-messages: $strangers commit(s) carry an author this project does not know." >&2
+    echo "A commit is authored by the person who wrote it, under one of the identities this" >&2
+    echo "project uses. A unit home the project's identity was never set in writes the" >&2
+    echo "machine's global one instead, which is how another author gets in: set the" >&2
+    echo "identity in the home, rewrite the author of the commit, and push the branch again." >&2
+    exit 1
+fi
+
 if [ -n "$merges" ]; then
-    echo "commit messages: $count commit(s) in $range, merges not read, no trailer lines"
+    echo "commit messages: $count commit(s) in $range, merges not read, no trailer lines, every author known"
 else
-    echo "commit messages: $count commit(s) in $range, no trailer lines"
+    echo "commit messages: $count commit(s) in $range, no trailer lines, every author known"
 fi
