@@ -167,12 +167,10 @@ pub struct Attribution<'a> {
 /// out in the trash, so that ref is the only reading left of a tree the walk below would
 /// otherwise reach through the checkout.
 #[derive(Debug, Clone, Copy, Default)]
-pub enum Work<'a> {
-    /// Every ref the home holds of its own, plus `HEAD`. The reading every caller but
-    /// the sweep of the trash makes, and therefore the default.
-    #[default]
-    Checkout,
-    /// The same refs, and the ref a trash row names besides.
+pub struct Work<'a>(
+    /// The ref a trash row names, and nothing for every other caller. Every reading walks
+    /// every ref the home holds of its own plus `HEAD`; this one name is walked besides,
+    /// which is why the default is the reading with no name in it.
     ///
     /// The name comes off the row and is never built from the unit. A home can hold a
     /// work-in-progress ref no reclaim ever wrote: `nodal done` takes one on every run
@@ -183,8 +181,8 @@ pub enum Work<'a> {
     /// had ever run `done`, on every sweep, with nothing a person could do to release it.
     /// The row names the ref for the one reclaim that preserved work, and nothing for the
     /// reclaims that had none to preserve.
-    Trashed(Option<&'a str>),
-}
+    pub Option<&'a str>,
+);
 
 /// The namespaces a home carries that hold no work of its own.
 ///
@@ -213,7 +211,7 @@ pub enum Work<'a> {
 /// raises and the sweep that asks again before the retention removes the directory are one
 /// walk of one set of refs, and a sweep that walked fewer would remove what the refusal
 /// was raised over. The trash adds one name and takes none away
-/// ([`Work::Trashed`]): nothing is checked out there, so a working tree a forced reclaim
+/// ([`Work`]): nothing is checked out there, so a working tree a forced reclaim
 /// committed to a ref of Nodal's own is reachable by no other reading.
 const NOT_ITS_OWN: [&str; 2] = ["refs/remotes/", crate::git::refs::NAMESPACE];
 
@@ -234,21 +232,19 @@ struct Scope {
 impl Work<'_> {
     /// Read what this home's work hangs off, for the evidence record and for the walk.
     ///
-    /// One `for-each-ref` and one `rev-parse` for a live home, and no process at all for
-    /// a home whose tips the caller already holds.
+    /// One `rev-parse` at worst, and no process at all for the ordinary home. The refs
+    /// are the listing the caller took, and every ref of the home is in it.
     ///
     /// `HEAD` is asked for separately because `for-each-ref` does not list it, and a home
     /// left on a detached `HEAD` has a commit checked out that no ref of it names. A
     /// `HEAD` nothing answers for is an unborn branch, which is a home with no commit of
     /// its own rather than a reading that failed.
     ///
-    /// The ref a trash row names is asked for by name, and a row naming a ref the home
-    /// does not hold is a row about a ref that has gone rather than a reading that
-    /// failed.
-    ///
-    /// # Errors
-    /// [`Error::Git`] when the ref a trash row names could not be read.
-    fn resolve(self, git: &Git, refs: &[crate::git::refs::Ref]) -> Result<Scope> {
+    /// The ref a trash row names is read out of that same listing, which already holds
+    /// it: [`NOT_ITS_OWN`] keeps the name out of the tips and not out of the listing. A
+    /// row naming a ref the home does not hold is a row about a ref that has gone rather
+    /// than a reading that failed.
+    fn resolve(self, git: &Git, refs: &[crate::git::refs::Ref]) -> Scope {
         let mut named = Vec::new();
         let mut tips = Vec::new();
         for reference in refs {
@@ -262,13 +258,13 @@ impl Work<'_> {
             tips.extend(git.rev_parse(HEAD).ok());
         }
         let mut walked: Vec<String> = WALKED.iter().map(|&name| String::from(name)).collect();
-        if let Self::Trashed(Some(recorded)) = self {
-            tips.extend(git.rev_parse_opt(recorded)?);
+        if let Some(recorded) = self.0 {
+            tips.extend(refs.iter().find(|one| one.name == recorded).map(|one| one.oid.clone()));
             walked.push(String::from(recorded));
         }
         tips.sort_unstable();
         tips.dedup();
-        Ok(Scope {
+        Scope {
             tips,
             walked,
             not_walked: NOT_ITS_OWN
@@ -277,7 +273,7 @@ impl Work<'_> {
                     format!("{kind}* (a record of somewhere else, not this home's own work)")
                 })
                 .collect(),
-        })
+        }
     }
 }
 
@@ -376,9 +372,9 @@ impl<'a> Input<'a> {
     /// would not move. The refusal a reclaim raises is about the work in a home, and it
     /// is the same refusal for a home Nodal made and for a checkout adopted in place.
     ///
-    /// The work is read from the branch the home is on, which is every caller but the
-    /// sweep of the trash ([`Work`]). The one caller that reads named tips instead sets
-    /// the field over this: `Input { work: Work::Trashed(named), ..Input::refusal(..) }`.
+    /// The work is read from every ref the home holds and not from the branch it is on
+    /// ([`Work`]). The sweep of the trash walks one name besides, and sets the field over
+    /// this: `Input { work: Work(named), ..Input::refusal(..) }`.
     ///
     /// [`Input::fate`] is unread by this reading and is not a claim about the home.
     /// `state: false` is what makes that true: the two dispositions whose sentence
@@ -396,7 +392,7 @@ impl<'a> Input<'a> {
             home,
             checkout,
             siblings,
-            work: Work::Checkout,
+            work: Work(None),
             fate: Fate::Trashed,
             state: false,
             dispositions: false,
@@ -1848,14 +1844,14 @@ fn history(
     reading: &mut Reading,
 ) -> Result<(Vec<CommitGroup>, Vec<String>, Vec<SameContent>)> {
     let remotes = git.remotes()?;
-    // One `for-each-ref` of the home, and two readings drawn off it. The assessed set is
-    // the refs this home keeps of its own accord, and the remote question is asked of the
-    // refs it names under `origin`; both are in one listing, and asking twice would cost a
-    // process per home to learn what the first answer held.
+    // One `for-each-ref` of the home, and every reading drawn off it. The assessed set is
+    // the refs this home keeps of its own accord, the remote question is asked of the refs
+    // it names under `origin`, and the ref a trash row names is in it as well; asking a
+    // second time would cost a process per home to learn what the first answer held.
     let refs = git.all_refs()?;
     let found = witness::elsewhere(input.home, input.checkout, &refs);
     let checkout = input.checkout.map(Checkout::path);
-    let work = input.work.resolve(git, &refs)?;
+    let work = input.work.resolve(git, &refs);
     reading.refs.walked.clone_from(&work.walked);
     reading.refs.not_walked.clone_from(&work.not_walked);
     if !input.dispositions {

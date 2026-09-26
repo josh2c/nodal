@@ -69,7 +69,7 @@
 //! ([`crate::lifecycle::assess`]), over the refs that reclaim was refused over: every ref
 //! the home holds of its own — its branches, its tags, its stash — and `HEAD`, and the
 //! ref the row says a forced reclaim wrote the working tree onto, which no branch reaches
-//! ([`crate::lifecycle::assess::Work::Trashed`]). The set is the reclaim's own and not a
+//! ([`crate::lifecycle::assess::Work`]). The set is the reclaim's own and not a
 //! narrower one, because a sweep that asked over fewer refs than the gate refuses over
 //! removes on the clock what the gate would not let go: a commit on a side branch, a tag
 //! or a stash, whose one other copy went while the home sat here, was swept with nothing
@@ -616,7 +616,7 @@ fn held_back(entry: &Trashed, reading: &Reading) -> Result<Option<HeldBack>> {
 /// [`Error::Git`] and [`Error::NotARepository`] when the trashed home could not be read.
 fn only_here(entry: &Trashed, reading: &Reading) -> Result<Option<Finding>> {
     let input = assess::Input {
-        work: assess::Work::Trashed(entry.snapshot.as_deref()),
+        work: assess::Work(entry.snapshot.as_deref()),
         ..assess::Input::refusal(&entry.path, Some(&reading.checkout), &reading.siblings)
     };
     let assessment = assess::assess(&input)?;
