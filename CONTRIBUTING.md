@@ -188,3 +188,19 @@ Write documentation to ASD-STE100 (Simplified Technical English) principles:
 - Give one instruction per sentence.
 - Use one term for one thing. Do not alternate between synonyms.
 - State facts. Do not use marketing language.
+
+## Names a reader can follow
+
+Every reference in this repository points at something a reader of it can open. Do not
+write a label whose meaning is in a private tracker: a decision number, a finding code, a
+sprint lane, a role inside one company, or a path to a draft this repository does not
+hold. Write the fact the label stood for. "The blobless clone" says what happened; a code
+for it does not.
+
+Do not commit an absolute path under a real account's home. An example path stands under
+an invented account, as the examples already in the tree do.
+
+`ci/public-identifiers.sh` fails a pull request whose tracked files hold one of these. It
+names the file, the line and the identifier. Its header comment states each rule and why
+the rule is there. It reads the tracked tree, so the files Nodal writes beside a unit home
+never fail it.

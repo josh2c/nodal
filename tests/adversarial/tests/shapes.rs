@@ -8,20 +8,20 @@
 //!
 //! | shape | what it was | test |
 //! |---|---|---|
-//! | FS-1, order (a) | the remote dropped the branch and the witness then pruned | `a_dropped_branch_the_witness_pruned_is_refused` |
-//! | FS-1, order (b) | the witness fetched without pruning and the remote then dropped | `a_prune_less_fetch_before_a_dropped_branch_stays_safe` |
-//! | FS-2, branch | a commit on a branch `HEAD` does not reach | `work_on_a_side_branch_is_refused` |
-//! | FS-2, stash | a stash, and a clone of the home that fetched none of it | `work_in_the_stash_is_refused` |
-//! | FS-2, detached | a commit on a detached `HEAD` | `work_on_a_detached_head_is_refused` |
-//! | FS-2, wip | a record under `refs/nodal/` | `a_record_under_the_nodal_namespace_is_not_the_homes_own_work` |
-//! | FS-3, the file | `packed-refs` rewritten with no fetch | `a_rewrite_of_packed_refs_moves_no_verdict` |
-//! | FS-3, the clock | a branch moved on to a commit made years ago | `a_branch_moved_on_to_an_older_commit_is_dated_by_the_move` |
-//! | FS-6 | a process of this account it may not read | `a_process_this_account_may_not_read_refuses_the_move` |
-//! | FS-8 | a write from a directory elsewhere | `a_write_from_a_directory_elsewhere_refuses_the_move` |
-//! | FS-14 | a blobless partial clone offered as the copy | `a_blobless_clone_is_no_copy_of_the_work` |
-//! | FS-15 | doctor's own predicate | `doctor_and_the_gate_give_one_verdict` |
-//! | DL-069 | the copy a trashed home rested on went | `a_trashed_home_whose_copy_went_is_kept` |
-//! | DL-072 | a lock holder this account may not read | `a_hold_whose_holder_cannot_be_read_is_kept` |
+//! | the dropped branch, order (a) | the remote dropped the branch and the witness then pruned | `a_dropped_branch_the_witness_pruned_is_refused` |
+//! | the dropped branch, order (b) | the witness fetched without pruning and the remote then dropped | `a_prune_less_fetch_before_a_dropped_branch_stays_safe` |
+//! | work `HEAD` does not reach, branch | a commit on a branch `HEAD` does not reach | `work_on_a_side_branch_is_refused` |
+//! | work `HEAD` does not reach, stash | a stash, and a clone of the home that fetched none of it | `work_in_the_stash_is_refused` |
+//! | work `HEAD` does not reach, detached | a commit on a detached `HEAD` | `work_on_a_detached_head_is_refused` |
+//! | work `HEAD` does not reach, record | a record under `refs/nodal/` | `a_record_under_the_nodal_namespace_is_not_the_homes_own_work` |
+//! | the moved ref, the file | `packed-refs` rewritten with no fetch | `a_rewrite_of_packed_refs_moves_no_verdict` |
+//! | the moved ref, the clock | a branch moved on to a commit made years ago | `a_branch_moved_on_to_an_older_commit_is_dated_by_the_move` |
+//! | the unreadable process | a process of this account it may not read | `a_process_this_account_may_not_read_refuses_the_move` |
+//! | the write from elsewhere | a write from a directory elsewhere | `a_write_from_a_directory_elsewhere_refuses_the_move` |
+//! | the blobless clone | a blobless partial clone offered as the copy | `a_blobless_clone_is_no_copy_of_the_work` |
+//! | doctor's own predicate | doctor asks the same question by its own route | `doctor_and_the_gate_give_one_verdict` |
+//! | the copy that went | the copy a trashed home rested on went | `a_trashed_home_whose_copy_went_is_kept` |
+//! | the unreadable holder | a lock holder this account may not read | `a_hold_whose_holder_cannot_be_read_is_kept` |
 //! | the server remote | `origin` is an `ssh` or an `https` URL and not a path | `a_witness_of_a_served_remote_is_read_through_the_witness_path` |
 //! | the trash record | a `rested` record nothing can parse | `a_trash_record_nothing_can_parse_is_read_again` |
 //! | the swept side branch | the copy of a side-branch commit went while the home sat in the trash | `a_side_branch_whose_copy_went_is_kept` |
@@ -98,7 +98,7 @@ fn one_group(check: &Check) -> Copies {
 }
 
 // ---------------------------------------------------------------------------
-// FS-1 — the two orderings of a dropped branch.
+// The two orderings of a dropped branch.
 // ---------------------------------------------------------------------------
 
 /// The remote dropped the branch and the witness then pruned, so nothing names the work.
@@ -120,7 +120,7 @@ fn a_dropped_branch_the_witness_pruned_is_refused() {
 
 /// The witness fetched without pruning and the remote then dropped the branch. Safe, by rule.
 ///
-/// DL-073 and the founder's ruling of 2026-09-24 settle this one. The record still names the
+/// The rule for a dated observation settles this one. The record still names the
 /// branch at a sha that reaches the work, dated after the push, and that is a true dated
 /// observation: at that instant the remote reported that state. Nodal never claims the remote
 /// is correct now, and no local reading can tell a fetch that pruned from one that did not.
@@ -140,7 +140,7 @@ fn a_prune_less_fetch_before_a_dropped_branch_stays_safe() {
 }
 
 // ---------------------------------------------------------------------------
-// FS-2 — work under a ref `HEAD` does not reach.
+// Work under a ref `HEAD` does not reach.
 // ---------------------------------------------------------------------------
 
 /// A commit on a branch the home is not checked out on is work the home holds.
@@ -235,7 +235,7 @@ fn a_record_under_the_nodal_namespace_is_not_the_homes_own_work() {
 }
 
 // ---------------------------------------------------------------------------
-// FS-3 — `packed-refs` is not a reading of a remote.
+// `packed-refs` is not a reading of a remote.
 // ---------------------------------------------------------------------------
 
 /// A rewrite of `packed-refs` with no fetch moves no verdict.
@@ -319,7 +319,7 @@ fn backdated(home: &Path) -> String {
 
 /// A branch moved on to an older commit is dated by the move and not by the commit.
 ///
-/// FS-3 in the direction that loses work. The freshness rule of §3 is an order between two
+/// The moved ref, in the direction that loses work. The freshness rule of §3 is an order between two
 /// instants: a reading of a remote proves work only where the reading is **after** the last
 /// local change. So the local instant has to be when the ref moved. A reading that took the
 /// commit's own committer date instead would date a ref pointed at an older commit by the age
@@ -380,7 +380,7 @@ fn dated_at(path: &Path) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// FS-6 and FS-8 — occupancy.
+// Occupancy.
 // ---------------------------------------------------------------------------
 
 /// A process of this account that this account may not read refuses the move.
@@ -439,7 +439,7 @@ fn a_write_from_a_directory_elsewhere_refuses_the_move() {
 }
 
 // ---------------------------------------------------------------------------
-// FS-14 — a store that holds the commit and not the work.
+// A store that holds the commit and not the work.
 // ---------------------------------------------------------------------------
 
 /// A blobless partial clone answers every reachability question and holds no content.
@@ -465,7 +465,7 @@ fn a_blobless_clone_is_no_copy_of_the_work() {
 }
 
 // ---------------------------------------------------------------------------
-// FS-15 — one predicate, whichever surface asks it.
+// One predicate, whichever surface asks it.
 // ---------------------------------------------------------------------------
 
 /// Doctor and the gate give one verdict about one home.
@@ -552,7 +552,7 @@ fn a_witness_of_a_served_remote_is_read_through_the_witness_path() {
 }
 
 // ---------------------------------------------------------------------------
-// DL-069 — the copy a trashed home rested on can go.
+// The copy a trashed home rested on can go.
 // ---------------------------------------------------------------------------
 
 /// A reclaim that rested on a copy keeps its home when that copy goes.
@@ -637,7 +637,7 @@ fn a_trash_record_nothing_can_parse_is_read_again() {
 /// A side branch whose one other copy went while the home sat in the trash keeps the home.
 ///
 /// The shape: work on a branch `HEAD` does not reach, a copy in another store at reclaim time,
-/// and that copy gone before the sweep. DL-069's promise is that `gc` never removes the only
+/// and that copy gone before the sweep. The promise is that `gc` never removes the only
 /// copy of a commit, and the promise now holds over the refs the gate is refused over and not
 /// over `HEAD` alone.
 ///
@@ -765,7 +765,7 @@ fn unparseable(machine: &Machine) {
 }
 
 // ---------------------------------------------------------------------------
-// DL-072 — a hold is held unless a reading proves its holder gone.
+// A hold is held unless a reading proves its holder gone.
 // ---------------------------------------------------------------------------
 
 /// A hold whose holder this account may not read keeps the unit held.

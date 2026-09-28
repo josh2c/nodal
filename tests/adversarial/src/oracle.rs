@@ -2,13 +2,13 @@
 //! table, with no line of Nodal in it.
 //!
 //! The oracle is the reason the grid is worth running. A grid that asked the predicate
-//! twice would agree with itself about everything, FS-14 included. So the contract is read
+//! twice would agree with itself about everything, the blobless clone included. So the contract is read
 //! here as a procedure over records Git writes, and the procedure shares no function with
 //! the crate it checks.
 //!
 //! ## What it reads, clause by clause
 //!
-//! `safety-contract-draft.md` §1 names the loss set, §2 names a proven witness and §3 names
+//! The safety contract's §1 names the loss set, §2 names a proven witness and §3 names
 //! a dated observation. Each becomes one reading:
 //!
 //! | clause | the reading |
@@ -34,8 +34,8 @@
 //!
 //! **It never lets Git fetch.** `GIT_NO_LAZY_FETCH=1` is on every call. A promisor store
 //! answers `cat-file -e` about an object it has not got by fetching it, so a reading
-//! without that variable would call a blobless clone complete, which is FS-14 read back
-//! into the oracle.
+//! without that variable would call a blobless clone complete, which is that same defect read
+//! back into the oracle.
 //!
 //! `refs/nodal/` is left out of the loss set here for the reason
 //! `tests/safety/tests/home_refs.rs` states: every ref under it is a record Nodal wrote
@@ -271,7 +271,7 @@ fn partial(store: &Path) -> bool {
 ///
 /// Two exclusions, and each one is a ruling this project made after a reading went wrong.
 ///
-/// An **object under no ref** is not a copy (DL-066). It is what `git gc` removes, and one
+/// An **object under no ref** is not a copy. It is what `git gc` removes, and one
 /// collection in a sibling that changed no work moved three units from safe to refuse. So
 /// the question is reachability and never presence.
 ///
@@ -300,7 +300,7 @@ const NOT_TRACKING: &str = "--exclude=refs/remotes/*";
 
 /// §2.2 — every object the commit names is in the store.
 ///
-/// This is the check FS-14 needed. A blobless clone answers §2.1 about every commit and
+/// This is the check the blobless clone needed. It answers §2.1 about every commit and
 /// prints a `?` line for every blob here.
 fn complete(store: &Path, oid: &str) -> bool {
     let walked = plumbing(store, &["rev-list", "--objects", "--missing=print", "--no-walk", oid]);
@@ -389,7 +389,7 @@ impl Observation {
 
 /// Every `FETCH_HEAD` line of every store outside the home, dated by the file it is in.
 ///
-/// DL-073 rules that `FETCH_HEAD` is the record and the reflog is not: Git writes no reflog
+/// The rule is that `FETCH_HEAD` is the record and the reflog is not: Git writes no reflog
 /// entry until a ref first moves, so a fetch that changed nothing leaves a reflog with
 /// nothing in it and a `FETCH_HEAD` that lists everything it saw.
 ///
@@ -436,7 +436,7 @@ fn newest(tips: &BTreeMap<String, String>, reaching: &[String], home: &Path) -> 
 ///
 /// `packed-refs` is deliberately not read. It is rewritten whenever any ref in it is
 /// packed, so it would date this ref by another ref's update, and the error would be in the
-/// direction of calling a stale reading fresh. That is FS-3.
+/// direction of calling a stale reading fresh. That is the moved ref.
 fn last_moved(home: &Path, name: &str) -> Option<u64> {
     if let Some(seconds) = reflogged(home, name) {
         return Some(seconds);
@@ -450,7 +450,7 @@ fn last_moved(home: &Path, name: &str) -> Option<u64> {
 /// `%gd` under `--date=unix`, and not `%ct`. `%ct` is the **commit's** committer date, and
 /// `-g` does not change that: a ref moved on to an older commit prints the older instant and
 /// dates as though it had not moved. A remote reading taken before that move then stands
-/// ahead of the clock and proves work the reading never saw — FS-3, in the unsafe direction,
+/// ahead of the clock and proves work the reading never saw — the moved ref, in the unsafe direction,
 /// which is the direction this function's own note claims to guard.
 ///
 /// The selector carries the instant instead. `--date=unix` renders it as
@@ -583,7 +583,7 @@ fn lsof(home: &Path) -> Occupancy {
 /// the point: a plumbing call here is asked *because it may fail*, so nothing asserts the
 /// status; and `GIT_NO_LAZY_FETCH` is on, so a promisor store answers about the disk rather
 /// than about its remote. Without that variable a blobless clone answers `cat-file -e`
-/// about a blob it has not got, and the oracle would agree with the reading FS-14 is.
+/// about a blob it has not got, and the oracle would agree with the blobless clone's own reading.
 ///
 /// # Panics
 ///

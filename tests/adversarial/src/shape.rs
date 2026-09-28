@@ -26,8 +26,9 @@ pub trait Axis: Copy + Eq + 'static {
 
 /// The topology of the store outside the home that is offered as the copy.
 ///
-/// Four of these hold the commit and are not a copy of the work, and that is the whole of
-/// FS-14: a store that answers every reachability question and holds none of the content.
+/// Four of these hold the commit and are not a copy of the work, and that is the whole of the
+/// blobless-clone defect: a store that answers every reachability question and holds none of
+/// the content.
 /// The contract calls a store that exists *eligible* and a store that passes all four
 /// checks *proven*, and these are the topologies that come apart between the two words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,7 +129,7 @@ impl Axis for Refs {
 /// The contract never establishes that a remote is correct now. It establishes that at an
 /// instant the remote reported a state, and that the instant is after the last local
 /// change. These six are the orderings that instant can stand in, and two of them are
-/// FS-1's two orderings of a dropped branch.
+/// the two orderings of a dropped branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Observed {
     /// The work was pushed, and the witness fetched after it.
@@ -139,7 +140,7 @@ pub enum Observed {
     /// The one value of this axis in which nothing outside the home has the work.
     NeverPushed,
     /// The witness fetched, and the remote then dropped the branch. `FETCH_HEAD` still
-    /// names it, dated after the push. DL-073 rules this safe, with the instant printed.
+    /// names it, dated after the push. The rule calls this safe, with the instant printed.
     DroppedAfterFetch,
     /// The remote dropped the branch, and the witness then pruned. Nothing names it.
     Pruned,

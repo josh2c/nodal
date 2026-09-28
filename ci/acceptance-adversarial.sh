@@ -17,12 +17,12 @@
 # Two sizes run here:
 #
 #   - the full shape set: every false-safe closed on the way to rc.4, as named cases that
-#     always run. FS-1 in both orderings of a dropped branch, FS-2 on a side branch, a
-#     stash, a `wip` record and a detached `HEAD`, FS-3's rewrite of `packed-refs`, FS-6's
-#     process this account may not read, FS-8's write from a directory elsewhere, FS-14's
-#     blobless clone, FS-15's second predicate, DL-069's copy that went, DL-072's hold whose
-#     holder cannot be read, the served remote whose absence hid a regression, and a trash
-#     record nothing can parse;
+#     always run. A dropped branch in both orderings, work `HEAD` does not reach on a side
+#     branch, in a stash, in a `wip` record and on a detached `HEAD`, the rewrite of
+#     `packed-refs`, the process this account may not read, the write from a directory
+#     elsewhere, the blobless clone, doctor's own predicate, the copy that went, the hold
+#     whose holder cannot be read, the served remote whose absence hid a regression, and a
+#     trash record nothing can parse;
 #   - the sample: sixty shapes drawn from one constant seed, holding every value of every
 #     axis at least once. It is the same sixty shapes on every run and on both hosts,
 #     because a grid that drew at random would turn a defect into a flake and a flake into a

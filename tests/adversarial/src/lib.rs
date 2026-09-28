@@ -2,7 +2,7 @@
 //! answerers the same question.
 //!
 //! Every false-safe reading this project has found was found by a person, after the code
-//! shipped. Seven of them were found in one week of reading (`FS-1` to `FS-15`), and each
+//! shipped. Seven of them were found in one week of reading, and each
 //! one was a *shape*: a combination of a witness topology, a ref, a remote observation, a
 //! working tree and something running. None of them needed a strange machine. Each one
 //! was a combination nobody had composed.
@@ -17,9 +17,8 @@
 //! | the predicate | `nodal reclaim --check --json`, the binary a person types | [`check`] |
 //! | the oracle | `git` plumbing, `/proc` and `lsof`, and the contract read as rules | [`oracle`] |
 //!
-//! The oracle is not a second implementation of Nodal. It reads
-//! `docs/research/boundary-2026-09-22/safety-contract-draft.md` §1 to §3 as a procedure
-//! over Git's own records: which refs a home holds, which store outside it holds every
+//! The oracle is not a second implementation of Nodal. It reads the safety contract §1 to
+//! §3 as a procedure over Git's own records: which refs a home holds, which store outside it holds every
 //! object those refs reach, which dated `FETCH_HEAD` line saw the work, and what the
 //! working tree says. It shares no function with the crate it checks, so a wrong rule in
 //! one of them cannot be wrong in the same direction in the other.
@@ -49,11 +48,11 @@
 //!
 //! | axis | values | the shape it was found by |
 //! |---|---|---|
-//! | [`shape::Witness`] | ten topologies of the store outside the home | FS-14, the blobless clone |
-//! | [`shape::Refs`] | six places a home can hold work | FS-2, the side branch |
-//! | [`shape::Observed`] | six ways a remote was or was not seen | FS-1, the prune-less fetch |
+//! | [`shape::Witness`] | ten topologies of the store outside the home | the blobless clone |
+//! | [`shape::Refs`] | six places a home can hold work | the side branch |
+//! | [`shape::Observed`] | six ways a remote was or was not seen | the fetch that did not prune |
 //! | [`shape::Tree`] | four states of the working tree | the ignored-only home |
-//! | [`shape::Occupant`] | five things that can be running | FS-6 and FS-8 |
+//! | [`shape::Occupant`] | five things that can be running | the unreadable process, and the write from elsewhere |
 //!
 //! ## The three sizes
 //!
