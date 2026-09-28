@@ -16,7 +16,12 @@
 #   - `Session:` glued under a prose line fails, for the key that ends in `-session`;
 #   - `Generated with` in prose fails, behind the emoji a harness puts before it;
 #   - a commit authored by the machine's global identity fails, and the output names the
-#     commit and the author it found;
+#     commit, the field and the author it found;
+#   - a commit whose author is right and whose committer is the machine's global identity
+#     fails, and the output names the committer: that is the shape a rebase run in a home
+#     the identity was never set in leaves behind, and reading the author alone passed it;
+#   - a merge whose own committer is GitHub passes, because a merge is read for neither
+#     field;
 #   - a merge a person made locally, with a trailer in its body, fails: this is the case
 #     that pays for reading merges, which is what a pull request is read without;
 #   - `--no-merges` skips that same merge, and skips a merge of GitHub's shape whose
@@ -174,15 +179,32 @@ Generated with a tool that writes the line, and the paragraph carries on after i
 MSG
 rejects "Generated with in prose" "Generated with a tool"
 
-# The author of a commit is read as well as its body. A commit under any other identity
-# fails, and the output names it and what it carries. This is the machine's global
-# identity, which a unit home writes when the project's own was never set in it.
+# The people a commit names are read as well as its body. A commit under any other
+# identity fails, and the output names it, the field and what that field carries. This is
+# the machine's global identity, which a unit home writes when the project's own was never
+# set in it.
 echo fallback > file
 GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@b.c \
     git commit --quiet -am "Change what the file holds under another identity"
 stranger=$(git rev-parse HEAD)
 rejects "a commit under the machine's own identity" "$stranger" "author: a <a@b.c>" \
-    "an author this project does not know"
+    "name somebody this project does not know"
+
+# The committer is read beside the author, because the two move apart. A rebase keeps the
+# author of every commit it moves and writes itself as the committer, so a branch written
+# under this project's identity and rebased in a home without it arrives with every author
+# right and every committer the machine's. Reading the author alone passed that branch,
+# which is what this claim is here to stop.
+echo rebased > file
+GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@b.c \
+    git commit --quiet -am "Change what the file holds, written down by somebody else"
+rebased=$(git rev-parse HEAD)
+rejects "a commit whose committer is the machine's own identity" "$rebased" \
+    "committer: a <a@b.c>" "name somebody this project does not know"
+case "$output" in
+    *"author: a <a@b.c>"*) fail "the committer claim named the author, which was this project's" ;;
+    *) ;;
+esac
 
 # A merge a person made locally, with a trailer in its body, is read like any other
 # commit. Deleting the merge from the range makes this claim fail.
@@ -237,6 +259,20 @@ run --no-merges
 rejects "a merge of GitHub's shape read without the flag" "$github" "Doctor: names attribute"
 git branch --quiet -D github-side
 
+# A merge is read for neither field, which is what lets GitHub make them. The account that
+# pressed the button is the author and GitHub itself is the committer, and this project
+# commits under neither.
+git checkout --quiet -b merged-side "$base"
+echo five > file
+git commit --quiet -am "Add the commit the second pull request holds"
+git checkout --quiet main
+GIT_AUTHOR_NAME=somebody GIT_AUTHOR_EMAIL=somebody@example.invalid \
+    GIT_COMMITTER_NAME=GitHub GIT_COMMITTER_EMAIL=noreply@github.com \
+    git merge --quiet --no-ff --no-verify -m "Merge pull request #2 from fixture/merged-side" \
+        merged-side
+passes "a merge whose author and committer are GitHub's"
+git branch --quiet -D merged-side
+
 # A range whose left side is all zeros is what a first push and a force-push give. On a
 # push that is nothing to fail a person for, so the check says so and exits 0.
 zeros=0000000000000000000000000000000000000000
@@ -260,4 +296,4 @@ case "$output" in
     *) fail "a base that names no commit did not say what was wrong" "$output" ;;
 esac
 
-echo "acceptance (commit messages): prose passes, what git calls a trailer and what a harness appends both fail and are named, a commit under another identity fails and is named, a merge is read without --no-merges and skipped with it, an unreadable range exits 0 on a push and 2 on a pull request"
+echo "acceptance (commit messages): prose passes, what git calls a trailer and what a harness appends both fail and are named, a commit whose author or committer is another identity fails and the field is named, a merge is read for neither field, a merge is read without --no-merges and skipped with it, an unreadable range exits 0 on a push and 2 on a pull request"
