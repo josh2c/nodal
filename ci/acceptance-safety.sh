@@ -69,6 +69,13 @@
 #     the next actor the home was free. The holder's own re-entry reads no process
 #     table: the reads it charges are counted against the reads one walk charges, in the
 #     same test, and both numbers are printed;
+#   - a `gc` killed part-way leaves every home recoverable: the sweep renames a home
+#     before it removes it, so a home is whole under its own name or wholly under the
+#     removing name and never part removed under a name a later sweep reads again. A
+#     real sweep is killed while it removes, and the next one finishes what it left.
+#     Each state a kill can leave is built and swept: a whole home under the removing
+#     name, a part-removed one, and a tree that went before its row. A home the fresh
+#     reading keeps is untouched by the killed sweep of another;
 #   - a home after an uninstall: a default uninstall leaves the state directory and the
 #     unit homes in it, and a surviving home is a standalone Git repository — its own
 #     history reads, its tree is clean, `git fsck` passes, it borrows no objects, and
@@ -103,3 +110,4 @@ echo "acceptance (safety): a warm base runs the build where it hands the base ov
 echo "acceptance (safety): a build that stopped is carried on with, whatever release stopped it;"
 echo "acceptance (safety): no process a recipe hook starts is left running that nothing owns"
 echo "acceptance (safety): a write lock is held unless a reading proves its holder gone"
+echo "acceptance (safety): a gc killed part-way leaves a state the next gc finishes"
