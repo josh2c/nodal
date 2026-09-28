@@ -264,16 +264,21 @@ test_percent=$(printf '%s' "$duplication" | python3 -c 'import json,sys; print(f
 gate "duplication, product" "$product_percent" 4.0 "percent" \
     "baseline 3.0%; ratchet to 3%"
 
-# Baseline 3.1% by this script, which counts the inline test modules of the product
+# Baseline 4.1% by this script, which counts the inline test modules of the product
 # files in the test corpus as well as the test crates. It read 7.4% before the shared
 # test kit landed: the binary runner was written out in nineteen test files, the `git`
 # runner in sixteen, and one fixture had been copied whole. Those are one implementation
 # now, in `tests/safety/src`, and a suite that needs one asks for it there. What is left
-# is the fixture of one suite resembling the fixture of one other. Ratchet to 2.5% as
-# each of those pairs is folded; the pairs are named by `ci/duplication.py` without
-# `--json`, worst first.
-gate "duplication, test" "$test_percent" 3.5 "percent" \
-    "baseline 3.1%; ratchet to 2.5% as the remaining fixture pairs are folded"
+# is the fixture of one suite resembling the fixture of one other.
+#
+# The baseline was 3.1% until `tests/*/tests/**` was named in the walk. That is the
+# safety suite, a fifth of the test code, and no measurement had ever read it. The
+# number went up because the corpus grew, not because a file got worse: the product
+# corpus and every file already measured read exactly what they read before. Ratchet to
+# 3.5% as the fixture pairs the suite adds are folded; the pairs are named by
+# `ci/duplication.py` without `--json`, worst first.
+gate "duplication, test" "$test_percent" 4.5 "percent" \
+    "baseline 4.1%; ratchet to 3.5% as the remaining fixture pairs are folded"
 echo
 
 # ---------------------------------------------------------------------------
