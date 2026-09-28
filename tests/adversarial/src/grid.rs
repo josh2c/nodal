@@ -11,7 +11,7 @@
 //!    constant ([`SEED`]) and of nothing else — not the clock, not the host, not the order
 //!    the tests run in.
 //! 2. **It holds every value of every axis.** Ten witness topologies and a sample that
-//!    happened to miss the blobless one is a sample that would have missed FS-14. The draw
+//!    happened to miss the blobless one is a sample that would have missed a shipped defect. The draw
 //!    alone does not promise that, so the draw is followed by a repair: every value no drawn
 //!    shape holds gets one shape of its own, drawn from the same stream.
 //!
@@ -198,8 +198,8 @@ mod tests {
 
     /// Every value of every axis is in the sample the pull-request job runs.
     ///
-    /// A sample that missed the blobless clone would have missed FS-14, and a sample that
-    /// missed the prune-less fetch would have missed FS-1.
+    /// A sample that missed the blobless clone, or the fetch that did not prune, would have
+    /// missed a false-safe reading this project shipped.
     #[test]
     fn the_sample_holds_every_value_of_every_axis() {
         let drawn = sample(SEED, SAMPLE);

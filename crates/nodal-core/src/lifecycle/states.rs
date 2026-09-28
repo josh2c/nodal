@@ -43,9 +43,8 @@
 //!
 //! What closes the gap is a **dated** observation rather than a fresher clone: the home's
 //! `FETCH_HEAD` dates its last fetch, and a ref absent from the latest `FETCH_HEAD` of its
-//! remote was not seen at that observation. Reading it is the next task on this lane
-//! (`docs/research/boundary-2026-09-22/safety-contract-draft.md` §3), and it lands with the
-//! record a verdict carries.
+//! remote was not seen at that observation. The safety contract's §3 states the rule, and it
+//! lands with the record a verdict carries.
 //!
 //! ## Why the first signal is needed, and why it is `ahead > 0`
 //!

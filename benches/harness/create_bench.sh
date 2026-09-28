@@ -3,7 +3,7 @@
 #
 # A: `nodal new` against a cold registry, which builds the base first. B: `nodal new`
 # against a registry whose base is already warm. C: `git clone`, which is what the
-# thirty-four clones on the founder's workstation each cost.
+# thirty-four clones on one workstation each cost.
 #
 # A and B are the two halves of the claim the README makes. C is the number they are
 # claimed against.

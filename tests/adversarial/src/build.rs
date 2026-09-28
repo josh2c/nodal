@@ -590,8 +590,8 @@ fn observed(steps: &mut Steps, at: &Where, work: &str, shape: Observed) {
 /// Leave the checkout with no record of a fetch and no reading of the remote.
 ///
 /// Nothing is pushed in this arm. It is the shape in which the work is in the home and
-/// nowhere else, so the witness axis alone decides the verdict, and it is how the FS-2 cases
-/// state that a commit under a ref `HEAD` does not reach is work.
+/// nowhere else, so the witness axis alone decides the verdict, and it is how the side-branch
+/// cases state that a commit under a ref `HEAD` does not reach is work.
 fn forget(steps: &mut Steps, checkout: &Path) {
     let record = checkout.join(".git/FETCH_HEAD");
     drop(std::fs::remove_file(&record));
