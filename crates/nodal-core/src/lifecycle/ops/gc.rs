@@ -78,10 +78,9 @@
 //! the next sweep clears; the other order would leave a directory nothing knows about,
 //! which nothing would ever clean up.
 //!
-//! A sweep killed at any point therefore leaves one of four states, and the next sweep
-//! finishes each of them. The home whole and the row there, which is read again. The
-//! home under the removing name, which is removed. The tree gone and the row there,
-//! which is dropped. Neither of the two, which is nothing to do.
+//! A sweep killed at any point therefore leaves a state the next sweep finishes.
+//! `tests/safety/tests/gc_interruption.rs` kills a sweep at each seam and names every
+//! one of them.
 //!
 //! One shape is older than the mark. A release before this one removed the tree under
 //! its own name, so a sweep it killed could leave a part-removed home there. That home
@@ -89,9 +88,9 @@
 //! person. The mark cannot be put on it now: nothing can say what that directory still
 //! holds.
 //!
-//! Each of them is read again first, and that reading is the reason this step is not a
-//! timer. A reclaim let the home go because its commits existed somewhere else, and that
-//! somewhere else is a repository on this disk. The copy can go while the home sits in
+//! Every expired home is read again first, and that reading is the reason this step is
+//! not a timer. A reclaim let the home go because its commits existed somewhere else,
+//! and that somewhere else is a repository on this disk. The copy can go while the home sits in
 //! the trash — somebody deletes a branch in a clone, a host drops a merged branch — and
 //! until this sweep nothing looked again. The retention running out then removed the last
 //! copy of a commit, with no refusal and no line.
@@ -169,6 +168,7 @@ use crate::runtime::processes::{Processes, Running};
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
 use crate::services::docker;
 use crate::store::{Store, environments, leases, projects, sessions, trash, units};
+use crate::substrate::build::beside;
 use crate::workspace::remove::tree as remove_tree;
 
 use super::reclaim;
@@ -520,6 +520,13 @@ struct Expiry {
 /// then the row goes. A home already under that name was read by the sweep that was
 /// killed, so this one removes it without asking again.
 ///
+/// Nothing here asks whether the removing name is already taken, because the home's own
+/// name answers it. A reading is made only of a home that is there ([`read_again`]), and
+/// a rename of a home that is not there is not a failure ([`begin`]). The one shape
+/// where both names hold a tree is therefore refused by the rename itself: the home is
+/// read, the move onto an occupied name fails, and the sweep names the directory for a
+/// person and keeps the row.
+///
 /// A project is read once, however many of its homes expired on one sweep. What a
 /// reading asks of the project is the same of every home of it — its checkout, and the
 /// repositories beside that checkout — and asking per row paid six `git` invocations
@@ -528,8 +535,26 @@ fn sweep(store: &Store, expired: &[Trashed], registered: &[Project]) -> Result<E
     let mut swept = Expiry::default();
     let mut readings = Readings::of(registered);
     for entry in expired {
-        let going = removing(&entry.path);
-        if !going.exists() && !start(entry, &going, &mut readings, &mut swept) {
+        if read_again(entry) {
+            let Some(reading) = readings.of_project(entry.project_id) else {
+                swept.leftovers.push(unread(entry, "the registry holds no project it belonged to"));
+                continue;
+            };
+            match held_back(entry, reading) {
+                Err(why) => {
+                    swept.leftovers.push(unread(entry, &why.to_string()));
+                    continue;
+                }
+                Ok(Some(held)) => {
+                    swept.held.push(held);
+                    continue;
+                }
+                Ok(None) => {}
+            }
+        }
+        let going = beside(&entry.path, REMOVING);
+        if let Err(why) = begin(&entry.path, &going) {
+            swept.leftovers.push(Leftover::new("directory", why.to_string()));
             continue;
         }
         let size = size_of(&going);
@@ -543,54 +568,6 @@ fn sweep(store: &Store, expired: &[Trashed], registered: &[Project]) -> Result<E
         }
     }
     Ok(swept)
-}
-
-/// The name a home is under while this sweep removes it.
-///
-/// A sibling of the home, so the rename that puts it on stays inside the trash
-/// directory and is one operation of one filesystem.
-fn removing(path: &Path) -> PathBuf {
-    let mut name = path.as_os_str().to_os_string();
-    name.push(REMOVING);
-    PathBuf::from(name)
-}
-
-/// Read this home again and put it under the name that says its removal has started,
-/// and answer whether the caller may now remove what is under that name.
-///
-/// The reading comes first, and a home it keeps keeps its row as well. The row is still
-/// expired afterwards, so the next sweep reads the same home again: a copy somebody
-/// restores is all it takes for the directory to go then.
-///
-/// What keeps a home is written into the report here rather than answered, because the
-/// two things that keep one belong to two parts of it. A home kept over work is what
-/// this step is for and is one of [`Expiry::held`]; a home nobody could read, and a
-/// home that would not move, are lines for a person.
-fn start(entry: &Trashed, going: &Path, readings: &mut Readings<'_>, swept: &mut Expiry) -> bool {
-    if read_again(entry) {
-        let Some(reading) = readings.of_project(entry.project_id) else {
-            swept.leftovers.push(unread(entry, "the registry holds no project it belonged to"));
-            return false;
-        };
-        match held_back(entry, reading) {
-            Err(why) => {
-                swept.leftovers.push(unread(entry, &why.to_string()));
-                return false;
-            }
-            Ok(Some(held)) => {
-                swept.held.push(held);
-                return false;
-            }
-            Ok(None) => {}
-        }
-    }
-    match begin(&entry.path, going) {
-        Ok(()) => true,
-        Err(why) => {
-            swept.leftovers.push(Leftover::new("directory", why.to_string()));
-            false
-        }
-    }
 }
 
 /// Move the home to the removing name.
@@ -660,16 +637,25 @@ impl<'a> Readings<'a> {
 /// before this one may have removed the tree and been killed before it wrote the row;
 /// removing the row is how that is finished.
 ///
-/// A home already under [`REMOVING`] never reaches here. Its caller asks this only
-/// while the home is still under its own name, which is the only shape a reading can
-/// be made of.
+/// A home already under [`REMOVING`] and gone from its own name answers `false` on the
+/// second half, which is the same answer and the reason the caller needs no guard of its
+/// own: a home that is not under its own name is not a shape a reading can be made of.
 fn read_again(entry: &Trashed) -> bool {
     entry.rested.re_asks() && entry.path.exists()
 }
 
 /// The line a home that could not be read leaves in the report.
+///
+/// The reason alone reads as a fault and says nothing to do: "not a git repository" is
+/// what Git answers about a directory a killed removal left part-way through, and a
+/// person is owed the one move that finishes it. The move is the same for both reasons a
+/// home goes unread. A directory that is not there is not read again ([`read_again`]),
+/// the rename of a home that is not there is not a failure ([`begin`]), and the row then
+/// goes with the sweep that finds neither.
 fn unread(entry: &Trashed, why: &str) -> Leftover {
-    Leftover::new("trashed home", format!("{}: {why}", entry.path.display()))
+    let path = entry.path.display();
+    let told = "remove the directory yourself and the next sweep forgets the row";
+    Leftover::new("trashed home", format!("{path}: {why}; {told}"))
 }
 
 /// What keeps this expired home, and nothing when nothing does.

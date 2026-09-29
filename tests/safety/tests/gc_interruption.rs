@@ -16,6 +16,13 @@
 //! removing name, and there is no instant between the two. The removing name says the
 //! tree was read, the reading found no last copy, and the removal has started.
 //!
+//! A person can still make the one shape the ordering does not: a home under both names
+//! at once, by renaming or copying a directory inside the trash, or by restoring one out
+//! of a backup. Nothing in the sweep guards against it. The rename does, because a move
+//! onto a name a tree already holds fails, so the sweep keeps that home, keeps its row
+//! and names the directory. A sweep that trusted the mark's name instead would print the
+//! home as removed and leave the whole of it standing with nothing pointing at it.
+//!
 //! | property | test |
 //! |---|---|
 //! | a real sweep, killed while it removes, leaves a state the next one finishes | `a_killed_sweep_leaves_a_state_the_next_sweep_finishes` |
@@ -24,6 +31,7 @@
 //! | a tree that went with the row still there is forgotten | `a_tree_that_went_before_the_row_is_forgotten` |
 //! | a home the reading keeps survives a killed sweep of another | `a_home_the_reading_keeps_survives_a_killed_sweep_of_another` |
 //! | a home part removed under its own name is named and kept | `a_home_part_removed_under_its_own_name_is_named_and_kept` |
+//! | a home under both names is kept, and a second sweep finishes it | `a_home_under_both_names_is_kept_and_the_next_sweep_finishes_it` |
 //!
 //! Every property here reads the filesystem and the registry, which both hosts answer,
 //! so each one asserts the same thing on Linux and on macOS.
@@ -38,6 +46,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use nodal_safety::InState as _;
+use nodal_safety::git::{COPY, sibling_holding};
 use nodal_safety::{Machine, git, stderr, stdout};
 
 /// What a sweep adds to a home's name while it removes it.
@@ -52,8 +61,9 @@ const OTHER: &str = "payroll-export";
 /// A path no ignore rule of the fixture covers, so a commit of it is work.
 const ONLY: &str = "only-here.txt";
 
-/// The branch a second repository keeps its copy of a home's commit on.
-const COPY: &str = "rescued";
+/// What the report tells a person to do about a directory it can neither read nor
+/// finish. The sentence is the contract, so the suite spells it.
+const TOLD: &str = "remove the directory yourself and the next sweep forgets the row";
 
 /// A second clone of the project, beside the checkout, where a person keeps a copy.
 const SIBLING: &str = "sibling";
@@ -72,15 +82,11 @@ const BULK: (usize, usize) = (100, 200);
 
 /// A machine whose trash keeps nothing.
 ///
-/// The retention is nought, so a reclaimed home is expired the instant it is trashed
-/// and the next `nodal gc` is the one that acts. What that sweep does when it is killed
-/// is the whole of what these properties are about, and a fortnight of waiting is not
-/// part of it.
+/// What a killed sweep leaves is the whole of what these properties are about, and a
+/// fortnight of waiting is not part of it ([`Machine::keep_no_trash`]).
 fn machine() -> Machine {
     let machine = Machine::new().with_env(ONLY_LOCAL);
-    let recipe = machine.source.join("nodal.toml");
-    let written = std::fs::read_to_string(&recipe).unwrap();
-    std::fs::write(&recipe, format!("{written}\n[reclaim]\ntrash_retention = 0\n")).unwrap();
+    machine.keep_no_trash();
     machine
 }
 
@@ -276,7 +282,7 @@ fn a_home_the_reading_keeps_survives_a_killed_sweep_of_another() {
     git(&home, &["add", "--all"]);
     git(&home, &["commit", "--quiet", "--message", "work only this home has"]);
     let tip = git(&home, &["rev-parse", "HEAD"]);
-    let sibling = sibling_holding(&machine, &home, &tip);
+    let sibling = sibling_holding(machine.root(), SIBLING, &home, &tip);
     let kept = reclaimed(&machine, OTHER);
     git(&sibling, &["update-ref", "-d", &format!("refs/heads/{COPY}")]);
     git(&sibling, &["reflog", "expire", "--expire=now", "--all"]);
@@ -289,19 +295,6 @@ fn a_home_the_reading_keeps_survives_a_killed_sweep_of_another() {
     assert_eq!(git(&kept, &["cat-file", "-t", &tip]), "commit", "the work is not readable");
     assert_eq!(rows(&machine), vec![kept], "the kept home is the one row left");
     settled(&machine);
-}
-
-/// A second repository beside the checkout, holding `tip` on a branch of its own.
-///
-/// Beside the checkout and not inside it, because that is where the reading looks: a
-/// destructive path asks the repositories under the checkout's parent.
-fn sibling_holding(machine: &Machine, from: &Path, tip: &str) -> PathBuf {
-    let parent = machine.source.parent().unwrap();
-    let path = parent.join(SIBLING);
-    let named = path.to_str().unwrap();
-    git(parent, &["init", "--quiet", "--initial-branch", "main", named]);
-    git(&path, &["fetch", "--quiet", from.to_str().unwrap(), &format!("{tip}:refs/heads/{COPY}")]);
-    path
 }
 
 /// A shape older than the mark: a home part removed under its own name.
@@ -323,4 +316,74 @@ fn a_home_part_removed_under_its_own_name_is_named_and_kept() {
     assert!(trash.is_dir(), "the sweep removed a directory it could not read");
     assert_eq!(rows(&machine), vec![trash.clone()], "and kept the row with it");
     assert!(report.contains(&trash.display().to_string()), "the report names it: {report}");
+
+    // And tells the person the one move that finishes it. "not a git repository" alone
+    // reads as a fault and says nothing to do; this directory is kept for ever until
+    // somebody removes it, so the line that names it says so.
+    assert!(report.contains(TOLD), "the line says nothing to do: {report}");
+}
+
+/// A home under its own name and under the removing name at once is kept, and the sweep
+/// says so rather than reporting the home as removed.
+///
+/// A person makes this shape: they rename or copy a directory inside the trash after a
+/// killed sweep, or restore one out of a backup. It is the one state the ordering does
+/// not reach on its own, and the dangerous reading of it is the report's: a sweep that
+/// trusted the mark's name would remove what is under the removing name, drop the row,
+/// print the home under REMOVED, and leave the whole home standing under its own name
+/// with nothing pointing at it — the directory nothing knows about that this module's
+/// order exists to prevent.
+///
+/// Nothing guards against it. The rename does. The home is there, so it is read again;
+/// the move onto a name a tree already occupies fails; the sweep names the directory
+/// and keeps the row. What that proves is that no reading, no mark and no row decides
+/// this — one filesystem operation that cannot half succeed does.
+///
+/// A second sweep, after the person has resolved the two directories, finishes normally.
+#[test]
+fn a_home_under_both_names_is_kept_and_the_next_sweep_finishes_it() {
+    let machine = machine();
+    machine.unit(SLUG);
+    let trash = reclaimed(&machine, SLUG);
+    let going = removing(&trash);
+
+    // The home under both names, each a whole home: the person's copy is the one under
+    // the removing name, so what a trusting sweep would remove holds everything.
+    copied(&trash, &going);
+    assert!(trash.join(".git").is_dir(), "the home under its own name is whole");
+    assert!(going.join(".git").is_dir(), "the home under the removing name is whole");
+
+    let report = sweep(&machine);
+
+    assert!(trash.is_dir(), "the sweep took the home out from under its own name");
+    assert!(going.is_dir(), "the sweep removed the tree under the removing name");
+    assert_eq!(rows(&machine), vec![trash.clone()], "the sweep dropped the row");
+    assert!(report.contains(&trash.display().to_string()), "the report names it: {report}");
+    // The table of removed homes is not in the report at all, which is the honesty this
+    // property is about: a sweep that trusted the mark would have printed this home in it.
+    assert!(!report.contains("REMOVED"), "the sweep called a home it kept removed: {report}");
+
+    // The person resolves it, which is the one move the report can ask for: the
+    // directory a killed sweep was removing goes, and the home stays.
+    std::fs::remove_dir_all(&going).unwrap();
+
+    sweep(&machine);
+
+    assert!(!trash.exists(), "the second sweep did not finish the removal");
+    assert!(rows(&machine).is_empty(), "the second sweep kept the row of a home that has gone");
+    settled(&machine);
+}
+
+/// Copy a directory tree, which is how a person makes a second copy of a trashed home.
+fn copied(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let at = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copied(&entry.path(), &at);
+        } else {
+            std::fs::copy(entry.path(), &at).unwrap();
+        }
+    }
 }
