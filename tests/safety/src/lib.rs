@@ -74,6 +74,7 @@
 //! | an advisory lock | a held unit stops an editor, a `git` call or a read command | `tests/one_writer.rs` |
 //! | a hold held unless proven dead | a holder the reader cannot resolve is read as gone, and its home is handed to the next actor | `tests/lock_liveness.rs` |
 //! | the holder's own re-entry is cheap | the commonest entry of all walks the process table for a reading it never looks at | `tests/lock_liveness.rs` |
+//! | a killed sweep is recoverable | a `gc` killed while it removes leaves a home part removed, which no later sweep can read, remove or finish | `tests/gc_interruption.rs` |
 //!
 //! ## How the properties are asserted
 //!

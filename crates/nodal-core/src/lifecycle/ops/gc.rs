@@ -52,15 +52,45 @@
 //! Reclaiming is not removing. The home goes to the trash with a retention of its own,
 //! and a later sweep is what finally takes it.
 //!
-//! **Then the expired homes go**, one at a time: the directory first, then the row.
-//! That order is the same one `nodal base gc` uses and for the same reason. A process
-//! killed between them leaves a row pointing at nothing, which the next sweep clears; the
-//! other order would leave a directory nothing knows about, which nothing would ever
-//! clean up.
+//! **Then the expired homes go**, one at a time, in three moves. The home is renamed
+//! to `<name>.removing`. The tree under that name is removed. The row goes.
 //!
-//! Each of them is read again first, and that reading is the reason this step is not a
-//! timer. A reclaim let the home go because its commits existed somewhere else, and that
-//! somewhere else is a repository on this disk. The copy can go while the home sits in
+//! The rename is what makes a killed sweep safe. Removing a tree is many operations of
+//! the filesystem, and a process killed part-way through one leaves a directory that
+//! holds part of a home. The reading below cannot be made of such a directory: Git
+//! refuses a repository whose object store is half there. A part-removed home under its
+//! own name is therefore read again by every later sweep, refused every time, and stays
+//! for ever.
+//!
+//! A rename is one operation of the filesystem, and the trash directory is one
+//! filesystem. So the home is whole under its own name, or it is wholly under the
+//! removing name, and there is no instant between the two. The removing name says one
+//! thing: this tree was read, the reading found no last copy in it, and its removal has
+//! started. A sweep that finds that name removes what is under it and does not ask
+//! again.
+//!
+//! Asking again is not possible, and it would also be wrong. The reading that let the
+//! home go was made while the home was whole. A second reading would answer about a
+//! tree this program has already started to take apart.
+//!
+//! The tree goes before the row, which is the order `nodal base gc` uses and for the
+//! same reason. A process killed between them leaves a row pointing at nothing, which
+//! the next sweep clears; the other order would leave a directory nothing knows about,
+//! which nothing would ever clean up.
+//!
+//! A sweep killed at any point therefore leaves a state the next sweep finishes.
+//! `tests/safety/tests/gc_interruption.rs` kills a sweep at each seam and names every
+//! one of them.
+//!
+//! One shape is older than the mark. A release before this one removed the tree under
+//! its own name, so a sweep it killed could leave a part-removed home there. That home
+//! is read again, the reading is refused, and the report names the directory for a
+//! person. The mark cannot be put on it now: nothing can say what that directory still
+//! holds.
+//!
+//! Every expired home is read again first, and that reading is the reason this step is
+//! not a timer. A reclaim let the home go because its commits existed somewhere else,
+//! and that somewhere else is a repository on this disk. The copy can go while the home sits in
 //! the trash — somebody deletes a branch in a clone, a host drops a merged branch — and
 //! until this sweep nothing looked again. The retention running out then removed the last
 //! copy of a commit, with no refusal and no line.
@@ -138,6 +168,7 @@ use crate::runtime::processes::{Processes, Running};
 use crate::runtime::stop::{self, Signals as _, Stopped, Target};
 use crate::services::docker;
 use crate::store::{Store, environments, leases, projects, sessions, trash, units};
+use crate::substrate::build::beside;
 use crate::workspace::remove::tree as remove_tree;
 
 use super::reclaim;
@@ -145,6 +176,14 @@ use crate::{Error, Result};
 
 /// The label a unit's containers carry.
 const UNIT_LABEL: &str = "nodal.unit";
+
+/// What is added to a trashed home's name while the sweep removes it.
+///
+/// A home under this name has been read, was found to hold no last copy, and is being
+/// taken away. It is the whole of what `gc` writes down about a removal: a rename is
+/// one operation, so there is no instant at which a part-removed tree carries the name
+/// a later sweep would read again.
+const REMOVING: &str = ".removing";
 
 /// What one sweep was asked to do beyond its ordinary work.
 #[derive(Debug, Clone, Copy, Default)]
@@ -476,9 +515,17 @@ struct Expiry {
 
 /// Read each expired home again, remove the ones that hold no last copy, and forget them.
 ///
-/// The reading comes first, and a home it keeps keeps its row as well. The row is still
-/// expired afterwards, so the next sweep reads the same home again: a copy somebody
-/// restores is all it takes for the directory to go then.
+/// Three moves per home, and the order is what makes a kill between any two of them
+/// safe: the home is renamed to [`REMOVING`], the tree under that name is removed, and
+/// then the row goes. A home already under that name was read by the sweep that was
+/// killed, so this one removes it without asking again.
+///
+/// Nothing here asks whether the removing name is already taken, because the home's own
+/// name answers it. A reading is made only of a home that is there ([`read_again`]), and
+/// a rename of a home that is not there is not a failure ([`begin`]). The one shape
+/// where both names hold a tree is therefore refused by the rename itself: the home is
+/// read, the move onto an occupied name fails, and the sweep names the directory for a
+/// person and keeps the row.
 ///
 /// A project is read once, however many of its homes expired on one sweep. What a
 /// reading asks of the project is the same of every home of it — its checkout, and the
@@ -505,8 +552,13 @@ fn sweep(store: &Store, expired: &[Trashed], registered: &[Project]) -> Result<E
                 Ok(None) => {}
             }
         }
-        let size = size_of(&entry.path);
-        match remove(&entry.path) {
+        let going = beside(&entry.path, REMOVING);
+        if let Err(why) = begin(&entry.path, &going) {
+            swept.leftovers.push(Leftover::new("directory", why.to_string()));
+            continue;
+        }
+        let size = size_of(&going);
+        match remove(&going) {
             Ok(()) => {
                 trash::remove(store.conn(), entry.environment_id)?;
                 swept.freed += size;
@@ -516,6 +568,21 @@ fn sweep(store: &Store, expired: &[Trashed], registered: &[Project]) -> Result<E
         }
     }
     Ok(swept)
+}
+
+/// Move the home to the removing name.
+///
+/// A home that is not there any more is not moved, and that is not a failure: the row
+/// is all that is left of it, and removing the row is how the caller finishes that.
+///
+/// # Errors
+/// [`Error::Io`] when the home is there and could not be moved. The home then stays
+/// under its own name, which is the state this sweep started in.
+fn begin(path: &Path, going: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    std::fs::rename(path, going).map_err(Error::io(path))
 }
 
 /// What every project of this sweep can say about where a commit also lives, read once.
@@ -569,13 +636,26 @@ impl<'a> Readings<'a> {
 /// ever. A home that is not on the disk any more cannot lose anything, and the sweep
 /// before this one may have removed the tree and been killed before it wrote the row;
 /// removing the row is how that is finished.
+///
+/// A home already under [`REMOVING`] and gone from its own name answers `false` on the
+/// second half, which is the same answer and the reason the caller needs no guard of its
+/// own: a home that is not under its own name is not a shape a reading can be made of.
 fn read_again(entry: &Trashed) -> bool {
     entry.rested.re_asks() && entry.path.exists()
 }
 
 /// The line a home that could not be read leaves in the report.
+///
+/// The reason alone reads as a fault and says nothing to do: "not a git repository" is
+/// what Git answers about a directory a killed removal left part-way through, and a
+/// person is owed the one move that finishes it. The move is the same for both reasons a
+/// home goes unread. A directory that is not there is not read again ([`read_again`]),
+/// the rename of a home that is not there is not a failure ([`begin`]), and the row then
+/// goes with the sweep that finds neither.
 fn unread(entry: &Trashed, why: &str) -> Leftover {
-    Leftover::new("trashed home", format!("{}: {why}", entry.path.display()))
+    let path = entry.path.display();
+    let told = "remove the directory yourself and the next sweep forgets the row";
+    Leftover::new("trashed home", format!("{path}: {why}; {told}"))
 }
 
 /// What keeps this expired home, and nothing when nothing does.

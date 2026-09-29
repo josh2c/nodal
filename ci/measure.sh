@@ -257,23 +257,40 @@ duplication=$(python3 "$root/ci/duplication.py" "$root" --json)
 product_percent=$(printf '%s' "$duplication" | python3 -c 'import json,sys; print(f"{json.load(sys.stdin)["product"]["percent"]:.1f}")')
 test_percent=$(printf '%s' "$duplication" | python3 -c 'import json,sys; print(f"{json.load(sys.stdin)["test"]["percent"]:.1f}")')
 
-# Baseline 3.0% by this script. An earlier measurement with the same window method, over
-# a corpus that was never committed, read 3.3%. This script's corpus is stated in its own
-# header and is what the ceiling follows. The four lifecycle operations are the whole of
-# it. Ratchet to 3% after the shared subject and the sweep land.
+# Baseline 3.0% by this script when the ceiling was set. It reads 1.9% today. An earlier
+# measurement with the same window method, over a corpus that was never committed, read
+# 3.3%. This script's corpus is stated in its own header and is what the ceiling follows.
+# The four lifecycle operations are the whole of it. Ratchet to 3% after the shared
+# subject and the sweep land.
 gate "duplication, product" "$product_percent" 4.0 "percent" \
-    "baseline 3.0%; ratchet to 3%"
+    "1.9% today, 3.0% when the ceiling was set; ratchet to 3%"
 
-# Baseline 3.1% by this script, which counts the inline test modules of the product
+# Baseline 4.1% by this script, which counts the inline test modules of the product
 # files in the test corpus as well as the test crates. It read 7.4% before the shared
 # test kit landed: the binary runner was written out in nineteen test files, the `git`
 # runner in sixteen, and one fixture had been copied whole. Those are one implementation
 # now, in `tests/safety/src`, and a suite that needs one asks for it there. What is left
-# is the fixture of one suite resembling the fixture of one other. Ratchet to 2.5% as
-# each of those pairs is folded; the pairs are named by `ci/duplication.py` without
-# `--json`, worst first.
-gate "duplication, test" "$test_percent" 3.5 "percent" \
-    "baseline 3.1%; ratchet to 2.5% as the remaining fixture pairs are folded"
+# is the fixture of one suite resembling the fixture of one other.
+#
+# The baseline was 3.1% until `tests/*/tests/**` was named in the walk. That is the
+# safety suite, a fifth of the test code, and no measurement had ever read it. The
+# number went up because the corpus grew, not because a file got worse. The product
+# corpus read what it read before. Of the 617 duplicated lines the walk added, 564 are
+# in files no measurement had ever read, and 53 are in five files it had: a file of the
+# new corpus is now the partner those five never had.
+#
+#   crates/nodal-cli/tests/done.rs             6 -> 24
+#   crates/nodal-core/tests/list.rs           20 -> 35
+#   crates/nodal-core/tests/ports.rs          19 -> 26
+#   crates/nodal-core/tests/doctor_machine.rs  0 ->  7
+#   crates/nodal-core/tests/materialize.rs     0 ->  6
+#
+# Those five pairs are the first the ratchet to 3.5% should fold, because each is a
+# duplication the old corpus could not see rather than one the new corpus brought. The
+# rest is named by `ci/duplication.py` without `--json`, which prints the five worst
+# files of each corpus.
+gate "duplication, test" "$test_percent" 4.5 "percent" \
+    "baseline 4.1%; ratchet to 3.5% as the remaining fixture pairs are folded"
 echo
 
 # ---------------------------------------------------------------------------

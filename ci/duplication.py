@@ -14,7 +14,8 @@ exactly one of them:
 
   product   the lines of `crates/*/src/**/*.rs` before the first `#[cfg(test)]`
   test      the lines of those files from the first `#[cfg(test)]` onwards, plus every
-            line of `crates/*/tests/`, `tests/*/src/` and `benches/*/src/`
+            line of `crates/*/tests/`, `tests/*/src/`, `tests/*/tests/` and
+            `benches/*/src/`
 
 The two are separate because they duplicate for different reasons and are fixed by
 different work. Product duplication is the four lifecycle operations copying each other.
@@ -42,7 +43,15 @@ MIN_CHARS = 72
 PRODUCT_GLOB = "crates/*/src/**/*.rs"
 
 #: Where the test corpus comes from, beyond the inline test modules of the product files.
-TEST_GLOBS = ("crates/*/tests/**/*.rs", "tests/*/src/**/*.rs", "benches/*/src/**/*.rs")
+#:
+#: `tests/*/tests/**` is the safety suite, which is a fifth of the test code and was
+#: measured by nothing until it was named here.
+TEST_GLOBS = (
+    "crates/*/tests/**/*.rs",
+    "tests/*/src/**/*.rs",
+    "tests/*/tests/**/*.rs",
+    "benches/*/src/**/*.rs",
+)
 
 
 def split_at_tests(text):

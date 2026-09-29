@@ -108,7 +108,10 @@ pub fn legacy_of(destination: &Path) -> PathBuf {
 }
 
 /// A sibling of a path, named by adding to the path's own name.
-fn beside(path: &Path, suffix: &str) -> PathBuf {
+///
+/// A sibling and not a child of another directory, so a rename that puts the name on
+/// stays inside one directory and is therefore one operation of one filesystem.
+pub(crate) fn beside(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
     name.push(suffix);
     PathBuf::from(name)
@@ -490,14 +493,7 @@ impl Materialise {
     /// takes a name no other attempt has, and what an orphan is still writing to is
     /// simply not in the way.
     fn scratch(&self) -> PathBuf {
-        self.beside(&format!(".{id}{PARTIAL_SUFFIX}", id = ulid::Ulid::new()))
-    }
-
-    /// A sibling of the destination, named by adding to the destination's own name.
-    fn beside(&self, suffix: &str) -> PathBuf {
-        let mut name = self.destination.as_os_str().to_os_string();
-        name.push(suffix);
-        PathBuf::from(name)
+        beside(&self.destination, &format!(".{id}{PARTIAL_SUFFIX}", id = ulid::Ulid::new()))
     }
 
     /// Remove the scratch directories earlier attempts left beside the destination,

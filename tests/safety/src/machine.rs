@@ -556,6 +556,41 @@ impl Machine {
         self
     }
 
+    /// The directory this machine's checkout stands in.
+    ///
+    /// It is where a second clone goes for every reading that asks what else on the disk
+    /// holds a commit: those readings walk the repositories under the checkout's parent
+    /// and not the checkout itself ([`nodal_core::doctor::scan::siblings`]). Ten suites
+    /// spell this, and three of them call it "the machine root".
+    ///
+    /// # Panics
+    ///
+    /// If the checkout has no parent, which no machine this kit builds can be in.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        self.source.parent().expect("the machine root")
+    }
+
+    /// Set this machine's trash to keep nothing.
+    ///
+    /// The retention is nought, so a reclaimed home is expired the instant it is trashed
+    /// and the next `nodal gc` is the one that acts on it. Three suites want it, and
+    /// none of them is about waiting a fortnight.
+    ///
+    /// Not a constructor, because one caller asks for it part-way through a test rather
+    /// than when it builds the machine.
+    ///
+    /// # Panics
+    ///
+    /// If the recipe could not be read or written, which is a machine no property about
+    /// the trash can be asserted on.
+    pub fn keep_no_trash(&self) {
+        let path = self.source.join(nodal_fixture::RECIPE);
+        let recipe = std::fs::read_to_string(&path).expect("the fixture has a recipe");
+        std::fs::write(&path, format!("{recipe}\n[reclaim]\ntrash_retention = 0\n"))
+            .expect("the recipe is written");
+    }
+
     /// Where this machine's commands keep the settings Claude Code reads.
     ///
     /// It is beside the state directory and it is not `$HOME/.claude`

@@ -306,9 +306,7 @@ fn name_without_objects(machine: &Machine, tip: &str) {
 /// Mark the unit merged and let its home's retention run out, which is the one state
 /// `nodal gc` reclaims a live home in.
 fn merged_and_due(machine: &Machine, slug: &str) {
-    let recipe = machine.source.join("nodal.toml");
-    let written = std::fs::read_to_string(&recipe).unwrap();
-    std::fs::write(&recipe, format!("{written}\n[reclaim]\ntrash_retention = 0\n")).unwrap();
+    machine.keep_no_trash();
     let store = machine.store();
     let project = machine.project(&store);
     let unit = units::list(store.conn(), project.id)
