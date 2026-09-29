@@ -124,6 +124,49 @@ pub fn fetched_later(repo: impl AsRef<Path>) {
     handle.set_times(std::fs::FileTimes::new().set_modified(when)).expect("the record is dated");
 }
 
+/// The branch a second repository keeps its copy of a home's commit on.
+///
+/// Named here rather than in each suite, because it is half of what
+/// [`sibling_holding`] makes: a caller that deletes the copy again deletes this name.
+pub const COPY: &str = "rescued";
+
+/// A second repository at `beside/named`, holding `tip` on [`COPY`].
+///
+/// `beside` is the directory the repository is made in, and it is the checkout's parent
+/// for every caller to date: that is where a destructive reading looks. A reading of
+/// this kind asks the repositories under the checkout's parent
+/// ([`nodal_core::doctor::scan::siblings`]), so a copy inside the checkout answers
+/// nothing and a property built on one would assert nothing.
+///
+/// The commit is asserted to be reachable before this answers. A fetch that took no
+/// object leaves a repository that looks right and holds nothing, and a property that
+/// then removed the copy would prove the opposite of what it says.
+///
+/// # Panics
+///
+/// If the repository could not be made, the fetch failed, or the fetch left a
+/// repository that does not reach `tip`.
+#[must_use]
+pub fn sibling_holding(beside: &Path, named: &str, from: &Path, tip: &str) -> PathBuf {
+    let path = beside.join(named);
+    let spelled = path.to_str().expect("a utf-8 path");
+    git(beside, &["init", "--quiet", "--initial-branch", "main", spelled]);
+    let from = from.to_str().expect("a utf-8 path");
+    git(&path, &["fetch", "--quiet", from, &format!("{tip}:refs/heads/{COPY}")]);
+    assert!(reaches(&path, tip), "the sibling does not hold the commit");
+    path
+}
+
+/// Whether a repository reaches this commit from a ref of its own.
+///
+/// # Panics
+///
+/// As [`git`].
+#[must_use]
+pub fn reaches(repo: &Path, tip: &str) -> bool {
+    git(repo, &["rev-list", "--all"]).lines().any(|line| line == tip)
+}
+
 /// A repository with one branch and this suite's identity, and nothing committed yet.
 ///
 /// # Panics

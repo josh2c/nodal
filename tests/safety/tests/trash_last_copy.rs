@@ -41,6 +41,7 @@
 use std::path::{Path, PathBuf};
 
 use nodal_safety::InState as _;
+use nodal_safety::git::{COPY, reaches, sibling_holding};
 use nodal_safety::project::resolved;
 use nodal_safety::{Machine, Snapshot, git, json, stderr, stdout};
 
@@ -52,9 +53,6 @@ const BYSTANDER: &str = "payroll-export";
 
 /// A path no ignore rule of the fixture covers, so a commit of it is work.
 const ONLY: &str = "only-here.txt";
-
-/// The branch a second repository keeps its copy of the home's commit on.
-const COPY: &str = "rescued";
 
 /// A path the fixture tracks, which is what a stash needs to have something to hold.
 const TRACKED: &str = "apps/web/app/page.tsx";
@@ -81,9 +79,7 @@ const NO_PROXY: (&str, &str) = ("GIT_PROXY_COMMAND", "false");
 /// what these properties are about, and a fortnight of waiting is not part of it.
 fn machine() -> Machine {
     let machine = Machine::with_remote().with_env(ONLY_LOCAL).with_env(NO_PROXY);
-    let recipe = machine.source.join("nodal.toml");
-    let written = std::fs::read_to_string(&recipe).unwrap();
-    std::fs::write(&recipe, format!("{written}\n[reclaim]\ntrash_retention = 0\n")).unwrap();
+    machine.keep_no_trash();
     machine
 }
 
@@ -108,22 +104,6 @@ fn reclaimed(machine: &Machine, slug: &str) -> PathBuf {
     trashed.into_iter().next().unwrap()
 }
 
-/// A second repository beside the checkout, holding `tip` on a branch of its own.
-///
-/// Beside the checkout and not inside it, because that is where the reading looks: a
-/// destructive path asks the repositories under the checkout's parent
-/// ([`nodal_core::doctor::scan::siblings`]).
-fn sibling_holding(machine: &Machine, from: &Path, tip: &str) -> PathBuf {
-    let parent = machine.source.parent().unwrap();
-    let path = parent.join(SIBLING);
-    let named = path.to_str().unwrap();
-    git(parent, &["init", "--quiet", "--initial-branch", "main", named]);
-    let spec = format!("{tip}:refs/heads/{COPY}");
-    git(&path, &["fetch", "--quiet", from.to_str().unwrap(), &spec]);
-    assert!(reaches(&path, tip), "the sibling does not hold the commit");
-    path
-}
-
 /// A path as the filesystem spells it, for a report that resolves every path it prints.
 ///
 /// One directory reached through a symbolic link and reached directly is one directory
@@ -132,11 +112,6 @@ fn sibling_holding(machine: &Machine, from: &Path, tip: &str) -> PathBuf {
 /// the other.
 fn named(path: &Path) -> String {
     resolved(path).to_str().expect("a utf-8 path").to_owned()
-}
-
-/// Whether a repository reaches this commit from a ref of its own.
-fn reaches(repo: &Path, tip: &str) -> bool {
-    git(repo, &["rev-list", "--all"]).lines().any(|line| line == tip)
 }
 
 /// The invariant: the trashed home is still there and plain Git still reads the work out
@@ -164,7 +139,7 @@ fn holds(trash: &Path, tip: &str) {
 fn a_home_whose_sibling_copy_went_survives_its_retention() {
     let machine = machine();
     let (home, tip) = only_here(&machine, SLUG);
-    let sibling = sibling_holding(&machine, &home, &tip);
+    let sibling = sibling_holding(machine.root(), SIBLING, &home, &tip);
     let trash = reclaimed(&machine, SLUG);
 
     // The copy the verdict rested on goes, which is one ordinary command in a
@@ -209,7 +184,7 @@ fn carries_the_same_in_json(machine: &Machine) {
 fn the_same_home_is_removed_once_the_copy_is_back() {
     let machine = machine();
     let (home, tip) = only_here(&machine, SLUG);
-    let sibling = sibling_holding(&machine, &home, &tip);
+    let sibling = sibling_holding(machine.root(), SIBLING, &home, &tip);
     let trash = reclaimed(&machine, SLUG);
 
     git(&sibling, &["update-ref", "-d", &format!("refs/heads/{COPY}")]);
@@ -376,7 +351,7 @@ fn a_detached_head_whose_copy_went_keeps_its_home() {
     git(&home, &["add", "--all"]);
     git(&home, &["commit", "--quiet", "--message", "work on a detached head"]);
     let tip = git(&home, &["rev-parse", "HEAD"]);
-    let sibling = sibling_holding(&machine, &home, &tip);
+    let sibling = sibling_holding(machine.root(), SIBLING, &home, &tip);
     let trash = reclaimed(&machine, SLUG);
 
     git(&sibling, &["update-ref", "-d", &format!("refs/heads/{COPY}")]);
@@ -440,7 +415,7 @@ fn permissions(path: &Path, mode: u32) {
 fn a_verdict_this_binary_cannot_read_is_asked_again_rather_than_taken() {
     let machine = machine();
     let (home, tip) = only_here(&machine, SLUG);
-    let sibling = sibling_holding(&machine, &home, &tip);
+    let sibling = sibling_holding(machine.root(), SIBLING, &home, &tip);
     let trash = reclaimed(&machine, SLUG);
     {
         let store = machine.store();
@@ -522,7 +497,7 @@ fn a_branch_the_reclaim_never_read_is_refused_at_the_reclaim() {
     assert!(machine.trashed().is_empty(), "the refusal put something in the trash");
 
     // The person puts both commits somewhere else, and the home goes on time.
-    let beside = sibling_holding(&machine, &home, &stranded);
+    let beside = sibling_holding(machine.root(), SIBLING, &home, &stranded);
     let kept = format!("{ahead}:refs/heads/kept");
     git(&beside, &["fetch", "--quiet", home.to_str().unwrap(), &kept]);
     let trash = reclaimed(&machine, SLUG);
@@ -609,7 +584,7 @@ fn a_side_branch_whose_copy_went_survives_its_retention() {
     let machine = machine();
     let home = machine.unit(SLUG);
     let tip = on_a_side_branch(&home);
-    let sibling = sibling_holding(&machine, &home, &tip);
+    let sibling = sibling_holding(machine.root(), SIBLING, &home, &tip);
     let trash = reclaimed(&machine, SLUG);
 
     copy_goes(&sibling, &tip);
@@ -623,7 +598,7 @@ fn a_tag_whose_copy_went_survives_its_retention() {
     let machine = machine();
     let home = machine.unit(SLUG);
     let tip = on_a_side_branch(&home);
-    let sibling = sibling_holding(&machine, &home, &tip);
+    let sibling = sibling_holding(machine.root(), SIBLING, &home, &tip);
     git(&home, &["tag", "--annotate", "--message", "a release", "kept", &tip]);
     git(&home, &["branch", "--quiet", "--delete", "--force", SIDE]);
     let trash = reclaimed(&machine, SLUG);
@@ -642,7 +617,7 @@ fn a_stash_whose_copy_went_survives_its_retention() {
     git(&home, &["stash", "push", "--quiet", "--message", "work only this home has"]);
     let tip = git(&home, &["rev-parse", "refs/stash"]);
     assert!(git(&home, &["status", "--porcelain"]).is_empty(), "the stash left the tree dirty");
-    let sibling = sibling_holding(&machine, &home, &tip);
+    let sibling = sibling_holding(machine.root(), SIBLING, &home, &tip);
     let trash = reclaimed(&machine, SLUG);
 
     copy_goes(&sibling, &tip);
