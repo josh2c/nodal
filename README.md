@@ -78,7 +78,7 @@ Two routes. Both give the same program. `nodal --version` prints the version you
 file beside it. You need no clone and no Rust toolchain.
 
 ```sh
-version=0.1.0-rc.3
+version=0.1.0-rc.4
 target=x86_64-unknown-linux-gnu                     # or aarch64-apple-darwin
 base=https://github.com/josh2c/nodal/releases/download/v$version
 curl -LO "$base/nodal-$version-$target"
@@ -103,7 +103,7 @@ quarantine attribute, so the file runs. For a browser download, remove the attri
 
 ```sh
 cargo install --git https://github.com/josh2c/nodal nodal-cli                    # the current main
-cargo install --git https://github.com/josh2c/nodal --tag v0.1.0-rc.3 nodal-cli  # one named version
+cargo install --git https://github.com/josh2c/nodal --tag v0.1.0-rc.4 nodal-cli  # one named version
 ```
 
 Then, for `nodal cd` to move the shell you are in:
