@@ -27,6 +27,12 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
 - The `nodal` shell function finds the binary each time it runs: the path it was printed
   with, else the one on the `PATH`. When neither holds one, it prints "nodal is not on the
   path" and exits 127, where it ran an empty command and printed `permission denied`.
+- `nodal reclaim --check` on a checkout adopted in place names the build output and the
+  installed dependencies it holds, and says that `--prune` is what removes them. It said
+  before that a trash would keep the local state of such a home. No trash holds it,
+  because no reclaim moves the home.
+- `nodal doctor --machine` names `nodal adopt <path> --in-place` for the clones it found,
+  and `nodal reclaim <unit> --check` after it. It runs neither.
 
 ### Locks
 
@@ -122,6 +128,12 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   entries were refused, what was not checked and why, and the instant of the reading.
   `nodal reclaim --check` prints it and still writes nothing; an executed reclaim writes it
   into the unit's log as a `verdict` event. Nothing in the record changes a verdict.
+- `nodal reclaim <unit> --prune` removes the build output and the installed dependencies
+  from a checkout adopted in place. Every other reclaim of such a checkout leaves the
+  directory exactly as it is, and its report names what `--prune` would remove.
+- `nodal reclaim --prune` removes a path only when an ignore rule covers it and the
+  exclusion table calls it regenerable. It never removes a tracked file, and it never
+  removes the directory. A reclaim that refuses over work prunes nothing.
 
 ### Make
 
@@ -131,6 +143,19 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   `build` outputs. The line reads `not checked` only when the build names no directory.
 - A readiness part nothing here could read is labelled `not checked`, apart from `not
   ready`, which is a part whose file is not there.
+- A base build and a home install run the form of each package manager that installs
+  from the lockfile and refuses to change it: `npm ci`, `pnpm install --frozen-lockfile`,
+  `yarn install --immutable` (`--frozen-lockfile` when the project pins Yarn 1),
+  `bun install --frozen-lockfile`, `uv sync --frozen`, `cargo fetch --locked`. A project
+  with no lockfile keeps the plain install, and the progress line says so.
+- `nodal init` prints one line when `package-lock.json` records a name or version that
+  `package.json` no longer states. The line names both.
+- An install that changes a file the project tracks is refused. The change is put back
+  in the base or the home it ran in, never in the checkout, and the refusal names the
+  file and the tool. This holds for every package manager.
+- A frozen install that fails because the lockfile disagrees with its manifest is refused
+  with the tool's own sentence and one line of Nodal's: which file disagrees with which,
+  and that the fix goes in the project's checkout. The create leaves no unit.
 
 ## 0.1.0-rc.3 — 2026-09-18
 
@@ -151,13 +176,6 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   output out of the base. The base runs no install for that manager, and its readiness
   line names the directory and the manager. Cargo never moves, because its download cache
   is outside the tree.
-- A base build and a home install run the form of each package manager that installs
-  from the lockfile and refuses to change it: `npm ci`, `pnpm install --frozen-lockfile`,
-  `yarn install --immutable` (`--frozen-lockfile` when the project pins Yarn 1),
-  `bun install --frozen-lockfile`, `uv sync --frozen`, `cargo fetch --locked`. A project
-  with no lockfile keeps the plain install, and the progress line says so.
-- `nodal init` prints one line when `package-lock.json` records a name or version that
-  `package.json` no longer states. The line names both.
 
 ### Reclaim
 
@@ -169,36 +187,11 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   of them is not a second object store, because a person clearing a machine removes them
   together.
 
-### Read
-
-- `nodal reclaim --check` on a checkout adopted in place names the build output and the
-  installed dependencies it holds, and says that `--prune` is what removes them. It said
-  before that a trash would keep the local state of such a home. No trash holds it,
-  because no reclaim moves the home.
-- `nodal doctor --machine` names `nodal adopt <path> --in-place` for the clones it found,
-  and `nodal reclaim <unit> --check` after it. It runs neither.
-
-### What it does
-
-- `nodal reclaim <unit> --prune` removes the build output and the installed dependencies
-  from a checkout adopted in place. Every other reclaim of such a checkout leaves the
-  directory exactly as it is, and its report names what `--prune` would remove.
-
 ### What refuses
-
-- `nodal reclaim --prune` removes a path only when an ignore rule covers it and the
-  exclusion table calls it regenerable. It never removes a tracked file, and it never
-  removes the directory. A reclaim that refuses over work prunes nothing.
 
 - `nodal new` and `nodal adopt` ask for hook approval before the operation writes
   anything. A create or an adoption refused for a hook nobody approved leaves no unit, no
   branch, no port lease and no home.
-- An install that changes a file the project tracks is refused. The change is put back
-  in the base or the home it ran in, never in the checkout, and the refusal names the
-  file and the tool. This holds for every package manager.
-- A frozen install that fails because the lockfile disagrees with its manifest is refused
-  with the tool's own sentence and one line of Nodal's: which file disagrees with which,
-  and that the fix goes in the project's checkout. The create leaves no unit.
 
 ## 0.1.0-rc.2 — 2026-09-17
 
