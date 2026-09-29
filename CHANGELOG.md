@@ -128,6 +128,19 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   entries were refused, what was not checked and why, and the instant of the reading.
   `nodal reclaim --check` prints it and still writes nothing; an executed reclaim writes it
   into the unit's log as a `verdict` event. Nothing in the record changes a verdict.
+- `nodal gc` marks a trashed home before it removes it. The home is renamed to
+  `<name>.removing`, the tree under that name goes, and the row goes last. A rename is
+  one operation of the filesystem, so the home is whole under its own name or wholly
+  under the removing name. A sweep killed at any point leaves a state the next sweep
+  finishes: a home under the removing name is removed with no second reading, because
+  the sweep that marked it had already read it whole, and a row whose directory has
+  gone is forgotten. The sweep removed the tree under its own name before, so a kill
+  part-way through left a directory Git refuses to open, the reading of it was refused
+  on every later sweep, and the home stayed for ever. A home an earlier release left in
+  that state is still refused, and the report names the directory.
+- A trashed home `nodal gc` could not read leaves a line that says what to do. The line
+  names the directory, gives the reason, and adds "remove the directory yourself and the
+  next sweep forgets the row". The reason alone read as a fault and named no move.
 - `nodal reclaim <unit> --prune` removes the build output and the installed dependencies
   from a checkout adopted in place. Every other reclaim of such a checkout leaves the
   directory exactly as it is, and its report names what `--prune` would remove.
