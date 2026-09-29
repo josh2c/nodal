@@ -150,6 +150,10 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   with no lockfile keeps the plain install, and the progress line says so.
 - `nodal init` prints one line when `package-lock.json` records a name or version that
   `package.json` no longer states. The line names both.
+- A project that carries `bun.lock` is read as a Bun project. Bun writes that file from
+  1.2 and wrote `bun.lockb` before it, and Nodal read the older name alone, so a project
+  on a current Bun got no package manager and no install. A project that carries both
+  files is held to `bun.lock`.
 - An install that changes a file the project tracks is refused. The change is put back
   in the base or the home it ran in, never in the checkout, and the refusal names the
   file and the tool. This holds for every package manager.
