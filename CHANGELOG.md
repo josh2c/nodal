@@ -27,6 +27,10 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
 - The `nodal` shell function finds the binary each time it runs: the path it was printed
   with, else the one on the `PATH`. When neither holds one, it prints "nodal is not on the
   path" and exits 127, where it ran an empty command and printed `permission denied`.
+- `nodal ls` prints `^?` in the `only here` column of a worktree whose remote-tracking
+  refs it could not read, and counts that worktree as holding work. The column printed
+  a dash there, which says the worktree holds nothing of its own. A count nobody could
+  take is not a zero.
 - `nodal reclaim --check` on a checkout adopted in place names the build output and the
   installed dependencies it holds, and says that `--prune` is what removes them. It said
   before that a trash would keep the local state of such a home. No trash holds it,
@@ -128,6 +132,13 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
   entries were refused, what was not checked and why, and the instant of the reading.
   `nodal reclaim --check` prints it and still writes nothing; an executed reclaim writes it
   into the unit's log as a `verdict` event. Nothing in the record changes a verdict.
+- One module answers whether a home may go, and every command that removes a home or
+  says whether one is safe hands it a reading and renders the answer: `nodal reclaim`,
+  `nodal reclaim --check`, `nodal gc`, `nodal doctor` and `nodal uninstall --state`. Six
+  places held that rule before, and two of them disagreed: after a push, a merge and a
+  remote branch deletion with no prune, one called a branch pushed while the remote no
+  longer held it. A `safe` on a trash row is a record of what one reading proved and
+  never permission, so `nodal gc` asks again.
 - `nodal gc` marks a trashed home before it removes it. The home is renamed to
   `<name>.removing`, the tree under that name goes, and the row goes last. A rename is
   one operation of the filesystem, so the home is whole under its own name or wholly
