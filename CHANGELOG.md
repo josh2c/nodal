@@ -3,7 +3,7 @@
 This file records what each release of Nodal lets a person do, and what it refuses.
 One line per behaviour. Versions follow [semantic versioning](https://semver.org).
 
-## Unreleased
+## 0.1.0-rc.4 — 2026-09-28
 
 ### Read
 
