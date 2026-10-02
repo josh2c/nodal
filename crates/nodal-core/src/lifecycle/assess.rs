@@ -547,6 +547,13 @@ impl Copies {
 /// reported the commit as only here and refused, and nothing said why the refusal was
 /// about a name rather than about the content. This is what says it.
 ///
+/// **Two distinct identifiers, always.** [`SameContent::commit`] and [`SameContent::tip`]
+/// are never one id. A home carries its own record of its own pushes, so a tree matched
+/// against every remote-namespace tip matches the ref that names the commit itself, and a
+/// row made there says two things that are not so: that the content is under a different
+/// id, and that a commit the named ref holds is only here. A home whose commit is its own
+/// tip raises no row ([`rewritten`]).
+///
 /// It is [`Survival::Reconstructable`] and never evidence of a second copy. Taking the
 /// tree from the ref rebuilds the content; it does not rebuild the commit, its message,
 /// its author or its parents. So this never reaches a refusal and never moves a verdict
@@ -1934,6 +1941,15 @@ fn rewritten(git: &Git, kept: &[Oid]) -> Result<Vec<SameContent>> {
         .zip(kept.iter())
         .filter_map(|(tree, commit)| {
             let held = by_tree.get(&tree)?;
+            // Two identifiers, or no row. A home's own remote-tracking ref can name the
+            // very commit being judged, and a tree matched against itself raised the row
+            // against one id: it said the content was under a different id where there
+            // was one, and that the commit was only here about a commit the ref it named
+            // holds. The row is about a rewritten history, and a history is not a rewrite
+            // of itself.
+            if *commit == held.oid {
+                return None;
+            }
             Some(SameContent {
                 commit: commit.clone(),
                 reference: held.name.clone(),
