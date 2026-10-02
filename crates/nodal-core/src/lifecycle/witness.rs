@@ -114,6 +114,7 @@ use crate::doctor::unique::{self, CloneReading, RemoteTip, Subject, Trusted, bel
 use crate::doctor::{inspect, origin};
 use crate::git::refs::{REMOTE as ORIGIN, TRACKING};
 use crate::git::{Git, Oid, fetched, refs, union};
+use crate::lifecycle::uniqueness::{Unobserved, Unread};
 use crate::model::Timestamp;
 
 /// What this machine can prove already exists outside one home.
@@ -160,8 +161,9 @@ pub struct Elsewhere {
     /// does not hold, the remote does not hold. Every other reading is a clone's, and a
     /// clone can only say what it last saw.
     pub direct: bool,
-    /// The branches the witness's last fetch is older than, and so says nothing about.
-    pub unobserved: Vec<String>,
+    /// The branches the witness's last fetch says nothing about, each with which of the
+    /// two readings left it unanswered ([`Unobserved`]).
+    pub unobserved: Vec<Unobserved>,
 }
 
 impl Elsewhere {
@@ -365,7 +367,7 @@ fn vouched(
     asked: &Asked<'_>,
     relation: Relation,
     reading: CloneReading,
-    unobserved: &mut Vec<String>,
+    unobserved: &mut Vec<Unobserved>,
 ) -> Trusted {
     let Some(witness) = witness(asked, relation, reading, unobserved) else {
         return Trusted::default();
@@ -390,7 +392,7 @@ fn witness(
     asked: &Asked<'_>,
     relation: Relation,
     mut reading: CloneReading,
-    unobserved: &mut Vec<String>,
+    unobserved: &mut Vec<Unobserved>,
 ) -> Option<Subject> {
     match relation {
         // Two clones of one remote. What the checkout may say is what its last fetch saw
@@ -435,7 +437,8 @@ fn witness(
 /// made before this home pushed says nothing about what the remote has since: a branch
 /// absent from it is a branch that did not exist yet, and one present in it stands at a
 /// commit from before the push. So a branch whose reading predates the home's own record
-/// of it is unobserved, and the row says so.
+/// of it is unobserved, and the row says which of the two readings that was
+/// ([`Unread`]).
 ///
 /// The commit vouched for is the one the fetch saw and wrote down, and never the one the
 /// tracking ref names. They are the same in the ordinary case and they come apart in
@@ -448,7 +451,7 @@ fn witness(
 /// `None` is a checkout that has made no observation of this remote at all: it has never
 /// fetched, or its last fetch was of another remote and rewrote the record with that
 /// remote's refs. Neither is a repository that found the remote empty.
-fn observed(asked: &Asked<'_>, unobserved: &mut Vec<String>) -> Option<Vec<RemoteTip>> {
+fn observed(asked: &Asked<'_>, unobserved: &mut Vec<Unobserved>) -> Option<Vec<RemoteTip>> {
     let home = asked.subject.path.as_path();
     // The url as it is written, not the name it groups under. The reading reduces what it
     // finds on its own lines, so a name reduced here as well would be reduced twice
@@ -476,13 +479,19 @@ fn observed(asked: &Asked<'_>, unobserved: &mut Vec<String>) -> Option<Vec<Remot
             // pruned. Nothing is vouched for and nothing is reported, because the question
             // was asked and the answer was no.
             None if strictly_later(observation.at, wrote) && !tracks.contains(branch.as_str()) => {}
-            // Everything else the reading cannot answer for. A branch absent from the
-            // listing that the checkout still tracks is the shape two different commands
-            // leave — a fetch of one branch by name, which asked about nothing else, and a
-            // fetch without `--prune` after the remote dropped the branch — and no record
-            // on this disk tells the two apart. A reading older than this home's own record
-            // of the branch answers for a state of it from before the work.
-            _ => unobserved.push(branch),
+            // The later reading, naming the branch nowhere, while the checkout still
+            // tracks it. Two different commands leave that — a fetch of one branch by
+            // name, which asked about nothing else, and a fetch without `--prune` after
+            // the remote dropped the branch — and no record on this disk tells them apart.
+            // What is known is that the reading is not the older one, and a report that
+            // said it was named the wrong cause.
+            None if strictly_later(observation.at, wrote) => {
+                unobserved.push(Unobserved { branch, reading: Unread::Unnamed });
+            }
+            // Everything else: a reading no later than this home's own record of the
+            // branch, which answers for a state of it from before the work, whether or not
+            // it names the branch at all.
+            _ => unobserved.push(Unobserved { branch, reading: Unread::Older }),
         }
     }
     Some(seen)

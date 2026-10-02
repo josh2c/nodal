@@ -7,11 +7,12 @@
 //! time and neither is ever told. The lock row is the record that crosses the accounts
 //! the scan cannot.
 //!
-//! Five properties, and each one is a way the arrangement could go wrong:
+//! The properties, and each one is a way the arrangement could go wrong:
 //!
 //! | property | what a break would look like |
 //! |---|---|
 //! | a second actor is told | two actors write one home and neither hears of the other |
+//! | the verb that removes a home asks too | a second actor takes away the directory the holder is working in |
 //! | the refusal names a way out | a person is stopped with no way to carry on |
 //! | the lock is advisory | Nodal stops an editor, a `git` call or a process it did not start |
 //! | `--take` is deliberate and recorded | a hold moves with nothing written down |
@@ -29,12 +30,12 @@
 
 #![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nodal_core::model::EventKind;
 use nodal_core::store::locks;
 use nodal_safety::machine::binary;
-use nodal_safety::project::Workspace;
+use nodal_safety::project::{Workspace, resolved};
 use nodal_safety::state::InState;
 use nodal_safety::{git_ok, stderr, stdout};
 
@@ -266,8 +267,82 @@ fn the_holder_re_entering_after_a_lapse_records_no_hand_off() {
     );
 }
 
+/// A second actor's reclaim is refused, in the sentence `nodal run` is refused in, and
+/// the home, the unit's row and the lock row are exactly as they were.
+///
+/// This is the one refusal that cannot be made afterwards. Every other verb the lock gates
+/// leaves the home where the holder can go and look; a reclaim moves the directory to the
+/// trash and closes the rows, and the holder finds out by their next command failing. So
+/// the destructive verb asks the lock first, before the home is read, and the refusal is
+/// the same sentence with the same way out — a person who has met it once has met it.
+///
+/// What is asserted beside the exit code is that nothing happened. A refusal a person acts
+/// on has to be a refusal that left the machine alone, and a lock claimed on the way to
+/// refusing would be a hold handed to whoever asked and was told no.
+#[test]
+fn a_second_actors_reclaim_is_refused_and_changes_nothing() {
+    let workspace = workspace();
+    let home = workspace.unit("worker-import");
+    let unit = workspace.one_unit();
+    let before = locks::get(workspace.store().conn(), unit.id).unwrap().unwrap();
+
+    let refused = as_second(&workspace, &home, &["reclaim", "worker-import", "--yes"]);
+    assert!(
+        !refused.status.success(),
+        "a second actor reclaimed a home the holder holds: {}",
+        stdout(&refused)
+    );
+    let said = stderr(&refused);
+    assert!(said.contains(FIRST), "the refusal does not name the holder: {said}");
+    assert!(said.contains("--take"), "the refusal does not say how to take it: {said}");
+    assert!(said.contains("advisory"), "the refusal does not say what it does not stop: {said}");
+
+    assert!(home.is_dir(), "the refused reclaim moved the home");
+    let homes: Vec<PathBuf> = workspace.homes().iter().map(|home| resolved(home)).collect();
+    assert_eq!(homes, vec![resolved(&home)], "the home is not the project's any more");
+    assert!(workspace.trashed().is_empty(), "the refused reclaim put something in the trash");
+    assert_eq!(workspace.one_unit(), unit, "the refused reclaim wrote the unit's row");
+    assert_eq!(
+        locks::get(workspace.store().conn(), unit.id).unwrap(),
+        Some(before),
+        "the refused reclaim wrote the lock row it was refused by",
+    );
+}
+
+/// `--take` is the way through for the reclaim as it is for every other write verb, and
+/// the hand-off it writes is the record the person it was taken from reads.
+///
+/// A hold that could only be taken by a verb that keeps the home would leave the person
+/// who really has to end somebody else's unit — the one whose agent was killed hours ago —
+/// with no way to do it but to go into the registry. So the way through is the same word,
+/// and it writes the same line.
+#[test]
+fn take_lets_a_second_actor_reclaim_and_records_the_hand_off() {
+    let workspace = workspace();
+    let home = workspace.unit("worker-import");
+    let unit = workspace.one_unit().id;
+
+    let gone = as_second(&workspace, &home, &["reclaim", "worker-import", "--take", "--yes"]);
+    assert!(gone.status.success(), "--take was refused the reclaim: {}", stderr(&gone));
+    assert!(!home.is_dir(), "the reclaim left the home where it was");
+    assert_eq!(
+        locks::get(workspace.store().conn(), unit).unwrap(),
+        None,
+        "a reclaimed unit still names a writer",
+    );
+
+    let handed: Vec<_> =
+        workspace.events().into_iter().filter(|event| event.kind == EventKind::Handoff).collect();
+    assert_eq!(handed.len(), 1, "a hand-off wrote {} events", handed.len());
+    let body = &handed[0].body;
+    assert!(body.contains(FIRST) && body.contains(SECOND), "the hand-off names nobody: {body}");
+}
+
 /// A reclaim gives up the unit's hold, so no row claims the writer of a home that is
 /// gone.
+///
+/// The holder's own reclaim, which the gate above must never refuse: the hold is theirs,
+/// entering their own home refreshes it, and the row goes when the home does.
 #[test]
 fn a_reclaim_releases_the_hold_it_held() {
     let workspace = workspace();

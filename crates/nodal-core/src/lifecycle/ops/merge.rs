@@ -919,6 +919,10 @@ fn remove(store: &mut Store, request: &Request, params: &Params, done: &mut Merg
         // Never. `nodal merge --remove` ends a unit; it is not consent to remove
         // anything from a checkout the person adopted in place.
         prune: false,
+        // Never. A merge is not an answer to "somebody else holds this home": the work
+        // is already on the target, and the home another actor holds is left for them
+        // with the stage line saying the removal was refused.
+        take: false,
         cwd: request.cwd.clone(),
     };
     match super::reclaim::reclaim(store, &asked) {

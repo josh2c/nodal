@@ -58,6 +58,8 @@
 //! | a process this account cannot read, started from inside the home, blocks | `an_unreadable_process_whose_lineage_reaches_the_home_blocks_the_move_at_the_seam` |
 //! | and one whose lineage reaches nothing here is counted, not hidden | `an_unreadable_process_unrelated_to_the_home_is_counted_and_refuses_nothing_at_the_seam` |
 //! | sharing a terminal with a shell in the home is not occupancy | `an_unreadable_process_sharing_only_a_session_with_the_home_refuses_nothing_at_the_seam` |
+//! | the list's word is the gate's word | `the_list_and_the_gate_name_one_reason_over_one_home` |
+//! | a declared path is kept, and the sentence says the gate did not act on the declaration | `an_untracked_path_the_project_declares_regenerable_is_kept_and_the_reason_says_so` |
 //! | it changes nothing | `the_check_changes_nothing_and_runs_no_hook` |
 //! | one value, two renderings | `the_human_form_and_the_json_are_one_value` |
 //! | it is not a way to force anything | `check_refuses_force_and_yes` |
@@ -94,6 +96,10 @@ const TRACKED: &str = "apps/web/app/page.tsx";
 
 /// The branch a home pushes its work to, as a review branch on the remote.
 const TOPIC: &str = "topic";
+
+/// A path the project's `[base] invalidate` names: its content records the directory it
+/// was made in, which is what a `__pycache__` holds.
+const DECLARED: &str = "api/__pycache__";
 
 /// The branch the checkout is left holding an object it cannot read on.
 const DAMAGED: &str = "damaged";
@@ -913,6 +919,98 @@ fn needs(machine: &Machine, slug: &str) -> String {
         .as_str()
         .unwrap_or("absent")
         .to_owned()
+}
+
+/// The top reason the gate gives for this home, which is the word `--check` prints first.
+fn gate(machine: &Machine, slug: &str) -> String {
+    let answer = check(machine, slug);
+    answer["reasons"][0]["needs"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the gate gave no reason: {answer:#}"))
+        .to_owned()
+}
+
+/// `nodal ls` and `nodal reclaim --check` answer with one [`nodal_core::model::Needs`],
+/// and over a home the gate refuses they answer the same word.
+///
+/// The column is the surface a person reads to decide which unit to end, and the two
+/// commands are meant to be one vocabulary: the enum lives in `model/` for that reason and
+/// says so in its own words. What they had was two answers over one home. A home holding
+/// commits on no remote read `review` in the list — the word for work that is finished —
+/// while the gate refused it as work that may exist only there, and `review` is the
+/// lower-ranked of the two, so the list was the reassuring one.
+///
+/// Two homes, and they are the gate's two refusing readings about commits:
+///
+/// * commits nothing here puts anywhere else, with the remote read: `unique loss` in both.
+/// * commits pushed, with nothing here having read the remote since: `unknown` in both.
+///
+/// The list is allowed to rank *higher* than the gate and never lower — it pays for a
+/// `git status` and two `stat` calls and the gate pays for `rev-list` — so what is asserted
+/// is the word, in the direction a person is misled by.
+#[test]
+fn the_list_and_the_gate_name_one_reason_over_one_home() {
+    let machine = machine();
+    let unpushed = machine.unit(SLUG);
+    std::fs::write(unpushed.join(ONLY), "the only copy\n").unwrap();
+    git(&unpushed, &["add", "--all"]);
+    git(&unpushed, &["commit", "--quiet", "--message", "work only this home has"]);
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+
+    assert_eq!(gate(&machine, SLUG), "unique_loss", "the gate changed its mind");
+    assert_eq!(
+        needs(&machine, SLUG),
+        "unique_loss",
+        "the list reports commits the gate refuses over under another word",
+    );
+
+    // The second home: pushed, so it carries its own record of the remote, and nothing
+    // here has read the remote since. The gate cannot say where the commit is and neither
+    // can the column.
+    let (pushed_home, _) = pushed(&machine, NEIGHBOUR);
+    assert_eq!(gate(&machine, NEIGHBOUR), "unknown_evidence", "the gate changed its mind");
+    assert_eq!(
+        needs(&machine, NEIGHBOUR),
+        "unknown_evidence",
+        "the list reports a reading the gate could not take under another word",
+    );
+    assert!(unpushed.is_dir() && pushed_home.is_dir(), "a pair of readings moved a home");
+}
+
+/// A path the project's `[base] invalidate` declares regenerable is kept exactly as any
+/// other untracked path is, and the reason line says the declaration was read and not
+/// acted on.
+///
+/// Two tables answer one question about one path. The project's says the content records
+/// the directory it was made in, which is a statement that a tool writes it again; the
+/// gate reads Git's ignore rules, under which the path is simply untracked. The
+/// conservative answer is the right default and it is the one that decides — a project
+/// cannot make this gate give up a file by declaring it — but a person who has written the
+/// declaration and is then refused over the path has been told the opposite of what they
+/// wrote, and is owed the sentence that says which reading they are looking at.
+#[test]
+fn an_untracked_path_the_project_declares_regenerable_is_kept_and_the_reason_says_so() {
+    let machine = Machine::invalidating(&[DECLARED]).with_env(ONLY_LOCAL).with_env(NO_PROXY);
+    let home = machine.unit(SLUG);
+    let cache = home.join(DECLARED);
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("main.cpython-312.pyc"), "bytes a tool wrote\n").unwrap();
+
+    let answer = check(&machine, SLUG);
+    assert_eq!(answer["safe_to_reclaim"], Value::Bool(false), "a declared path let it go");
+    let group = paths(&answer, "untracked_declared")
+        .unwrap_or_else(|| panic!("no group for the declared path: {answer:#}"));
+    assert_eq!(group["disposition"], Value::from("must_survive"), "{answer:#}");
+    let why = group["why"].as_str().unwrap();
+    assert!(
+        why.contains("declares this path regenerable")
+            && why.contains("does not act on that declaration"),
+        "the reason line does not say which reading refused: {why}",
+    );
+
+    // And the refusal itself is the one refusal it always was, over the one count.
+    reclaim_also_refuses(&machine, SLUG, "untracked files (1)");
+    assert!(home.is_dir(), "the pair of readings moved the home");
 }
 
 /// A unit with one process carrying its identifier.

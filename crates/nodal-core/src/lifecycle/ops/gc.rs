@@ -319,6 +319,10 @@ fn retire(
             // Never. An idle unit is retired without a person present, and the build
             // output of a checkout somebody adopted is theirs to give up.
             prune: false,
+            // Never, for the same reason. A hold is the record that somebody is working
+            // in the home, and a sweep that ran while they were is the one reader of it
+            // with nobody there to be told. A held unit is left, and the row says so.
+            take: false,
             cwd: project.root.clone(),
         };
         match reclaim::reclaim(store, &request) {
@@ -697,7 +701,10 @@ fn held_back(entry: &Trashed, reading: &Reading) -> Result<Option<HeldBack>> {
 fn only_here(entry: &Trashed, reading: &Reading) -> Result<Option<Finding>> {
     let input = assess::Input {
         work: assess::Work(entry.snapshot.as_deref()),
-        ..assess::Input::refusal(&entry.path, Some(&reading.checkout), &reading.siblings)
+        // No declaration to read. The loss set below carries the commits and no path
+        // group at all, so how the untracked paths of a trashed home would group is a
+        // question nothing here asks.
+        ..assess::Input::refusal(&entry.path, Some(&reading.checkout), &reading.siblings, &[])
     };
     let assessment = assess::assess(&input)?;
     let commits = LossSet {

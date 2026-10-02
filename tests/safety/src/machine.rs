@@ -443,6 +443,22 @@ impl Machine {
         Some(Self::built(&Setup { node: Some(lock_name), host_npm: true, ..Setup::default() }))
     }
 
+    /// A machine whose project names `invalidate` paths: paths whose content records
+    /// the directory it was made in, and which the project therefore calls regenerable.
+    ///
+    /// What the declaration is for is the copy a create makes, which removes such a
+    /// directory rather than trusting it at a new path. What a property here is about is
+    /// the other reader of the same paths: the gate, which reads Git's ignore rules and
+    /// keeps an untracked file under one of them.
+    ///
+    /// # Panics
+    ///
+    /// As [`Machine::tracking`].
+    #[must_use]
+    pub fn invalidating(invalidate: &[&str]) -> Self {
+        Self::built(&Setup { invalidate, ..Setup::default() })
+    }
+
     /// A machine whose checkout has a bare `origin` beside it, with `main` pushed to it.
     ///
     /// Every base of this project is a clone of that bare repository, so every home
@@ -495,8 +511,8 @@ impl Machine {
             shadow_tools(&tools);
         }
 
-        if !setup.exclude.is_empty() {
-            write_exclude(&source, setup.exclude);
+        if !setup.exclude.is_empty() || !setup.invalidate.is_empty() {
+            write_base(&source, setup.exclude, setup.invalidate);
         }
         if let Some(pin) = setup.pin.as_deref() {
             write_pin(&source, pin);
@@ -706,6 +722,10 @@ struct Setup<'a> {
     forced: &'a [&'a str],
     /// Paths written into the project's own `base.exclude`.
     exclude: &'a [&'a str],
+    /// Paths written into the project's own `base.invalidate`: the paths it declares
+    /// record the directory they were made in, and so are regenerable by its own
+    /// statement.
+    invalidate: &'a [&'a str],
     /// The stub package manager's script, when it is not the plain one.
     stub: Option<&'a str>,
     /// The version the stub answers `--version` with. The fixture's own pin unless the
@@ -766,12 +786,18 @@ fn write_npm_project(root: &Path, lock_name: &str) -> PathBuf {
 }
 
 /// Add a `base.exclude` table to the fixture's own recipe, as a person would write it.
-fn write_exclude(source: &Path, exclude: &[&str]) {
+fn write_base(source: &Path, exclude: &[&str], invalidate: &[&str]) {
     let path = source.join(nodal_fixture::RECIPE);
     let recipe = std::fs::read_to_string(&path).expect("the fixture has a recipe");
-    let rows: Vec<String> = exclude.iter().map(|path| format!("\"{path}\"")).collect();
-    let written = format!("{recipe}\n[base]\nexclude = [{rows}]\n", rows = rows.join(", "));
-    std::fs::write(&path, written).expect("the recipe is written");
+    let keyed = |key: &str, paths: &[&str]| -> Option<String> {
+        let rows: Vec<String> = paths.iter().map(|path| format!("\"{path}\"")).collect();
+        (!rows.is_empty()).then(|| format!("{key} = [{rows}]", rows = rows.join(", ")))
+    };
+    let mut lines = vec![recipe, String::from("[base]")];
+    lines.extend(keyed("exclude", exclude));
+    lines.extend(keyed("invalidate", invalidate));
+    lines.push(String::new());
+    std::fs::write(&path, lines.join("\n")).expect("the recipe is written");
 }
 
 /// Add a package-manager pin to the fixture's own recipe, as a manifest would carry it.

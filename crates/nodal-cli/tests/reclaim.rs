@@ -509,6 +509,53 @@ fn a_commit_a_remote_tip_holds_the_tree_of_is_named_and_still_refused() {
     );
 }
 
+/// A commit that is its own tip raises no content row at all.
+///
+/// A home carries its own record of its own pushes, so the refs the tree is matched against
+/// include ones that name the very commit being judged. Matched against itself, the row
+/// fired on one identifier and then said two things that were not so: that the content was
+/// under a *different* id, and that the commit was still only here — about a commit the ref
+/// it had just named holds.
+///
+/// So the row is about a rewrite, and a history is not a rewrite of itself: `commit` and
+/// `tip` are two distinct identifiers or there is no row. The verdict is unaffected either
+/// way, which is why nothing failed over it; what was wrong was every word of the sentence.
+#[test]
+fn a_commit_that_is_its_own_remote_tip_raises_no_content_row() {
+    let workspace = workspace();
+    drop(stdout(&workspace.nodal(&["new", "--name", "worker-import"])));
+    let (_, home) = workspace.one_unit_and_home();
+    std::fs::write(home.join("app").join("main.txt"), "the work, pushed\n").unwrap();
+    drop(git(&home, &["config", "user.email", "unit@example.invalid"]));
+    drop(git(&home, &["config", "user.name", "Test"]));
+    drop(git(&home, &["add", "-A"]));
+    drop(git(&home, &["commit", "-qm", "the work this home pushed"]));
+    let commit = git(&home, &["rev-parse", "HEAD"]).trim().to_owned();
+
+    // The home's own record of its own push: the ref names the commit, not a rewrite of it.
+    let reference = "refs/nodal/origin/nodal/worker-import";
+    drop(git(&home, &["update-ref", reference, &commit]));
+
+    let document: serde_json::Value = serde_json::from_str(&answer(&workspace.nodal(&[
+        "reclaim",
+        "worker-import",
+        "--check",
+        "--json",
+    ])))
+    .unwrap();
+    let rows = document["content"].as_array().expect("the report carries the content rows");
+    assert!(rows.is_empty(), "a commit raised a content row against itself: {document}");
+
+    let report = answer(&workspace.nodal(&["reclaim", "worker-import", "--check"]));
+    assert!(!report.contains("same content as"), "the sentence is printed anyway: {report}");
+    assert!(!report.contains("under a different id"), "{report}");
+
+    // And every row there is names two identifiers, which is the invariant behind it.
+    for row in rows {
+        assert_ne!(row["commit"], row["tip"], "a content row names one id twice: {document}");
+    }
+}
+
 /// A sibling that names a commit without holding it proves nothing.
 ///
 /// This is the invariant the reading rests on: a refusal is weakened by an object in a

@@ -164,6 +164,10 @@ const SNAPSHOT_MESSAGE: &str = "nodal: work in progress at reclaim";
 
 /// What a person asked `nodal reclaim` for.
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a flag is a bool, and this is the list of the command's flags"
+)]
 pub struct Request {
     /// The unit's handle, or nothing to mean the unit the working directory is in.
     pub target: Option<String>,
@@ -176,6 +180,10 @@ pub struct Request {
     /// adopted in place. `--prune`, and never a default: the directory is the person's
     /// own and a reclaim of it otherwise removes nothing from it.
     pub prune: bool,
+    /// Whether to take the unit's write from the actor who holds it, and record the
+    /// hand-off. `--take`, and the only way past a live holder
+    /// ([`crate::runtime::lock`]).
+    pub take: bool,
     /// Where the command was run, which decides the unit when no target was given.
     pub cwd: PathBuf,
 }
@@ -362,6 +370,12 @@ fn read(
         // repositories beside the project's checkout, proved by their own object stores
         // and never by a name.
         siblings: &crate::doctor::scan::siblings(&project.root),
+        // The project's own declaration about which of its paths are regenerable, which
+        // splits the untracked group's sentence in two and changes no disposition. Read
+        // here rather than asked for, because the preflight reads nothing else of the
+        // recipe and a reading of one file is what it costs
+        // ([`assess::Input::declared`]).
+        declared: &recipe_of(&project.root).base.invalidate,
         // What a reclaim does with this home, which decides what the report says becomes
         // of the paths in it. Read from the registry row, not guessed from the path.
         fate: assess::Fate::of(environment.managed),
@@ -1133,10 +1147,17 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
     let unit =
         crate::runtime::entry::unit_named(store.conn(), request.target.as_deref(), &request.cwd)?;
     let environment = latest(store.conn(), &unit)?;
+    // The write on the home, before the home is read and therefore before anything here
+    // writes. A reclaim enters a home and removes it, which is the one entry a second
+    // writer can never be told about afterwards, so it asks the lock first and for the
+    // same reason `run` does ([`crate::runtime::lock::claim`]). A home the registry
+    // names that is not on the disk carries no marker and answers no unit, so there is
+    // no hold to ask about and the reclaim of it goes on.
+    crate::runtime::lock::claim(store.conn(), &environment.home, request.take, Timestamp::now())?;
     let project = project_of(store.conn(), &unit)?;
     let placed = placement(&environment)?;
     let recipe = recipe_of(&project.root);
-    let examined = examine(&placed, &project.root, &unit, request.force)?;
+    let examined = examine(&placed, &project.root, &unit, request.force, &recipe.base.invalidate)?;
     let mut reading = examined.reading;
     // The reading above is about the work in the home and never asks the process table,
     // so the record it carries says the table was not read. This reclaim does read it, a
@@ -1263,7 +1284,13 @@ struct Examined {
 /// [`crate::lifecycle::kernel::Proof`] this crate can make, and the row the trash keeps is
 /// that proof's own record — so nothing can write a row that says safe over a reading that
 /// did not.
-fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Result<Examined> {
+fn examine(
+    placed: &Placement,
+    source: &Path,
+    unit: &Unit,
+    force: bool,
+    declared: &[PathBuf],
+) -> Result<Examined> {
     let Some(home) = placed.path() else {
         // Nothing was read, because there is nothing there to read. An empty record
         // would say the same bytes as a reading that looked and found nothing, which is
@@ -1278,7 +1305,7 @@ fn examine(placed: &Placement, source: &Path, unit: &Unit, force: bool) -> Resul
     };
     let checkout = Checkout::read(source);
     let siblings = crate::doctor::scan::siblings(source);
-    let refusal = assess::Input::refusal(home, Some(&checkout), &siblings);
+    let refusal = assess::Input::refusal(home, Some(&checkout), &siblings, declared);
     let assessment = assess::assess(&assess::Input { dispositions: true, ..refusal })?;
     // The kernel decides, and the record rides along. `evidence` says what was read;
     // nothing in it chooses an arm, and the arm below is the kernel's alone.
