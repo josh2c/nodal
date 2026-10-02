@@ -58,6 +58,7 @@
 //! | a process this account cannot read, started from inside the home, blocks | `an_unreadable_process_whose_lineage_reaches_the_home_blocks_the_move_at_the_seam` |
 //! | and one whose lineage reaches nothing here is counted, not hidden | `an_unreadable_process_unrelated_to_the_home_is_counted_and_refuses_nothing_at_the_seam` |
 //! | sharing a terminal with a shell in the home is not occupancy | `an_unreadable_process_sharing_only_a_session_with_the_home_refuses_nothing_at_the_seam` |
+//! | the list's word is the gate's word | `the_list_and_the_gate_name_one_reason_over_one_home` |
 //! | it changes nothing | `the_check_changes_nothing_and_runs_no_hook` |
 //! | one value, two renderings | `the_human_form_and_the_json_are_one_value` |
 //! | it is not a way to force anything | `check_refuses_force_and_yes` |
@@ -913,6 +914,62 @@ fn needs(machine: &Machine, slug: &str) -> String {
         .as_str()
         .unwrap_or("absent")
         .to_owned()
+}
+
+/// The top reason the gate gives for this home, which is the word `--check` prints first.
+fn gate(machine: &Machine, slug: &str) -> String {
+    let answer = check(machine, slug);
+    answer["reasons"][0]["needs"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the gate gave no reason: {answer:#}"))
+        .to_owned()
+}
+
+/// `nodal ls` and `nodal reclaim --check` answer with one [`nodal_core::model::Needs`],
+/// and over a home the gate refuses they answer the same word.
+///
+/// The column is the surface a person reads to decide which unit to end, and the two
+/// commands are meant to be one vocabulary: the enum lives in `model/` for that reason and
+/// says so in its own words. What they had was two answers over one home. A home holding
+/// commits on no remote read `review` in the list — the word for work that is finished —
+/// while the gate refused it as work that may exist only there, and `review` is the
+/// lower-ranked of the two, so the list was the reassuring one.
+///
+/// Two homes, and they are the gate's two refusing readings about commits:
+///
+/// * commits nothing here puts anywhere else, with the remote read: `unique loss` in both.
+/// * commits pushed, with nothing here having read the remote since: `unknown` in both.
+///
+/// The list is allowed to rank *higher* than the gate and never lower — it pays for a
+/// `git status` and two `stat` calls and the gate pays for `rev-list` — so what is asserted
+/// is the word, in the direction a person is misled by.
+#[test]
+fn the_list_and_the_gate_name_one_reason_over_one_home() {
+    let machine = machine();
+    let unpushed = machine.unit(SLUG);
+    std::fs::write(unpushed.join(ONLY), "the only copy\n").unwrap();
+    git(&unpushed, &["add", "--all"]);
+    git(&unpushed, &["commit", "--quiet", "--message", "work only this home has"]);
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+
+    assert_eq!(gate(&machine, SLUG), "unique_loss", "the gate changed its mind");
+    assert_eq!(
+        needs(&machine, SLUG),
+        "unique_loss",
+        "the list reports commits the gate refuses over under another word",
+    );
+
+    // The second home: pushed, so it carries its own record of the remote, and nothing
+    // here has read the remote since. The gate cannot say where the commit is and neither
+    // can the column.
+    let (pushed_home, _) = pushed(&machine, NEIGHBOUR);
+    assert_eq!(gate(&machine, NEIGHBOUR), "unknown_evidence", "the gate changed its mind");
+    assert_eq!(
+        needs(&machine, NEIGHBOUR),
+        "unknown_evidence",
+        "the list reports a reading the gate could not take under another word",
+    );
+    assert!(unpushed.is_dir() && pushed_home.is_dir(), "a pair of readings moved a home");
 }
 
 /// A unit with one process carrying its identifier.
