@@ -59,6 +59,7 @@
 //! | and one whose lineage reaches nothing here is counted, not hidden | `an_unreadable_process_unrelated_to_the_home_is_counted_and_refuses_nothing_at_the_seam` |
 //! | sharing a terminal with a shell in the home is not occupancy | `an_unreadable_process_sharing_only_a_session_with_the_home_refuses_nothing_at_the_seam` |
 //! | the list's word is the gate's word | `the_list_and_the_gate_name_one_reason_over_one_home` |
+//! | a declared path is kept, and the sentence says the gate did not act on the declaration | `an_untracked_path_the_project_declares_regenerable_is_kept_and_the_reason_says_so` |
 //! | it changes nothing | `the_check_changes_nothing_and_runs_no_hook` |
 //! | one value, two renderings | `the_human_form_and_the_json_are_one_value` |
 //! | it is not a way to force anything | `check_refuses_force_and_yes` |
@@ -95,6 +96,10 @@ const TRACKED: &str = "apps/web/app/page.tsx";
 
 /// The branch a home pushes its work to, as a review branch on the remote.
 const TOPIC: &str = "topic";
+
+/// A path the project's `[base] invalidate` names: its content records the directory it
+/// was made in, which is what a `__pycache__` holds.
+const DECLARED: &str = "api/__pycache__";
 
 /// The branch the checkout is left holding an object it cannot read on.
 const DAMAGED: &str = "damaged";
@@ -970,6 +975,42 @@ fn the_list_and_the_gate_name_one_reason_over_one_home() {
         "the list reports a reading the gate could not take under another word",
     );
     assert!(unpushed.is_dir() && pushed_home.is_dir(), "a pair of readings moved a home");
+}
+
+/// A path the project's `[base] invalidate` declares regenerable is kept exactly as any
+/// other untracked path is, and the reason line says the declaration was read and not
+/// acted on.
+///
+/// Two tables answer one question about one path. The project's says the content records
+/// the directory it was made in, which is a statement that a tool writes it again; the
+/// gate reads Git's ignore rules, under which the path is simply untracked. The
+/// conservative answer is the right default and it is the one that decides — a project
+/// cannot make this gate give up a file by declaring it — but a person who has written the
+/// declaration and is then refused over the path has been told the opposite of what they
+/// wrote, and is owed the sentence that says which reading they are looking at.
+#[test]
+fn an_untracked_path_the_project_declares_regenerable_is_kept_and_the_reason_says_so() {
+    let machine = Machine::invalidating(&[DECLARED]).with_env(ONLY_LOCAL).with_env(NO_PROXY);
+    let home = machine.unit(SLUG);
+    let cache = home.join(DECLARED);
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("main.cpython-312.pyc"), "bytes a tool wrote\n").unwrap();
+
+    let answer = check(&machine, SLUG);
+    assert_eq!(answer["safe_to_reclaim"], Value::Bool(false), "a declared path let it go");
+    let group = paths(&answer, "untracked_declared")
+        .unwrap_or_else(|| panic!("no group for the declared path: {answer:#}"));
+    assert_eq!(group["disposition"], Value::from("must_survive"), "{answer:#}");
+    let why = group["why"].as_str().unwrap();
+    assert!(
+        why.contains("declares this path regenerable")
+            && why.contains("does not act on that declaration"),
+        "the reason line does not say which reading refused: {why}",
+    );
+
+    // And the refusal itself is the one refusal it always was, over the one count.
+    reclaim_also_refuses(&machine, SLUG, "untracked files (1)");
+    assert!(home.is_dir(), "the pair of readings moved the home");
 }
 
 /// A unit with one process carrying its identifier.

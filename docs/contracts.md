@@ -1489,10 +1489,19 @@ table says which are regenerable.
 | what it holds | disposition | what a reclaim does |
 |---|---|---|
 | uncommitted changes, untracked files | `must_survive` | refuses |
+| untracked files under a path `base.invalidate` names | `must_survive` | refuses, and the reason says why |
 | ignored state no tool writes again | `must_survive` | trashes it; `nodal gc` is what takes it |
 | build output and installed dependencies | `reconstructable` | drops it from the trashed copy |
 
-Only the first refuses, and what makes that safe is the retention. A reclaim **moves** a home
+The second row is the first row with one sentence added. `base.invalidate` is a statement by the
+project that a path's content records the directory it was made in, which is a statement that a tool
+writes it again; this gate reads Git's ignore rules and nothing else, under which such a file is simply
+untracked. The two readings answer differently about one path, the conservative one decides, and a
+project cannot make the gate give up a file by declaring the path. What the row adds is that the
+reason line says so, rather than leaving a person who wrote the declaration to find both tables and
+compare them.
+
+Only the first two refuse, and what makes that safe is the retention. A reclaim **moves** a home
 to `<state>/<project>/trash/<id>` and `nodal gc` removes it once `reclaim.trash_retention` days
 have passed — fourteen by default, stamped on the trash row at the moment of the move, so a
 recipe edited later cannot shorten it. Ignored state no tool writes again is therefore still
