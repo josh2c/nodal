@@ -347,6 +347,14 @@ pub struct Input<'a> {
     pub fate: Fate,
     /// Whether to classify the ignored state the home holds.
     pub state: bool,
+    /// The project's `[base] invalidate`: the paths it declares regenerable.
+    ///
+    /// It splits the untracked paths into two groups with one disposition, so that a
+    /// person reading the refusal over such a path is told that the project's own table
+    /// says something else about it and that this gate does not act on that
+    /// ([`regenerable`]). An empty slice is the reading of a project with no such
+    /// declaration, and of a caller that has no recipe to hand.
+    pub declared: &'a [PathBuf],
     /// Whether to say where else each commit lives, rather than only which commits
     /// nothing proved live anywhere else.
     ///
@@ -387,6 +395,7 @@ impl<'a> Input<'a> {
         home: &'a Path,
         checkout: Option<&'a Checkout>,
         siblings: &'a [PathBuf],
+        declared: &'a [PathBuf],
     ) -> Self {
         Self {
             home,
@@ -396,6 +405,7 @@ impl<'a> Input<'a> {
             fate: Fate::Trashed,
             state: false,
             dispositions: false,
+            declared,
             runtime: None,
         }
     }
@@ -671,6 +681,16 @@ pub enum Held {
     Uncommitted,
     /// Paths Git does not track and no ignore rule covers.
     Untracked,
+    /// The same, under a path the project's `[base] invalidate` names.
+    ///
+    /// One disposition and two sentences. The project's own table says the content of
+    /// such a path records the directory it was made in, which is a statement that the
+    /// path is regenerable; the gate reads Git's ignore rules and nothing else, so an
+    /// untracked file under it is kept exactly as any other untracked file is. Both
+    /// readings are about the same path and they answer differently, and the conservative
+    /// one is the one that decides. What this variant adds is that the person is told so
+    /// rather than left to find the two tables and compare them.
+    UntrackedDeclared,
     /// Ignored state no tool writes again: a local database, an `.env.local`.
     LocalState,
     /// Ignored state the exclusion table calls regenerable.
@@ -682,7 +702,9 @@ impl Held {
     #[must_use]
     pub const fn survival(self) -> Survival {
         match self {
-            Self::Uncommitted | Self::Untracked | Self::LocalState => Survival::MustSurvive,
+            Self::Uncommitted | Self::Untracked | Self::UntrackedDeclared | Self::LocalState => {
+                Survival::MustSurvive
+            }
             Self::Generated => Survival::Reconstructable,
         }
     }
@@ -693,6 +715,7 @@ impl Held {
         match self {
             Self::Uncommitted => "uncommitted changes",
             Self::Untracked => "untracked files",
+            Self::UntrackedDeclared => "untracked files the project calls regenerable",
             Self::LocalState => "local state no tool writes again",
             Self::Generated => "build output and installed dependencies",
         }
@@ -713,6 +736,11 @@ impl Held {
         match (self, fate) {
             (Self::Uncommitted, _) => "no commit holds it, so removing the home loses it",
             (Self::Untracked, _) => "git does not track it and no ignore rule covers it",
+            (Self::UntrackedDeclared, _) => {
+                "git does not track it and no ignore rule covers it; the project's base \
+                 table declares this path regenerable, and the gate does not act on that \
+                 declaration"
+            }
             (Self::LocalState, Fate::Trashed) => {
                 "an ignore rule covers it and no tool writes it again; the trash keeps it \
                  until nodal gc takes it"
@@ -740,7 +768,7 @@ impl Held {
     /// that ever held an `.env.local`.
     #[must_use]
     pub const fn refuses(self) -> bool {
-        matches!(self, Self::Uncommitted | Self::Untracked)
+        matches!(self, Self::Uncommitted | Self::Untracked | Self::UntrackedDeclared)
     }
 }
 
@@ -1547,14 +1575,30 @@ impl Assessment {
         findings.extend(self.path_finding(Held::Uncommitted, |count, sample| {
             Finding::Uncommitted { count, sample }
         }));
-        findings.extend(
-            self.path_finding(Held::Untracked, |count, sample| Finding::Untracked {
-                count,
-                sample,
-            }),
-        );
+        findings.extend(self.untracked());
         findings.extend(self.unpushed());
         findings
+    }
+
+    /// The one finding the untracked paths make, over both groups they come in.
+    ///
+    /// Two groups and one finding, because it is one refusal. A path the project declares
+    /// regenerable is kept for the reason any untracked path is kept, and the declaration
+    /// changes the sentence the preflight prints over the group and nothing else
+    /// ([`Held::UntrackedDeclared`]). A projection that read one group would have let a
+    /// home whose only untracked file was a declared one refuse nothing at all.
+    fn untracked(&self) -> Option<Finding> {
+        let groups: Vec<&PathGroup> = self
+            .paths
+            .iter()
+            .filter(|group| matches!(group.held, Held::Untracked | Held::UntrackedDeclared))
+            .collect();
+        let count: usize = groups.iter().map(|group| group.count).sum();
+        if count == 0 {
+            return None;
+        }
+        let sample = groups.iter().flat_map(|group| group.sample.iter().cloned()).take(SAMPLE);
+        Some(Finding::Untracked { count, sample: sample.collect() })
     }
 
     /// One finding over the paths of one kind, or nothing when the home holds none.
@@ -1615,7 +1659,7 @@ impl Assessment {
 pub fn assess(input: &Input<'_>) -> Result<Assessment> {
     let git = Git::open(input.home)?;
     let status = git.status()?;
-    let mut paths = working(&status, input.fate);
+    let mut paths = working(&status, input.fate, input.declared);
     let mut notes = Vec::new();
     if input.state {
         paths.extend(ignored(input.home, input.fate, &mut notes));
@@ -1724,19 +1768,44 @@ pub mod taken {
 // The working tree.
 // ---------------------------------------------------------------------------
 
-/// The paths of the working tree that carry work, in the two kinds they come in.
+/// The paths of the working tree that carry work, in the kinds they come in.
 ///
 /// Visible to the kernel, which is where [`kernel::loss_set`] reads the loss set of a
 /// directory for a caller that holds no assessment. One reader of a `git status`, so the
-/// two entries cannot group one status two ways.
-pub(crate) fn working(status: &Summary, fate: Fate) -> Vec<PathGroup> {
+/// entries cannot group one status two ways.
+///
+/// `declared` is the project's `[base] invalidate`, which splits the untracked paths into
+/// two groups with one disposition ([`regenerable`]). An empty slice is a caller that has
+/// no recipe to read, and every untracked path is then simply untracked.
+pub(crate) fn working(status: &Summary, fate: Fate, declared: &[PathBuf]) -> Vec<PathGroup> {
     let tracked =
         paths_where(status, |entry| matches!(entry.state, State::Tracked { .. } | State::Unmerged));
-    let untracked = paths_where(status, |entry| entry.state == State::Untracked);
-    [group(Held::Uncommitted, fate, tracked), group(Held::Untracked, fate, untracked)]
-        .into_iter()
-        .flatten()
-        .collect()
+    let (named, untracked): (Vec<PathBuf>, Vec<PathBuf>) =
+        paths_where(status, |entry| entry.state == State::Untracked)
+            .into_iter()
+            .partition(|path| regenerable(path, declared));
+    [
+        group(Held::Uncommitted, fate, tracked),
+        group(Held::Untracked, fate, untracked),
+        group(Held::UntrackedDeclared, fate, named),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Whether `path`, or a directory above it, is one the project's `[base] invalidate`
+/// declares.
+///
+/// Matched where it sits and not only at the root, which is how the same table is read
+/// everywhere else ([`crate::model::BaseSpec::invalidate`]): a repository of several
+/// packages keeps one such directory under each of them.
+///
+/// It changes a sentence and never a disposition. Both groups this splits are
+/// [`Survival::MustSurvive`] and both [`Held::refuses`], so a project that declares a path
+/// cannot make the gate give up a file by declaring it.
+fn regenerable(path: &Path, declared: &[PathBuf]) -> bool {
+    path.ancestors().any(|above| declared.iter().any(|named| above.ends_with(named)))
 }
 
 /// One group over a list of paths, or nothing when the list is empty.
