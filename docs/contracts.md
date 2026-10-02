@@ -848,15 +848,23 @@ asks nothing when a shell ends.
 Sessions are derived, not declared: a process carrying `NODAL_ID` is attached to that unit, and a
 session ends when the process is gone. Nothing has to be run on entry or on exit.
 
-Each of those five verbs takes the unit's write lock before it does its own work. See Locks.
+Each of those five verbs takes the unit's write lock before it does its own work, and so does
+`nodal reclaim`. See Locks.
 
 ## Locks
 One actor writes a unit's home at a time. The registry holds one lock row per unit. The row names the
 host, the actor, the process that took the hold, when it began and when an entry last touched it.
 
-`nodal cd`, `shell`, `run`, `new` and `adopt` take the hold or refresh it. A second actor running one
-of those in a held home is refused. The message names the holder, says how long they have held it, and
-says `--take`. Every one of those verbs accepts `--take`.
+`nodal cd`, `shell`, `run`, `new`, `adopt` and `reclaim` take the hold or refresh it. A second actor
+running one of those in a held home is refused. The message names the holder, says how long they have
+held it, and says `--take`. Every one of those verbs accepts `--take`.
+
+`nodal reclaim` is on that list because it enters a home and then takes it away. It asks before it
+reads the home, so a refused reclaim has moved nothing, written nothing and claimed nothing; every
+other refusal leaves the home where its holder can go and look, and this one would not.
+`nodal reclaim --check` takes no hold and refuses nobody: it is a read verb and it accepts no `--take`.
+`nodal gc` takes none either, and that is not a gap in the list — it acts on homes that are already in
+the trash, which no lock row names.
 
 The lock is advisory. It refuses Nodal's own write verbs and stops nothing else. An editor opens in a
 held home. `git` runs in it. A process starts in it. A second actor is told, not blocked.
@@ -885,8 +893,8 @@ the hold moved.
 `--take` moves a hold that has not lapsed. It writes a `handoff` event on the unit naming who it came
 from and who it went to. Nothing else moves a live hold.
 
-A reclaim releases the unit's hold. This host releases only its own; a hold another machine took is
-that machine's to release.
+A reclaim releases the unit's hold, which it took or refreshed on the way in. This host releases only
+its own; a hold another machine took is that machine's to release.
 
 A hold is an actor and a lineage. An actor name alone is not a writer: every agent of a fleet reports
 as `claude-code`, so the name matched itself and a second agent entered a home the first one held,

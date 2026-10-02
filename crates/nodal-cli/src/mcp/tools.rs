@@ -113,6 +113,9 @@ fn reading() -> Vec<Tool> {
                     force: false,
                     json: true,
                     yes: false,
+                    // The tool surface asks and never claims. `--check` takes no hold,
+                    // so there is none here to take from anybody.
+                    take: false,
                 };
                 let request = command.request(!cli.no_hooks);
                 let (answer, _) = Reclaim::checked(&store(cli)?, &request, Format::Json)

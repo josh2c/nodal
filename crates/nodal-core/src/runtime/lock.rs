@@ -10,6 +10,15 @@
 //! where "is anybody else in this unit" has to be answered, so the answer is written
 //! down rather than observed. A lock row is that record.
 //!
+//! **Which verbs ask, and the one that removes a home.** `cd`, `shell`, `run`, `new`,
+//! `adopt` and `reclaim` ask [`claim`] before they do anything. `reclaim` is on that list
+//! because it enters a home and then takes it away, which is the entry a second writer
+//! can never be told about afterwards: every other refusal leaves the home where a person
+//! can go and look. It asks before the home is read, so a refused reclaim has moved
+//! nothing and written nothing, and `--take` is the one way past a live holder, as it is
+//! for the rest. `gc` is not on the list and is not a gap in it: it acts on homes that
+//! have already been trashed, which no lock row names.
+//!
 //! **The hold is advisory.** Nodal refuses its own write verbs to a second actor and
 //! stops nothing else. An editor opens in the home, `git` runs in it, and a process
 //! starts there, exactly as before. What the lock prevents is two writers driving one
@@ -424,9 +433,11 @@ pub fn open(conn: &Connection, unit: UnitId, idle_hours: u32, now: Timestamp) ->
 
 /// Take or refresh the write on the home at `home`, refusing a second actor.
 ///
-/// This is what the write verbs call: `cd`, `shell`, `run`, `new` and `adopt`. A
-/// directory the registry holds no unit for answers `None` and is entered as before,
-/// because there is no unit for a hold to be about.
+/// This is what the write verbs call: `cd`, `shell`, `run`, `new`, `adopt` and `reclaim`.
+/// A directory the registry holds no unit for answers `None` and is entered as before,
+/// because there is no unit for a hold to be about. So is a home the registry names that
+/// is not on the disk: it carries no marker, and a reclaim of it has no writer to
+/// displace.
 ///
 /// # Errors
 /// As [`enter`].

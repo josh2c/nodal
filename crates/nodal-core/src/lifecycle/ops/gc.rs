@@ -319,6 +319,10 @@ fn retire(
             // Never. An idle unit is retired without a person present, and the build
             // output of a checkout somebody adopted is theirs to give up.
             prune: false,
+            // Never, for the same reason. A hold is the record that somebody is working
+            // in the home, and a sweep that ran while they were is the one reader of it
+            // with nobody there to be told. A held unit is left, and the row says so.
+            take: false,
             cwd: project.root.clone(),
         };
         match reclaim::reclaim(store, &request) {

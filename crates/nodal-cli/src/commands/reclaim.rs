@@ -2,8 +2,15 @@
 //!
 //! `--check` is the same command asked what it would do. It performs no part of a
 //! reclaim: no hook, no signal, no container action, no port release, no snapshot, no
-//! trash move, no registry write and no remote. It prints the reading and stops, and its
-//! exit code is the verdict, so a script can gate on it without parsing anything.
+//! trash move, no registry write, no remote — and no claim on the unit's write, which is
+//! a registry write like any other and is the one thing on that list a person would
+//! notice from another session. It prints the reading and stops, and its exit code is the
+//! verdict, so a script can gate on it without parsing anything.
+//!
+//! A reclaim itself asks for that write first. It enters a home and then removes it, so a
+//! second actor's reclaim of a home somebody holds is refused in the words
+//! `nodal run` is refused in, and `--take` is the way through
+//! ([`nodal_core::runtime::lock`]).
 //!
 //! It refuses `--force` and `--yes` for the reason it exists. Both of those are answers
 //! to a question a person has already asked, and a command that both describes what
@@ -42,7 +49,7 @@ pub struct Reclaim {
     /// repositories beside it, two directory levels under its parent. It is not this
     /// host: `nodal ps` reads the host, and these are two scopes and now two phrases. A
     /// copy counts only where that repository's own object store holds the commit.
-    #[arg(long, conflicts_with_all = ["force", "yes", "prune"])]
+    #[arg(long, conflicts_with_all = ["force", "yes", "prune", "take"])]
     pub check: bool,
 
     /// Reclaim a unit whose home holds work that exists nowhere else, or whose home
@@ -73,6 +80,14 @@ pub struct Reclaim {
     #[arg(short = 'y', long)]
     pub yes: bool,
 
+    /// Take the write lock from the actor who holds it, and record the hand-off.
+    ///
+    /// A reclaim enters a home and removes it, so a second actor's reclaim of a home
+    /// somebody holds is refused exactly as their `nodal run` is. This is the way
+    /// through, and it is the only one.
+    #[arg(long)]
+    pub take: bool,
+
     /// Print the result as JSON.
     #[arg(long)]
     pub json: bool,
@@ -97,10 +112,10 @@ impl Reclaim {
     ///
     /// # Errors
     ///
-    /// Propagates a home that holds work that is only there, a home something Nodal
-    /// did not start is standing in, a unit that was reclaimed already, a hook this
-    /// machine has not approved, and whatever Git, the filesystem or the registry
-    /// reported.
+    /// Propagates a home another actor holds the write on, a home that holds work that
+    /// is only there, a home something Nodal did not start is standing in, a unit that
+    /// was reclaimed already, a hook this machine has not approved, and whatever Git,
+    /// the filesystem or the registry reported.
     pub fn run(&self, store: &mut Store, hooks: bool) -> nodal_core::Result<ExitCode> {
         let request = self.request(hooks);
         if self.check {
@@ -201,6 +216,7 @@ impl Reclaim {
             force: self.force,
             hooks,
             prune: self.prune,
+            take: self.take,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
