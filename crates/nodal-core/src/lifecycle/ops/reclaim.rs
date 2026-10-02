@@ -164,6 +164,10 @@ const SNAPSHOT_MESSAGE: &str = "nodal: work in progress at reclaim";
 
 /// What a person asked `nodal reclaim` for.
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a flag is a bool, and this is the list of the command's flags"
+)]
 pub struct Request {
     /// The unit's handle, or nothing to mean the unit the working directory is in.
     pub target: Option<String>,
@@ -176,6 +180,10 @@ pub struct Request {
     /// adopted in place. `--prune`, and never a default: the directory is the person's
     /// own and a reclaim of it otherwise removes nothing from it.
     pub prune: bool,
+    /// Whether to take the unit's write from the actor who holds it, and record the
+    /// hand-off. `--take`, and the only way past a live holder
+    /// ([`crate::runtime::lock`]).
+    pub take: bool,
     /// Where the command was run, which decides the unit when no target was given.
     pub cwd: PathBuf,
 }
@@ -1133,6 +1141,13 @@ fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
     let unit =
         crate::runtime::entry::unit_named(store.conn(), request.target.as_deref(), &request.cwd)?;
     let environment = latest(store.conn(), &unit)?;
+    // The write on the home, before the home is read and therefore before anything here
+    // writes. A reclaim enters a home and removes it, which is the one entry a second
+    // writer can never be told about afterwards, so it asks the lock first and for the
+    // same reason `run` does ([`crate::runtime::lock::claim`]). A home the registry
+    // names that is not on the disk carries no marker and answers no unit, so there is
+    // no hold to ask about and the reclaim of it goes on.
+    crate::runtime::lock::claim(store.conn(), &environment.home, request.take, Timestamp::now())?;
     let project = project_of(store.conn(), &unit)?;
     let placed = placement(&environment)?;
     let recipe = recipe_of(&project.root);
