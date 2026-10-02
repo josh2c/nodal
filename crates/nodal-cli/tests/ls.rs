@@ -247,13 +247,19 @@ fn assert_squash_merge_is_done(row: &serde_json::Value) {
 /// A file written into one home is work no commit holds, which is the top of the
 /// ranking, and it is the row that changes. Every other row is unaffected, because the
 /// column is a fact about a unit and not about the run.
+///
+/// The unit written into is the one whose branch the base already holds. This project has
+/// no remote, so every unit with a commit of its own reads the top of the ranking before
+/// anything is written — the commits are on no remote and nowhere else, which is what
+/// `nodal reclaim --check` refuses over — and a row already at the top could not show that
+/// the write moved it there.
 #[test]
 fn the_needs_column_names_the_most_actionable_reason_for_each_unit() {
     let fixture = Fixture::new();
-    let subject = fixture.slugs().into_iter().next().unwrap();
+    let subject = String::from("follows-base-0");
     let before = fixture.needs(&subject);
     assert_ne!(before, "absent", "the column was not computed at all");
-    assert_ne!(before, "unique_loss", "the unit already holds uncommitted work");
+    assert_ne!(before, "unique_loss", "the unit already holds work that is only here");
 
     std::fs::write(fixture.home(&subject).join("scratch.txt"), "not committed\n").unwrap();
 

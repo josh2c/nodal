@@ -45,6 +45,14 @@
 //! `nodal reclaim --check` is where it is paid. The column points at the unit; the
 //! preflight answers about it.
 //!
+//! **The column may omit and must never rank lower than the kernel.** The two readings
+//! are not the same reading and the column is cheaper on purpose, so a unit the kernel
+//! calls safe may still read `diverged` or `review` here: those are reasons to open a
+//! unit and not claims about loss. What is a break is the other direction — a word less
+//! actionable than the verdict's, which tells a person a home is finished when the gate
+//! would refuse to remove it. The commit axis is where that happened, and
+//! [`unproved`] carries the rule and its boundary.
+//!
 //! **WHO is two readings, in this order.** The lock rows first, then the process table.
 //! The order is not a preference: the process table is `/proc`, which does not cross
 //! Linux accounts, so on a host two engineers share it cannot see the other person at
@@ -368,7 +376,11 @@ enum Standing {
 ///
 /// So the column is decided here, and the sentence that keeps it honest is the one above: it
 /// may omit, and it must never assert something it did not check. A reading it could not
-/// take answers [`Needs::UnknownEvidence`], never [`Needs::Nothing`].
+/// take answers [`Needs::UnknownEvidence`], never [`Needs::Nothing`]. And what it omits is
+/// always a *lower*-ranked reason than the kernel's: the three axes answer in the enum's
+/// own order, and the commit axis ([`unproved`]) is the one that may not be skipped,
+/// because the words below it in the ranking are the words for a unit that has nothing
+/// to lose.
 fn needs(work: Option<&Work>, standing: Standing, remote: Remote) -> Option<Needs> {
     // A home Git could not answer for has no ranking, and `Nothing` would be the wrong
     // answer rather than a cautious one. The top of the ranking is the working tree, so
@@ -383,8 +395,8 @@ fn needs(work: Option<&Work>, standing: Standing, remote: Remote) -> Option<Need
         Standing::Unread => return Some(Needs::UnknownEvidence),
         Standing::Clear => {}
     }
-    if stale(work, remote.exists, remote.current) {
-        return Some(Needs::UnknownEvidence);
+    if let Some(loss) = unproved(work, remote) {
+        return Some(loss);
     }
     if work.integration == Integration::Conflict || work.divergence.is_behind() {
         return Some(Needs::Diverged);
@@ -395,24 +407,55 @@ fn needs(work: Option<&Work>, standing: Standing, remote: Remote) -> Option<Need
     Some(Needs::Nothing)
 }
 
-/// Whether this unit has work whose remote evidence cannot be current.
+/// Why the branch's own commits need a person, when they do: what the list has read
+/// about where else they are.
 ///
-/// Three things have to hold. The unit is ahead of the base, so it has something to
-/// lose. The **project** has a remote, so there is a remote for this machine to be out of
-/// date about. And nothing here has read that remote since the home last wrote its own
-/// record of it — which is the reading a home makes when it pushes and never corrects
-/// afterwards ([`witness`]).
+/// The commit axis of the column, and the axis the list used to answer `review` on. A
+/// branch ahead of its base holds commits the base has not got, and the word for that is
+/// `review` only once something puts them somewhere besides this home. Nothing here had
+/// read that something, so a home whose commits were on no remote — the case
+/// `nodal reclaim --check` refuses over, and the case with the most to lose — was
+/// reported under the word for work that is finished. [`Needs`] is one enum because one
+/// word is meant to mean one thing in both places, and `review` where the gate says
+/// `unique loss` is the lower-ranked of the two.
 ///
-/// The middle one is about the project and not about the unit, and the difference is a
-/// whole class of unit. A branch nobody has pushed has no upstream at all, and reading
-/// that as "no remote question" would call it `review` while `nodal reclaim` refuses it:
-/// its commits are on no remote and nothing here proved otherwise. A unit with no
-/// upstream is the case with the most to lose, not the least.
+/// So the branch's commits answer here, in the order the readings cost nothing in:
+///
+/// * The project has no remote: there is nowhere for them to be. They are only here.
+/// * Nothing here read the remote since the home wrote its own record of it: the reading
+///   **cannot** be current, so what it holds is not evidence about this work
+///   ([`witness::read_since`]).
+/// * The reading is current, and the branch has no upstream this machine holds, or an
+///   upstream that does not hold every commit of it: nothing the list read puts them
+///   elsewhere, so they may be only here.
+///
+/// Anything else is a branch whose commits are on the upstream a current reading covered,
+/// and the ranking goes on to the base and the review.
+///
+/// # What this axis does not reach, and why
+///
+/// It answers over the branch, because a `git status` and two `stat` calls are the whole
+/// of what a row may cost (`ci/measure.sh`). A home can hold work on a ref the branch
+/// does not reach — a stash, a tag, a second branch — and finding those is a
+/// `git for-each-ref` and a `rev-list` per home, which is what `nodal reclaim --check`
+/// pays and this column does not. Such a home reads lower here than the gate answers
+/// about it. That is the column omitting, which it may; the direction it must never go is
+/// the other one, and the three readings above are what keep it out of it.
 ///
 /// A unit with nothing of its own is not marked, however old the reading is. There is
 /// nothing about it a stale ref could get wrong.
-const fn stale(work: &Work, has_remote: bool, current: bool) -> bool {
-    work.divergence.ahead > 0 && has_remote && !current
+fn unproved(work: &Work, remote: Remote) -> Option<Needs> {
+    if work.divergence.ahead == 0 {
+        return None;
+    }
+    if !remote.exists {
+        return Some(Needs::UniqueLoss);
+    }
+    if !remote.current {
+        return Some(Needs::UnknownEvidence);
+    }
+    let held = work.remote.as_ref().is_some_and(|upstream| upstream.divergence.ahead == 0);
+    (!held).then_some(Needs::UniqueLoss)
 }
 
 /// What the survey read of one home, as the list shows it.
@@ -686,24 +729,55 @@ mod tests {
     ///
     /// Reading it the other way put a never-pushed unit under `review` while `nodal
     /// reclaim` refuses it, which is the one direction this column must not be wrong in.
+    /// Neither reading of the remote rescues it: a stale one cannot be evidence, and a
+    /// current one names no upstream that holds these commits.
     #[test]
-    fn a_unit_that_was_never_pushed_is_unknown_and_not_review() {
+    fn a_unit_that_was_never_pushed_is_never_review() {
         let mut never_pushed = clean();
         never_pushed.remote = None;
         assert_eq!(
             needs(Some(&never_pushed), Standing::Clear, STALE),
             Some(Needs::UnknownEvidence)
         );
+        assert_eq!(needs(Some(&never_pushed), Standing::Clear, CURRENT), Some(Needs::UniqueLoss));
     }
 
-    /// A project with no remote at all has no remote reading to be stale, so the age of
-    /// one says nothing about it.
+    /// A project with no remote at all is the simplest case of all: there is nowhere for
+    /// the branch's commits to be, so they are only here, and the age of a reading that
+    /// does not exist says nothing about anything.
+    ///
+    /// This is the reading `nodal reclaim --check` makes of the same home — no remote to
+    /// ask, so the commits are `only here` — and the word the list prints is that word.
     #[test]
-    fn a_project_with_no_remote_is_never_marked_unknown() {
+    fn a_project_with_no_remote_holds_its_commits_and_nothing_else_does() {
         let mut work = clean();
         work.remote = None;
         let no_remote = Remote { exists: false, current: false };
-        assert_eq!(needs(Some(&work), Standing::Clear, no_remote), Some(Needs::Review));
+        assert_eq!(needs(Some(&work), Standing::Clear, no_remote), Some(Needs::UniqueLoss));
+
+        // And a unit with no commit of its own loses nothing by going, whatever the
+        // project has for a remote.
+        let mut quiet = work;
+        quiet.divergence.ahead = 0;
+        assert_eq!(needs(Some(&quiet), Standing::Clear, no_remote), Some(Needs::Nothing));
+    }
+
+    /// An upstream that does not hold every commit of the branch puts none of them
+    /// anywhere else, so the commits that are not on it may be only here.
+    ///
+    /// This is the branch somebody pushed and then committed to again. The ref proves the
+    /// commits it reaches and says nothing about the ones after them.
+    #[test]
+    fn an_upstream_the_branch_has_moved_past_is_not_a_copy_of_what_came_after() {
+        let mut moved_on = clean();
+        moved_on.remote = Some(Upstream {
+            upstream: String::from("origin/nodal/worker-import"),
+            divergence: Divergence { ahead: 2, behind: 0 },
+        });
+        assert_eq!(needs(Some(&moved_on), Standing::Clear, CURRENT), Some(Needs::UniqueLoss));
+
+        // The control: the same branch, with every commit of it on the upstream.
+        assert_eq!(needs(Some(&clean()), Standing::Clear, CURRENT), Some(Needs::Review));
     }
 
     /// Work the base already carries is a unit somebody should end, and it is the lowest
