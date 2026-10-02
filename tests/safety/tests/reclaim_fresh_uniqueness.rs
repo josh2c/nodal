@@ -33,6 +33,7 @@
 //! | a partial checkout witnesses nothing | `a_checkout_that_fetches_one_branch_witnesses_nothing` |
 //! | a name is not an object store | `a_ref_naming_a_commit_its_own_store_lost_vouches_for_nothing` |
 //! | a witness has to be the later reading | `a_checkout_that_has_not_read_the_remote_since_the_push_is_not_a_witness` |
+//! | the clause names the reading it saw | the two above, and `a_branch_the_last_fetch_did_not_see_is_not_proved_by_a_ref_it_left` |
 
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests fail by panicking")]
 
@@ -287,6 +288,10 @@ fn a_checkout_that_has_not_read_the_remote_since_the_push_is_not_a_witness() {
     assert!(told.contains("commits no current reading proves a remote has (1)"), "{told}");
     assert!(told.contains(TOPIC), "the refusal does not name the branch: {told}");
     assert!(told.contains("it is the older one"), "{told}");
+    assert!(
+        !told.contains("is the later one"),
+        "a reading taken before the push is described as the later one: {told}",
+    );
     intact(&machine, &home, &tip);
 }
 
@@ -330,6 +335,12 @@ fn merged_and_due(machine: &Machine, slug: &str) {
 /// saw, and a branch the remote dropped is not in it. That is a reading and not a gap: the
 /// fetch asked the remote for its branches and this was not one of them. So the commit is
 /// only here, whatever the tracking ref still names.
+///
+/// **And the clause says which reading it saw.** The refusal is the whole safety point and
+/// the reason a person is given has to be the one that happened. This reading was taken
+/// *after* the push; the account that called it the older reading named a cause that had
+/// not occurred, under an instruction — fetch and read again — that cannot change the
+/// answer while the stale ref stands. A fetch that prunes can, and that is what it says.
 #[test]
 fn a_branch_the_last_fetch_did_not_see_is_not_proved_by_a_ref_it_left() {
     let machine = machine();
@@ -349,6 +360,13 @@ fn a_branch_the_last_fetch_did_not_see_is_not_proved_by_a_ref_it_left() {
     let told = stderr(&refused);
     assert!(told.contains(&tip[..8]), "the refusal does not name the commit: {told}");
     assert!(told.contains("only here"), "the reading did not settle it: {told}");
+    assert!(told.contains(TOPIC), "the refusal does not name the branch: {told}");
+    assert!(told.contains("is the later one and does not name"), "the wrong cause: {told}");
+    assert!(told.contains("--prune"), "the instruction cannot change the answer: {told}");
+    assert!(
+        !told.contains("it is the older one"),
+        "a reading taken after the push is described as the older one: {told}",
+    );
     intact(&machine, &home, &tip);
 }
 

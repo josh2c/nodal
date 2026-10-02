@@ -132,19 +132,22 @@ pub enum Witness {
     Checked {
         /// The repositories whose reading was used.
         by: Vec<PathBuf>,
-        /// The branches that reading is older than, and so says nothing about.
+        /// The branches that reading says nothing about, each with which of the two
+        /// readings it was ([`Unobserved`]).
         ///
-        /// A reading covers the branches of a remote as they were when the fetch was made.
-        /// A branch this home wrote its own record of after that fetch is outside it: a
-        /// branch absent from such a reading is one that did not exist yet, and a branch
-        /// present in it stands at a commit from before the work. Either way the reading
-        /// answers for the remote and not for this work, so the branch is named and the
-        /// person is told what to run.
+        /// A reading covers the branches of a remote as they were when the fetch was
+        /// made, and there are two ways a branch falls outside it. The reading is the
+        /// older one, so it answers for a state of the branch from before this work. Or
+        /// the reading is the later one and does not name the branch at all, while the
+        /// checkout still tracks it, which is what a dropped branch and a prune-less
+        /// fetch leave. Either way the reading answers for the remote and not for this
+        /// work; what differs is what happened and therefore what to run next, so each
+        /// branch carries which it was.
         ///
         /// Defaulted on the way in, so that a finding written by an older Nodal reads as
         /// a reading with nothing to report rather than as a claim it never made.
         #[serde(default)]
-        unobserved: Vec<String>,
+        unobserved: Vec<Unobserved>,
     },
     /// The remote itself is on this machine and was read. A project with no remote of
     /// its own is cloned from the person's checkout, so the checkout is the remote, and
@@ -155,6 +158,92 @@ pub enum Witness {
     },
     /// The repository names no remote, so there is no remote question to answer.
     NoRemote,
+}
+
+/// One branch a reading of the remote says nothing about, and which reading it was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Unobserved {
+    /// The branch, as the home's own record of the remote names it.
+    pub branch: String,
+    /// Which of the two readings left it unanswered.
+    pub reading: Unread,
+}
+
+/// Why a reading of the remote answers for no state of one branch.
+///
+/// Two readings and not one, because they are two things that happened and the thing to
+/// do about them differs. One report gave the person the first account for the second
+/// case: a branch the remote had dropped was described as one this home recorded after
+/// the fetch, under an instruction — fetch and read again — that cannot change the
+/// answer while the stale ref stands.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unread {
+    /// The reading is not later than this home's own record of the branch. It answers for
+    /// a state of the branch from before the work, or from before the branch was there at
+    /// all, and a later reading settles it.
+    ///
+    /// The default, which is what a finding an older Nodal wrote says: that release
+    /// recorded the branch without recording which reading it was, and described this one.
+    #[default]
+    Older,
+    /// The reading is the later one and names the branch nowhere, while this checkout
+    /// still tracks it. The remote dropped the branch and the fetch did not prune, or the
+    /// fetch asked the remote about one branch by name and about this one asked nothing.
+    /// No record on this disk tells those two apart; a fetch that prunes settles both.
+    Unnamed,
+}
+
+impl Unread {
+    /// The clause this reading adds about the branches it left unanswered.
+    ///
+    /// It says what the reading did, and then what to run. The two instructions are
+    /// different instructions: a reading that is merely older is corrected by a newer one,
+    /// and a reading that does not name a branch the checkout still tracks is not — the
+    /// stale ref is what keeps the question open, and only a fetch that prunes removes it.
+    fn about(self, branches: &str) -> String {
+        match self {
+            Self::Older => format!(
+                "that reading was taken before this home wrote its own record of \
+                 {branches}, so for those branches it is the older one; fetch in the \
+                 checkout and read again"
+            ),
+            Self::Unnamed => format!(
+                "that reading is the later one and does not name {branches} at all, while \
+                 this checkout still tracks the branch, so what the remote has now is not \
+                 known: the remote may have dropped it, or the fetch may have asked about \
+                 one branch by name. Fetch with --prune in the checkout and read again"
+            ),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Unobserved {
+    /// Reads the row this writes, and the bare branch name an older Nodal wrote.
+    ///
+    /// A finding reaches a deserializer from the journal of a reclaim that was
+    /// interrupted, so a run the release before this one started has to be finishable by
+    /// this one. That release recorded the branch alone, and [`Unread::Older`] is the
+    /// reading it described.
+    fn deserialize<D: serde::Deserializer<'de>>(from: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Form {
+            /// What an older Nodal wrote: the branch, and no reading.
+            Named(String),
+            /// What this one writes.
+            Row {
+                branch: String,
+                #[serde(default)]
+                reading: Unread,
+            },
+        }
+
+        Ok(match Form::deserialize(from)? {
+            Form::Named(branch) => Self { branch, reading: Unread::Older },
+            Form::Row { branch, reading } => Self { branch, reading },
+        })
+    }
 }
 
 /// What a refusal adds when nothing on this machine could check the home's own refs.
@@ -177,19 +266,15 @@ impl Witness {
         match self {
             Self::NoRemote | Self::Direct { .. } => None,
             Self::Checked { by, unobserved } => {
-                let read = format!(
+                let mut clause = format!(
                     "the newest reading of the remote here is {}, and it does not reach them",
                     names(by.iter().map(|path| path.display().to_string()))
                 );
-                if unobserved.is_empty() {
-                    return Some(read);
+                for (reading, branches) in grouped(unobserved) {
+                    clause.push_str("; ");
+                    clause.push_str(&reading.about(&branches));
                 }
-                Some(format!(
-                    "{read}; that reading was taken before this home wrote its own record of \
-                     {}, so for those branches it is the older one; fetch in the checkout and \
-                     read again",
-                    names(unobserved.iter().cloned())
-                ))
+                Some(clause)
             }
             Self::Unchecked => Some(String::from(UNREAD)),
         }
@@ -377,14 +462,43 @@ fn names(items: impl Iterator<Item = String>) -> String {
     items.collect::<Vec<String>>().join(", ")
 }
 
+/// The branches of each reading that left any, in the order [`Unread`] declares them.
+///
+/// One clause per reading and never one per branch: a fetch that did not prune leaves
+/// every dropped branch in the same state, and a sentence repeated for each of them is a
+/// sentence a person stops reading.
+fn grouped(unobserved: &[Unobserved]) -> Vec<(Unread, String)> {
+    [Unread::Older, Unread::Unnamed]
+        .into_iter()
+        .filter_map(|reading| {
+            let branches = unobserved
+                .iter()
+                .filter(|one| one.reading == reading)
+                .map(|one| one.branch.clone());
+            let listed = names(branches);
+            (!listed.is_empty()).then_some((reading, listed))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests fail by panicking")]
 
     use std::path::PathBuf;
 
-    use super::{Finding, SAMPLE, Uniqueness, Witness};
+    use super::{Finding, SAMPLE, Uniqueness, Unobserved, Unread, Witness};
     use crate::git::Oid;
+
+    /// A reading of the remote by one checkout, with these branches left unanswered.
+    fn checked(unobserved: Vec<Unobserved>) -> Witness {
+        Witness::Checked { by: vec![PathBuf::from("/w/project")], unobserved }
+    }
+
+    /// One branch of a reading, under the reading that left it unanswered.
+    fn branch(name: &str, reading: Unread) -> Unobserved {
+        Unobserved { branch: String::from(name), reading }
+    }
 
     fn sample(count: usize) -> Finding {
         Finding::Untracked {
@@ -444,6 +558,73 @@ mod tests {
             assert_eq!(finding.label(), "commits on no remote");
             assert!(finding.describe().ends_with("abababab"), "{}", finding.describe());
         }
+    }
+
+    /// A reading older than this home's own record of the branch is described as the older
+    /// one, and the instruction is the one that changes the answer: read the remote again.
+    #[test]
+    fn a_reading_older_than_the_home_is_described_as_the_older_one() {
+        let older = checked(vec![branch("nodal/worker-import", Unread::Older)]).because().unwrap();
+        assert!(older.contains("nodal/worker-import"), "{older}");
+        assert!(older.contains("was taken before this home wrote its own record"), "{older}");
+        assert!(older.contains("it is the older one"), "{older}");
+        assert!(older.contains("fetch in the checkout and read again"), "{older}");
+    }
+
+    /// A reading that is the newer one and does not name the branch is described as that,
+    /// and not as the older reading.
+    ///
+    /// This is a branch the remote dropped, after which the checkout fetched without
+    /// `--prune`. The reading was taken *after* the push, so the account that called it the
+    /// older reading named a cause that had not happened, under an instruction — fetch and
+    /// read again — that cannot change the answer while the stale ref stands. What does is
+    /// a fetch that prunes, and that is what the clause says to run.
+    #[test]
+    fn a_reading_that_no_longer_names_the_branch_is_described_as_that_and_not_as_an_older_one() {
+        let dropped =
+            checked(vec![branch("nodal/worker-import", Unread::Unnamed)]).because().unwrap();
+        assert!(dropped.contains("nodal/worker-import"), "{dropped}");
+        assert!(dropped.contains("is the later one and does not name"), "{dropped}");
+        assert!(dropped.contains("--prune"), "the instruction cannot change the answer: {dropped}");
+        assert!(
+            !dropped.contains("was taken before this home wrote its own record"),
+            "the later reading is described as the older one: {dropped}",
+        );
+    }
+
+    /// A reading with both kinds says both, one clause each, however many branches are in
+    /// either.
+    #[test]
+    fn a_reading_with_both_kinds_gives_one_clause_for_each_and_not_one_per_branch() {
+        let both = checked(vec![
+            branch("nodal/one", Unread::Older),
+            branch("nodal/two", Unread::Unnamed),
+            branch("nodal/three", Unread::Unnamed),
+        ])
+        .because()
+        .unwrap();
+        assert_eq!(both.matches("was taken before").count(), 1, "{both}");
+        assert_eq!(both.matches("is the later one").count(), 1, "{both}");
+        assert!(both.contains("nodal/two, nodal/three"), "the branches are not listed: {both}");
+
+        // And a reading with nothing unanswered adds no clause at all.
+        let clean = checked(Vec::new()).because().unwrap();
+        assert!(clean.ends_with("does not reach them"), "{clean}");
+    }
+
+    /// A row an older Nodal wrote is the branch alone, and it reads as the reading that
+    /// release described.
+    ///
+    /// A reclaim interrupted by one release is finished by the next, and the plan it is
+    /// rebuilt from carries this value.
+    #[test]
+    fn a_branch_written_before_this_field_reads_as_the_older_reading() {
+        let read: Vec<Unobserved> = serde_json::from_str(r#"["nodal/worker-import"]"#).unwrap();
+        assert_eq!(read, vec![branch("nodal/worker-import", Unread::Older)]);
+
+        let row = r#"[{"branch":"nodal/worker-import","reading":"unnamed"}]"#;
+        let read: Vec<Unobserved> = serde_json::from_str(row).unwrap();
+        assert_eq!(read, vec![branch("nodal/worker-import", Unread::Unnamed)]);
     }
 
     /// The reason travels in `--json` as well as in the message, under its own key.
