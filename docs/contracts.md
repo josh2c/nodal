@@ -197,8 +197,10 @@ trash, and `gc` removes the directory after the trash retention.
 holding them, one row each and the largest holder first. It is the reading before the stall.
 
 A create that cannot get a port for one of those names is refused, and nothing it took is kept. The
-refusal states how many ports the block holds, how many of them the other units hold, how many are
-free, how many this unit asked for, and `nodal reclaim <unit>` as the command that gives ports back.
+refusal states how many ports the block holds, how many of them are held, how many are free, how
+many this unit asked for, and `nodal reclaim <unit>` as the command that gives ports back. "Held"
+counts the same ports here as in the report: every port the block has handed out. The refusal counts
+them as the create found them, because the create gives back every port it took.
 
 ## Home path policy
 `~/.nodal/<project>/e/<id>/`, equal length for every unit of a project. `<id>` is the last

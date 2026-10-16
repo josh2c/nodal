@@ -14,8 +14,8 @@ One line per behaviour. Versions follow [semantic versioning](https://semver.org
 
 ### What refuses
 
-- A create that cannot get a port says how many ports the block holds, how many the
-  other units hold, how many are free, how many this unit asked for, and that
+- A create that cannot get a port says how many ports the block holds, how many are
+  held, how many are free, how many this unit asked for, and that
   `nodal reclaim <unit>` gives a unit's ports back to the block. It said "ports 20000 to
   20099 are all held", which named no remedy and was wrong where a port was free.
 

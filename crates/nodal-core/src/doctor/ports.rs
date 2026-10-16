@@ -6,10 +6,10 @@
 //! recipe declares. So the ports are the resource a project runs out of first, and the
 //! port a `nodal new` cannot get is the first a person hears of it.
 //!
-//! The reading is therefore in the report a person runs before they are stopped, and it
-//! is the same two numbers the refusal carries ([`crate::Error::PortBlockFull`]): how
-//! much of the block is held, and who holds it. It reads three tables and writes
-//! nothing.
+//! The reading is therefore in the report a person runs before they are stopped. It says
+//! how much of the block is held, which is the count the refusal carries
+//! ([`crate::Error::PortBlockFull`]) under the same meaning of the word, and it names who
+//! holds it, which the refusal cannot. It reads three tables and writes nothing.
 
 use std::collections::BTreeMap;
 

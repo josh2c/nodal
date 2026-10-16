@@ -279,6 +279,29 @@ fn a_block_with_a_free_port_is_not_reported_as_one_where_every_port_is_held() {
     assert!(!refused.contains("all held"), "one port is free: {refused:?}");
 }
 
+/// A port the asking environment already holds is held, and no rollback gives it back.
+/// The environment asked under two names before, the block is full, and it now asks
+/// under a third. The two ports it holds stay held whatever this call does, so the
+/// refusal must not count them as free.
+#[test]
+fn the_ports_the_asking_environment_already_holds_are_not_reported_as_free() {
+    let mut registry = Registry::open();
+    let project = registry.project(1);
+    let (_, holder) = registry.unit(project, 1);
+    let (_, asking) = registry.unit(project, 2);
+    let block = ports::ensure_block(&mut registry.store, project).unwrap();
+    let mine = [name("app"), name("api")];
+    ports::allocate(registry.store.conn(), block, asking, &mine).unwrap();
+    fill_block(&registry, block, holder, mine.len());
+
+    let refused =
+        ports::allocate(registry.store.conn(), block, asking, &three()).unwrap_err().to_string();
+
+    for part in ["100 ports", "100 held", "0 free"] {
+        assert!(refused.contains(part), "{part:?} is not in {refused:?}");
+    }
+}
+
 #[test]
 fn a_fixed_port_conflict_names_the_holding_unit() {
     let registry = Registry::open();

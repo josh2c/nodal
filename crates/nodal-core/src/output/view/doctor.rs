@@ -272,7 +272,8 @@ pub struct PortUse {
     pub last: u16,
     /// How many ports the block holds.
     pub span: usize,
-    /// How many of them an environment of this project holds.
+    /// How many of them the block has handed out, which is what the word means here
+    /// and in the refusal ([`crate::Error::PortBlockFull`]).
     pub held: usize,
     /// The units holding them, the largest holder first.
     pub holders: Vec<PortHolder>,
