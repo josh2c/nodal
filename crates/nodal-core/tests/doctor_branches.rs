@@ -257,6 +257,7 @@ fn report(branches: Branches, expand: bool) -> String {
         here: Vec::new(),
         elsewhere: Vec::new(),
         trash: nodal_core::output::view::doctor::Trash::default(),
+        ports: None,
         branches: Branches { expand, ..branches },
         notes: Vec::new(),
     };

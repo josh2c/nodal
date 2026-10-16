@@ -24,7 +24,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::Timestamp;
+use crate::model::{Slug, Timestamp};
 use crate::output::Render;
 use crate::output::human::{self, Block, Doc, Field, Table};
 use crate::workspace::sharing::{self, Sharing};
@@ -34,6 +34,9 @@ const HERE: [&str; 5] = ["what", "kind", "size", "state", "intent"];
 
 /// The columns of the section for other projects. Names and sizes, and no more.
 const ELSEWHERE: [&str; 3] = ["what", "kind", "size"];
+
+/// The columns of the section that says which units hold this project's ports.
+const PORTS: [&str; 2] = ["unit", "ports"];
 
 /// The columns of the loud bucket of the branch section.
 const UNPUSHED: [&str; 4] = ["branch", "commits", "last commit", "upstream"];
@@ -255,6 +258,44 @@ impl Branches {
     }
 }
 
+/// How much of this project's block of ports is held, and by which units.
+///
+/// A project is granted one block and keeps it, and a unit takes one port for itself and
+/// one for each service name its recipe declares. The ports therefore run out before
+/// anything else does, and the count is not a thing a person can see anywhere else. This
+/// is the reading before the stall; [`crate::Error::PortBlockFull`] is the refusal at it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortUse {
+    /// The lowest port in the block.
+    pub first: u16,
+    /// The highest port in the block.
+    pub last: u16,
+    /// How many ports the block holds.
+    pub span: usize,
+    /// How many of them an environment of this project holds.
+    pub held: usize,
+    /// The units holding them, the largest holder first.
+    pub holders: Vec<PortHolder>,
+}
+
+impl PortUse {
+    /// The line the section opens with: what is held of the block, and where the block
+    /// is.
+    #[must_use]
+    pub fn line(&self) -> String {
+        format!("{} of {} held, {} to {}", self.held, self.span, self.first, self.last)
+    }
+}
+
+/// One unit, and how many ports of the project's block it holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortHolder {
+    /// The unit's handle, which is what `nodal ls` shows.
+    pub unit: Slug,
+    /// How many ports of the block it holds, over every materialisation of it.
+    pub ports: usize,
+}
+
 /// The checkout the command was run in, and the project it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkout {
@@ -344,6 +385,11 @@ pub struct Doctor {
     /// What the trash under the state root holds.
     #[serde(default)]
     pub trash: Trash,
+    /// How much of this project's block of ports is held, and `None` where no project
+    /// of this checkout has a block. A block is granted the first time a project needs
+    /// a port, and a registry nothing read answers nothing.
+    #[serde(default)]
+    pub ports: Option<PortUse>,
     /// The local branches of this checkout that no worktree has checked out.
     #[serde(default)]
     pub branches: Branches,
@@ -375,6 +421,9 @@ impl Render for Doctor {
         doc.push(Block::blank());
         doc.push(Block::fields(vec![Field::new("this project", self.subject())]).at(0));
         doc.push(section(&self.here, &HERE, "nothing of this project is left behind"));
+        for block in self.port_blocks() {
+            doc.push(block);
+        }
         doc.push(Block::blank());
         doc.push(
             Block::fields(vec![Field::new("not this project", "other projects' leftovers")]).at(0),
@@ -414,6 +463,31 @@ impl Doctor {
 }
 
 impl Doctor {
+    /// The port section: what the project's block holds, and the units holding it.
+    ///
+    /// A project with no block prints nothing here. The reading comes out of the
+    /// registry, so a line saying no port is held would be a claim about a registry
+    /// this report may not have been able to read.
+    fn port_blocks(&self) -> Vec<Block> {
+        let Some(ports) = &self.ports else {
+            return Vec::new();
+        };
+        let mut blocks = vec![
+            Block::blank(),
+            Block::fields(vec![Field::new("ports", "this project's block")]).at(0),
+            Block::line(ports.line()),
+        ];
+        if ports.holders.is_empty() {
+            return blocks;
+        }
+        let mut table = Table::new(&PORTS);
+        for holder in &ports.holders {
+            table.push(vec![holder.unit.to_string(), holder.ports.to_string()]);
+        }
+        blocks.push(Block::table(table));
+        blocks
+    }
+
     /// The branch section: the loud bucket in full, and the safe buckets as counts.
     ///
     /// This is the one place a rendering shows less than it holds. A machine with 306
@@ -555,8 +629,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        BranchRow, Branches, CLOSING, Checkout, Doctor, Finding, Kind, Note, Standing, Trash,
-        shorten,
+        BranchRow, Branches, CLOSING, Checkout, Doctor, Finding, Kind, Note, PortHolder, PortUse,
+        Standing, Trash, shorten,
     };
     use crate::model::Timestamp;
     use crate::output::Render;
@@ -587,6 +661,13 @@ mod tests {
             state_root: PathBuf::from("/home/j/.nodal"),
             sharing: Some(sharing(Shares::Yes)),
             trash: Trash { homes: 2, bytes: 1_400_000_000, complete: true },
+            ports: Some(PortUse {
+                first: 20_000,
+                last: 20_099,
+                span: 100,
+                held: 7,
+                holders: vec![holder("importer", 4), holder("checkout-copy", 3)],
+            }),
             notes: vec![Note {
                 source: String::from("docker"),
                 why: String::from("docker is not installed"),
@@ -604,6 +685,11 @@ mod tests {
             probed_at: at("2026-03-02T09:00:00Z"),
             device: Some(66),
         }
+    }
+
+    /// One unit of this project, and the ports of the block it holds.
+    fn holder(unit: &str, ports: usize) -> PortHolder {
+        PortHolder { unit: crate::model::Slug::parse(unit).expect("a handle"), ports }
     }
 
     /// One branch of each bucket, and one whose upstream was deleted.
@@ -752,6 +838,38 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("branches merged into origin/main: 1"), "{text}");
+    }
+
+    /// The ceiling a project meets before anything else stops it: how much of the
+    /// block is held, where the block is, and which unit holds what.
+    #[test]
+    fn the_report_says_how_much_of_the_port_block_is_held_and_by_which_units() {
+        let text = report().doc().to_string();
+        assert!(text.contains("7 of 100 held, 20000 to 20099"), "{text}");
+        let line = text.lines().find(|line| line.contains("importer ")).expect("the row");
+        assert!(line.contains('4'), "the ports that unit holds: {line}");
+        assert!(text.contains("checkout-copy"), "every holder is a row: {text}");
+    }
+
+    /// The largest holder is the first row. A person reading this is looking for the
+    /// unit to reclaim.
+    #[test]
+    fn the_unit_holding_the_most_ports_is_the_first_row() {
+        let text = report().doc().to_string();
+        let first = text.find("importer ").expect("the first row");
+        let second = text.find("checkout-copy").expect("the second row");
+        assert!(first < second, "{text}");
+    }
+
+    /// A project with no block prints no line about one. The reading comes out of the
+    /// registry, and this report is printed where the registry could not be read.
+    #[test]
+    fn a_project_with_no_block_of_ports_is_claimed_nothing_about() {
+        let mut none = report();
+        none.ports = None;
+        let text = none.doc().to_string();
+        assert!(!text.contains("this project's block"), "{text}");
+        assert!(!text.contains("held, 20000"), "{text}");
     }
 
     #[test]

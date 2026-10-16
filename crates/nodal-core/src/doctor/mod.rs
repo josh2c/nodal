@@ -47,6 +47,14 @@
 //! Each source is therefore asked once per project root and every row of that answer
 //! carries that project's section ([`worktrees::find`] takes it as an argument).
 //!
+//! ## A reading that is not a leftover
+//!
+//! [`ports`] is the one reading here that is about a resource rather than about
+//! something a tool left behind. A project holds one block of a hundred ports and every
+//! unit takes one port and one per per-unit service, so the ports run out before
+//! anything else does, and the first a person hears of it is a create that cannot get
+//! one. The report therefore says how much of the block is held and which units hold it.
+//!
 //! ## What is never touched
 //!
 //! A worktree another tool holds a lock on is reported as locked, and nothing else is
@@ -96,6 +104,7 @@ pub mod databases;
 pub mod intent;
 pub mod machine;
 pub mod onlyhere;
+pub mod ports;
 pub mod size;
 pub mod trash;
 pub mod units;
@@ -316,6 +325,10 @@ pub fn survey(
     let mut here = Vec::new();
     let mut elsewhere = Vec::new();
     let mut notes = Vec::new();
+    let ports = match conn {
+        Some(conn) => ports::find(conn, &scope)?,
+        None => None,
+    };
 
     // What the remote of each repository is worth, read once for that repository. Both the
     // worktree rows and the branch audit count against it, and each used to take it for
@@ -353,6 +366,7 @@ pub fn survey(
         state_root: machine.state_dir.to_path_buf(),
         sharing: machine.sharing.cloned(),
         trash: trash::count(machine.state_dir),
+        ports,
         here,
         elsewhere,
         branches,
