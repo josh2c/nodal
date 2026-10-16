@@ -382,7 +382,9 @@ impl<'a> Input<'a> {
     ///
     /// The work is read from every ref the home holds and not from the branch it is on
     /// ([`Work`]). The sweep of the trash walks one name besides, and sets the field over
-    /// this: `Input { work: Work(named), ..Input::refusal(..) }`.
+    /// this: `Input { work: Work(named), ..Input::refusal(..) }`. [`Input::declared`] is
+    /// set the same way by the one caller that has a recipe to hand, and is empty here
+    /// because a caller with no recipe has nothing to declare.
     ///
     /// [`Input::fate`] is unread by this reading and is not a claim about the home.
     /// `state: false` is what makes that true: the two dispositions whose sentence
@@ -395,7 +397,6 @@ impl<'a> Input<'a> {
         home: &'a Path,
         checkout: Option<&'a Checkout>,
         siblings: &'a [PathBuf],
-        declared: &'a [PathBuf],
     ) -> Self {
         Self {
             home,
@@ -405,7 +406,7 @@ impl<'a> Input<'a> {
             fate: Fate::Trashed,
             state: false,
             dispositions: false,
-            declared,
+            declared: &[],
             runtime: None,
         }
     }
@@ -1575,43 +1576,46 @@ impl Assessment {
     #[must_use]
     pub fn findings(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
-        findings.extend(self.path_finding(Held::Uncommitted, |count, sample| {
+        findings.extend(self.path_finding(&[Held::Uncommitted], |count, sample| {
             Finding::Uncommitted { count, sample }
         }));
-        findings.extend(self.untracked());
+        findings.extend(
+            self.path_finding(&[Held::Untracked, Held::UntrackedDeclared], |count, sample| {
+                Finding::Untracked { count, sample }
+            }),
+        );
         findings.extend(self.unpushed());
         findings
     }
 
-    /// The one finding the untracked paths make, over both groups they come in.
+    /// One finding over the paths of the kinds it names, or nothing when the home holds
+    /// none of them.
     ///
-    /// Two groups and one finding, because it is one refusal. A path the project declares
-    /// regenerable is kept for the reason any untracked path is kept, and the declaration
-    /// changes the sentence the preflight prints over the group and nothing else
-    /// ([`Held::UntrackedDeclared`]). A projection that read one group would have let a
-    /// home whose only untracked file was a declared one refuse nothing at all.
-    fn untracked(&self) -> Option<Finding> {
-        let groups: Vec<&PathGroup> = self
-            .paths
-            .iter()
-            .filter(|group| matches!(group.held, Held::Untracked | Held::UntrackedDeclared))
-            .collect();
-        let count: usize = groups.iter().map(|group| group.count).sum();
+    /// Several kinds and one finding, because a refusal is one refusal. The untracked paths
+    /// are the pair that needs it: a path the project declares regenerable is kept for the
+    /// reason any untracked path is kept, and the declaration changes the sentence the
+    /// preflight prints over the group and nothing else ([`Held::UntrackedDeclared`]), so a
+    /// projection that read one group would have let a home whose only untracked file was a
+    /// declared one refuse nothing at all.
+    ///
+    /// Every group's own sample is already at most [`SAMPLE`] entries ([`group`]) and the
+    /// cap is applied again over the concatenation, so one kind and several answer the same
+    /// way.
+    fn path_finding(
+        &self,
+        kinds: &[Held],
+        build: impl Fn(usize, Vec<PathBuf>) -> Finding,
+    ) -> Option<Finding> {
+        let mut count = 0;
+        let mut sample = Vec::new();
+        for group in self.paths.iter().filter(|group| kinds.contains(&group.held)) {
+            count += group.count;
+            sample.extend(group.sample.iter().cloned());
+        }
         if count == 0 {
             return None;
         }
-        let sample = groups.iter().flat_map(|group| group.sample.iter().cloned()).take(SAMPLE);
-        Some(Finding::Untracked { count, sample: sample.collect() })
-    }
-
-    /// One finding over the paths of one kind, or nothing when the home holds none.
-    fn path_finding(
-        &self,
-        held: Held,
-        build: impl Fn(usize, Vec<PathBuf>) -> Finding,
-    ) -> Option<Finding> {
-        let group = self.paths.iter().find(|group| group.held == held)?;
-        Some(build(group.count, group.sample.clone()))
+        Some(build(count, sample.into_iter().take(SAMPLE).collect()))
     }
 
     /// The one finding the commits make, which is the two groups a reclaim refuses over

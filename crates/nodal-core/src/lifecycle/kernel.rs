@@ -398,20 +398,19 @@ pub fn judge(set: &LossSet, evidence: &Evidence) -> Verdict {
 /// assumed: a report that offered the trash for a home no removal moves would name a
 /// directory the person could not go to.
 ///
-/// `declared` is the project's `[base] invalidate`, for the same reason: it decides a
-/// sentence and no disposition ([`assess::working`]). A caller with no recipe to hand
-/// passes none.
-///
 /// # Errors
 /// [`crate::Error::Git`] when the status could not be read, and
 /// [`crate::Error::NotARepository`] when `path` is not a repository. A directory nobody
 /// could read has no loss set rather than an empty one, because a reading nobody took is
 /// not a reading that found nothing.
-pub fn loss_set(path: &Path, fate: Fate, declared: &[PathBuf]) -> crate::Result<LossSet> {
+pub fn loss_set(path: &Path, fate: Fate) -> crate::Result<LossSet> {
     let git = Git::open(path)?;
     Ok(LossSet {
         home: path.to_path_buf(),
-        paths: assess::working(&git.status()?, fate, declared),
+        // No declaration. This reads a directory for a caller that holds no assessment and
+        // therefore no recipe, and the declaration decides a sentence and no disposition
+        // ([`assess::working`]), so there is nothing for it to change here.
+        paths: assess::working(&git.status()?, fate, &[]),
         commits: Vec::new(),
     })
 }

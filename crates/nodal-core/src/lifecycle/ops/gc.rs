@@ -704,7 +704,7 @@ fn only_here(entry: &Trashed, reading: &Reading) -> Result<Option<Finding>> {
         // No declaration to read. The loss set below carries the commits and no path
         // group at all, so how the untracked paths of a trashed home would group is a
         // question nothing here asks.
-        ..assess::Input::refusal(&entry.path, Some(&reading.checkout), &reading.siblings, &[])
+        ..assess::Input::refusal(&entry.path, Some(&reading.checkout), &reading.siblings)
     };
     let assessment = assess::assess(&input)?;
     let commits = LossSet {

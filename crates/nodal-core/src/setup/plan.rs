@@ -426,7 +426,7 @@ fn unique_work(home: &Path, project: Option<&Path>) -> Option<Uniqueness> {
     // No declaration to read. It splits one group's sentence in two and the findings
     // below read both groups as the one refusal they are, so an uninstall's words are the
     // same either way ([`assess::Assessment::findings`]).
-    let input = assess::Input::refusal(home, checkout.as_ref(), &[], &[]);
+    let input = assess::Input::refusal(home, checkout.as_ref(), &[]);
     let assessment = assess::assess(&input).ok()?;
     if assessment.verdict(Vec::new(), Timestamp::now()).safe() {
         return None;

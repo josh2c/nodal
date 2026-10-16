@@ -270,9 +270,17 @@ impl Witness {
                     "the newest reading of the remote here is {}, and it does not reach them",
                     names(by.iter().map(|path| path.display().to_string()))
                 );
-                for (reading, branches) in grouped(unobserved) {
-                    clause.push_str("; ");
-                    clause.push_str(&reading.about(&branches));
+                // One clause per reading and never one per branch: a fetch that did not
+                // prune leaves every dropped branch in the same state, and a sentence
+                // repeated for each of them is a sentence a person stops reading. The
+                // order is the one [`Unread`] declares.
+                for reading in [Unread::Older, Unread::Unnamed] {
+                    let left = unobserved.iter().filter(|one| one.reading == reading);
+                    let branches = names(left.map(|one| one.branch.clone()));
+                    if !branches.is_empty() {
+                        clause.push_str("; ");
+                        clause.push_str(&reading.about(&branches));
+                    }
                 }
                 Some(clause)
             }
@@ -460,25 +468,6 @@ impl Uniqueness {
 /// Join what a finding lists, in the one form every message here uses.
 fn names(items: impl Iterator<Item = String>) -> String {
     items.collect::<Vec<String>>().join(", ")
-}
-
-/// The branches of each reading that left any, in the order [`Unread`] declares them.
-///
-/// One clause per reading and never one per branch: a fetch that did not prune leaves
-/// every dropped branch in the same state, and a sentence repeated for each of them is a
-/// sentence a person stops reading.
-fn grouped(unobserved: &[Unobserved]) -> Vec<(Unread, String)> {
-    [Unread::Older, Unread::Unnamed]
-        .into_iter()
-        .filter_map(|reading| {
-            let branches = unobserved
-                .iter()
-                .filter(|one| one.reading == reading)
-                .map(|one| one.branch.clone());
-            let listed = names(branches);
-            (!listed.is_empty()).then_some((reading, listed))
-        })
-        .collect()
 }
 
 #[cfg(test)]

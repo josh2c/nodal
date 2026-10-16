@@ -144,7 +144,7 @@ fn read(
 ) -> Option<Finding> {
     // No declaration to read: this reading is about the commits of the home, and the
     // groups a declaration splits are the untracked paths, which nothing below looks at.
-    let input = assess::Input::refusal(home, Some(checkout), siblings, &[]);
+    let input = assess::Input::refusal(home, Some(checkout), siblings);
     let assessed = match assess::assess(&input) {
         Ok(assessed) => assessed,
         Err(why) => return Some(unreadable(unit, home, &why.to_string())),
