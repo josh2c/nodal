@@ -683,13 +683,16 @@ pub enum Held {
     Untracked,
     /// The same, under a path the project's `[base] invalidate` names.
     ///
-    /// One disposition and two sentences. The project's own table says the content of
-    /// such a path records the directory it was made in, which is a statement that the
-    /// path is regenerable; the gate reads Git's ignore rules and nothing else, so an
-    /// untracked file under it is kept exactly as any other untracked file is. Both
-    /// readings are about the same path and they answer differently, and the conservative
-    /// one is the one that decides. What this variant adds is that the person is told so
-    /// rather than left to find the two tables and compare them.
+    /// One disposition and two sentences. The project's own table says the content of such
+    /// a path records the directory it was made in, so a copy of it at a new path is
+    /// removed rather than trusted ([`crate::model::BaseSpec::invalidate`], and
+    /// [`crate::workspace::relocate::InvalidateCache`] is what acts on it). That is a
+    /// statement about a copy and not a statement that a tool writes the file again, which
+    /// is why this gate does not read it as one: it reads Git's ignore rules and nothing
+    /// else, so an untracked file under such a path is kept exactly as any other untracked
+    /// file is. What this variant adds is that a person who wrote the declaration and is
+    /// then refused over the path is told which of the two readings refused them, rather
+    /// than left to find both tables and compare them.
     UntrackedDeclared,
     /// Ignored state no tool writes again: a local database, an `.env.local`.
     LocalState,

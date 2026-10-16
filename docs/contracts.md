@@ -1499,12 +1499,13 @@ table says which are regenerable.
 | build output and installed dependencies | `reconstructable` | drops it from the trashed copy |
 
 The second row is the first row with one sentence added. `base.invalidate` is a statement by the
-project that a path's content records the directory it was made in, which is a statement that a tool
-writes it again; this gate reads Git's ignore rules and nothing else, under which such a file is simply
-untracked. The two readings answer differently about one path, the conservative one decides, and a
-project cannot make the gate give up a file by declaring the path. What the row adds is that the
-reason line says so, rather than leaving a person who wrote the declaration to find both tables and
-compare them.
+project that a path's content records the directory it was made in, so that a copy of it at a new
+path is removed rather than trusted. That is a statement about a copy, and not a statement that a
+tool writes the file again; this gate reads Git's ignore rules and nothing else, under which such a
+file is simply untracked. The two readings answer differently about one path, the conservative one
+decides, and a project cannot make the gate give up a file by declaring the path. What the row adds
+is that the reason line says so, rather than leaving a person who wrote the declaration to find both
+tables and compare them.
 
 Only the first two refuse, and what makes that safe is the retention. A reclaim **moves** a home
 to `<state>/<project>/trash/<id>` and `nodal gc` removes it once `reclaim.trash_retention` days

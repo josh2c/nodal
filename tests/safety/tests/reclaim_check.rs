@@ -1032,7 +1032,8 @@ fn work_in_the_stash_is_not_on_the_columns_axis() {
 /// acted on.
 ///
 /// Two tables answer one question about one path. The project's says the content records
-/// the directory it was made in, which is a statement that a tool writes it again; the
+/// the directory it was made in, so a copy of it at a new path is removed rather than
+/// trusted — a statement about a copy and not about a tool writing the file again; the
 /// gate reads Git's ignore rules, under which the path is simply untracked. The
 /// conservative answer is the right default and it is the one that decides — a project
 /// cannot make this gate give up a file by declaring it — but a person who has written the
