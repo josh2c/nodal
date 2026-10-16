@@ -181,14 +181,28 @@ pub enum Tree {
     TrackedModified,
     /// A file no commit tracks and no ignore rule covers.
     Untracked,
+    /// The same file, under a path the project's `[base] invalidate` names.
+    ///
+    /// Two readings of one path that answer differently. The project declares the path
+    /// regenerable; Git's ignore rules, which are the only rules the gate reads, call the
+    /// file untracked. The conservative reading decides, so this is the row above with one
+    /// sentence added — and that is exactly why it is on the grid: a declaration that moved
+    /// the disposition would be a project switching the guarantee off by writing a path in
+    /// its own recipe.
+    UntrackedDeclared,
     /// A file an ignore rule covers, and nothing else. Not in the guarantee, and the
     /// trash keeps it.
     IgnoredOnly,
 }
 
 impl Axis for Tree {
-    const ALL: &'static [Self] =
-        &[Self::Clean, Self::TrackedModified, Self::Untracked, Self::IgnoredOnly];
+    const ALL: &'static [Self] = &[
+        Self::Clean,
+        Self::TrackedModified,
+        Self::Untracked,
+        Self::UntrackedDeclared,
+        Self::IgnoredOnly,
+    ];
     const AXIS: &'static str = "tree";
 
     fn label(self) -> &'static str {
@@ -196,6 +210,7 @@ impl Axis for Tree {
             Self::Clean => "clean",
             Self::TrackedModified => "tracked-modified",
             Self::Untracked => "untracked",
+            Self::UntrackedDeclared => "untracked-declared",
             Self::IgnoredOnly => "ignored-only",
         }
     }
@@ -315,8 +330,12 @@ mod tests {
     /// The count is the product of the axes. It is asserted because the nightly workflow's
     /// runtime is a function of it, and an axis value added without a reading of the cost
     /// is how a nightly job becomes one nobody waits for.
+    ///
+    /// The fifth value of [`Tree`] took the full grid from 7,200 shapes to 9,000, which is
+    /// a quarter more creates on the nightly run and nothing on a pull request: the sample
+    /// is a fixed 60 shapes whatever the space is.
     #[test]
     fn the_grid_is_the_product_of_the_five_axes() {
-        assert_eq!(Shape::COUNT, 10 * 6 * 6 * 4 * 5);
+        assert_eq!(Shape::COUNT, 10 * 6 * 6 * 5 * 5);
     }
 }

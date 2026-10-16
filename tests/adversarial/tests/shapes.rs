@@ -25,6 +25,7 @@
 //! | the server remote | `origin` is an `ssh` or an `https` URL and not a path | `a_witness_of_a_served_remote_is_read_through_the_witness_path` |
 //! | the trash record | a `rested` record nothing can parse | `a_trash_record_nothing_can_parse_is_read_again` |
 //! | the swept side branch | the copy of a side-branch commit went while the home sat in the trash | `a_side_branch_whose_copy_went_is_kept` |
+//! | the declared path | the project declares the untracked path regenerable | `an_untracked_path_the_project_declares_regenerable_is_still_in_the_loss_set` |
 //!
 //! One of them states a difference and not a fix, because this lane writes no product code. It
 //! says so in its own note, and it fails on the day the difference closes, which is how whoever
@@ -46,7 +47,7 @@
 use std::path::Path;
 
 use nodal_adversarial::build::{self, Built, SLUG};
-use nodal_adversarial::check::{Check, Copies, Needs};
+use nodal_adversarial::check::{Check, Copies, Held, Needs};
 use nodal_adversarial::compare;
 use nodal_adversarial::oracle::Answer;
 use nodal_adversarial::shape::{Observed, Occupant, Refs, Shape, Tree, Witness};
@@ -436,6 +437,44 @@ fn a_write_from_a_directory_elsewhere_refuses_the_move() {
     assert!(check.blocked_by_occupancy(), "it refused for some other reason: {:?}", check.reasons);
     let ignored = check.paths.iter().any(|group| !group.held.in_the_loss_set());
     assert!(ignored, "the file it writes is not ignored, so this shape proves nothing");
+}
+
+// ---------------------------------------------------------------------------
+// The path two tables answer differently about.
+// ---------------------------------------------------------------------------
+
+/// A project cannot take a path out of the loss set by declaring it in its own recipe.
+///
+/// `[base] invalidate` is the project saying a path's content records the directory it was
+/// made in. The gate reads Git's ignore rules and nothing else, under which an untracked
+/// file under such a path is simply untracked. Two readings of one path, answering
+/// differently, and the conservative one decides — so the declaration adds a sentence to
+/// the report and moves no disposition.
+///
+/// It is on the grid because the other answer is a false safe a project could switch on for
+/// itself. The oracle reads §1 off `git status` and knows nothing of the recipe, which is
+/// what makes the agreement here load-bearing: the mirror has to name the group Nodal
+/// reports, and a group the mirror could not name would have passed as an unknown kind.
+#[test]
+fn an_untracked_path_the_project_declares_regenerable_is_still_in_the_loss_set() {
+    let (_built, check, oracle) = asked(shape(
+        Witness::Nothing,
+        Refs::Branch,
+        Observed::NeverPushed,
+        Tree::UntrackedDeclared,
+        Occupant::Nothing,
+    ));
+    both_refuse(&check, &oracle, "an untracked file under a path the project declares");
+    let declared = check
+        .paths
+        .iter()
+        .find(|group| group.held == Held::UntrackedDeclared)
+        .unwrap_or_else(|| panic!("no group for the declared path: {:?}", check.paths));
+    assert!(
+        declared.held.in_the_loss_set(),
+        "a declaration took the path out of the loss set: {declared:?}"
+    );
+    assert_eq!(declared.count, 1, "the group counts something else: {declared:?}");
 }
 
 // ---------------------------------------------------------------------------

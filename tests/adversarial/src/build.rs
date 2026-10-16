@@ -65,6 +65,10 @@ const TRACKED: &str = "apps/web/app/page.tsx";
 /// axis both use it, because both are about something no other conjunct can see.
 const IGNORED: &str = "dist/dev.sqlite";
 
+/// A directory the project declares regenerable in its own `[base] invalidate`, and which
+/// no ignore rule of the fixture covers.
+const DECLARED: &str = "api/__pycache__";
+
 /// The branch the work is pushed to on the remote.
 const TOPIC: &str = "topic";
 
@@ -237,7 +241,7 @@ pub fn build(shape: Shape) -> Built {
         home: home.clone(),
     };
     let work = work(&mut steps, &home, shape.refs);
-    tree(&mut steps, &home, shape.tree);
+    tree(&mut steps, &at, shape.tree);
     witness(&mut steps, &at, &work, shape.witness);
     observed(&mut steps, &at, &work, shape.observed);
     let started = occupant(&mut steps, &home, shape.occupant);
@@ -382,7 +386,8 @@ fn unit_id(home: &Path) -> String {
 // ---------------------------------------------------------------------------
 
 /// Leave the working tree in the state this axis names.
-fn tree(steps: &mut Steps, home: &Path, state: Tree) {
+fn tree(steps: &mut Steps, at: &Where, state: Tree) {
+    let (home, checkout) = (at.home.as_path(), at.checkout.as_path());
     match state {
         Tree::Clean => steps.note(String::from("# the working tree is left clean")),
         Tree::TrackedModified => {
@@ -399,11 +404,36 @@ fn tree(steps: &mut Steps, home: &Path, state: Tree) {
                 home.join("scratch.md").display()
             ));
         }
+        Tree::UntrackedDeclared => {
+            // The declaration is written on the project and the file under it in the home,
+            // because the two together are the shape: either alone is a row the gate
+            // already has.
+            declare(steps, checkout, DECLARED);
+            write(home, &format!("{DECLARED}/main.cpython-312.pyc"), "bytes a tool wrote\n");
+            steps.note(format!(
+                "printf 'bytes a tool wrote\\n' > {}",
+                home.join(DECLARED).join("main.cpython-312.pyc").display()
+            ));
+        }
         Tree::IgnoredOnly => {
             write(home, IGNORED, "a local database\n");
             steps.note(format!("printf 'a local database\\n' > {}", home.join(IGNORED).display()));
         }
     }
+}
+
+/// Add `path` to the project's own `[base] invalidate`, which is the declaration the
+/// disposition reads.
+///
+/// Appended to the recipe rather than built into the fixture, so that every other shape
+/// runs against a project that declares nothing and this one is the only reading of the
+/// pair.
+fn declare(steps: &mut Steps, checkout: &Path, path: &str) {
+    let recipe = checkout.join("nodal.toml");
+    let held = std::fs::read_to_string(&recipe).expect("the project has a recipe");
+    let declaration = format!("{held}\n[base]\ninvalidate = [\"{path}\"]\n");
+    std::fs::write(&recipe, declaration).expect("the recipe is writable");
+    steps.note(format!("printf '[base]\\ninvalidate = [\"{path}\"]\\n' >> {}", recipe.display()));
 }
 
 // ---------------------------------------------------------------------------

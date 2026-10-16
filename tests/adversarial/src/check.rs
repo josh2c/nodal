@@ -88,6 +88,15 @@ pub enum Held {
     Uncommitted,
     /// A path Git does not track and no ignore rule covers.
     Untracked,
+    /// The same, under a path the project's `[base] invalidate` names.
+    ///
+    /// A second word for one disposition and never a second answer. The declaration says
+    /// the path is regenerable and the gate reads Git's ignore rules, so the file is kept
+    /// exactly as any other untracked file is and the word only says which two readings a
+    /// person is looking at. A mirror that did not know the word read the group as an
+    /// unknown kind, and a group the mirror cannot name is a group it cannot hold the gate
+    /// to.
+    UntrackedDeclared,
     /// Ignored state no tool writes again.
     LocalState,
     /// Ignored state the exclusion table calls regenerable.
@@ -101,7 +110,7 @@ impl Held {
     /// environment, the report names it, and the trash keeps the kind nothing writes again.
     #[must_use]
     pub const fn in_the_loss_set(self) -> bool {
-        matches!(self, Self::Uncommitted | Self::Untracked)
+        matches!(self, Self::Uncommitted | Self::Untracked | Self::UntrackedDeclared)
     }
 }
 
