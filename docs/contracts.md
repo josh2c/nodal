@@ -258,7 +258,8 @@ and an operator needs all six:
   answers from whichever unit started first. This reading was taken: the answer came from unit one
   and the exit status was 0.
 - No command reports a pinned port or a collision on one. `nodal doctor`, `nodal show` and
-  `nodal env` report granted ports and say nothing about a pinned one.
+  `nodal env` report granted ports and say nothing about a pinned one. The recipe `nodal init`
+  writes carries the table, and that document is the only output the number appears in.
 - A pin inside 20000 to 29999 is a mistake, and Nodal refuses it. That range is the one a unit's
   ports are granted from, so the pin and a port of the project's own block would be the same number.
   The refusal names the key, the number, the range and the remedy, and it happens when the recipe is
