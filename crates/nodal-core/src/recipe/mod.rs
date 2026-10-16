@@ -27,6 +27,7 @@ use crate::recipe::change::Change;
 use crate::recipe::gap::Gap;
 use crate::recipe::infer::{Confidence, Project};
 use crate::recipe::merge::Merge;
+use crate::services::ports;
 
 /// The file a project's recipe lives in, at the project root.
 pub const FILE_NAME: &str = "nodal.toml";
@@ -72,9 +73,77 @@ fn loaded(root: &Path) -> Result<(Effective, Project)> {
 
     let project = Project::open(root);
     let proposed = infer::infer(&project);
+    let origin = if explicit.db.fixed_ports.is_empty() {
+        PinSource::Inferred
+    } else {
+        PinSource::Written(path.clone())
+    };
     let recipe = explicit.merge(proposed.recipe);
+    refuse_a_pin_inside_the_granted_range(&recipe, origin)?;
     let gaps = proposed.gaps.into_iter().filter(|gap| !gap.key.is_answered_by(&recipe)).collect();
     Ok((Effective { recipe, gaps, confidence: proposed.confidence, file }, project))
+}
+
+/// Where a pinned port in the effective recipe came from.
+///
+/// `[db.fixed_ports]` merges whole: a table a person wrote replaces the inferred one
+/// entirely, so one side or the other states every pin and a refusal can name which.
+/// The operator's next action is not the same for the two. A written pin is a line in a
+/// file that is there to edit. An inferred pin is in no file of the project's own, so
+/// the file a message named would send the operator to a document nobody wrote; the
+/// stack states that pin, and `nodal.toml` is where a person overrides it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinSource {
+    /// The project's own recipe, at this path, states the pin.
+    Written(PathBuf),
+    /// No recipe states the pin: it is read from the stack's own configuration.
+    Inferred,
+}
+
+impl PinSource {
+    /// What to do about a pin this source states, in the words a refusal carries.
+    #[must_use]
+    pub fn remedy(&self) -> String {
+        match self {
+            Self::Written(_) => String::from("pin it in db.fixed_ports outside that range"),
+            Self::Inferred => {
+                format!("change the stack, or state db.fixed_ports in {FILE_NAME} without it")
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for PinSource {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Written(path) => write!(out, "{}", path.display()),
+            Self::Inferred => out.write_str("the stack's configuration"),
+        }
+    }
+}
+
+/// Refuse a pinned port that sits inside the range a unit's ports are granted from.
+///
+/// Nodal does not lease a pinned port and does not keep it out of a block: it is one
+/// number for the whole project, and the only thing that keeps it apart from a granted
+/// port is that the two ranges do not overlap. A pin inside the block range breaks that,
+/// and the allocator will hand the same number to a unit of the same project. The merged
+/// recipe is checked, not only the file, so `nodal init` refuses an inferred pin before
+/// it writes one that the next command cannot read. `origin` is read before the merge,
+/// which is the one place that knows which side the pin came from.
+fn refuse_a_pin_inside_the_granted_range(recipe: &Recipe, origin: PinSource) -> Result<()> {
+    for (name, port) in &recipe.db.fixed_ports {
+        if (ports::RANGE_FIRST..=ports::RANGE_LAST).contains(port) {
+            return Err(Error::RecipePinInGrantedRange {
+                origin,
+                name: name.clone(),
+                port: *port,
+                first: ports::RANGE_FIRST,
+                last: ports::RANGE_LAST,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// What `nodal init` would write, and what it would leave for a person.

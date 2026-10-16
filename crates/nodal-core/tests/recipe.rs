@@ -611,3 +611,85 @@ fn a_cargo_lint_command_needs_the_project_to_state_clippy() {
         Some("cargo clippy")
     );
 }
+
+/// A pin inside the range Nodal grants ports from is refused where the recipe is read.
+///
+/// The number is the project's own address and Nodal never grants it. Inside the block
+/// range it is also a number the allocator hands to a unit of that same project: a
+/// project pinning 20100 was granted 20100 for its unit's application, and nothing said
+/// so. The refusal names the key, the number, the range and what to do. The pin here is
+/// written, so it names the file that states it, which is the line an operator edits.
+#[test]
+fn a_pin_inside_the_granted_range_is_refused_when_the_recipe_is_read() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = directory.path();
+    let path = root.join(recipe::FILE_NAME);
+    std::fs::write(&path, "[db.fixed_ports]\napp = 20100\n").expect("a recipe");
+
+    let Err(refused) = recipe::load(root) else {
+        panic!("20100 is inside the range Nodal grants ports from")
+    };
+    let said = refused.to_string();
+    for part in ["db.fixed_ports", "app", "20100", "20000", "29999"] {
+        assert!(said.contains(part), "{part} is not named: {said}");
+    }
+    assert!(said.contains("outside"), "the refusal does not say what to do: {said}");
+    assert!(said.contains(&*path.to_string_lossy()), "the file is not named: {said}");
+    assert!(!said.contains("the stack"), "a written pin is not the stack's: {said}");
+}
+
+/// The edges of the range are inside it, and a port either side of it loads.
+#[test]
+fn the_refusal_covers_the_whole_granted_range_and_nothing_outside_it() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = directory.path();
+    for refused in [20_000, 29_999] {
+        std::fs::write(
+            root.join(recipe::FILE_NAME),
+            format!("[db.fixed_ports]\napp = {refused}\n"),
+        )
+        .expect("a recipe");
+        assert!(recipe::load(root).is_err(), "{refused} is inside the granted range");
+    }
+    for accepted in [19_999, 30_000, 54_321] {
+        std::fs::write(
+            root.join(recipe::FILE_NAME),
+            format!("[db.fixed_ports]\napp = {accepted}\n"),
+        )
+        .expect("a recipe");
+        let loaded = recipe::load(root).expect("a port outside the granted range");
+        assert_eq!(loaded.recipe.db.fixed_ports.values().copied().collect::<Vec<_>>(), [accepted]);
+    }
+}
+
+/// `nodal init` refuses such a pin before it writes, so it never writes a recipe that
+/// the next command cannot read.
+///
+/// The pin here is inferred rather than written: the stack's own configuration states
+/// it, and `init` is what would put it in `nodal.toml`. The refusal therefore names the
+/// stack and not the recipe, because the recipe is the file `init` has not written yet.
+/// An operator sent to that path would open a document nobody wrote.
+#[test]
+fn init_refuses_a_pin_inside_the_granted_range_before_it_writes_the_file() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let root = directory.path();
+    std::fs::create_dir_all(root.join("supabase/migrations")).expect("the migrations directory");
+    std::fs::write(root.join("supabase/config.toml"), "[db]\nport = 20100\n")
+        .expect("the stack configuration");
+    std::fs::write(root.join("supabase/migrations/0001_init.sql"), "select 1;\n")
+        .expect("a migration");
+
+    let Err(refused) = recipe::plan_init(root) else {
+        panic!("init plans nothing over a pin it refuses")
+    };
+    let said = refused.to_string();
+    assert!(said.contains("the stack's configuration"), "the source is not named: {said}");
+    let recipe_path = root.join(recipe::FILE_NAME);
+    assert!(
+        !said.contains(&*recipe_path.to_string_lossy()),
+        "the refusal names a recipe nobody wrote: {said}"
+    );
+    assert!(said.contains("change the stack"), "the refusal does not say what to do: {said}");
+    assert!(said.contains("db.fixed_ports"), "the key that overrides it is not named: {said}");
+    assert!(!recipe_path.exists(), "no recipe was written");
+}

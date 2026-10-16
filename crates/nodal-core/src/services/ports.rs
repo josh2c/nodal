@@ -1,20 +1,24 @@
-//! The port allocator: a block per project, a port per name, and who holds a fixed one.
+//! The port allocator: a block per project and a port per name.
 //!
 //! Ports are the resource two units collide on first, and the collision is silent: the
 //! second unit's dev server takes the next port it can find, the browser goes to the
 //! first one, and the answers come from the wrong unit. So a port here is granted, not
 //! chosen. A project is given a block once and keeps it; an environment takes ports from
-//! that block; reclaim gives them back.
+//! that block; reclaim gives them back. That row in `port_allocation` is the only record
+//! this module writes for a running unit.
 //!
-//! Two kinds of port, two records, for one reason. A port from the block is a row in
-//! `port_allocation`, held for as long as the environment exists. A port the project
-//! pins — `db.fixed_ports` in the recipe, a Postgres on 54322 that its own configuration
-//! names — cannot be moved, so only one environment may hold it at a time and the claim
-//! has to lapse if that environment's process dies. That is a lease, and the lease table
-//! is where it lives.
+//! A port the project pins — `db.fixed_ports` in the recipe, a Postgres on 54322 that
+//! its own configuration names — is not that. It is one number for the whole project,
+//! the address of a service every unit shares, and Nodal does not claim it. What keeps
+//! it apart from a granted port is that the two ranges do not overlap, and the recipe
+//! refuses a pin inside [`RANGE_FIRST`] to [`RANGE_LAST`] for that reason.
+//! [`check_fixed`] and [`hold_fixed`] below carry the exclusive-claim shape, which a
+//! per-unit gateway will want; no product path calls either one today, so no pinned port
+//! is leased and two units of one project share every port their project pins.
+//! `docs/contracts.md` states what a pin does not do.
 //!
-//! Nothing here reads before it writes. Both records are claimed with one statement
-//! whose uniqueness the database enforces, so two `nodal new` runs in two terminals are
+//! Nothing here reads before it writes. A record is claimed with one statement whose
+//! uniqueness the database enforces, so two `nodal new` runs in two terminals are
 //! separated by SQLite rather than by whichever of them read first.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -204,6 +208,9 @@ pub fn release(conn: &Connection, environment: EnvId) -> Result<Released> {
 
 /// Report every fixed port another environment holds, without claiming anything.
 ///
+/// No product path calls this, so the answer today is always empty: nothing leases a
+/// pinned port. It is the reading a per-unit gateway would take before it claimed one.
+///
 /// An empty answer means the claimant may take them all. A claim that has lapsed is not
 /// a conflict, and neither is a port the claimant already holds.
 ///
@@ -226,6 +233,10 @@ pub fn check_fixed(
 }
 
 /// Take every fixed port for the claimant, or take none and say who holds one.
+///
+/// No product path calls this. Nodal does not lease a pinned port, and a unit that wants
+/// one binds it or finds it taken by whatever got there first. The claim is kept for the
+/// per-unit gateway that will address its own services rather than share the project's.
 ///
 /// All or nothing on purpose: a unit that holds three of a stack's four pinned ports
 /// has a broken stack and has taken three ports off the unit that could have used them.

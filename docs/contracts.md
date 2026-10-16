@@ -242,6 +242,40 @@ where the program is not on the path, the line says `not checked` with the reaso
 refuses over a pin in this table and no command selects a version from it. The one place a pin
 is acted on is the package-manager pin, which a base build runs the install at.
 
+**A pinned port in `db.fixed_ports` is recorded, and nothing else.** The table states the
+address of a service the whole project shares — a local Supabase stack on 54321, its Postgres on
+54322. Nodal reads the table, writes it back, and names it where it names ports. Seven facts follow,
+and an operator needs all seven:
+
+- Nodal does not allocate, reserve or protect a pinned port. No command claims it and no record of
+  a claim is written.
+- Two units of one project share every port the project pins. There is one number and the units get
+  the same one.
+- Only one process can bind that number. The second process fails in the words of its own tool, not
+  in Nodal's, because Nodal was never asked.
+- **A client in a second unit reaches the first unit's service and gets the first unit's data, with
+  no error anywhere.** Each unit has its own database by name, and the pinned port in front of them
+  answers from whichever unit started first. This reading was taken: the answer came from unit one
+  and the exit status was 0.
+- No command reports a pinned port or a collision on one. `nodal doctor`, `nodal show` and
+  `nodal env` report granted ports and say nothing about a pinned one. The recipe `nodal init`
+  writes carries the table, and that document is the only output the number appears in.
+- A pin inside 20000 to 29999 is a mistake, and Nodal refuses it. That range is the one a unit's
+  ports are granted from, so the pin and a port of the project's own block would be the same number.
+  The refusal names the key, the number, the range and the remedy, and it happens when the recipe is
+  read, which is before a port is granted. `nodal init` refuses such a pin before it writes a file.
+  It also names where the pin came from: the recipe, where a person wrote it, or the stack's own
+  configuration, where the stack states it. An inferred pin is in no file of the project's own, and
+  a message that named one would send a person to a document nobody wrote.
+- A `[db.fixed_ports]` table a person writes replaces the inferred table whole, so a project whose
+  stack really does sit inside that range is not locked out. State the table in `nodal.toml` without
+  that pin. This table merges whole and not key by key, so the pin the stack states is not in the
+  recipe that applies, and the project loads. What Nodal gives up is the record of that address,
+  which is all it ever had.
+
+Running one stack per unit instead needs an adapter that starts and addresses each unit's services
+on granted ports. Nodal does not have one.
+
 **A base build never installs into the host.** `uv` and Poetry make their own environment; `pip` does
 not, so a base build makes one for it. The build runs `python3 -m venv .venv` as its own step and then
 runs `.venv/bin/pip install -r requirements.txt`, and a host with neither `python3` nor `python` is
