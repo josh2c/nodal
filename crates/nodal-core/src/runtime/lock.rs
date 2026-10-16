@@ -14,10 +14,20 @@
 //! `adopt` and `reclaim` ask [`claim`] before they do anything. `reclaim` is on that list
 //! because it enters a home and then takes it away, which is the entry a second writer
 //! can never be told about afterwards: every other refusal leaves the home where a person
-//! can go and look. It asks before the home is read, so a refused reclaim has moved
-//! nothing and written nothing, and `--take` is the one way past a live holder, as it is
-//! for the rest. `gc` is not on the list and is not a gap in it: it acts on homes that
-//! have already been trashed, which no lock row names.
+//! can go and look. It asks before the home is read, and the claim and the reading of the
+//! home are one transaction, so a reclaim refused before it runs anything in the home has
+//! moved nothing, written nothing and claimed nothing
+//! ([`crate::lifecycle::ops::reclaim`]). `--take` is the one way past a live holder, as it
+//! is for the rest.
+//!
+//! **`gc` asks too, through the reclaim it runs.** A merged unit whose retention has run
+//! out still has a live home, and the sweep gives that home back through the ordinary
+//! reclaim rather than around it, so the hold is claimed and given up exactly as it is for
+//! a person who types the verb. The sweep passes no `--take`: a hold is the record that
+//! somebody is working in the home, and the sweep is the one reader of that record with
+//! nobody present to be told, so a held unit is left and the report says which. What the
+//! sweep takes no hold for is the other half of its work — removing homes that are already
+//! in the trash, which answer no unit and which no lock row names.
 //!
 //! **The hold is advisory.** Nodal refuses its own write verbs to a second actor and
 //! stops nothing else. An editor opens in the home, `git` runs in it, and a process

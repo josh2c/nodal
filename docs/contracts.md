@@ -860,11 +860,16 @@ running one of those in a held home is refused. The message names the holder, sa
 held it, and says `--take`. Every one of those verbs accepts `--take`.
 
 `nodal reclaim` is on that list because it enters a home and then takes it away. It asks before it
-reads the home, so a refused reclaim has moved nothing, written nothing and claimed nothing; every
-other refusal leaves the home where its holder can go and look, and this one would not.
+reads the home, and the claim and the reading are one registry write, so a reclaim refused before it
+runs anything in the home has moved nothing, written nothing and claimed nothing; every other refusal
+leaves the home where its holder can go and look, and this one would not.
 `nodal reclaim --check` takes no hold and refuses nobody: it is a read verb and it accepts no `--take`.
-`nodal gc` takes none either, and that is not a gap in the list — it acts on homes that are already in
-the trash, which no lock row names.
+
+`nodal gc` asks for the hold too, because it gives a merged unit's live home back through the
+ordinary reclaim and not around it. It passes no `--take`: a hold is the record that somebody is
+working in the home, and the sweep is the one reader of that record with nobody present to be told,
+so a unit somebody holds is left and the report names it. The sweep's other half takes no hold —
+homes already in the trash answer no unit, and no lock row names them.
 
 The lock is advisory. It refuses Nodal's own write verbs and stops nothing else. An editor opens in a
 held home. `git` runs in it. A process starts in it. A second actor is told, not blocked.
