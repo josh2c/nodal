@@ -20,14 +20,15 @@
 //! ([`crate::lifecycle::ops::reclaim`]). `--take` is the one way past a live holder, as it
 //! is for the rest.
 //!
-//! **`gc` asks too, through the reclaim it runs.** A merged unit whose retention has run
-//! out still has a live home, and the sweep gives that home back through the ordinary
-//! reclaim rather than around it, so the hold is claimed and given up exactly as it is for
-//! a person who types the verb. The sweep passes no `--take`: a hold is the record that
-//! somebody is working in the home, and the sweep is the one reader of that record with
-//! nobody present to be told, so a held unit is left and the report says which. What the
-//! sweep takes no hold for is the other half of its work — removing homes that are already
-//! in the trash, which answer no unit and which no lock row names.
+//! **`gc` and `merge --remove` ask too, through the reclaim they run.** A merged unit whose
+//! retention has run out still has a live home, and the sweep gives that home back through
+//! the ordinary reclaim rather than around it, so the hold is claimed and given up exactly
+//! as it is for a person who types the verb. `nodal merge --remove` ends a unit the same
+//! way. Neither passes `--take`: a hold is the record that somebody is working in the home,
+//! and both of them end a unit with nobody present to be told, so a held unit is left and
+//! the report says which. What the sweep takes no hold for is the other half of its work —
+//! removing homes that are already in the trash, which answer no unit and which no lock row
+//! names.
 //!
 //! **The hold is advisory.** Nodal refuses its own write verbs to a second actor and
 //! stops nothing else. An editor opens in the home, `git` runs in it, and a process

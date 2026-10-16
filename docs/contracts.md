@@ -865,11 +865,11 @@ runs anything in the home has moved nothing, written nothing and claimed nothing
 leaves the home where its holder can go and look, and this one would not.
 `nodal reclaim --check` takes no hold and refuses nobody: it is a read verb and it accepts no `--take`.
 
-`nodal gc` asks for the hold too, because it gives a merged unit's live home back through the
-ordinary reclaim and not around it. It passes no `--take`: a hold is the record that somebody is
-working in the home, and the sweep is the one reader of that record with nobody present to be told,
-so a unit somebody holds is left and the report names it. The sweep's other half takes no hold —
-homes already in the trash answer no unit, and no lock row names them.
+`nodal gc` and `nodal merge --remove` ask for the hold too, because each ends a unit through the
+ordinary reclaim and not around it. Neither passes `--take`: a hold is the record that somebody is
+working in the home, and both of these end a unit with no person present to be told, so a unit
+somebody holds is left and the report names it. The sweep's other half takes no hold — homes
+already in the trash answer no unit, and no lock row names them.
 
 The lock is advisory. It refuses Nodal's own write verbs and stops nothing else. An editor opens in a
 held home. `git` runs in it. A process starts in it. A second actor is told, not blocked.
