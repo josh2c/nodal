@@ -10,6 +10,28 @@
 //! where "is anybody else in this unit" has to be answered, so the answer is written
 //! down rather than observed. A lock row is that record.
 //!
+//! **Which verbs ask, and the one that removes a home.** `cd`, `shell`, `run`, `new`,
+//! `adopt` and `reclaim` ask [`claim`] before they do anything. `reclaim` is on that list
+//! because it enters a home and then takes it away, which is the entry a second writer
+//! can never be told about afterwards: every other refusal leaves the home where a person
+//! can go and look. It asks before the home is read, and the claim and the reading of the
+//! home are one transaction, so a reclaim the reading refuses — the placement rule, the
+//! uniqueness check, the process table — has moved nothing, written nothing and claimed
+//! nothing ([`crate::lifecycle::ops::reclaim::prepare`]). Past the reading the reclaim has
+//! begun, and the hold is this actor's: that is the hook phase and everything after it,
+//! including a declared hook this machine has not approved. `--take` is the one way past a
+//! live holder, as it is for the rest.
+//!
+//! **`gc` and `merge --remove` ask too, through the reclaim they run.** A merged unit whose
+//! retention has run out still has a live home, and the sweep gives that home back through
+//! the ordinary reclaim rather than around it, so the hold is claimed and given up exactly
+//! as it is for a person who types the verb. `nodal merge --remove` ends a unit the same
+//! way. Neither passes `--take`: a hold is the record that somebody is working in the home,
+//! and both of them end a unit with nobody present to be told, so a held unit is left and
+//! the report says which. What the sweep takes no hold for is the other half of its work —
+//! removing homes that are already in the trash, which answer no unit and which no lock row
+//! names.
+//!
 //! **The hold is advisory.** Nodal refuses its own write verbs to a second actor and
 //! stops nothing else. An editor opens in the home, `git` runs in it, and a process
 //! starts there, exactly as before. What the lock prevents is two writers driving one
@@ -424,9 +446,11 @@ pub fn open(conn: &Connection, unit: UnitId, idle_hours: u32, now: Timestamp) ->
 
 /// Take or refresh the write on the home at `home`, refusing a second actor.
 ///
-/// This is what the write verbs call: `cd`, `shell`, `run`, `new` and `adopt`. A
-/// directory the registry holds no unit for answers `None` and is entered as before,
-/// because there is no unit for a hold to be about.
+/// This is what the write verbs call: `cd`, `shell`, `run`, `new`, `adopt` and `reclaim`.
+/// A directory the registry holds no unit for answers `None` and is entered as before,
+/// because there is no unit for a hold to be about. So is a home the registry names that
+/// is not on the disk: it carries no marker, and a reclaim of it has no writer to
+/// displace.
 ///
 /// # Errors
 /// As [`enter`].

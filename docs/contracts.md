@@ -848,15 +848,29 @@ asks nothing when a shell ends.
 Sessions are derived, not declared: a process carrying `NODAL_ID` is attached to that unit, and a
 session ends when the process is gone. Nothing has to be run on entry or on exit.
 
-Each of those five verbs takes the unit's write lock before it does its own work. See Locks.
+Each of those five verbs takes the unit's write lock before it does its own work, and so does
+`nodal reclaim`. See Locks.
 
 ## Locks
 One actor writes a unit's home at a time. The registry holds one lock row per unit. The row names the
 host, the actor, the process that took the hold, when it began and when an entry last touched it.
 
-`nodal cd`, `shell`, `run`, `new` and `adopt` take the hold or refresh it. A second actor running one
-of those in a held home is refused. The message names the holder, says how long they have held it, and
-says `--take`. Every one of those verbs accepts `--take`.
+`nodal cd`, `shell`, `run`, `new`, `adopt` and `reclaim` take the hold or refresh it. A second actor
+running one of those in a held home is refused. The message names the holder, says how long they have
+held it, and says `--take`. Every one of those verbs accepts `--take`.
+
+`nodal reclaim` is on that list because it enters a home and then takes it away. It asks before it
+reads the home, and the claim and the reading are one registry write, so a reclaim the reading
+refuses has moved nothing, written nothing and claimed nothing; every other refusal leaves the home
+where its holder can go and look, and this one would not. Past the reading the reclaim has begun and
+the hold is the actor's until the operation ends, which includes a reclaim stopped by a hook.
+`nodal reclaim --check` takes no hold and refuses nobody: it is a read verb and it accepts no `--take`.
+
+`nodal gc` and `nodal merge --remove` ask for the hold too, because each ends a unit through the
+ordinary reclaim and not around it. Neither passes `--take`: a hold is the record that somebody is
+working in the home, and both of these end a unit with no person present to be told, so a unit
+somebody holds is left and the report names it. The sweep's other half takes no hold — homes
+already in the trash answer no unit, and no lock row names them.
 
 The lock is advisory. It refuses Nodal's own write verbs and stops nothing else. An editor opens in a
 held home. `git` runs in it. A process starts in it. A second actor is told, not blocked.
@@ -885,8 +899,8 @@ the hold moved.
 `--take` moves a hold that has not lapsed. It writes a `handoff` event on the unit naming who it came
 from and who it went to. Nothing else moves a live hold.
 
-A reclaim releases the unit's hold. This host releases only its own; a hold another machine took is
-that machine's to release.
+A reclaim releases the unit's hold, which it took or refreshed on the way in. This host releases only
+its own; a hold another machine took is that machine's to release.
 
 A hold is an actor and a lineage. An actor name alone is not a writer: every agent of a fleet reports
 as `claude-code`, so the name matched itself and a second agent entered a home the first one held,
@@ -1481,10 +1495,20 @@ table says which are regenerable.
 | what it holds | disposition | what a reclaim does |
 |---|---|---|
 | uncommitted changes, untracked files | `must_survive` | refuses |
+| untracked files under a path `base.invalidate` names | `must_survive` | refuses, and the reason says why |
 | ignored state no tool writes again | `must_survive` | trashes it; `nodal gc` is what takes it |
 | build output and installed dependencies | `reconstructable` | drops it from the trashed copy |
 
-Only the first refuses, and what makes that safe is the retention. A reclaim **moves** a home
+The second row is the first row with one sentence added. `base.invalidate` is a statement by the
+project that a path's content records the directory it was made in, so that a copy of it at a new
+path is removed rather than trusted. That is a statement about a copy, and not a statement that a
+tool writes the file again; this gate reads Git's ignore rules and nothing else, under which such a
+file is simply untracked. The two readings answer differently about one path, the conservative one
+decides, and a project cannot make the gate give up a file by declaring the path. What the row adds
+is that the reason line says so, rather than leaving a person who wrote the declaration to find both
+tables and compare them.
+
+Only the first two refuse, and what makes that safe is the retention. A reclaim **moves** a home
 to `<state>/<project>/trash/<id>` and `nodal gc` removes it once `reclaim.trash_retention` days
 have passed — fourteen by default, stamped on the trash row at the moment of the move, so a
 recipe edited later cannot shorten it. Ignored state no tool writes again is therefore still

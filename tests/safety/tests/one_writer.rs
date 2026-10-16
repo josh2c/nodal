@@ -7,16 +7,19 @@
 //! time and neither is ever told. The lock row is the record that crosses the accounts
 //! the scan cannot.
 //!
-//! Five properties, and each one is a way the arrangement could go wrong:
+//! The properties, and each one is a way the arrangement could go wrong:
 //!
 //! | property | what a break would look like |
 //! |---|---|
 //! | a second actor is told | two actors write one home and neither hears of the other |
+//! | the verb that removes a home asks too | a second actor takes away the directory the holder is working in |
 //! | the refusal names a way out | a person is stopped with no way to carry on |
 //! | the lock is advisory | Nodal stops an editor, a `git` call or a process it did not start |
 //! | `--take` is deliberate and recorded | a hold moves with nothing written down |
 //! | a recorded move is a real move | the log says a hold changed hands when it came back to the holder it had |
 //! | an idle hold lapses, and says so | a home nobody has entered for a day stays locked, or changes hands with no record of why |
+//! | a refused reclaim claimed nothing | the actor who was told no is recorded as the writer of a home it never entered |
+//! | the sweep asks the hold too | `nodal gc` takes a home somebody is working in, or locks every unit it fails to retire |
 //!
 //! ## The second actor, without a second account
 //!
@@ -29,12 +32,12 @@
 
 #![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use nodal_core::model::EventKind;
-use nodal_core::store::locks;
+use nodal_core::model::{EventKind, HostName, Timestamp, UnitId, UnitStatus};
+use nodal_core::store::{locks, units};
 use nodal_safety::machine::binary;
-use nodal_safety::project::Workspace;
+use nodal_safety::project::{Workspace, resolved};
 use nodal_safety::state::InState;
 use nodal_safety::{git_ok, stderr, stdout};
 
@@ -266,8 +269,82 @@ fn the_holder_re_entering_after_a_lapse_records_no_hand_off() {
     );
 }
 
+/// A second actor's reclaim is refused, in the sentence `nodal run` is refused in, and
+/// the home, the unit's row and the lock row are exactly as they were.
+///
+/// This is the one refusal that cannot be made afterwards. Every other verb the lock gates
+/// leaves the home where the holder can go and look; a reclaim moves the directory to the
+/// trash and closes the rows, and the holder finds out by their next command failing. So
+/// the destructive verb asks the lock first, before the home is read, and the refusal is
+/// the same sentence with the same way out — a person who has met it once has met it.
+///
+/// What is asserted beside the exit code is that nothing happened. A refusal a person acts
+/// on has to be a refusal that left the machine alone, and a lock claimed on the way to
+/// refusing would be a hold handed to whoever asked and was told no.
+#[test]
+fn a_second_actors_reclaim_is_refused_and_changes_nothing() {
+    let workspace = workspace();
+    let home = workspace.unit("worker-import");
+    let unit = workspace.one_unit();
+    let before = locks::get(workspace.store().conn(), unit.id).unwrap().unwrap();
+
+    let refused = as_second(&workspace, &home, &["reclaim", "worker-import", "--yes"]);
+    assert!(
+        !refused.status.success(),
+        "a second actor reclaimed a home the holder holds: {}",
+        stdout(&refused)
+    );
+    let said = stderr(&refused);
+    assert!(said.contains(FIRST), "the refusal does not name the holder: {said}");
+    assert!(said.contains("--take"), "the refusal does not say how to take it: {said}");
+    assert!(said.contains("advisory"), "the refusal does not say what it does not stop: {said}");
+
+    assert!(home.is_dir(), "the refused reclaim moved the home");
+    let homes: Vec<PathBuf> = workspace.homes().iter().map(|home| resolved(home)).collect();
+    assert_eq!(homes, vec![resolved(&home)], "the home is not the project's any more");
+    assert!(workspace.trashed().is_empty(), "the refused reclaim put something in the trash");
+    assert_eq!(workspace.one_unit(), unit, "the refused reclaim wrote the unit's row");
+    assert_eq!(
+        locks::get(workspace.store().conn(), unit.id).unwrap(),
+        Some(before),
+        "the refused reclaim wrote the lock row it was refused by",
+    );
+}
+
+/// `--take` is the way through for the reclaim as it is for every other write verb, and
+/// the hand-off it writes is the record the person it was taken from reads.
+///
+/// A hold that could only be taken by a verb that keeps the home would leave the person
+/// who really has to end somebody else's unit — the one whose agent was killed hours ago —
+/// with no way to do it but to go into the registry. So the way through is the same word,
+/// and it writes the same line.
+#[test]
+fn take_lets_a_second_actor_reclaim_and_records_the_hand_off() {
+    let workspace = workspace();
+    let home = workspace.unit("worker-import");
+    let unit = workspace.one_unit().id;
+
+    let gone = as_second(&workspace, &home, &["reclaim", "worker-import", "--take", "--yes"]);
+    assert!(gone.status.success(), "--take was refused the reclaim: {}", stderr(&gone));
+    assert!(!home.is_dir(), "the reclaim left the home where it was");
+    assert_eq!(
+        locks::get(workspace.store().conn(), unit).unwrap(),
+        None,
+        "a reclaimed unit still names a writer",
+    );
+
+    let handed: Vec<_> =
+        workspace.events().into_iter().filter(|event| event.kind == EventKind::Handoff).collect();
+    assert_eq!(handed.len(), 1, "a hand-off wrote {} events", handed.len());
+    let body = &handed[0].body;
+    assert!(body.contains(FIRST) && body.contains(SECOND), "the hand-off names nobody: {body}");
+}
+
 /// A reclaim gives up the unit's hold, so no row claims the writer of a home that is
 /// gone.
+///
+/// The holder's own reclaim, which the gate above must never refuse: the hold is theirs,
+/// entering their own home refreshes it, and the row goes when the home does.
 #[test]
 fn a_reclaim_releases_the_hold_it_held() {
     let workspace = workspace();
@@ -347,4 +424,145 @@ fn the_list_names_the_writer_before_what_the_process_table_saw() {
 /// reading contradicts the row.
 fn liveness_of(holder: &serde_json::Value) {
     assert_eq!(holder["state"], "gone", "{holder}");
+}
+
+/// A reclaim that claims the hold and then refuses gives the hold back, and records no
+/// hand-off.
+///
+/// The claim is the first thing a reclaim does, before the home is read, because the home
+/// is what it is about to take away. Everything that refuses after it — the placement rule,
+/// the uniqueness check, the reading of the process table — therefore refuses with the hold
+/// already taken, and a release that only ran on the way out left the refused actor
+/// recorded as the writer of a home it never entered. Unattended that is every merged unit
+/// the sweep fails to retire.
+///
+/// The hold is given back and the log says nothing, which is the pair that makes it a
+/// refusal rather than a half-finished operation. A `handoff` line over a reclaim that did
+/// not happen would send the previous holder looking for a move nobody made.
+#[test]
+fn a_reclaim_refused_after_it_claimed_gives_the_hold_back_and_records_no_hand_off() {
+    let workspace = workspace();
+    let home = workspace.unit("worker-import");
+    let unit = workspace.one_unit().id;
+    // A free unit, so the hold the row carries afterwards can only be the one this
+    // reclaim took. The create's own hold is given up the way the clock gives one up.
+    free(&workspace, unit);
+    // The work the check refuses over: a file Git does not track and no ignore rule of
+    // the fixture covers.
+    std::fs::write(home.join("draft.txt"), "the second actor typed this\n").unwrap();
+
+    let refused = as_second(&workspace, &home, &["reclaim", "worker-import", "--yes"]);
+    assert!(
+        !refused.status.success(),
+        "the reclaim took a home holding an untracked file: {}",
+        stdout(&refused)
+    );
+    assert!(stderr(&refused).contains("untracked"), "{}", stderr(&refused));
+
+    assert_eq!(
+        locks::get(workspace.store().conn(), unit).unwrap(),
+        None,
+        "a refused reclaim left the actor it refused recorded as the unit's writer",
+    );
+    assert_eq!(hand_offs(&workspace), Vec::<String>::new(), "a refused reclaim recorded a move");
+    assert!(home.is_dir(), "the refused reclaim moved the home");
+}
+
+/// The sweep makes the same refusal, and gives the same hold back.
+///
+/// `nodal gc` retires a merged unit through the ordinary reclaim, so it claims the live
+/// home it is about to take and meets every refusal that reclaim meets. This is the
+/// unattended case: nobody reads the sweep's report, and a hold left behind on each pass
+/// would lock every merged unit the sweep cannot retire for the idle window, with the
+/// process that took it already gone.
+#[test]
+fn a_sweep_whose_reclaim_refuses_gives_the_hold_back() {
+    let workspace = merged_and_due();
+    let home = workspace.unit("worker-import");
+    let unit = workspace.one_unit().id;
+    merged(&workspace, unit);
+    free(&workspace, unit);
+    std::fs::write(home.join("draft.txt"), "work the sweep must not take\n").unwrap();
+
+    let swept = workspace.nodal(&["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    let report = stdout(&swept);
+    assert!(report.contains("worker-import"), "the sweep does not name the unit it kept: {report}");
+
+    assert!(home.is_dir(), "the sweep took a home holding an untracked file");
+    assert_eq!(
+        locks::get(workspace.store().conn(), unit).unwrap(),
+        None,
+        "the sweep left a hold on the unit its reclaim refused",
+    );
+    assert_eq!(hand_offs(&workspace), Vec::<String>::new(), "the sweep recorded a move");
+}
+
+/// The sweep asks the hold like every other reclaim, so a merged unit somebody holds is a
+/// line of the report and not a home the sweep took.
+///
+/// `nodal gc` passes no `--take`, deliberately: a hold is the record that somebody is
+/// working in the home, and the sweep is the one reader of it with nobody present to be
+/// told. So the holder keeps the home and keeps the hold, and the report says which unit
+/// was left and who holds it.
+#[test]
+fn the_sweep_leaves_a_merged_unit_another_actor_holds_and_says_so() {
+    let workspace = merged_and_due();
+    let home = workspace.unit("worker-import");
+    let unit = workspace.one_unit().id;
+    merged(&workspace, unit);
+    let held = locks::get(workspace.store().conn(), unit).unwrap().unwrap();
+
+    let swept = as_second(&workspace, &home, &["gc"]);
+    assert!(swept.status.success(), "{}", stderr(&swept));
+    let report = stdout(&swept);
+    assert!(report.contains("worker-import"), "the sweep does not name the unit it kept: {report}");
+    // The line is the lock's own refusal and not some other reading: the sweep asked for
+    // the hold, was told no, and carried the sentence into its report.
+    assert!(
+        report.contains(&format!("is held by {FIRST}")),
+        "the line is not the lock refusal: {report}",
+    );
+    assert!(report.contains("--take"), "the line does not say how to take it: {report}");
+
+    assert!(home.is_dir(), "the sweep took a home its holder is working in");
+    assert!(workspace.trashed().is_empty(), "the sweep put a held home in the trash");
+    assert_eq!(
+        locks::get(workspace.store().conn(), unit).unwrap(),
+        Some(held),
+        "the sweep wrote the lock row that refused it",
+    );
+}
+
+/// A workspace whose homes and records are kept for no time at all, which is what makes a
+/// merged unit due for the sweep the moment it is merged.
+fn merged_and_due() -> Workspace {
+    Workspace::with_recipe(binary(), "[reclaim]\ntrash_retention = 0\n")
+        .with_env("NODAL_ACTOR", FIRST)
+}
+
+/// Move the unit to merged, which with no retention is the one state `nodal gc` reclaims
+/// a live home in.
+fn merged(workspace: &Workspace, unit: UnitId) {
+    let store = workspace.store();
+    let moved = units::update_status(store.conn(), unit, UnitStatus::Merged, Timestamp::now());
+    assert!(moved.unwrap(), "no row was moved to merged");
+}
+
+/// Give up whatever hold the fixture's own commands took, so the row read afterwards is
+/// written by the command under test and by nothing else.
+fn free(workspace: &Workspace, unit: UnitId) {
+    let store = workspace.store();
+    assert!(locks::release(store.conn(), unit, &HostName::current()).unwrap(), "no hold to free");
+    assert_eq!(locks::get(store.conn(), unit).unwrap(), None, "the hold was not given up");
+}
+
+/// Every hand-off the unit's log records, as the lines a person would read.
+fn hand_offs(workspace: &Workspace) -> Vec<String> {
+    workspace
+        .events()
+        .into_iter()
+        .filter(|event| event.kind == EventKind::Handoff)
+        .map(|event| event.body)
+        .collect()
 }

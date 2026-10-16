@@ -407,7 +407,10 @@ pub fn loss_set(path: &Path, fate: Fate) -> crate::Result<LossSet> {
     let git = Git::open(path)?;
     Ok(LossSet {
         home: path.to_path_buf(),
-        paths: assess::working(&git.status()?, fate),
+        // No declaration. This reads a directory for a caller that holds no assessment and
+        // therefore no recipe, and the declaration decides a sentence and no disposition
+        // ([`assess::working`]), so there is nothing for it to change here.
+        paths: assess::working(&git.status()?, fate, &[]),
         commits: Vec::new(),
     })
 }
