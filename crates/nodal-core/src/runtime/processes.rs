@@ -1359,7 +1359,7 @@ mod tests {
         let block = procargs(1, "/bin/zsh", &["-zsh", "", ""]);
         let (argv, environ) = split_procargs(&block).unwrap();
         assert_eq!(command_of(argv).as_deref(), Some("-zsh"));
-        assert!(environ.is_empty());
+        assert_eq!(environ, [] as [u8; 0]);
     }
 
     #[test]

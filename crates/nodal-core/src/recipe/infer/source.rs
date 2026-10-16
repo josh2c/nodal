@@ -236,8 +236,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("coverage")).unwrap();
         let project = Project::open(root.path());
-        assert!(project.tracked(&["coverage"]).is_empty());
-        assert!(project.tracked(&[]).is_empty());
+        assert_eq!(project.tracked(&["coverage"]), [] as [&str; 0]);
+        assert_eq!(project.tracked(&[]), [] as [&str; 0]);
     }
 
     #[test]
@@ -246,6 +246,6 @@ mod tests {
         std::fs::create_dir_all(root.path().join("coverage")).unwrap();
         git(root.path(), &["init", "--quiet", "."]);
         let project = Project::open(root.path());
-        assert!(project.tracked(&["coverage"]).is_empty());
+        assert_eq!(project.tracked(&["coverage"]), [] as [&str; 0]);
     }
 }

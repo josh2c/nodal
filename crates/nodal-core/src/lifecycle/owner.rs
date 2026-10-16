@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn a_host_name_is_always_produced() {
-        assert!(!HostName::current().as_str().is_empty());
+        assert_ne!(HostName::current().as_str(), "");
     }
 
     #[test]

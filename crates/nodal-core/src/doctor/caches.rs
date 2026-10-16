@@ -158,12 +158,12 @@ mod tests {
     #[test]
     fn a_cache_written_to_this_week_is_not_reported() {
         let root = checkout(Duration::from_secs(60 * 60 * 24));
-        assert!(find(root.path(), now()).is_empty());
+        assert_eq!(find(root.path(), now()), []);
     }
 
     #[test]
     fn a_directory_that_holds_no_cache_reports_nothing() {
         let root = tempfile::tempdir().unwrap();
-        assert!(find(root.path(), now()).is_empty());
+        assert_eq!(find(root.path(), now()), []);
     }
 }

@@ -115,7 +115,7 @@ mod tests {
         assert!(remove(state.path(), Shell::Zsh).unwrap());
         assert!(!remove(state.path(), Shell::Zsh).unwrap(), "removing twice is not an error");
         assert!(tidy(state.path()).unwrap());
-        assert!(installed(state.path()).is_empty());
+        assert_eq!(installed(state.path()), [] as [std::path::PathBuf; 0]);
     }
 
     #[test]

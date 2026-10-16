@@ -650,14 +650,14 @@ mod tests {
     #[test]
     fn the_default_branch_pointer_is_not_a_branch() {
         let tips = [reference("refs/remotes/origin/HEAD", 1)];
-        assert!(tracked_in(&tips).is_empty());
+        assert_eq!(tracked_in(&tips), []);
     }
 
     /// A local branch is no evidence about a remote.
     #[test]
     fn a_local_branch_is_not_a_remote_tip() {
         let tips = [reference("refs/heads/main", 1)];
-        assert!(tracked_in(&tips).is_empty());
+        assert_eq!(tracked_in(&tips), []);
     }
 
     fn oid(seed: u8) -> Oid {
@@ -785,6 +785,6 @@ mod tests {
             "shallow",
             CloneReading { tips: vec![oid(7)], shallow: true, ..CloneReading::default() },
         );
-        assert!(held_by_others(&[deep, shallow])[0].is_empty());
+        assert_eq!(held_by_others(&[deep, shallow])[0], []);
     }
 }

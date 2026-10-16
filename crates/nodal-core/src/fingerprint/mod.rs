@@ -423,6 +423,6 @@ mod tests {
                 Path::new("pnpm-lock.yaml")
             ]
         );
-        assert!(selected.paths(FingerprintPart::Toolchain).is_empty());
+        assert_eq!(selected.paths(FingerprintPart::Toolchain), [] as [&Path; 0]);
     }
 }

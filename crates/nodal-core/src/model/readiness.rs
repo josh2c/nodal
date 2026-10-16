@@ -165,7 +165,7 @@ mod tests {
 
         let ready = Readiness { dependencies: State::Ready, build: State::Ready };
         assert!(ready.is_ready());
-        assert!(ready.cold().is_empty());
+        assert_eq!(ready.cold(), []);
     }
 
     #[test]

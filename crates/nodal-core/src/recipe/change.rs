@@ -126,8 +126,8 @@ mod tests {
 
     #[test]
     fn two_texts_that_hold_the_same_lines_change_nothing() {
-        assert!(lines("a\nb\nc\n", "a\nb\nc\n").is_empty());
-        assert!(lines("", "").is_empty());
+        assert_eq!(lines("a\nb\nc\n", "a\nb\nc\n"), []);
+        assert_eq!(lines("", ""), []);
     }
 
     #[test]

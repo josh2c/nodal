@@ -256,7 +256,7 @@ fn units_round_trip_and_are_found_by_slug_and_branch() {
     );
     assert_eq!(units::find_open_by_branch(conn, id('1'), &unit().branch).unwrap(), Some(unit()));
     assert_eq!(units::list_by_status(conn, id('1'), UnitStatus::Open).unwrap(), vec![unit()]);
-    assert!(units::list_by_status(conn, id('1'), UnitStatus::Merged).unwrap().is_empty());
+    assert_eq!(units::list_by_status(conn, id('1'), UnitStatus::Merged).unwrap(), []);
 }
 
 #[test]
@@ -386,7 +386,7 @@ fn sessions_open_and_close_once() {
     assert!(sessions::end(conn, id('6'), ended).unwrap());
     assert!(!sessions::end(conn, id('6'), at("2026-09-06T16:00:00Z")).unwrap());
     assert_eq!(sessions::get(conn, id('6')).unwrap().unwrap().ended_at, Some(ended));
-    assert!(sessions::list_open(conn, id('5')).unwrap().is_empty());
+    assert_eq!(sessions::list_open(conn, id('5')).unwrap(), []);
     assert_eq!(sessions::list_for_environment(conn, id('5')).unwrap().len(), 1);
 }
 
@@ -468,7 +468,7 @@ fn a_lease_is_held_by_one_environment_until_it_lapses() {
     assert!(!leases::release(conn, &resource, id('5')).unwrap(), "only the holder releases");
     assert!(leases::release(conn, &resource, id('A')).unwrap());
     assert_eq!(leases::get(conn, &resource).unwrap(), None);
-    assert!(leases::list_for_environment(conn, id('A')).unwrap().is_empty());
+    assert_eq!(leases::list_for_environment(conn, id('A')).unwrap(), []);
 }
 
 /// A person at a terminal, by the name they log in as.
@@ -698,6 +698,6 @@ fn ports_are_read_back_by_range_and_by_name_and_are_returned_together() {
 
     assert_eq!(port_allocations::release_all(conn, id('A')).unwrap(), 0);
     assert_eq!(port_allocations::release_all(conn, id('5')).unwrap(), 2);
-    assert!(port_allocations::list_for_environment(conn, id('5')).unwrap().is_empty());
+    assert_eq!(port_allocations::list_for_environment(conn, id('5')).unwrap(), []);
     assert_eq!(port_allocations::get(conn, 20_000).unwrap(), None);
 }

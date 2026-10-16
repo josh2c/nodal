@@ -153,6 +153,6 @@ mod tests {
 
     #[test]
     fn nothing_to_report_is_no_lines() {
-        assert!(collapse(&[], "units").is_empty());
+        assert_eq!(collapse(&[], "units"), [] as [String; 0]);
     }
 }

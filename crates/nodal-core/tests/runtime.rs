@@ -110,7 +110,7 @@ fn a_session_opens_because_a_process_is_there_and_ends_because_it_is_gone() {
     let ended =
         sessions::observe(store.conn(), &Table(Vec::new()), &host, Timestamp::now()).unwrap();
     assert_eq!(ended.ended, 1);
-    assert!(session_rows::list_open(store.conn(), environment).unwrap().is_empty());
+    assert_eq!(session_rows::list_open(store.conn(), environment).unwrap(), []);
 }
 
 #[test]

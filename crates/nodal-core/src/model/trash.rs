@@ -219,8 +219,8 @@ mod tests {
     #[test]
     fn only_a_safe_verdict_names_what_it_rested_on() {
         assert_eq!(Rested::Safe { copies: vec![held(&[])] }.copies(), &[held(&[])]);
-        assert!(Rested::Forced.copies().is_empty());
-        assert!(Rested::Unrecorded.copies().is_empty());
+        assert_eq!(Rested::Forced.copies(), []);
+        assert_eq!(Rested::Unrecorded.copies(), []);
     }
 
     fn at(text: &str) -> Timestamp {

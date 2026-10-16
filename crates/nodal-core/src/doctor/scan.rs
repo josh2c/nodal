@@ -417,7 +417,7 @@ mod tests {
     #[test]
     fn a_missing_root_is_an_empty_walk() {
         let found = walk(&[PathBuf::from("/this/path/is/not/there")], 6, &[]);
-        assert!(found.repositories.is_empty());
+        assert_eq!(found.repositories, []);
         assert_eq!(found.skipped.len(), 1);
     }
 }

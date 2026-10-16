@@ -84,6 +84,6 @@ mod tests {
 
     #[test]
     fn a_grant_nothing_listens_on_is_not_a_row() {
-        assert!(rows(&BTreeSet::new(), &scope()).is_empty());
+        assert_eq!(rows(&BTreeSet::new(), &scope()), []);
     }
 }

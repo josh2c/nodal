@@ -2638,7 +2638,7 @@ mod tests {
     #[test]
     fn a_reason_names_what_it_is_about() {
         let reason = Reason::new(Needs::UniqueLoss, "untracked files (1)");
-        assert!(!reason.detail.is_empty());
+        assert_ne!(reason.detail, "");
         assert_eq!(reason.needs.label(), "unique loss");
     }
 }

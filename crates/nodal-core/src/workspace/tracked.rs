@@ -197,7 +197,7 @@ mod tests {
         let root = repository(&["src/main.rs"]);
         std::fs::create_dir_all(root.path().join("test-results")).unwrap();
         let git = Git::open(root.path()).unwrap();
-        assert!(tracked(&git, "HEAD", &Excludes::default_list()).unwrap().is_empty());
+        assert_eq!(tracked(&git, "HEAD", &Excludes::default_list()).unwrap(), []);
         let mut list = Excludes::default_list();
         assert_eq!(enforce(root.path(), &mut list).unwrap(), []);
         assert!(list.excludes(Path::new("test-results")), "the row is still on the list");

@@ -692,7 +692,10 @@ mod tests {
             &Checkout::read(directory.path()),
         );
         assert_eq!(none, Relation::Unrelated);
-        assert!(elsewhere(&absent, Some(&Checkout::read(&absent)), &[]).witnesses.is_empty());
+        assert_eq!(
+            elsewhere(&absent, Some(&Checkout::read(&absent)), &[]).witnesses,
+            [] as [std::path::PathBuf; 0]
+        );
     }
 
     /// With no checkout to ask, nothing is believed and nobody vouched.
