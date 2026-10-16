@@ -47,6 +47,14 @@
 //! Each source is therefore asked once per project root and every row of that answer
 //! carries that project's section ([`worktrees::find`] takes it as an argument).
 //!
+//! ## A reading that is not a leftover
+//!
+//! [`ports`] is the one reading here that is about a resource rather than about
+//! something a tool left behind. A project holds one block of a hundred ports and every
+//! unit takes one port and one per per-unit service, so the ports run out before
+//! anything else does, and the first a person hears of it is a create that cannot get
+//! one. The report therefore says how much of the block is held and which units hold it.
+//!
 //! ## What is never touched
 //!
 //! A worktree another tool holds a lock on is reported as locked, and nothing else is
@@ -96,6 +104,7 @@ pub mod databases;
 pub mod intent;
 pub mod machine;
 pub mod onlyhere;
+pub mod ports;
 pub mod size;
 pub mod trash;
 pub mod units;
@@ -248,6 +257,18 @@ impl Scope {
         }
     }
 
+    /// The project of the checkout the command was run in, and `None` outside one or
+    /// where the registry does not know it.
+    ///
+    /// The project is found among the roots the scope already resolved, and not by a
+    /// query on the path. A registry row holds the path whoever wrote it used, which on
+    /// a host with a linked temporary directory is not the path this command resolved.
+    #[must_use]
+    pub fn here(&self) -> Option<&Known> {
+        let root = self.root.as_ref()?;
+        self.projects.iter().find(|known| &known.root == root)
+    }
+
     /// Whether a path is inside the checkout the command was run in.
     ///
     /// [`Scope::section`] cannot answer this. It says `Here` both for a path this
@@ -316,6 +337,10 @@ pub fn survey(
     let mut here = Vec::new();
     let mut elsewhere = Vec::new();
     let mut notes = Vec::new();
+    let ports = match conn {
+        Some(conn) => ports::find(conn, &scope)?,
+        None => None,
+    };
 
     // What the remote of each repository is worth, read once for that repository. Both the
     // worktree rows and the branch audit count against it, and each used to take it for
@@ -353,6 +378,7 @@ pub fn survey(
         state_root: machine.state_dir.to_path_buf(),
         sharing: machine.sharing.cloned(),
         trash: trash::count(machine.state_dir),
+        ports,
         here,
         elsewhere,
         branches,
@@ -453,17 +479,9 @@ fn scope_of(conn: Option<&Connection>, machine: &Machine<'_>) -> Result<Scope> {
 
 /// The checkout line of the report: where the command ran, and what the registry calls
 /// the project there.
-///
-/// The project is found among the roots the scope already resolved, and not by a query
-/// on the path. A registry row holds the path whoever wrote it used, which on a host
-/// with a linked temporary directory is not the path this command resolved.
 fn checkout_of(scope: &Scope) -> Option<Checkout> {
     let root = scope.root.as_ref()?;
-    let project = scope
-        .projects
-        .iter()
-        .find(|known| &known.root == root)
-        .map(|known| known.project.name.to_string());
+    let project = scope.here().map(|known| known.project.name.to_string());
     Some(Checkout { root: root.clone(), project })
 }
 

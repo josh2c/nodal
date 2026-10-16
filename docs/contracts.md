@@ -176,6 +176,32 @@ A project is keyed by its `origin` remote, normalised, and by its checkout path 
 remote. Two clones of one repository are therefore one project with one base and one block of
 ports. Each command acts on the checkout the person is standing in, never on another person's.
 
+## Ports
+A project is granted one block of 100 ports the first time it needs one, from 20000 upwards, and
+keeps it. A block is never given back. Its first port is the project's own: blocks are equal in
+length and aligned, so the rule that two blocks do not overlap is one unique index on that number
+(`0003_ports.sql`). The block is not configurable, because a block of another length would break
+that index.
+
+A unit is granted `1 + len(services.per_unit)` ports of the block: one for the development server,
+and one for each service the project gives every unit its own copy of. A project that declares two
+per-unit services holds three ports for each unit, so 33 units of it fill the block.
+
+A unit keeps its ports while it exists, and a merged unit is no different. `nodal reclaim` is what
+gives them back, and it gives back every port of the unit in the write that ends the reclaim.
+`nodal merge` ends with that reclaim; `nodal merge --no-remove` does not, and the unit keeps its
+ports. `nodal gc` gives back no port of a block: the ports came back when the home went to the
+trash, and `gc` removes the directory after the trash retention.
+
+`nodal doctor` reports the block: how many of its ports are held, where the block is, and the units
+holding them, one row each and the largest holder first. It is the reading before the stall.
+
+A create that cannot get a port for one of those names is refused, and nothing it took is kept. The
+refusal states how many ports the block holds, how many of them are held, how many are free, how
+many this unit asked for, and `nodal reclaim <unit>` as the command that gives ports back. "Held"
+counts the same ports here as in the report: every port the block has handed out. The refusal counts
+them as the create found them, because the create gives back every port it took.
+
 ## Home path policy
 `~/.nodal/<project>/e/<id>/`, equal length for every unit of a project. `<id>` is the last
 eight characters of the environment's identifier: they are the random part rather than the
@@ -555,7 +581,7 @@ done, and the report says so.
 unreferenced volumes, orphan databases, a project over the open-unit threshold, and the unit homes that
 hold work no other copy has, each with a size, in two
 sections: this project, and a separate section for another project's leftovers that carries names and sizes
-only.
+only. It also reports this project's block of ports, as **Ports** above states.
 
 A unit home is read the way a reclaim reads it (`reclaim --check`, one evaluator), and the row says how
 many of its commits are only here and how many nothing has checked. The question is asked of the

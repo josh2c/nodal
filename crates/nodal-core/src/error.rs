@@ -351,8 +351,23 @@ pub enum Error {
         last: u16,
     },
 
-    /// Every port in a project's block is held, so the environment gets none.
-    #[error("ports {first} to {last} are all held")]
+    /// A project's block has no port left for one of the names an environment asked
+    /// under, so the environment gets none.
+    ///
+    /// `held` counts every port of the block that is handed out, which is the one thing
+    /// the word says here and in the report
+    /// ([`crate::output::view::doctor::PortUse::held`]). It is the count the call began
+    /// with. A refusal ends a create, the create gives back every port it took, and the
+    /// block a person then meets is the block the call began with, so that count is the
+    /// number they act on. A count taken at the refusal instead would report the ports
+    /// of a call that is already going away, and name as free the ports an environment
+    /// holds under its other names, which no rollback gives back.
+    #[error(
+        "this project's block holds {span} ports, {first} to {last}: {held} held, {free} free, \
+         and this unit needs {needed}. `nodal reclaim <unit>` gives a unit's ports back to the \
+         block",
+        free = span.saturating_sub(*held)
+    )]
     PortBlockFull {
         /// The environment that asked for a port.
         environment: EnvId,
@@ -360,6 +375,12 @@ pub enum Error {
         first: u16,
         /// The highest port in the block.
         last: u16,
+        /// How many ports the block covers.
+        span: usize,
+        /// How many ports of the block are handed out.
+        held: usize,
+        /// How many names this environment asked for a port under.
+        needed: usize,
     },
 
     /// A fixed port was refused, and by the time the holder was read it had let go,

@@ -173,17 +173,21 @@ pub fn ensure_block(store: &mut Store, project_id: ProjectId) -> Result<PortBloc
 /// under is answered from the record, so the call is a step that can be repeated.
 ///
 /// # Errors
-/// [`Error::PortBlockFull`] when every port in the block is held, [`Error::Store`] on a
-/// failed statement.
+/// [`Error::PortBlockFull`] when the block has no port left for one of the names,
+/// [`Error::Store`] on a failed statement.
 pub fn allocate(
     conn: &Connection,
     block: PortBlock,
     environment: EnvId,
     names: &[PortName],
 ) -> Result<Ports> {
+    let held = port_allocations::list_in_range(conn, block.first, block.last)?.len();
     let mut granted = BTreeMap::new();
     for name in names {
-        granted.insert(name.clone(), allocate_one(conn, block, environment, name)?);
+        let Some(port) = allocate_one(conn, block, environment, name)? else {
+            return Err(block_full(block, environment, held, names.len()));
+        };
+        granted.insert(name.clone(), port);
     }
     Ok(Ports(granted))
 }
@@ -305,9 +309,9 @@ fn allocate_one(
     block: PortBlock,
     environment: EnvId,
     name: &PortName,
-) -> Result<u16> {
+) -> Result<Option<u16>> {
     if let Some(port) = held(conn, environment, name)? {
-        return Ok(port);
+        return Ok(Some(port));
     }
     let taken: BTreeSet<u16> = port_allocations::list_in_range(conn, block.first, block.last)?
         .iter()
@@ -321,16 +325,29 @@ fn allocate_one(
             name: name.clone(),
         };
         if port_allocations::claim(conn, &allocation)? {
-            return Ok(port);
+            return Ok(Some(port));
         }
     }
-    // A refusal is also what a second grant under one name meets, so the record has the
+    // No port is also what a second grant under one name meets, so the record has the
     // last word on whether this environment came away with a port.
-    held(conn, environment, name)?.ok_or(Error::PortBlockFull {
+    held(conn, environment, name)
+}
+
+/// The refusal a block with no port left for a name earns.
+///
+/// The count is the one [`allocate`] took before it claimed anything, and not a count
+/// taken here. A refusal ends a create, the create gives back every port it took, and
+/// the block a person then meets is the block the call began with. Counting here would
+/// report the ports of a call that is already going away.
+fn block_full(block: PortBlock, environment: EnvId, held: usize, needed: usize) -> Error {
+    Error::PortBlockFull {
         environment,
         first: block.first,
         last: block.last,
-    })
+        span: block.span(),
+        held,
+        needed,
+    }
 }
 
 /// Give up every port lease an environment holds.

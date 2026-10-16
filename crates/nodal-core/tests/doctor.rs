@@ -478,6 +478,70 @@ fn a_project_over_the_unit_threshold_is_a_row_of_its_own() {
     assert!(counted.bytes.is_some(), "the disk the homes hold is measured");
 }
 
+/// The reading a person takes before a create is stopped by a full block: how much of
+/// the project's hundred ports is held, and which unit holds what.
+#[test]
+fn the_report_says_how_much_of_the_port_block_is_held_and_which_units_hold_it() {
+    use nodal_core::services::ports::{BLOCK_SPAN, RANGE_FIRST};
+    let machine = plant();
+    let conn = machine.store.conn();
+    let project = project_row(&machine.checkout);
+    nodal_core::store::projects::insert(conn, &project).expect("the project");
+    let block = nodal_core::model::PortBlock {
+        project_id: project.id,
+        first: RANGE_FIRST,
+        last: RANGE_FIRST + BLOCK_SPAN - 1,
+    };
+    nodal_core::store::port_blocks::insert(conn, &block).expect("the block");
+
+    // Two units of the project: one holding three ports of the block, one holding two.
+    for (index, holds) in [(0_u16, 3_u16), (1, 2)] {
+        let unit = unit_row(project.id, usize::from(index));
+        nodal_core::store::units::insert(conn, &unit).expect("a unit");
+        let home = machine.state.join(format!("home-{index}"));
+        let environment = nodal_safety::rows::environment(
+            nodal_core::model::EnvId::from_ulid(ulid::Ulid::new()),
+            unit.id,
+            &home,
+            Timestamp::now(),
+        );
+        nodal_core::store::environments::insert(conn, &environment).expect("a home");
+        for port in 0..holds {
+            let allocation = nodal_core::model::PortAllocation {
+                port: block.first + index * 10 + port,
+                project_id: project.id,
+                environment_id: environment.id,
+                name: nodal_core::model::PortName::parse(format!("svc-{port}")).expect("a name"),
+            };
+            assert!(
+                nodal_core::store::port_allocations::claim(conn, &allocation).expect("a grant"),
+                "the port was not granted"
+            );
+        }
+    }
+
+    let reading = machine.report().ports.expect("the port reading");
+    assert_eq!((reading.first, reading.last), (block.first, block.last));
+    assert_eq!(reading.span, usize::from(BLOCK_SPAN), "the ceiling a person is told");
+    assert_eq!(reading.held, 5);
+    assert_eq!(reading.holders.len(), 2, "{:?}", reading.holders);
+    assert_eq!(reading.holders[0].unit.to_string(), "unit-0", "the largest holder first");
+    assert_eq!(reading.holders[0].ports, 3);
+    assert_eq!(reading.holders[1].unit.to_string(), "unit-1");
+    assert_eq!(reading.holders[1].ports, 2);
+}
+
+/// A project that has never needed a port has no block, and nothing is said about one.
+#[test]
+fn a_project_with_no_block_of_ports_is_read_as_having_none() {
+    let machine = plant();
+    let project = project_row(&machine.checkout);
+    nodal_core::store::projects::insert(machine.store.conn(), &project).expect("the project");
+
+    assert!(machine.report().ports.is_none());
+    assert!(machine.report_without_a_registry().ports.is_none(), "nothing in it was read");
+}
+
 /// One open unit of a project, named by its index so that every slug and branch differ.
 fn unit_row(project: nodal_core::model::ProjectId, index: usize) -> nodal_core::model::Unit {
     let now = Timestamp::now();

@@ -3,6 +3,22 @@
 This file records what each release of Nodal lets a person do, and what it refuses.
 One line per behaviour. Versions follow [semantic versioning](https://semver.org).
 
+## Unreleased
+
+### Read
+
+- `nodal doctor` reports this project's block of ports: how many of its 100 ports are
+  held, which ports the block covers, and one row per unit holding ports, the largest
+  holder first. Nothing said how much of the block was left before a create was stopped
+  by it.
+
+### What refuses
+
+- A create that cannot get a port says how many ports the block holds, how many are
+  held, how many are free, how many this unit asked for, and that
+  `nodal reclaim <unit>` gives a unit's ports back to the block. It said "ports 20000 to
+  20099 are all held", which named no remedy and was wrong where a port was free.
+
 ## 0.1.0-rc.5 — 2026-10-15
 
 ### Locks
