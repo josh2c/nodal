@@ -3,6 +3,33 @@
 This file records what each release of Nodal lets a person do, and what it refuses.
 One line per behaviour. Versions follow [semantic versioning](https://semver.org).
 
+## 0.1.0-rc.5 — 2026-10-15
+
+### Locks
+
+- `nodal reclaim` asks the unit's write lock before it reads the home. It refuses a home
+  that a different actor holds, and it moves nothing and writes nothing. The refusal
+  names the holder and says that `--take` is the one way past. A second actor's reclaim
+  moved a home its holder was still working in before, and it gave exit code 0. The
+  holder read the loss in the failure of their next command.
+- `nodal reclaim --take` writes a `handoff` line on the unit's log, as `nodal run --take`
+  does. `--take` and `--check` conflict, because `--check` takes no hold and refuses
+  nobody.
+- `nodal gc` and `nodal merge --remove` end a unit through the same reclaim. Neither
+  passes `--take`, so each one leaves a unit that a different actor holds, and the report
+  names it.
+- A reclaim gives the hold back when it refuses before it runs anything in the home. The
+  lock row is then the row it was, and the log records no hand-off. Each such refusal
+  recorded the refused actor as the writer of the unit for the idle window before, with
+  no process behind the hold.
+
+### Build
+
+- The workspace builds with stable Rust 1.99.0. That release adds the
+  `clippy::assert_is_empty` lint, which this project denies, and the lint stopped a build
+  from source. What the program does, what it prints and what it exits with do not
+  change.
+
 ## 0.1.0-rc.4 — 2026-09-28
 
 ### Read
