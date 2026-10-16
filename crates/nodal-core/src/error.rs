@@ -10,7 +10,7 @@ use thiserror::Error as ThisError;
 use crate::git::preflight;
 use crate::lifecycle::hooks::Phase;
 use crate::lifecycle::uniqueness::Finding;
-use crate::model::{BaseId, BranchName, EnvId, OperationId, Slug, UnitId};
+use crate::model::{BaseId, BranchName, EnvId, OperationId, PortName, Slug, UnitId};
 use crate::runtime::attribute::Standing;
 
 /// Every failure `nodal-core` can return.
@@ -45,6 +45,31 @@ pub enum Error {
         /// Why it was rejected, with the line and column.
         #[source]
         source: Box<toml::de::Error>,
+    },
+
+    /// A recipe pins a port inside the range Nodal grants a unit's ports from.
+    ///
+    /// A pinned port is the address of a service the whole project shares, and Nodal
+    /// never grants it. Inside the block range it is also a number the allocator hands
+    /// to a unit of that same project, so the project and one of its own units end up
+    /// on one port. The pin is refused where the recipe is read, which is before any
+    /// port is granted.
+    #[error(
+        "{path}: db.fixed_ports pins {name} to {port}, which is inside {first} to {last}, \
+         the range Nodal grants a unit's ports from; pin {name} outside that range",
+        path = path.display()
+    )]
+    RecipePinInGrantedRange {
+        /// The recipe the pin applies to.
+        path: PathBuf,
+        /// The name the stack gives the port.
+        name: PortName,
+        /// The port that was pinned.
+        port: u16,
+        /// The lowest port Nodal grants.
+        first: u16,
+        /// The highest port Nodal grants.
+        last: u16,
     },
 
     /// `nodal init` was asked to write a recipe over one that is already there.

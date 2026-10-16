@@ -27,6 +27,7 @@ use crate::recipe::change::Change;
 use crate::recipe::gap::Gap;
 use crate::recipe::infer::{Confidence, Project};
 use crate::recipe::merge::Merge;
+use crate::services::ports;
 
 /// The file a project's recipe lives in, at the project root.
 pub const FILE_NAME: &str = "nodal.toml";
@@ -73,8 +74,32 @@ fn loaded(root: &Path) -> Result<(Effective, Project)> {
     let project = Project::open(root);
     let proposed = infer::infer(&project);
     let recipe = explicit.merge(proposed.recipe);
+    refuse_a_pin_inside_the_granted_range(&recipe, &path)?;
     let gaps = proposed.gaps.into_iter().filter(|gap| !gap.key.is_answered_by(&recipe)).collect();
     Ok((Effective { recipe, gaps, confidence: proposed.confidence, file }, project))
+}
+
+/// Refuse a pinned port that sits inside the range a unit's ports are granted from.
+///
+/// Nodal does not lease a pinned port and does not keep it out of a block: it is one
+/// number for the whole project, and the only thing that keeps it apart from a granted
+/// port is that the two ranges do not overlap. A pin inside the block range breaks that,
+/// and the allocator will hand the same number to a unit of the same project. The merged
+/// recipe is checked, not only the file, so `nodal init` refuses an inferred pin before
+/// it writes one that the next command cannot read.
+fn refuse_a_pin_inside_the_granted_range(recipe: &Recipe, path: &Path) -> Result<()> {
+    for (name, port) in &recipe.db.fixed_ports {
+        if (ports::RANGE_FIRST..=ports::RANGE_LAST).contains(port) {
+            return Err(Error::RecipePinInGrantedRange {
+                path: path.to_path_buf(),
+                name: name.clone(),
+                port: *port,
+                first: ports::RANGE_FIRST,
+                last: ports::RANGE_LAST,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// What `nodal init` would write, and what it would leave for a person.
