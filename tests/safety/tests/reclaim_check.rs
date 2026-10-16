@@ -59,6 +59,7 @@
 //! | and one whose lineage reaches nothing here is counted, not hidden | `an_unreadable_process_unrelated_to_the_home_is_counted_and_refuses_nothing_at_the_seam` |
 //! | sharing a terminal with a shell in the home is not occupancy | `an_unreadable_process_sharing_only_a_session_with_the_home_refuses_nothing_at_the_seam` |
 //! | the list's word is the gate's word | `the_list_and_the_gate_name_one_reason_over_one_home` |
+//! | and the list's axis is the branch, so a stash is the gate's alone | `work_in_the_stash_is_not_on_the_columns_axis` |
 //! | a declared path is kept, and the sentence says the gate did not act on the declaration | `an_untracked_path_the_project_declares_regenerable_is_kept_and_the_reason_says_so` |
 //! | it changes nothing | `the_check_changes_nothing_and_runs_no_hook` |
 //! | one value, two renderings | `the_human_form_and_the_json_are_one_value` |
@@ -945,9 +946,11 @@ fn gate(machine: &Machine, slug: &str) -> String {
 /// * commits nothing here puts anywhere else, with the remote read: `unique loss` in both.
 /// * commits pushed, with nothing here having read the remote since: `unknown` in both.
 ///
-/// The list is allowed to rank *higher* than the gate and never lower — it pays for a
-/// `git status` and two `stat` calls and the gate pays for `rev-list` — so what is asserted
-/// is the word, in the direction a person is misled by.
+/// Both homes are refused over the branch, which is what the column reads. The column pays
+/// for a `git status` and two `stat` calls and the gate pays for `rev-list`, so the two are
+/// held together over the readings the column takes and not over every home there is: work
+/// on a ref the branch does not reach is the column omitting, and
+/// `work_in_the_stash_is_not_on_the_columns_axis` is where that boundary is stated.
 #[test]
 fn the_list_and_the_gate_name_one_reason_over_one_home() {
     let machine = machine();
@@ -975,6 +978,53 @@ fn the_list_and_the_gate_name_one_reason_over_one_home() {
         "the list reports a reading the gate could not take under another word",
     );
     assert!(unpushed.is_dir() && pushed_home.is_dir(), "a pair of readings moved a home");
+}
+
+/// Work on a ref the branch does not reach is not on the column's axis, and the gate is
+/// where it is answered.
+///
+/// The boundary of the rule above, stated as a test rather than only as a sentence. The
+/// column's commit axis reads the branch — the commits it is ahead of its base by — because
+/// one `git status` and two `stat` calls are the whole of what a row may cost
+/// (`ci/measure.sh`). A stash is work the home holds under a ref the branch does not reach.
+/// The branch itself is pushed and the checkout has read the remote, so the column has
+/// nothing to report and reports nothing; the gate reads every ref and refuses.
+///
+/// So the rule is not "no row ever ranks below the verdict". It is that no reading the
+/// column took is reported as less than it found, and a reading it did not take is an
+/// omission a person pays `nodal reclaim --check` to close. A test asserting the stronger
+/// sentence would be asserting a cost the column does not pay.
+#[test]
+fn work_in_the_stash_is_not_on_the_columns_axis() {
+    let machine = machine();
+    let (home, _) = pushed(&machine, SLUG);
+    git(&machine.source, &["fetch", "--quiet", "--prune", "origin"]);
+    // The control: with the branch proved on the remote, neither surface has anything to
+    // refuse over, so what the stash changes is the only thing the test reads.
+    assert_eq!(check(&machine, SLUG)["safe_to_reclaim"], Value::Bool(true), "{SLUG} is not clear");
+    let word = needs(&machine, SLUG);
+
+    std::fs::write(
+        home.join("stashed.txt"),
+        "work only the stash holds
+",
+    )
+    .unwrap();
+    git(&home, &["stash", "push", "--include-untracked", "--quiet"]);
+    assert!(!home.join("stashed.txt").exists(), "the stash left the file in the tree");
+
+    assert_eq!(
+        check(&machine, SLUG)["safe_to_reclaim"],
+        Value::Bool(false),
+        "the gate let the stash go",
+    );
+    assert_eq!(gate(&machine, SLUG), "unique_loss", "the gate refused for another reason");
+    assert_eq!(
+        needs(&machine, SLUG),
+        word,
+        "the column answered about a ref it does not read, so this asserts no boundary",
+    );
+    assert!(home.is_dir(), "a pair of readings moved the home");
 }
 
 /// A path the project's `[base] invalidate` declares regenerable is kept exactly as any

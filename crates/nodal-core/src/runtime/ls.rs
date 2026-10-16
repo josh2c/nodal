@@ -45,13 +45,24 @@
 //! `nodal reclaim --check` is where it is paid. The column points at the unit; the
 //! preflight answers about it.
 //!
-//! **The column may omit and must never rank lower than the kernel.** The two readings
-//! are not the same reading and the column is cheaper on purpose, so a unit the kernel
-//! calls safe may still read `diverged` or `review` here: those are reasons to open a
-//! unit and not claims about loss. What is a break is the other direction — a word less
-//! actionable than the verdict's, which tells a person a home is finished when the gate
-//! would refuse to remove it. The commit axis is where that happened, and
-//! [`unproved`] carries the rule and its boundary.
+//! **What the column reads, and what it does not.** The two readings are not the same
+//! reading and the column is cheaper on purpose, so a unit the kernel calls safe may still
+//! read `diverged` or `review` here: those are reasons to open a unit and not claims about
+//! loss. The other direction — a word less actionable than the verdict's — is the one that
+//! misleads, because it tells a person a home is finished when the gate would refuse to
+//! remove it. The commit axis is where that happened, and [`unproved`] is the rule that
+//! closed it.
+//!
+//! The rule holds over the readings this column takes, and those readings are the branch.
+//! `unproved` answers about the commits the branch is ahead of its base by, because one
+//! `git status` and two `stat` calls are the whole of what a row may cost
+//! (`ci/measure.sh`). A home can hold work on a ref the branch does not reach — a stash, a
+//! tag, a second branch, a commit made with `HEAD` detached — and finding those is a
+//! `git for-each-ref` and a `rev-list` per home, which `nodal reclaim --check` pays and
+//! this column does not. **Such a home reads lower here than the gate answers about it,
+//! and that is the column omitting rather than the column being wrong.** It is not an
+//! invariant that no row ever ranks below the verdict; it is an invariant that no reading
+//! the column took is reported as less than it found.
 //!
 //! **WHO is two readings, in this order.** The lock rows first, then the process table.
 //! The order is not a preference: the process table is `/proc`, which does not cross
