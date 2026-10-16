@@ -117,6 +117,21 @@ struct Fixed<'a> {
     port: u16,
 }
 
+/// What one environment asked a block for.
+///
+/// The count of names travels with the block and the environment because a refusal
+/// reports it: a unit that needs three ports and meets one free port is told both
+/// numbers ([`Error::PortBlockFull`]).
+#[derive(Debug, Clone, Copy)]
+struct Ask {
+    /// The block the ports come from.
+    block: PortBlock,
+    /// The environment the ports are granted to.
+    environment: EnvId,
+    /// How many names the environment asked for a port under.
+    needed: usize,
+}
+
 /// A fixed port another environment holds, and the unit that environment belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FixedPortConflict {
@@ -173,17 +188,18 @@ pub fn ensure_block(store: &mut Store, project_id: ProjectId) -> Result<PortBloc
 /// under is answered from the record, so the call is a step that can be repeated.
 ///
 /// # Errors
-/// [`Error::PortBlockFull`] when every port in the block is held, [`Error::Store`] on a
-/// failed statement.
+/// [`Error::PortBlockFull`] when the block has no port left for one of the names,
+/// [`Error::Store`] on a failed statement.
 pub fn allocate(
     conn: &Connection,
     block: PortBlock,
     environment: EnvId,
     names: &[PortName],
 ) -> Result<Ports> {
+    let ask = Ask { block, environment, needed: names.len() };
     let mut granted = BTreeMap::new();
     for name in names {
-        granted.insert(name.clone(), allocate_one(conn, block, environment, name)?);
+        granted.insert(name.clone(), allocate_one(conn, ask, name)?);
     }
     Ok(Ports(granted))
 }
@@ -300,15 +316,11 @@ fn held(conn: &Connection, environment: EnvId, name: &PortName) -> Result<Option
 /// than one write per port that is taken. That read is a hint and nothing more: the
 /// grant itself is the write, and a port taken between the read and the write is a
 /// refusal that moves on to the next port.
-fn allocate_one(
-    conn: &Connection,
-    block: PortBlock,
-    environment: EnvId,
-    name: &PortName,
-) -> Result<u16> {
-    if let Some(port) = held(conn, environment, name)? {
+fn allocate_one(conn: &Connection, ask: Ask, name: &PortName) -> Result<u16> {
+    if let Some(port) = held(conn, ask.environment, name)? {
         return Ok(port);
     }
+    let block = ask.block;
     let taken: BTreeSet<u16> = port_allocations::list_in_range(conn, block.first, block.last)?
         .iter()
         .map(|allocation| allocation.port)
@@ -317,7 +329,7 @@ fn allocate_one(
         let allocation = PortAllocation {
             port,
             project_id: block.project_id,
-            environment_id: environment,
+            environment_id: ask.environment,
             name: name.clone(),
         };
         if port_allocations::claim(conn, &allocation)? {
@@ -326,10 +338,32 @@ fn allocate_one(
     }
     // A refusal is also what a second grant under one name meets, so the record has the
     // last word on whether this environment came away with a port.
-    held(conn, environment, name)?.ok_or(Error::PortBlockFull {
-        environment,
-        first: block.first,
-        last: block.last,
+    match held(conn, ask.environment, name)? {
+        Some(port) => Ok(port),
+        None => Err(block_full(conn, ask)?),
+    }
+}
+
+/// The refusal a block with no port left for a name earns.
+///
+/// The ports are counted again here rather than taken from the hint the grant read.
+/// That read is a hint and this is a report, and the two are separated by every claim
+/// the loop made.
+///
+/// What this environment itself holds is left out of the count, for the reason
+/// [`Error::PortBlockFull`] states.
+fn block_full(conn: &Connection, ask: Ask) -> Result<Error> {
+    let held = port_allocations::list_in_range(conn, ask.block.first, ask.block.last)?
+        .iter()
+        .filter(|allocation| allocation.environment_id != ask.environment)
+        .count();
+    Ok(Error::PortBlockFull {
+        environment: ask.environment,
+        first: ask.block.first,
+        last: ask.block.last,
+        held,
+        free: ask.block.span().saturating_sub(held),
+        needed: ask.needed,
     })
 }
 

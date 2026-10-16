@@ -31,6 +31,12 @@ impl PortBlock {
         self.first <= port && port <= self.last
     }
 
+    /// How many ports the block holds.
+    #[must_use]
+    pub fn span(self) -> usize {
+        usize::from(self.last.saturating_sub(self.first)) + 1
+    }
+
     /// Every port in the block, lowest first.
     #[must_use]
     pub fn ports(self) -> RangeInclusive<u16> {

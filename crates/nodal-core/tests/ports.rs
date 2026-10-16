@@ -20,8 +20,8 @@ use std::sync::Barrier;
 
 use nodal_core::error::Error;
 use nodal_core::model::{
-    BranchName, Digest, EnvId, EnvState, Environment, HostName, PortName, Ports, Project,
-    ProjectId, ProjectName, Slug, Timestamp, Unit, UnitId, UnitStatus,
+    BranchName, Digest, EnvId, EnvState, Environment, HostName, PortBlock, PortName, Ports,
+    Project, ProjectId, ProjectName, Slug, Timestamp, Unit, UnitId, UnitStatus,
 };
 use nodal_core::services::{listeners, ports};
 use nodal_core::store::{
@@ -221,6 +221,62 @@ fn asking_twice_returns_the_ports_already_held() {
 
     assert_eq!(once, again, "a repeated step must not grant a second port");
     assert_eq!(port_allocations::list_for_environment(conn, environment).unwrap().len(), 1);
+}
+
+/// Hold every port of `block` but `spare` of them, under one environment.
+///
+/// One environment under many names is how a block fills: the names are the recipe's
+/// and the ports are the block's, and the count is what a refusal reports against.
+fn fill_block(registry: &Registry, block: PortBlock, holder: EnvId, spare: usize) {
+    let wanted: Vec<PortName> =
+        (0..usize::from(ports::BLOCK_SPAN) - spare).map(|n| name(&format!("svc-{n}"))).collect();
+    let granted = ports::allocate(registry.store.conn(), block, holder, &wanted).unwrap();
+    assert_eq!(granted.0.len(), wanted.len(), "the block did not fill: {granted:?}");
+}
+
+/// The three names a unit of this project asks for ports under.
+fn three() -> [PortName; 3] {
+    [name("app"), name("api"), name("db")]
+}
+
+/// A refusal reports the numbers a person acts on: the size of the block, what is held,
+/// what is free, how many this unit asked for, and the command that gives ports back.
+#[test]
+fn a_full_block_says_what_it_holds_and_the_command_that_gives_ports_back() {
+    let mut registry = Registry::open();
+    let project = registry.project(1);
+    let (_, holder) = registry.unit(project, 1);
+    let (_, asking) = registry.unit(project, 2);
+    let block = ports::ensure_block(&mut registry.store, project).unwrap();
+    fill_block(&registry, block, holder, 0);
+
+    let refused =
+        ports::allocate(registry.store.conn(), block, asking, &three()).unwrap_err().to_string();
+
+    for part in ["20000 to 20099", "100 ports", "100 held", "0 free", "needs 3", "nodal reclaim"] {
+        assert!(refused.contains(part), "{part:?} is not in {refused:?}");
+    }
+}
+
+/// The sentence says what is free, and a block with a free port is never reported as one
+/// where every port is held. A unit that needs three ports is stopped by the last free
+/// one, and the port it took is given back when the create that asked for it rolls back.
+#[test]
+fn a_block_with_a_free_port_is_not_reported_as_one_where_every_port_is_held() {
+    let mut registry = Registry::open();
+    let project = registry.project(1);
+    let (_, holder) = registry.unit(project, 1);
+    let (_, asking) = registry.unit(project, 2);
+    let block = ports::ensure_block(&mut registry.store, project).unwrap();
+    fill_block(&registry, block, holder, 1);
+
+    let refused =
+        ports::allocate(registry.store.conn(), block, asking, &three()).unwrap_err().to_string();
+
+    for part in ["100 ports", "99 held", "1 free", "needs 3"] {
+        assert!(refused.contains(part), "{part:?} is not in {refused:?}");
+    }
+    assert!(!refused.contains("all held"), "one port is free: {refused:?}");
 }
 
 #[test]
