@@ -13,7 +13,7 @@ string_newtype! {
 }
 
 /// A claim on a singular resource. It expires so that a crashed session cannot hold a
-/// fixed port forever.
+/// resource forever.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Lease {
     /// The resource being held.

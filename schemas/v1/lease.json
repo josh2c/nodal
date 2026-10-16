@@ -20,7 +20,7 @@
   },
   "$id": "https://github.com/josh2c/nodal/blob/main/schemas/v1/lease.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "A claim on a singular resource. It expires so that a crashed session cannot hold a\nfixed port forever.",
+  "description": "A claim on a singular resource. It expires so that a crashed session cannot hold a\nresource forever.",
   "properties": {
     "environment_id": {
       "$ref": "#/$defs/EnvId",

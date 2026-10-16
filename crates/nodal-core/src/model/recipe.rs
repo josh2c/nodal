@@ -507,8 +507,13 @@ pub struct Db {
     pub migrations_dir: Option<PathBuf>,
     /// The variables a connection string is published in, in the order tried.
     pub url_var: Vec<EnvName>,
-    /// Ports the stack pins, by the name its own configuration gives them. A pinned
-    /// port can be held by only one environment at a time.
+    /// Ports the stack pins, by the name its own configuration gives them.
+    ///
+    /// A pinned port is the address of a service the whole project shares. Nodal
+    /// records it and never grants it to a unit. Nodal does not reserve it, does not
+    /// keep two units of the project off it, and reports no collision on it. A pin
+    /// inside the range Nodal grants a unit's ports from is refused when the recipe is
+    /// read. `docs/contracts.md` states what a pin does not do.
     pub fixed_ports: BTreeMap<PortName, u16>,
 }
 

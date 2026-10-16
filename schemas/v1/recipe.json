@@ -159,7 +159,7 @@
         "fixed_ports": {
           "additionalProperties": false,
           "default": {},
-          "description": "Ports the stack pins, by the name its own configuration gives them. A pinned\nport can be held by only one environment at a time.",
+          "description": "Ports the stack pins, by the name its own configuration gives them.\n\nA pinned port is the address of a service the whole project shares. Nodal\nrecords it and never grants it to a unit. Nodal does not reserve it, does not\nkeep two units of the project off it, and reports no collision on it. A pin\ninside the range Nodal grants a unit's ports from is refused when the recipe is\nread. `docs/contracts.md` states what a pin does not do.",
           "patternProperties": {
             "^[\\x21-\\x7E]+$": {
               "format": "uint16",

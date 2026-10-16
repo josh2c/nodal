@@ -242,6 +242,31 @@ where the program is not on the path, the line says `not checked` with the reaso
 refuses over a pin in this table and no command selects a version from it. The one place a pin
 is acted on is the package-manager pin, which a base build runs the install at.
 
+**A pinned port in `db.fixed_ports` is recorded, and nothing else.** The table states the
+address of a service the whole project shares — a local Supabase stack on 54321, its Postgres on
+54322. Nodal reads the table, writes it back, and names it where it names ports. Six facts follow,
+and an operator needs all six:
+
+- Nodal does not allocate, reserve or protect a pinned port. No command claims it and no record of
+  a claim is written.
+- Two units of one project share every port the project pins. There is one number and the units get
+  the same one.
+- Only one process can bind that number. The second process fails in the words of its own tool, not
+  in Nodal's, because Nodal was never asked.
+- **A client in a second unit reaches the first unit's service and gets the first unit's data, with
+  no error anywhere.** Each unit has its own database by name, and the pinned port in front of them
+  answers from whichever unit started first. This reading was taken: the answer came from unit one
+  and the exit status was 0.
+- No command reports a pinned port or a collision on one. `nodal doctor`, `nodal show` and
+  `nodal env` report granted ports and say nothing about a pinned one.
+- A pin inside 20000 to 29999 is a mistake, and Nodal refuses it. That range is the one a unit's
+  ports are granted from, so the pin and a port of the project's own block would be the same number.
+  The refusal names the key, the number, the range and the remedy, and it happens when the recipe is
+  read, which is before a port is granted. `nodal init` refuses such a pin before it writes a file.
+
+Running one stack per unit instead needs an adapter that starts and addresses each unit's services
+on granted ports. Nodal does not have one.
+
 **A base build never installs into the host.** `uv` and Poetry make their own environment; `pip` does
 not, so a base build makes one for it. The build runs `python3 -m venv .venv` as its own step and then
 runs `.venv/bin/pip install -r requirements.txt`, and a host with neither `python3` nor `python` is
