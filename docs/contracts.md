@@ -244,8 +244,8 @@ is acted on is the package-manager pin, which a base build runs the install at.
 
 **A pinned port in `db.fixed_ports` is recorded, and nothing else.** The table states the
 address of a service the whole project shares — a local Supabase stack on 54321, its Postgres on
-54322. Nodal reads the table, writes it back, and names it where it names ports. Six facts follow,
-and an operator needs all six:
+54322. Nodal reads the table, writes it back, and names it where it names ports. Seven facts follow,
+and an operator needs all seven:
 
 - Nodal does not allocate, reserve or protect a pinned port. No command claims it and no record of
   a claim is written.
@@ -264,6 +264,14 @@ and an operator needs all six:
   ports are granted from, so the pin and a port of the project's own block would be the same number.
   The refusal names the key, the number, the range and the remedy, and it happens when the recipe is
   read, which is before a port is granted. `nodal init` refuses such a pin before it writes a file.
+  It also names where the pin came from: the recipe, where a person wrote it, or the stack's own
+  configuration, where the stack states it. An inferred pin is in no file of the project's own, and
+  a message that named one would send a person to a document nobody wrote.
+- A `[db.fixed_ports]` table a person writes replaces the inferred table whole, so a project whose
+  stack really does sit inside that range is not locked out. State the table in `nodal.toml` without
+  that pin. This table merges whole and not key by key, so the pin the stack states is not in the
+  recipe that applies, and the project loads. What Nodal gives up is the record of that address,
+  which is all it ever had.
 
 Running one stack per unit instead needs an adapter that starts and addresses each unit's services
 on granted ports. Nodal does not have one.

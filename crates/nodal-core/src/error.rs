@@ -11,6 +11,7 @@ use crate::git::preflight;
 use crate::lifecycle::hooks::Phase;
 use crate::lifecycle::uniqueness::Finding;
 use crate::model::{BaseId, BranchName, EnvId, OperationId, PortName, Slug, UnitId};
+use crate::recipe::PinSource;
 use crate::runtime::attribute::Standing;
 
 /// Every failure `nodal-core` can return.
@@ -54,14 +55,18 @@ pub enum Error {
     /// to a unit of that same project, so the project and one of its own units end up
     /// on one port. The pin is refused where the recipe is read, which is before any
     /// port is granted.
+    ///
+    /// `origin` says where the pin came from, and the remedy the message carries differs
+    /// with it: a written pin is a line to edit, and an inferred one is a stack to change
+    /// or a table to state.
     #[error(
-        "{path}: db.fixed_ports pins {name} to {port}, which is inside {first} to {last}, \
-         the range Nodal grants a unit's ports from; pin {name} outside that range",
-        path = path.display()
+        "{origin} pins {name} to {port}, which is inside {first} to {last}, the range a \
+         unit's ports come from; {remedy}",
+        remedy = origin.remedy()
     )]
     RecipePinInGrantedRange {
-        /// The recipe the pin applies to.
-        path: PathBuf,
+        /// Where the pin was read from.
+        origin: PinSource,
         /// The name the stack gives the port.
         name: PortName,
         /// The port that was pinned.
