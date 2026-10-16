@@ -257,6 +257,18 @@ impl Scope {
         }
     }
 
+    /// The project of the checkout the command was run in, and `None` outside one or
+    /// where the registry does not know it.
+    ///
+    /// The project is found among the roots the scope already resolved, and not by a
+    /// query on the path. A registry row holds the path whoever wrote it used, which on
+    /// a host with a linked temporary directory is not the path this command resolved.
+    #[must_use]
+    pub fn here(&self) -> Option<&Known> {
+        let root = self.root.as_ref()?;
+        self.projects.iter().find(|known| &known.root == root)
+    }
+
     /// Whether a path is inside the checkout the command was run in.
     ///
     /// [`Scope::section`] cannot answer this. It says `Here` both for a path this
@@ -467,17 +479,9 @@ fn scope_of(conn: Option<&Connection>, machine: &Machine<'_>) -> Result<Scope> {
 
 /// The checkout line of the report: where the command ran, and what the registry calls
 /// the project there.
-///
-/// The project is found among the roots the scope already resolved, and not by a query
-/// on the path. A registry row holds the path whoever wrote it used, which on a host
-/// with a linked temporary directory is not the path this command resolved.
 fn checkout_of(scope: &Scope) -> Option<Checkout> {
     let root = scope.root.as_ref()?;
-    let project = scope
-        .projects
-        .iter()
-        .find(|known| &known.root == root)
-        .map(|known| known.project.name.to_string());
+    let project = scope.here().map(|known| known.project.name.to_string());
     Some(Checkout { root: root.clone(), project })
 }
 

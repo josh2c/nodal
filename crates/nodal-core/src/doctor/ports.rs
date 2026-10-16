@@ -29,7 +29,7 @@ use crate::store::{environments, port_allocations, port_blocks, units};
 /// [`crate::Error::Store`] when the registry could not be read, and
 /// [`crate::Error::StoreRow`] when a column does not hold a value the model accepts.
 pub fn find(conn: &Connection, scope: &Scope) -> crate::Result<Option<PortUse>> {
-    let Some(project) = here(scope) else {
+    let Some(project) = scope.here().map(|known| known.project.id) else {
         return Ok(None);
     };
     let Some(block) = port_blocks::get(conn, project)? else {
@@ -55,17 +55,6 @@ pub fn find(conn: &Connection, scope: &Scope) -> crate::Result<Option<PortUse>> 
         held: allocations.len(),
         holders,
     }))
-}
-
-/// The project of the checkout the command was run in.
-///
-/// The project is found among the roots the scope already resolved, for the reason
-/// [`crate::doctor::survey`] resolves them: a registry row holds the path whoever wrote
-/// it used, which on a host with a linked temporary directory is not the path this
-/// command resolved.
-fn here(scope: &Scope) -> Option<ProjectId> {
-    let root = scope.root.as_ref()?;
-    scope.projects.iter().find(|known| &known.root == root).map(|known| known.project.id)
 }
 
 /// The handle of the unit behind each environment of the project.
