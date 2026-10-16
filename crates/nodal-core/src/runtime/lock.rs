@@ -15,10 +15,12 @@
 //! because it enters a home and then takes it away, which is the entry a second writer
 //! can never be told about afterwards: every other refusal leaves the home where a person
 //! can go and look. It asks before the home is read, and the claim and the reading of the
-//! home are one transaction, so a reclaim refused before it runs anything in the home has
-//! moved nothing, written nothing and claimed nothing
-//! ([`crate::lifecycle::ops::reclaim`]). `--take` is the one way past a live holder, as it
-//! is for the rest.
+//! home are one transaction, so a reclaim the reading refuses — the placement rule, the
+//! uniqueness check, the process table — has moved nothing, written nothing and claimed
+//! nothing ([`crate::lifecycle::ops::reclaim::prepare`]). Past the reading the reclaim has
+//! begun, and the hold is this actor's: that is the hook phase and everything after it,
+//! including a declared hook this machine has not approved. `--take` is the one way past a
+//! live holder, as it is for the rest.
 //!
 //! **`gc` and `merge --remove` ask too, through the reclaim they run.** A merged unit whose
 //! retention has run out still has a live home, and the sweep gives that home back through

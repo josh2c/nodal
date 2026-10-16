@@ -860,9 +860,10 @@ running one of those in a held home is refused. The message names the holder, sa
 held it, and says `--take`. Every one of those verbs accepts `--take`.
 
 `nodal reclaim` is on that list because it enters a home and then takes it away. It asks before it
-reads the home, and the claim and the reading are one registry write, so a reclaim refused before it
-runs anything in the home has moved nothing, written nothing and claimed nothing; every other refusal
-leaves the home where its holder can go and look, and this one would not.
+reads the home, and the claim and the reading are one registry write, so a reclaim the reading
+refuses has moved nothing, written nothing and claimed nothing; every other refusal leaves the home
+where its holder can go and look, and this one would not. Past the reading the reclaim has begun and
+the hold is the actor's until the operation ends, which includes a reclaim stopped by a hook.
 `nodal reclaim --check` takes no hold and refuses nobody: it is a read verb and it accepts no `--take`.
 
 `nodal gc` and `nodal merge --remove` ask for the hold too, because each ends a unit through the

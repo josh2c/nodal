@@ -1158,6 +1158,14 @@ impl Prepared {
 /// across the claim alone. A second writer waits for that reading instead of a statement.
 /// The reading is bounded, every read verb goes on answering through it (WAL), and the
 /// alternative is the refusal above.
+///
+/// **The boundary is this function.** A transaction cannot span the project's own
+/// `pre_reclaim` hook, which is the next thing [`reclaim`] does and which runs for as long
+/// as the project's command takes; holding the registry's write lock across it would block
+/// every other writer on somebody else's script. So a refusal from the hook phase onwards
+/// keeps the hold, and that includes [`Error::HookNotApproved`], where the hook did not
+/// run. Such a reclaim has not moved the home, and the hold is the one this actor would
+/// need for the retry.
 fn prepare(store: &mut Store, request: &Request) -> Result<Prepared> {
     let path = store.path().to_path_buf();
     let tx = store.transaction()?;
