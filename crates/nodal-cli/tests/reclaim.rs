@@ -1004,7 +1004,7 @@ fn a_hook_that_fails_stops_the_reclaim_before_anything_moves() {
     assert!(told.contains("pre_reclaim hook failed"), "{told}");
     assert!(told.contains("exited 3"), "the message says how: {told}");
     assert!(home.is_dir(), "and the home is where it was");
-    assert!(workspace.trashed().is_empty());
+    assert_eq!(workspace.trashed(), [] as [PathBuf; 0]);
 }
 
 #[test]
@@ -1074,7 +1074,7 @@ fn a_reclaim_killed_between_two_steps_is_rolled_back_by_the_next_invocation() {
     child.reclaim();
 
     assert!(home.is_dir(), "the kill landed before the home was moved");
-    assert!(workspace.trashed().is_empty());
+    assert_eq!(workspace.trashed(), [] as [PathBuf; 0]);
 
     // What a person does next. The run is rolled back, and the unit is still there.
     let next = workspace.nodal(&["reclaim", "worker-import"]);

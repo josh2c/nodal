@@ -208,6 +208,6 @@ mod tests {
     /// A project that pins nothing gets no lines, rather than a line saying nothing.
     #[test]
     fn a_project_that_pins_nothing_reports_nothing() {
-        assert!(readings(&Recipe::default(), &Fake(BTreeMap::new())).is_empty());
+        assert_eq!(readings(&Recipe::default(), &Fake(BTreeMap::new())), []);
     }
 }

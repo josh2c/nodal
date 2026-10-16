@@ -273,7 +273,7 @@ fn a_home_whose_commits_are_in_the_checkout_is_removed_on_time() {
     assert!(swept.status.success(), "{}", stderr(&swept));
     assert!(stdout(&swept).contains("1 home"), "{}", stdout(&swept));
     assert!(!trash.exists(), "the sweep kept a home holding nothing: {}", stdout(&swept));
-    assert!(machine.trashed().is_empty());
+    assert_eq!(machine.trashed(), [] as [PathBuf; 0]);
 }
 
 /// A reclaim of one unit writes into that unit's home and into the registry, and into

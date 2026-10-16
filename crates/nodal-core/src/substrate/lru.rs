@@ -70,7 +70,7 @@ mod tests {
     #[test]
     fn nothing_is_evicted_while_the_project_is_inside_its_number() {
         let rows = [candidate(1, 10, 0), candidate(2, 20, 0)];
-        assert!(evictable(&rows, DEFAULT_KEEP).is_empty());
+        assert_eq!(evictable(&rows, DEFAULT_KEEP), []);
     }
 
     #[test]
@@ -82,7 +82,7 @@ mod tests {
     #[test]
     fn a_pinned_base_is_never_evicted_and_does_not_take_a_place() {
         let rows = [candidate(1, 10, 3), candidate(2, 20, 0), candidate(3, 30, 0)];
-        assert!(evictable(&rows, 2).is_empty());
+        assert_eq!(evictable(&rows, 2), []);
         assert_eq!(evictable(&rows, 1), vec![rows[1].id]);
     }
 

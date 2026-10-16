@@ -939,7 +939,7 @@ fn a_rewritten_recipe_names_the_lines_it_changes() {
 /// A rewrite that changes nothing has nothing to warn about.
 #[test]
 fn a_recipe_that_does_not_change_carries_no_warning() {
-    assert!(init_report().warning().is_empty());
+    assert_eq!(init_report().warning(), [] as [String; 0]);
 }
 
 #[test]

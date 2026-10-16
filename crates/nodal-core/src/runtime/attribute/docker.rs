@@ -153,7 +153,7 @@ mod tests {
             container("elsewhere", &[(UNIT_LABEL, "01ARZ3NDEKTSV4RRFFQ69G5FZZ")], &[]),
             container("nonsense", &[(UNIT_LABEL, "not-an-identifier")], &[]),
         ];
-        assert!(rows(&containers, &scope()).is_empty());
+        assert_eq!(rows(&containers, &scope()), []);
     }
 
     #[test]

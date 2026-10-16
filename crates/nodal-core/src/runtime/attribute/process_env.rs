@@ -103,14 +103,14 @@ mod tests {
     #[test]
     fn a_process_of_a_unit_this_host_has_no_home_for_is_not_a_row() {
         let table = [process(12, &[("NODAL_ID", "01ARZ3NDEKTSV4RRFFQ69G5FZZ")])];
-        assert!(rows(&table, &scope()).is_empty());
+        assert_eq!(rows(&table, &scope()), []);
     }
 
     #[test]
     fn a_process_that_names_no_unit_or_names_nonsense_is_not_a_row() {
         let table =
             [process(13, &[("USER", "josh")]), process(14, &[("NODAL_ID", "not-an-identifier")])];
-        assert!(rows(&table, &scope()).is_empty());
+        assert_eq!(rows(&table, &scope()), []);
     }
 
     #[test]
@@ -127,6 +127,6 @@ mod tests {
         let table = [process(16, &[("NODAL_ID", UNIT)])];
         let rows = rows(&table, &scope());
         assert_eq!(rows.len(), 1);
-        assert!(rows[0].what.is_empty());
+        assert_eq!(rows[0].what, "");
     }
 }

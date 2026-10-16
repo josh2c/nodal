@@ -446,7 +446,7 @@ fn a_build_killed_between_steps_is_finished_by_the_next_invocation() {
     assert!(bases[0].base.path.join(".warm-log").exists(), "and finished the work");
 
     // Resolved once, not reported again.
-    assert!(lifecycle::resolve(&mut store, &[&BaseBuild]).unwrap().is_empty());
+    assert_eq!(lifecycle::resolve(&mut store, &[&BaseBuild]).unwrap(), []);
 }
 
 /// Re-execute this test binary, running only the child test, and own what it starts.

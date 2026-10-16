@@ -586,9 +586,9 @@ mod tests {
         let verdict = judged(&set(Vec::new(), Vec::new()));
         assert!(verdict.safe());
         let proof = verdict.proof().unwrap();
-        assert!(proof.rests_on().is_empty());
+        assert_eq!(proof.rests_on(), []);
         assert_eq!(proof.observed_at(), at());
-        assert!(proof.record().is_empty());
+        assert_eq!(proof.record(), []);
     }
 
     /// The two path groups a removal would lose refuse; the two the trash keeps do not.

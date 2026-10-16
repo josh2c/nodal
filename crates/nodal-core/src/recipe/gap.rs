@@ -129,8 +129,8 @@ mod tests {
     fn every_key_has_a_question() {
         for key in KEYS {
             assert!(QUESTIONS.iter().any(|row| row.0 == *key), "{key:?} is not in the table");
-            assert!(!key.question().is_empty());
-            assert!(!key.toml_key().is_empty());
+            assert_ne!(key.question(), "");
+            assert_ne!(key.toml_key(), "");
         }
         assert_eq!(QUESTIONS.len(), KEYS.len());
     }

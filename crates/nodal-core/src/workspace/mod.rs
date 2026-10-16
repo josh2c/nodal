@@ -498,7 +498,7 @@ mod tests {
             panic!("a directory that is not there answered {answer:?}");
         };
         assert_eq!(errno, Some(libc::ENOENT));
-        assert!(!why.is_empty());
+        assert_ne!(why, "");
     }
 
     #[test]

@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn a_name_is_split_at_every_character_that_is_not_a_letter_or_a_digit() {
         assert_eq!(tokens("supabase_db_acme-web.1"), ["supabase", "db", "acme", "web", "1"]);
-        assert!(tokens("///").is_empty());
+        assert_eq!(tokens("///"), [] as [String; 0]);
     }
 
     #[test]

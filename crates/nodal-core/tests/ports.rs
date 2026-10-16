@@ -233,7 +233,7 @@ fn a_fixed_port_conflict_names_the_holding_unit() {
     let pinned = fixed(54_322);
 
     assert_eq!(ports::hold_fixed(conn, holding_env, &pinned, now(), until()).unwrap(), None);
-    assert!(ports::check_fixed(conn, holding_env, &pinned, now()).unwrap().is_empty());
+    assert_eq!(ports::check_fixed(conn, holding_env, &pinned, now()).unwrap(), []);
 
     let reported = ports::check_fixed(conn, claimant, &pinned, now()).unwrap();
     assert_eq!(reported.len(), 1, "{reported:?}");
@@ -247,7 +247,7 @@ fn a_fixed_port_conflict_names_the_holding_unit() {
 
     let refused = ports::hold_fixed(conn, claimant, &pinned, now(), until()).unwrap();
     assert_eq!(refused.as_ref(), Some(conflict), "the claim is refused, and by the same words");
-    assert!(leases::list_for_environment(conn, claimant).unwrap().is_empty());
+    assert_eq!(leases::list_for_environment(conn, claimant).unwrap(), []);
 }
 
 #[test]
@@ -281,9 +281,9 @@ fn a_lapsed_claim_is_not_a_conflict() {
 
     ports::hold_fixed(conn, holding_env, &pinned, now(), until()).unwrap();
     let later = at("2026-09-08T11:00:00Z");
-    assert!(ports::check_fixed(conn, claimant, &pinned, later).unwrap().is_empty());
+    assert_eq!(ports::check_fixed(conn, claimant, &pinned, later).unwrap(), []);
     assert_eq!(ports::hold_fixed(conn, claimant, &pinned, later, later).unwrap(), None);
-    assert!(leases::list_for_environment(conn, holding_env).unwrap().is_empty());
+    assert_eq!(leases::list_for_environment(conn, holding_env).unwrap(), []);
 }
 
 #[test]
@@ -304,8 +304,8 @@ fn reclaim_gives_back_every_port_and_lease() {
         granted.0.values().copied().collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>()
     );
     assert_eq!(released.fixed, vec![54_322]);
-    assert!(port_allocations::list_for_environment(conn, environment).unwrap().is_empty());
-    assert!(leases::list_for_environment(conn, environment).unwrap().is_empty());
+    assert_eq!(port_allocations::list_for_environment(conn, environment).unwrap(), []);
+    assert_eq!(leases::list_for_environment(conn, environment).unwrap(), []);
 
     // What was given back is available again, to this environment or to another.
     let reused = ports::allocate(conn, block, other, &[name("app")]).unwrap();
@@ -415,7 +415,7 @@ fn concurrent_claims_on_one_fixed_port_leave_one_holder_everybody_names() {
         assert_eq!(conflict.environment, winners[0], "{environment} was told the wrong holder");
         assert_eq!(conflict.port, 54_322);
         assert!(conflict.slug.as_str().starts_with("unit-"), "{:?}", conflict.slug);
-        assert!(leases::list_for_environment(conn, *environment).unwrap().is_empty());
+        assert_eq!(leases::list_for_environment(conn, *environment).unwrap(), []);
     }
 }
 

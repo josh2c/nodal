@@ -518,7 +518,7 @@ mod tests {
         let recipe = Recipe { package_manager: vec![PackageManager::Pnpm], ..Recipe::default() };
         let resolved = only(&recipe, &bare_host()).unwrap();
         assert_eq!(resolved.argv, ["pnpm", "install"]);
-        assert!(resolved.env.is_empty());
+        assert_eq!(resolved.env, []);
     }
 
     /// The blocker this shape exists for: `pip` with no environment installs into
@@ -629,7 +629,7 @@ mod tests {
         let recipe = Recipe { package_manager: vec![PackageManager::Pnpm], ..Recipe::default() };
         let host = Fake { tools: Vec::new(), version: None };
         assert_eq!(only(&recipe, &host).unwrap().at, Site::Base);
-        assert!(in_the_home(&recipe, &host, bare_tree()).unwrap().is_empty());
+        assert_eq!(in_the_home(&recipe, &host, bare_tree()).unwrap(), []);
     }
 
     /// Cargo writes into the Cargo home, which no exclusion list reaches, so an
@@ -639,7 +639,7 @@ mod tests {
         let recipe = excluding(PackageManager::Cargo, &["target", "node_modules"]);
         let host = Fake { tools: Vec::new(), version: None };
         assert_eq!(only(&recipe, &host).unwrap().at, Site::Base);
-        assert!(in_the_home(&recipe, &host, bare_tree()).unwrap().is_empty());
+        assert_eq!(in_the_home(&recipe, &host, bare_tree()).unwrap(), []);
     }
 
     /// One half of a repository moves and the other does not. A base of three ecosystems

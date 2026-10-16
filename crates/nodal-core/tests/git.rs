@@ -391,7 +391,7 @@ fn refs_round_trip_in_the_nodal_namespace() {
     git.delete_ref(&wip).unwrap();
     assert_eq!(git.read_ref(&wip).unwrap(), None);
     git.delete_ref(&wip).unwrap();
-    assert!(git.list_refs(refs::NAMESPACE).unwrap().is_empty());
+    assert_eq!(git.list_refs(refs::NAMESPACE).unwrap(), []);
     assert!(git.write_ref("refs/nodal/bad", &head, "reason").is_ok());
 }
 

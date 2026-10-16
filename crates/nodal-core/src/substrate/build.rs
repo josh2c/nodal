@@ -1153,7 +1153,7 @@ mod tests {
     #[test]
     fn a_warm_build_runs_only_when_it_was_asked_for() {
         let recipe = recipe(&[PackageManager::Pnpm], Some("pnpm run build"));
-        assert!(warm_argv(&recipe, false).is_empty());
+        assert_eq!(warm_argv(&recipe, false), [] as [String; 0]);
         assert_eq!(warm_argv(&recipe, true), ["pnpm", "run", "build"]);
     }
 

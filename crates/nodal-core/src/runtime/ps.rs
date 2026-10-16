@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn a_host_with_no_process_table_says_so_for_both_signals_that_need_one() {
         let (running, notes) = table(&NoTable);
-        assert!(running.is_empty());
+        assert_eq!(running, []);
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].signal, Source::Environment);
         assert_eq!(notes[1].signal, Source::Cwd);

@@ -82,8 +82,8 @@ mod tests {
     #[test]
     fn every_state_has_a_marker_and_no_marker_repeats() {
         for (state, marker) in MARKERS {
-            assert!(!marker.is_empty());
-            assert!(!state.marker().is_empty());
+            assert_ne!(*marker, "");
+            assert_ne!(state.marker(), "");
         }
         assert_eq!(State::Merge.marker(), "MERGE_HEAD");
         let mut paths: Vec<&str> = MARKERS.iter().map(|(_, marker)| *marker).collect();

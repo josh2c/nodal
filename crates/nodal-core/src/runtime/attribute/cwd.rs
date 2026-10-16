@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn a_process_outside_every_home_is_not_a_row() {
         let table = [standing(22, "/tmp"), Running::new(23, BTreeMap::new())];
-        assert!(rows(&table, &scope()).is_empty());
+        assert_eq!(rows(&table, &scope()), []);
     }
 
     #[test]

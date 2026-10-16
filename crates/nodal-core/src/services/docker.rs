@@ -673,8 +673,8 @@ mod tests {
 
     #[test]
     fn a_table_that_cannot_be_read_is_no_volumes_rather_than_a_failure() {
-        assert!(super::dangling_in("not json\n").is_empty());
-        assert!(super::dangling_in("").is_empty());
+        assert_eq!(super::dangling_in("not json\n"), []);
+        assert_eq!(super::dangling_in(""), []);
     }
 
     #[test]
