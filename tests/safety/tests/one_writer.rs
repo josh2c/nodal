@@ -517,7 +517,13 @@ fn the_sweep_leaves_a_merged_unit_another_actor_holds_and_says_so() {
     assert!(swept.status.success(), "{}", stderr(&swept));
     let report = stdout(&swept);
     assert!(report.contains("worker-import"), "the sweep does not name the unit it kept: {report}");
-    assert!(report.contains(FIRST), "the line does not name the holder: {report}");
+    // The line is the lock's own refusal and not some other reading: the sweep asked for
+    // the hold, was told no, and carried the sentence into its report.
+    assert!(
+        report.contains(&format!("is held by {FIRST}")),
+        "the line is not the lock refusal: {report}",
+    );
+    assert!(report.contains("--take"), "the line does not say how to take it: {report}");
 
     assert!(home.is_dir(), "the sweep took a home its holder is working in");
     assert!(workspace.trashed().is_empty(), "the sweep put a held home in the trash");
